@@ -1,0 +1,58 @@
+import { z } from "zod";
+import { CapabilityId, type DataClass, type Integrity, type NonEmpty, type Sensitivity, type Task } from "../../contracts/src/index.js";
+import type { CallScalar } from "../../registry/src/index.js";
+
+/**
+ * What reaches the enforcement boundary for one capability call (spec §2.6,
+ * §2.7; DECISIONS.md D-041).
+ *
+ * Every argument value arrives with its provenance class stated by mechanism,
+ * never inferred from the value (invariant 7):
+ *   - `constant`: names a slot whose value the runtime fixed at admission.
+ *   - `bound`: a `${<seq>.<path>}` reference the runtime resolves from the
+ *     task's own trajectory. The value never round-trips through the model.
+ *   - `synthesized`: free text the model composed.
+ * A list field carries one source per element, so each element has its own
+ * provenance, named `<field>[<index>]` (D-022).
+ */
+
+const Scalar = z.union([z.string(), z.number().finite(), z.boolean()]);
+
+export const ArgumentSource = z.discriminatedUnion("class", [
+  z.strictObject({ class: z.literal("constant"), slot: z.string().min(1).max(256) }),
+  z.strictObject({ class: z.literal("bound"), reference: z.string() }),
+  z.strictObject({ class: z.literal("synthesized"), value: Scalar }),
+]);
+export type ArgumentSource = z.infer<typeof ArgumentSource>;
+
+export const ProposedCall = z.strictObject({
+  capability: CapabilityId,
+  /** Keyed by interface field name; a list element is never a key of its own, so `<field>[<index>]` names cannot collide. */
+  arguments: z.record(z.string().regex(/^[a-z_][a-z0-9_]*$/), z.union([ArgumentSource, z.array(ArgumentSource)])),
+});
+export type ProposedCall = z.infer<typeof ProposedCall>;
+
+/** A value the runtime fixed at admission, with the data class admission gave it (§2.6 `constant`). */
+export type Constant = {
+  readonly value: CallScalar;
+  /** Integrity is the admitting source's (normally `operator`), set by admission. */
+  readonly data_class: DataClass;
+};
+
+/**
+ * The turn whose output carries the synthesized values (§2.6). Admission and
+ * the turn loop (Increment 5) supply it.
+ */
+export type Synthesis = {
+  /** The producing turn's sensitivity; a synthesized value is never less sensitive than the turn it came from (§1.2). */
+  readonly sensitivity: Sensitivity;
+  /** Under `owned` context: the integrity of every entry in the volatile region (§2.6). Ignored under `native`. */
+  readonly volatile_region?: NonEmpty<Integrity>;
+};
+
+/** Everything the boundary needs to know about the calling task. */
+export type TaskContext = {
+  readonly task: Task;
+  readonly constants: Readonly<Record<string, Constant>>;
+  readonly synthesis: Synthesis;
+};
