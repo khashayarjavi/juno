@@ -4,7 +4,8 @@
 0 — Scaffold and the verification harness
 
 ## Done in this increment
-- Nothing yet. Repo created from the starter kit on 2026-10-28.
+- Repo restructured: starter kit moved to the repo root, zip removed (D-008).
+- Spec renamed to `spec/core-semantic-model.md`, content unchanged; operator confirmed it is final v0.5.1 (D-009).
 
 ## Remaining in this increment
 - TypeScript strict mode (`noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`)

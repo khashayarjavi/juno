@@ -65,3 +65,17 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
 - Applies to: Increment 0 onward
 - Decision: `.github/workflows/verify.yml` runs `make verify` on every pull request into `main`. The operator accepts an increment when the CI check is green and `STATE.md` says the increment is done.
 - Reason: the build plan asks the operator to run `make verify` personally. The operator builds in cloud sessions and does not keep a local toolchain, so CI is the independent run. It also stops the coding agent from being the only witness to its own result.
+
+## D-008 — Repository layout: the starter kit lives at the repo root
+- Date: 2026-10-28
+- Status: Accepted (operator, 2026-10-28)
+- Applies to: Increment 0 onward
+- Decision: the starter kit was first committed one level down (`juno-starter-kit/juno/`), with `juno-starter-kit.zip` beside it. Its contents now sit at the repository root, and the nested folder and the zip have been removed.
+- Reason: GitHub runs workflows only from the root `.github/workflows/`, so with the kit nested, the D-007 CI check could never run. The SessionStart hook in `.claude/settings.json` also never fired. The zip duplicated tracked files.
+
+## D-009 — Semantic model file renamed, content unchanged
+- Date: 2026-10-28
+- Status: Accepted (operator, 2026-10-28)
+- Applies to: Increment 0 onward
+- Decision: the spec arrived as `spec/core-semantic-model.md.md`. It was renamed to `spec/core-semantic-model.md` with `git mv`, and the content is byte-identical. The operator confirmed the file is the final v0.5.1. The `spec/README.md` final-version check looks for the wildcard-egress cross-reference in §8.3. That reference actually sits in §3.2 (it cites §8.3's "cannot observe the consequence" criterion), and §2.2.1 states it too. The operator accepted it there.
+- Reason: CLAUDE.md §1 requires the file at exactly this path. A rename is not a content edit. CLAUDE.md rule 6 is about content.
