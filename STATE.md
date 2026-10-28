@@ -5,7 +5,7 @@
 
 Branch: `claude/inc-3-registry-ucto18`. The session harness assigned this name and allows pushes only to it, so it is used instead of `inc-3-registry` (D-028). Draft PR: https://github.com/khashayarjavi/juno/pull/5. Increment 2 is in `main` (PR #4 merged).
 
-**Status: done.** Everything in the build plan's Increment 3 scope, the D-025 Inc 3 directive, `work-vol` ownership, and the operator's O-2 ruling (D-036) are built and tested, and `make verify` is green in the cloud session and in CI. CI `verify` passed on PR #5 (run 40736968183, commit 6a4a3c8). The next run (40737367665, commit 35d71d6, a STATE-only change) failed one control test: the unlimited CPU probe measured 1.28 CPUs, below the 1.5 required, on a busy shared runner. D-039 makes that control take up to three samples, with the 1.5 threshold unchanged; CI on that fix is pending. Waiting for the operator's review of `shell.run.json` and merge.
+**Status: done.** Everything in the build plan's Increment 3 scope, the D-025 Inc 3 directive, `work-vol` ownership, and the operator's O-2 ruling (D-036) are built and tested, and `make verify` is green in the cloud session and in CI. CI `verify` passed on PR #5 (run 40736968183, commit 6a4a3c8). The next run (40737367665, commit 35d71d6, a STATE-only change) failed one control test: the unlimited CPU probe measured 1.28 CPUs, below the 1.5 required, on a busy shared runner. D-039 makes that control take up to three samples, with the 1.5 threshold unchanged; CI `verify` passed on that fix (run 40737951667, commit 3bbe69b). Waiting for the operator's review of `shell.run.json` and merge.
 
 ## Done in this increment
 Every test names the spec section it proves.
@@ -39,7 +39,7 @@ Every test names the spec section it proves.
 - Decisions D-028 to D-039 recorded.
 
 ## Remaining in this increment
-- Nothing to build. CI must be green on the D-039 commit (see Status). Then waiting for the operator's review of `packages/registry/definitions/shell.run.json` (D-035) and merge.
+- Nothing. CI `verify` passed on the D-039 commit (run 40737951667, commit 3bbe69b). Waiting for the operator's review of `packages/registry/definitions/shell.run.json` (D-035) and merge.
 
 ## make verify
 GREEN as of 2026-10-28 in the cloud session and in CI on PR #5, with D-036 built: 409 unit tests (13 files), 38 container tests (5 files), lint self-test rejected the `exec()` probe. Summary line: `make verify: GREEN`.
