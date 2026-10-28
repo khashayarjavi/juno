@@ -1,0 +1,46 @@
+{
+  "capability": {
+    "id": "shell.run",
+    "interface": {
+      "program": { "type": { "kind": "enum", "values": ["/usr/bin/cat"] }, "role": "instruction" },
+      "argv": { "type": { "kind": "list", "items": { "kind": "string" } }, "role": "data" },
+      "cwd": { "type": { "kind": "path" }, "role": "data" }
+    },
+    "providers": ["workload.execfile"],
+    "side_effect": "read",
+    "isolation_tier": 1,
+    "max_input_sensitivity": "internal",
+    "min_argument_integrity": "attested",
+    "output_class": { "sensitivity": "input", "integrity": "untrusted" },
+    "cost_model": { "expected_cost": 0, "expected_latency_ms": 2000, "cost_of_failure": 0 }
+  },
+  "program_field": "program",
+  "program_surfaces": [
+    {
+      "program": "/usr/bin/cat",
+      "positions": [
+        { "position": { "kind": "flag", "flag": "-A" }, "executes_code": false },
+        { "position": { "kind": "flag", "flag": "--show-all" }, "executes_code": false },
+        { "position": { "kind": "flag", "flag": "-b" }, "executes_code": false },
+        { "position": { "kind": "flag", "flag": "--number-nonblank" }, "executes_code": false },
+        { "position": { "kind": "flag", "flag": "-e" }, "executes_code": false },
+        { "position": { "kind": "flag", "flag": "-E" }, "executes_code": false },
+        { "position": { "kind": "flag", "flag": "--show-ends" }, "executes_code": false },
+        { "position": { "kind": "flag", "flag": "-n" }, "executes_code": false },
+        { "position": { "kind": "flag", "flag": "--number" }, "executes_code": false },
+        { "position": { "kind": "flag", "flag": "-s" }, "executes_code": false },
+        { "position": { "kind": "flag", "flag": "--squeeze-blank" }, "executes_code": false },
+        { "position": { "kind": "flag", "flag": "-t" }, "executes_code": false },
+        { "position": { "kind": "flag", "flag": "-T" }, "executes_code": false },
+        { "position": { "kind": "flag", "flag": "--show-tabs" }, "executes_code": false },
+        { "position": { "kind": "flag", "flag": "-u" }, "executes_code": false },
+        { "position": { "kind": "flag", "flag": "-v" }, "executes_code": false },
+        { "position": { "kind": "flag", "flag": "--show-nonprinting" }, "executes_code": false },
+        { "position": { "kind": "flag", "flag": "--help" }, "executes_code": false },
+        { "position": { "kind": "flag", "flag": "--version" }, "executes_code": false },
+        { "position": { "kind": "flag", "flag": "--" }, "executes_code": false },
+        { "position": { "kind": "operand" }, "executes_code": false }
+      ]
+    }
+  ]
+}
