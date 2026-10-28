@@ -3,7 +3,7 @@
 ## Current increment
 3 — Registry, adapters, and the conformance suite
 
-Branch: `claude/inc-3-registry-ucto18`. The session harness assigned this name and allows pushes only to it, so it is used instead of `inc-3-registry` (D-028). Increment 2 is in `main` (PR #4 merged).
+Branch: `claude/inc-3-registry-ucto18`. The session harness assigned this name and allows pushes only to it, so it is used instead of `inc-3-registry` (D-028). Draft PR: https://github.com/khashayarjavi/juno/pull/5. Increment 2 is in `main` (PR #4 merged).
 
 **Status: not done.** Everything in the build plan's Increment 3 scope, plus the D-025 Inc 3 directive and `work-vol` ownership, is built and green. One item is blocked by objection **O-2**: per-position argv roles (§2.3 rule 2), which the operator asked to be part of this increment. The increment is done when the operator rules on O-2 and that ruling is built and tested.
 
