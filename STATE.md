@@ -5,7 +5,7 @@
 
 Branch: `claude/inc-3-registry-ucto18`. The session harness assigned this name and allows pushes only to it, so it is used instead of `inc-3-registry` (D-028). Draft PR: https://github.com/khashayarjavi/juno/pull/5. Increment 2 is in `main` (PR #4 merged).
 
-**Status: not done.** Everything in the build plan's Increment 3 scope, plus the D-025 Inc 3 directive and `work-vol` ownership, is built and green. One item is blocked by objection **O-2**: per-position argv roles (§2.3 rule 2), which the operator asked to be part of this increment. The increment is done when the operator rules on O-2 and that ruling is built and tested.
+**Status: not done.** Everything in the build plan's Increment 3 scope, plus the D-025 Inc 3 directive and `work-vol` ownership, is built and green. The operator ruled on objection O-2 (D-036). What is left is building that ruling (per-call promotion of code-bearing argv positions) and its tests, including acceptance test 4b with the code flag moved later in argv.
 
 ## Done in this increment
 Every test names the spec section it proves.
@@ -28,23 +28,16 @@ Every test names the spec section it proves.
 - Decisions D-028 to D-035 recorded.
 
 ## Remaining in this increment
-- **Blocked by O-2:** per-position argv roles inside `argv` (an extension of the D-017 field-type language) and the promotion mechanism acceptance test 4b needs. Nothing built here assumes either reading.
+- Build D-036: read each call's `argv` against the program's declared flag surface, promote code-bearing elements to scalar `instruction` values at the `operator` floor, promote every element when the call uses a flag the surface does not cover, and check each instruction value alone against its floor (park reason `integrity_floor`). Tests: acceptance test 4b on the shipped `shell.run` with `sh` forced into the enum, including the code flag moved later in argv.
 
 ## make verify
-GREEN as of 2026-10-28 in the cloud session: 364 unit tests (11 files), 38 container tests (5 files), lint self-test rejected the `exec()` probe. Summary line: `make verify: GREEN`. Green does not mean done: O-2 is open.
+GREEN as of 2026-10-28 in the cloud session (before the D-036 work): 364 unit tests (11 files), 38 container tests (5 files), lint self-test rejected the `exec()` probe. Summary line: `make verify: GREEN`. Green does not mean done: D-036 is not built yet.
 
 ## Open objections to the spec
-- **O-2 — §2.3 rule 2 (per-position argv roles) is not settled by the spec.** Raised 2026-10-28 in Increment 3. Acceptance test 4b depends on it. §2.3 rule 2 says: "Where an interpreter is unavoidable, the code-bearing argv positions are promoted to `instruction` role, restoring the operator floor exactly where it belongs." The spec leaves three questions open:
-  1. **It conflicts with §2.2 rule 2.** `argv` is `list<string>`. §2.2 rule 2 forbids an `instruction` role on a list "because whole-field `min()` over heterogeneous origins is ambiguous and per-element provenance would have to be invented". It also says that where an operation seems to need one, "it needs a different capability decomposition". An `instruction` role on one element of `argv` is exactly a per-element role inside a list. The spec does not say whether §2.3 rule 2 is an exception to §2.2 rule 2 (so lists may carry per-element roles and per-element provenance), or whether "promotion" means something else.
-  2. **It does not say what a "position" is or who fixes it.** In an interpreter, the code is not at a fixed index: `sh -c CODE`, `sh -e -c CODE`, `sh -cCODE`, `python script.py`, `find . -exec CMD ;`, `tar --use-compress-program=PROG`, `sed 's/x/y/e'` (the code flag sits inside an operand). Two readings fit the text:
-     - (a) **Static.** The operator declares fixed argv indices as `instruction` in the capability definition. This keeps the trust root few and operator-authored (§0.5, §2.5). But code at an undeclared index (for example `sh -e -c CODE` when index 1 was declared) is not promoted.
-     - (b) **Per call.** At each call, the enforcement boundary reads the argv against the program's declared flag surface (DECISIONS.md D-018) and promotes every element that carries code. This catches moved flags. But one element's role then depends on other elements the model wrote, and the boundary's reading of the argv must match the program's own option parser exactly, or the hole reopens.
-  3. **It does not say which floor a promoted position gets.** §2.1 gives a capability one `min_argument_integrity`, which "applies to `instruction` fields". §2.2's illustration gives `program` the floor `attested` (the value `shell.run` now declares, D-035). §2.3 says promotion restores "the operator floor". With one value per capability, either `program` rises to `operator` or the promoted position gets only `attested`. The spec does not say whether floors may differ per field.
-  - **Blocked until the operator rules:** per-position roles inside `argv`, and the mechanism acceptance test 4b needs. **Not blocked:** everything else in Increment 3, which is built. `interpreterVerdict` (Increment 1) already reports which declared positions carry code, so either ruling can be built on it.
-  - **Requested from the operator:** rule on (1); choose (a), (b) or another reading for (2); and say for (3) whether a promoted position's floor is `operator` (per-field floors) or the capability's `min_argument_integrity`.
+- None. (O-1 was resolved as D-024; O-2 was resolved by the operator on 2026-10-28 as the per-call, flag-aware reading; see D-036.)
 
 ## Notes for the next session
-- **Next step:** if the operator has ruled on O-2, record the ruling as a decision, build it (extend the field-type language and test the promotion rule on the shipped `shell.run` with `sh` forced into the enum outside registration), run `make verify`, and mark the increment done. If not, nothing else in Increment 3 is left; do not start Increment 4.
+- **Next step:** build D-036 (see "Remaining"), run `make verify`, and mark the increment done. Do not start Increment 4.
 - Read D-025 at the start of Increments 5, 6 and 7. The Inc 2 and Inc 3 directives are done.
 - `packages/registry/definitions/` is not copied into the runner image yet; nothing in the runner loads the registry. Increment 5 must copy it when the runner registers capabilities at start.
 - The adapter calls the `docker` CLI (D-034). Today only the host-side tests call it. Increment 5 must decide how the runner, inside its container, reaches Docker, and record the decision.
