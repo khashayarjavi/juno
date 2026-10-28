@@ -177,3 +177,22 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
 - Applies to: Increment 1 onward
 - Decision: `fast-check` 4.10.2, pinned exactly, is a dev dependency. It supplies the property-based tests the build plan requires for the join, the reference grammar and attenuation. Because the lattice has only 16 elements, commutativity and associativity are also checked on every pair and triple.
 - Reason: it is the standard property-based testing library for TypeScript and runs inside Vitest. It is test-only and never reaches the images.
+
+## D-024 — Grant attenuation: a child may equal its parent (O-1 resolved)
+- Date: 2026-10-28
+- Status: Accepted (operator ruling on objection O-1, 2026-10-28)
+- Applies to: Increment 1 onward
+- Decision: the operator chose reading (a) of §3.2's "a strict subset of its parent on every dimension". A derived grant is a valid attenuation when it is no wider than its parent on every dimension; equality on a dimension is permitted, so an identical copy is valid. A child's `max_invocations` must not exceed the parent's: a `null` parent cap is unbounded, so any child cap is allowed under it, and a `null` child cap under a bounded parent is a widening. Invocations of a derived grant will be charged against the parent chain, mirroring §3.1's budget attenuation ("spend is attributed to the child and charged to the parent chain"). Enforcing that charge is deferred with delegation (D-006), because Slice 1 has no delegation and nothing consumes a derived grant. `isValidAttenuation` in `packages/contracts/src/attenuation.ts` implements the accept rule. This settles the point D-020 left open.
+- Reason: reading (c) makes many grants impossible to attenuate (a single-capability grant, a grant already at `(public, operator)`, any grant with a fixed principal). Reading (b) adds nothing to safety, because an identical copy grants no authority the parent lacks. Charging the parent chain stops a child grant from multiplying the parent's invocation cap by being copied.
+
+## D-025 — Operator directives for later increments (not spec changes)
+- Date: 2026-10-28
+- Status: Accepted (operator, 2026-10-28)
+- Applies to: each item applies only in the increment it names. None of them is in force in Increment 1.
+- Decision:
+  - **Increment 2:** the hash chain covers each payload's digest, never its bytes. Deleting a blob leaves the chain verifiable.
+  - **Increment 3:** the workload container gets fixed CPU, memory and process-count limits, proven by container tests that hit each limit.
+  - **Increment 5:** one runner per journal volume. A second runner refuses to start.
+  - **Increments 5 and 6:** `ttl` counts wall time, including host sleep and time spent parked. The `wall_clock` budget counts elapsed running time only.
+  - **Increment 7:** every acceptance criterion names protected paths, and verification fails if the task wrote under them.
+- Reason: operator directives that settle choices the model leaves to the build. They are recorded now so the session that reaches each increment applies them and cannot miss them. They do not change `spec/`.

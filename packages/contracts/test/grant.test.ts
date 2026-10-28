@@ -8,6 +8,7 @@ import {
   SENSITIVITY_LEVELS,
   attenuationViolations,
   compareGrantDimensions,
+  isValidAttenuation,
   parseAtBoundary,
 } from "../src/index.js";
 
@@ -193,6 +194,130 @@ describe("attenuation (§3.2): a derived grant never widens its parent", () => {
           expect(attenuationViolations(parent, narrowed)).toEqual([]);
         },
       ),
+    );
+  });
+});
+
+describe("attenuation (§3.2, D-024): a child no wider than its parent on every dimension is valid", () => {
+  // proves §3.2 under D-024: equality is permitted on every dimension, so an identical copy is a valid attenuation
+  it("accepts an identical copy", () => {
+    expect(isValidAttenuation(parent, child({}))).toBe(true);
+  });
+
+  // proves §3.2 under D-024: a child narrowed on every dimension is valid
+  it("accepts a child narrowed on every narrowable dimension", () => {
+    const narrow = child({
+      capability_selector: { capabilities: ["fs.file.read"] },
+      resource_scope: [{ kind: "path", prefix: "/work/repo/src" }],
+      data_class_bounds: { max_sensitivity: "internal", min_integrity: "attested" },
+      expires_at: "2026-10-28T12:00:00Z",
+      max_invocations: 3,
+    });
+    expect(isValidAttenuation(parent, narrow)).toBe(true);
+  });
+
+  // proves §3.2 under D-024: equality on some dimensions and narrowing on the rest is valid
+  it.each<[string, Partial<Grant>]>([
+    ["only the capability set narrowed", { capability_selector: { capabilities: ["shell.run"] } }],
+    ["only the scope narrowed", { resource_scope: [{ kind: "host", host: "api.example.com", port: 443 }] }],
+    ["only the expiry brought forward", { expires_at: "2026-10-29T08:59:59Z" }],
+    ["only the invocation cap lowered", { max_invocations: 9 }],
+  ])("accepts a child with %s", (_name, overrides) => {
+    expect(isValidAttenuation(parent, child(overrides))).toBe(true);
+  });
+
+  // proves §3.2: a child that widens any single dimension is not a valid attenuation, whatever it narrows elsewhere
+  it.each<[string, Partial<Grant>]>([
+    ["a different principal", { principal: "someone-else", max_invocations: 1 }],
+    ["an added capability", { capability_selector: { capabilities: ["shell.run", "fs.file.read", "fs.file.write"] }, max_invocations: 1 }],
+    ["a wider scope", { resource_scope: [{ kind: "path", prefix: "/work" }], max_invocations: 1 }],
+    ["a higher sensitivity ceiling", { data_class_bounds: { max_sensitivity: "secret", min_integrity: "operator" } }],
+    ["a lower integrity floor", { data_class_bounds: { max_sensitivity: "public", min_integrity: "untrusted" } }],
+    ["an extended expiry", { expires_at: "2026-10-29T09:00:01Z", max_invocations: 1 }],
+    ["a higher invocation cap", { max_invocations: 11, expires_at: "2026-10-28T10:00:00Z" }],
+  ])("refuses a child with %s", (_name, overrides) => {
+    expect(isValidAttenuation(parent, child(overrides))).toBe(false);
+  });
+
+  describe("max_invocations (D-024)", () => {
+    const uncappedParent = child({ id: "grant-uncapped", max_invocations: null });
+    const derive = (from: Grant, cap: number | null): Grant =>
+      parseAtBoundary("grant", Grant, { ...from, id: "grant-derived", attenuation_parent: from.id, max_invocations: cap });
+
+    // proves D-024: a null parent cap is unbounded, so an uncapped child under it is equal, not wider
+    it("accepts an uncapped child under an uncapped parent", () => {
+      expect(isValidAttenuation(uncappedParent, derive(uncappedParent, null))).toBe(true);
+    });
+
+    // proves D-024: any cap under an unbounded parent is no wider
+    it.each([0, 1, 10, 1_000_000])("accepts a cap of %i under an uncapped parent", (cap) => {
+      expect(isValidAttenuation(uncappedParent, derive(uncappedParent, cap))).toBe(true);
+    });
+
+    // proves D-024: a null child cap under a bounded parent is a widening
+    it("refuses an uncapped child under a capped parent", () => {
+      expect(isValidAttenuation(parent, derive(parent, null))).toBe(false);
+    });
+
+    // proves D-024: a child cap may equal the parent's but must not exceed it
+    it("accepts a cap equal to the parent's and refuses one above it", () => {
+      expect(isValidAttenuation(parent, derive(parent, 10))).toBe(true);
+      expect(isValidAttenuation(parent, derive(parent, 11))).toBe(false);
+    });
+  });
+
+  // A small pool of grants, so random pairs and triples are often in the attenuation relation.
+  const grantArbitrary = fc
+    .record({
+      principal: fc.constantFrom("alireza", "alireza", "alireza", "other"),
+      capabilities: fc.subarray(["fs.file.read", "shell.run", "net.http.get"], { minLength: 1 }),
+      prefixes: fc.subarray(["/work", "/work/repo", "/work/repo/src", "/data"], { minLength: 0 }),
+      maxSensitivity: fc.constantFrom(...SENSITIVITY_LEVELS),
+      minIntegrity: fc.constantFrom(...INTEGRITY_LEVELS),
+      expiryHours: fc.integer({ min: 1, max: 4 }),
+      cap: fc.constantFrom(null, 0, 1, 2),
+    })
+    .map((g) =>
+      parseAtBoundary("grant", Grant, {
+        ...parent,
+        principal: g.principal,
+        capability_selector: { capabilities: g.capabilities },
+        resource_scope: g.prefixes.map((prefix) => ({ kind: "path", prefix })),
+        data_class_bounds: { max_sensitivity: g.maxSensitivity, min_integrity: g.minIntegrity },
+        expires_at: new Date(Date.parse(parent.issued_at) + g.expiryHours * 3_600_000).toISOString(),
+        max_invocations: g.cap,
+      }),
+    );
+
+  // proves §3.2 under D-024 as a property: every grant is a valid attenuation of itself
+  it("is reflexive", () => {
+    fc.assert(
+      fc.property(grantArbitrary, (grant) => {
+        expect(isValidAttenuation(grant, grant)).toBe(true);
+      }),
+    );
+  });
+
+  // proves §3.2 as a property: attenuating an attenuation never yields more than the original grant held
+  it("is transitive", () => {
+    fc.assert(
+      fc.property(grantArbitrary, grantArbitrary, grantArbitrary, (a, b, c) => {
+        if (isValidAttenuation(a, b) && isValidAttenuation(b, c)) {
+          expect(isValidAttenuation(a, c)).toBe(true);
+        }
+      }),
+      { numRuns: 2000 },
+    );
+  });
+
+  // proves §3.2 as a property: a child is valid exactly when no dimension is wider than the parent's
+  it("accepts exactly the children with no widened dimension", () => {
+    fc.assert(
+      fc.property(grantArbitrary, grantArbitrary, (a, b) => {
+        const relations = compareGrantDimensions(a, b);
+        const noneWider = GRANT_DIMENSIONS.every((dimension) => relations[dimension] !== "wider");
+        expect(isValidAttenuation(a, b)).toBe(noneWider);
+      }),
     );
   });
 });

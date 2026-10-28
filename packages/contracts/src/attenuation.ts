@@ -7,14 +7,13 @@ import { compareIntegrity, compareSensitivity } from "./lattice.js";
  * parent on every dimension."
  *
  * This module compares a child grant with its parent one dimension at a time.
- * A child that is wider on any dimension is not an attenuation under any
- * reading of §3.2, so `attenuationViolations` rejects it.
+ * The operator ruled on the reading (DECISIONS.md D-024): a child is a valid
+ * attenuation when it is no wider than its parent on every dimension. Equality
+ * on a dimension is permitted, so an identical copy is valid.
  *
- * What it deliberately does not decide: whether a child that is *equal* to its
- * parent on some or all dimensions is an attenuation. "Strict subset on every
- * dimension" can be read three ways, and the readings disagree exactly there.
- * That is open objection O-1 in STATE.md; until the operator rules, no
- * function here declares a grant a valid attenuation.
+ * Invocations of a derived grant are to be charged against the parent chain,
+ * as budgets are (§3.1). That charge is runtime accounting, deferred with
+ * delegation (D-006); this module only decides whether a child is valid.
  *
  * Dimensions that describe authority: principal, capability set, resource
  * scope, the two data-class bounds, expiry, and invocation cap. `issuance`,
@@ -98,11 +97,18 @@ export function compareGrantDimensions(parent: Grant, child: Grant): Readonly<Re
 
 /**
  * The dimensions on which `child` widens `parent`. A non-empty result means
- * `child` is not an attenuation of `parent` under any reading of §3.2, and
- * must be refused. An empty result is necessary for attenuation; whether it
- * is sufficient is open objection O-1.
+ * `child` is not an attenuation of `parent` and must be refused.
  */
 export function attenuationViolations(parent: Grant, child: Grant): readonly GrantDimension[] {
   const relations = compareGrantDimensions(parent, child);
   return GRANT_DIMENSIONS.filter((dimension) => relations[dimension] === "wider");
+}
+
+/**
+ * Whether `child` is a valid attenuation of `parent` (§3.2, D-024): no wider
+ * on any dimension. A child equal to its parent on some or every dimension is
+ * valid.
+ */
+export function isValidAttenuation(parent: Grant, child: Grant): boolean {
+  return attenuationViolations(parent, child).length === 0;
 }
