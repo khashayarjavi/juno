@@ -25,6 +25,20 @@ export const AbsolutePath = z
   );
 export type AbsolutePath = z.infer<typeof AbsolutePath>;
 
+/**
+ * The root of the capability namespace for paths: the work volume, mounted at
+ * this path in the workload container. Every path a selector can name is this
+ * path or under it. Journal storage is never under it (§3.4.1, DECISIONS.md D-026).
+ */
+export const WORK_NAMESPACE = "/work";
+
+/** An absolute, normalised path inside the capability namespace. */
+export const WorkPath = AbsolutePath.refine(
+  (path) => pathWithin(path, WORK_NAMESPACE),
+  `must be ${WORK_NAMESPACE} or under it; nothing outside the capability namespace can be named (§3.4.1)`,
+);
+export type WorkPath = z.infer<typeof WorkPath>;
+
 /** An exact identifier inside a scope. Pattern characters are refused so nothing reads as a wildcard. */
 const ScopeId = Ref.refine((id) => !/[*?]/.test(id), "must not contain '*' or '?'; scopes enumerate, they do not match patterns");
 
@@ -38,7 +52,7 @@ const HostName = z
   );
 
 export const ResourceSelector = z.discriminatedUnion("kind", [
-  z.strictObject({ kind: z.literal("path"), prefix: AbsolutePath }),
+  z.strictObject({ kind: z.literal("path"), prefix: WorkPath }),
   z.strictObject({ kind: z.literal("repo"), id: ScopeId }),
   z.strictObject({ kind: z.literal("host"), host: HostName, port: z.int().min(1).max(65535) }),
   z.strictObject({ kind: z.literal("record"), id: ScopeId }),
@@ -111,6 +125,11 @@ export function pathWithin(inner: AbsolutePath, outer: AbsolutePath): boolean {
     return true;
   }
   return inner === outer || inner.startsWith(`${outer}/`);
+}
+
+/** Whether two normalised absolute paths overlap: either one contains the other. */
+export function pathsOverlap(a: AbsolutePath, b: AbsolutePath): boolean {
+  return pathWithin(a, b) || pathWithin(b, a);
 }
 
 /** Whether every selector of `inner` is within some selector of `outer`. */
