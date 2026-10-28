@@ -6,10 +6,12 @@ import {
   INTEGRITY_LEVELS,
   ResourceSelector,
   SENSITIVITY_LEVELS,
+  WORK_NAMESPACE,
   attenuationViolations,
   compareGrantDimensions,
   isValidAttenuation,
   parseAtBoundary,
+  pathWithin,
 } from "../src/index.js";
 
 const parent: Grant = parseAtBoundary("grant", Grant, {
@@ -68,6 +70,31 @@ describe("Grant schema (§3.2)", () => {
   // proves §3.3 canonical form: path selectors must be absolute and normalised, so containment cannot be fooled by '..'
   it.each(["work/repo", "/work/../etc", "/work/./repo", "/work//repo", "/work/repo/"])("rejects the non-canonical path %j", (prefix) => {
     expect(ResourceSelector.safeParse({ kind: "path", prefix }).success).toBe(false);
+  });
+
+  // proves §3.2 / §3.4.1: a path selector cannot name anything outside the capability namespace, journal storage included
+  it.each(["/", "/journal", "/journal/tasks", "/journal/blobs/sha256", "/etc", "/workspace", "/work-other", "/app", "/var/lib/docker"])(
+    "rejects the out-of-namespace path %j at grant creation",
+    (prefix) => {
+      expect(ResourceSelector.safeParse({ kind: "path", prefix }).success).toBe(false);
+      expect(Grant.safeParse({ ...parent, resource_scope: [{ kind: "path", prefix }] }).success).toBe(false);
+    },
+  );
+
+  // proves §3.4.1 as a property: every path selector that parses lies inside the capability namespace
+  it("accepts a path selector only when it lies inside the capability namespace", () => {
+    const segment = fc.constantFrom("work", "journal", "repo", "src", "..", ".", "", "a", "work-x", "tasks");
+    fc.assert(
+      fc.property(fc.array(segment, { minLength: 0, maxLength: 5 }), (segments) => {
+        const prefix = `/${segments.join("/")}`;
+        const parsed = ResourceSelector.safeParse({ kind: "path", prefix });
+        if (parsed.success && parsed.data.kind === "path") {
+          expect(pathWithin(parsed.data.prefix, WORK_NAMESPACE)).toBe(true);
+        }
+      }),
+      { numRuns: 3000 },
+    );
+    expect(ResourceSelector.safeParse({ kind: "path", prefix: WORK_NAMESPACE }).success).toBe(true);
   });
 
   // proves §3.2: the capability selector is a bounded set — at least one capability, each named once
@@ -271,7 +298,7 @@ describe("attenuation (§3.2, D-024): a child no wider than its parent on every 
     .record({
       principal: fc.constantFrom("alireza", "alireza", "alireza", "other"),
       capabilities: fc.subarray(["fs.file.read", "shell.run", "net.http.get"], { minLength: 1 }),
-      prefixes: fc.subarray(["/work", "/work/repo", "/work/repo/src", "/data"], { minLength: 0 }),
+      prefixes: fc.subarray(["/work", "/work/repo", "/work/repo/src", "/work/data"], { minLength: 0 }),
       maxSensitivity: fc.constantFrom(...SENSITIVITY_LEVELS),
       minIntegrity: fc.constantFrom(...INTEGRITY_LEVELS),
       expiryHours: fc.integer({ min: 1, max: 4 }),

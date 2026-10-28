@@ -1,29 +1,23 @@
 # STATE
 
 ## Current increment
-1 — Contracts and the lattice
+2 — Journal
 
-Branch: `inc-1-contracts-lattice`. PR: https://github.com/khashayarjavi/juno/pull/3. Increment 0 is in `main` (its commits reached `main` through PR #2).
+Branch: `inc-2-journal`. Increment 1 is in `main` (PR #3 merged).
 
-**Status: done.** Every Increment 1 property holds under test, and `make verify` is green. The operator ruled on O-1 (D-024), and the accept half of the attenuation check is built. CI `verify` passed on PR #3 (run 40722704784, commit 346e829). Waiting for the operator to merge.
+**Status: in progress.** Not done until `make verify` is green and the container tests below exist.
 
 ## Done in this increment
-All in `packages/contracts` (pure, no I/O). Every test names the spec section it proves.
-- **Lattice (§1.1–1.2)** — `lattice.ts`. Sensitivity and integrity are ordered enums, and `join` takes max sensitivity and min integrity. Property-based tests (fast-check, D-023) show join is commutative, associative, idempotent, independent of input order, composes over concatenation, and is monotonic in the right direction on both axes. Commutativity and associativity are also checked on every one of the 16³ triples. `join` refuses empty input (D-015).
-- **Task `sensitivity_floor` cannot decrease (§3.1)** — `raiseSensitivityFloor` never lowers the floor (property test), and `assertSensitivityFloorTransition` refuses every lowering pair (all 16 pairs checked).
-- **Field roles (§2.2)** — `capability.ts`. A field with no declared role parses as `instruction`. A `list` or `map` `instruction` field fails to parse, and so does a list field with no role, because it defaults to `instruction`. An invalid or misspelt role is an error, never a fallback (D-016, D-017).
-- **Contracts as types and runtime schemas** — Task (§3.1), Capability (§2.1), Grant (§3.2), TrajectoryEntry (§3.4.2), Closure (§3.4.4), Artifact (§3.5). Shapes the model leaves open are in D-020 to D-022. The closure schema refuses `verified` unless the criterion is `operator` integrity and the check passed, and `closureSchemaFor` refuses a verifier equal to the executing actor.
-- **Provenance classes and the `${<seq>.<path>}` grammar (§2.6, O9)** — `provenance.ts`, `reference.ts`. The parser rejects cross-task, ambiguous and unresolvable forms, each with its reason, and rejects any text around a reference. A round-trip property test shows every reference prints as readable text and parses back unchanged (D-019).
-- **Interpreter test (§2.3)** — `interpreter.ts`. A predicate over a program name plus its declared flag surface. Every program on the spec's list is an interpreter, including `sh` and `git`, and so is any program with a code-bearing argv position. A program with no declared surface fails closed (D-018).
-- **Grant attenuation (§3.2, D-020, D-024)** — `attenuation.ts`. It compares a child grant with its parent on seven dimensions and refuses any widening, including expiry extension (property-tested). `isValidAttenuation` accepts a child that is no wider than its parent on every dimension; equal is allowed, so an identical copy is valid (operator ruling on O-1). A `null` invocation cap under a capped parent is a widening; any cap under an uncapped parent is not. Property tests show the rule is reflexive, transitive, and accepts exactly the children with no widened dimension. Wildcard scope cannot be written at all, so §3.2's ban on wildcard egress scope holds by construction (D-020).
-- **Mutation-checked:** 21 deliberate breakages (e.g. role defaulting to `data`, join using max integrity, expiry comparison reversed, cross-task detection off, self-verification allowed, and for the accept rule: requiring at least one narrower dimension, treating a removed cap as equal, ignoring the principal, accepting everything) each make tests fail.
-- `scripts/session-start.sh`: a pid file whose PID now belongs to an unrelated process is treated as stale. This session, Docker would not start until the file was removed by hand.
+- `packages/journal`: per-task hash chain, content-addressed blob store, writer, read interface (plain functions). Unit tests for tamper, truncation, reordering, D-025 blob deletion.
+- Path selectors confined to the capability namespace `/work`; the journal refuses any root overlapping it; the runner config refuses overlap too.
 
 ## Remaining in this increment
-- Nothing. CI `verify` passed on PR #3 (run 40722704784, commit 346e829). Waiting for the operator to merge.
+- Runner image: `/journal` directory owned by the runner user.
+- Container tests: runner writes to `journal-vol`; workload read and write attempts fail; full-filesystem canary scan in the workload finds nothing.
+- DECISIONS.md D-026, D-027. Full STATE.md update. `make verify`.
 
 ## make verify
-GREEN as of 2026-10-28 in the cloud session and in CI on PR #3: 255 unit tests (9 files), 14 container tests, lint self-test rejected the `exec()` probe. Summary line: `make verify: GREEN`.
+Not yet run this increment. Unit tests: 313 passing.
 
 ## Open objections to the spec
 - None. (O-1 was resolved by the operator as reading (a); see D-024.)
