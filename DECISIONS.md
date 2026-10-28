@@ -79,3 +79,24 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
 - Applies to: Increment 0 onward
 - Decision: the spec arrived as `spec/core-semantic-model.md.md`. It was renamed to `spec/core-semantic-model.md` with `git mv`, and the content is byte-identical. The operator confirmed the file is the final v0.5.1. The `spec/README.md` final-version check looks for the wildcard-egress cross-reference in §8.3. That reference actually sits in §3.2 (it cites §8.3's "cannot observe the consequence" criterion), and §2.2.1 states it too. The operator accepted it there.
 - Reason: CLAUDE.md §1 requires the file at exactly this path. A rename is not a content edit. CLAUDE.md rule 6 is about content.
+
+## D-010 — Toolchain: TypeScript 6.0, ESLint 10 with typescript-eslint, Vitest 5
+- Date: 2026-10-28
+- Status: Accepted
+- Applies to: Increment 0 onward
+- Decision: TypeScript 6.0.x, ESLint 10 (flat config) with typescript-eslint's `strict` preset, and Vitest 5 as the test runner (`npm run test:watch` for watch mode). Versions are pinned exactly in `package.json`. ES modules, `NodeNext` resolution, Node 22.
+- Reason: TypeScript 7 is current, but typescript-eslint supports only versions below 6.1, and a lint rule that cannot parse the code is no control. Vitest runs TypeScript without a separate build step and has watch mode built in. Exact pins keep `make verify` reproducible between sessions weeks apart.
+
+## D-011 — Runtime schema library: Zod 4
+- Date: 2026-10-28
+- Status: Accepted
+- Applies to: Increment 0 onward
+- Decision: Zod 4 is the runtime schema library. Every boundary goes through `parseAtBoundary(boundary, schema, input)` in `packages/contracts`. It returns the typed value or throws `BoundaryError`, which callers treat as fail-closed.
+- Reason: Zod gives the TypeScript type and the runtime check from one definition, so the two cannot drift. One helper means every boundary rejects input the same way (§0.2 D8).
+
+## D-012 — The no-shell lint rule is a local plugin, and inline lint config is off
+- Date: 2026-10-28
+- Status: Accepted
+- Applies to: Increment 0 onward
+- Decision: `tools/eslint-plugin-juno` defines `juno/no-shell`, at error level on every file. It allows only `execFile` to be imported from `child_process`, so `exec`, `execSync`, `spawn`, `fork`, `execFileSync`, whole-module imports, `require` and re-exports are all banned. It bans a `shell` option set to anything but the literal `false`. It also bans building an `execFile` program or argv element with a template literal or `+`. `noInlineConfig: true` makes every `eslint-disable` comment in the repo ineffective. `make lint` also feeds a deliberately non-conforming file to the real ESLint CLI and fails if ESLint does not reject it.
+- Reason: CLAUDE.md rule 8 says use `execFile(program, argv)` only, and the rule must never be disabled inline. An allowlist fails closed, whereas a denylist misses the next launcher. Like the §2.4 conformance suite, the rule catches honest mistakes, not deliberate evasion (for example `process.binding`). That limit is stated in the rule's header (§0.5 corollary).
