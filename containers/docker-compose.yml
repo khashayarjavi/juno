@@ -27,6 +27,12 @@ services:
     network_mode: none          # never relaxed (CLAUDE.md §5)
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
+    # Fixed resource limits (DECISIONS.md D-025 Inc 3, D-030). Swap equals
+    # memory, so the memory limit cannot be stretched by swapping.
+    cpus: 1.0
+    mem_limit: 512m
+    memswap_limit: 512m
+    pids_limit: 128
     volumes:
       - work-vol:/work          # no journal-vol, no credentials
 

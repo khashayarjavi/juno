@@ -18,5 +18,11 @@ COPY dist ./dist
 RUN ["mkdir", "-m", "0700", "/journal"]
 RUN ["chown", "node:node", "/journal"]
 
+# The work-vol mount point, with the same owner and mode as in the workload
+# image, so a new volume gets them whichever container mounts it first
+# (DECISIONS.md D-031). The runner can read the work volume but not write it.
+RUN ["mkdir", "-m", "0755", "/work"]
+RUN ["chown", "65532:65532", "/work"]
+
 USER node
 CMD ["node", "dist/runner/src/main.js"]
