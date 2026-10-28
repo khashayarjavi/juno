@@ -1,43 +1,43 @@
 # STATE
 
 ## Current increment
-2 — Journal
+3 — Registry, adapters, and the conformance suite
 
-Branch: `inc-2-journal`. PR: https://github.com/khashayarjavi/juno/pull/4 (draft). Increment 1 is in `main` (PR #3 merged).
+Branch: `claude/inc-3-registry-ucto18`. The session harness assigned this branch name and allows pushes only to it, so it is used instead of `inc-3-registry`. Increment 2 is in `main` (PR #4 merged).
 
-**Status: done.** Every Increment 2 property holds under test, and `make verify` is green in the cloud session and in CI. CI `verify` passed on PR #4 (run 40726168581, commit f29082c). Waiting for the operator to merge.
+**Status: not done.** Objection O-2 blocks one part of this increment (per-position argv roles, §2.3 rule 2). The rest is being built.
 
 ## Done in this increment
-Every test names the spec section it proves.
-- **Hash chain (§3.4.2)** — `packages/journal/src/chain.ts`. One chain per task, `seq` from 0. Each entry is one line of canonical JSON; its hash is the `sha256:` of that line, and the next entry's `hash_prev` is that hash. A head record names the last entry's `seq` and hash, so cutting entries off the end is detected (D-027).
-- **Tamper, truncation, reordering are detected** — property tests: changing any single byte of the stored entries fails verification; cutting the entries at any byte fails; every reordering fails; a canonical rewrite of any field of any entry fails; changing the head fails; adding an entry without moving the head fails; a non-canonical but equivalent line fails. Each failure names its reason and line.
-- **D-025 directive (Inc 2)** — the chain covers each payload's digest (`payload_ref`), never its bytes. Tests: deleting a blob leaves the chain verifiable and the reader is told `missing`; a changed blob is reported `corrupt` and its bytes are never returned; different payloads give different entry hashes.
-- **Blob store** — `blobs.ts`. Payloads stored by content address; every read checks the bytes still match.
-- **Writer** — `writer.ts`, used by the runner. Append-only (no update or delete). It assigns `seq`, `task_id`, `payload_ref`, `hash_prev` and `timestamp`, so a caller cannot forge them (tested by smuggling them into a draft). It checks every entry against the TrajectoryEntry contract and writes nothing on refusal. It refuses to append to a chain that fails verification.
-- **Read interface (§3.4.1)** — `read.ts`: `readTrajectory`, `verifyTrajectory`, `readPayload`. Plain functions, not a Capability, with no capability id; a test checks that nothing the journal exports parses as a Capability. Entries are returned only when the whole chain verifies; readable while the task runs (tested after every append).
-- **Journal path unaddressable by construction (§3.2, §3.4.1; the STATE.md item from Increment 1)** — D-026. Path selectors can name only `/work` and what is under it; `/`, `/journal`, `/etc`, `/workspace` fail at grant creation. The journal refuses any root overlapping `/work`; the runner refuses to start if `JUNO_JOURNAL_DIR` overlaps `/work` or `JUNO_WORK_DIR`. A property test checks that no journal root the journal accepts and no path selector the Grant schema accepts overlap in either direction (with a guard that hundreds of pairs were compared).
-- **Containers** — the runner image creates `/journal` owned by the runner user, mode 0700. The runner opens the journal at start. Container tests: the runner (non-root) writes an entry to `journal-vol` and a second runner container reads it back verified; the workload's reads of the runner's exact journal paths fail, its writes fail, and a scan of every file it can read (about 1,300) finds no trace of the journal's canary, while finding a control marker it wrote itself; the journal is unchanged afterwards. Compose checks: `work-vol` is mounted in the workload at exactly `/work`; `journal-vol` is mounted nowhere inside `/work` in any service; the runner's `JUNO_JOURNAL_DIR` is the `journal-vol` mount.
-- **Mutation-checked:** 18 deliberate breakages, each caught by a test: link, `seq`, canonical form, head seq/hash, missing head, task id and incomplete-line checks turned off; blob digest not checked on read; verification made to depend on blob bytes; journal root inside or containing `/work` accepted; path selector outside `/work` accepted, or checked without a segment boundary; both runner overlap checks off; writer appending to a broken chain; caller able to override chain fields; payload not stored.
-- One unit-test fixture in `packages/contracts/test/grant.test.ts` changed from `/data` to `/work/data`, because the old path can no longer be written as scope. The property it serves is unchanged (D-026).
+- Objection O-2 written (below).
 
 ## Remaining in this increment
-- Nothing. CI `verify` passed on PR #4 (run 40726168581, commit f29082c). Waiting for the operator to merge.
+- Capability definitions as versioned files (`packages/registry`), `shell.run` with declared roles and an interpreter-free enum.
+- Registration review: enum membership checked by the interpreter test (§2.3 rule 3, acceptance test 4a).
+- Adapter: `execFile` across the container boundary, argv as an array.
+- Registration conformance suite (§2.4): canary intact through a conforming adapter; a string-interpolating adapter blocked at registration (acceptance test 5).
+- D-025 Inc 3 directive: fixed CPU, memory and process-count limits on the workload, each hit by a container test.
+- `work-vol` ownership for the workload user (65532).
+- **Blocked by O-2:** per-position argv roles (§2.3 rule 2).
 
 ## make verify
-GREEN as of 2026-10-28 in the cloud session and in CI on PR #4: 313 unit tests (10 files), 23 container tests (2 files), lint self-test rejected the `exec()` probe. Summary line: `make verify: GREEN`.
+Not yet run on this branch.
 
 ## Open objections to the spec
-- None. (O-1 was resolved by the operator as reading (a); see D-024.)
+- **O-2 — §2.3 rule 2 (per-position argv roles) is not settled by the spec.** Raised 2026-10-28 in Increment 3. Acceptance test 4b depends on it. §2.3 rule 2 says: "Where an interpreter is unavoidable, the code-bearing argv positions are promoted to `instruction` role, restoring the operator floor exactly where it belongs." The spec leaves three questions open:
+  1. **It conflicts with §2.2 rule 2.** `argv` is `list<string>`. §2.2 rule 2 forbids an `instruction` role on a list "because whole-field `min()` over heterogeneous origins is ambiguous and per-element provenance would have to be invented", and says that where an operation seems to need one, "it needs a different capability decomposition". An `instruction` role on one element of `argv` is exactly a per-element role inside a list. The spec does not say whether §2.3 rule 2 is an exception to §2.2 rule 2 (so lists may carry per-element roles and per-element provenance), or whether "promotion" means something else.
+  2. **It does not say what a "position" is or who fixes it.** In an interpreter, the code is not at a fixed index: `sh -c CODE`, `sh -e -c CODE`, `sh -cCODE`, `python script.py`, `find . -exec CMD ;`, `tar --use-compress-program=PROG`, `sed 's/x/y/e'` (the code flag sits inside an operand). Two readings fit the text:
+     - (a) **Static.** The operator declares fixed argv indices as `instruction` in the capability definition. This keeps the trust root few and operator-authored (§0.5, §2.5). But code at an undeclared index (for example `sh -e -c CODE` when index 1 was declared) is not promoted.
+     - (b) **Per call.** At each call, the enforcement boundary reads the argv against the program's declared flag surface (DECISIONS.md D-018) and promotes every element that carries code. This catches moved flags. But one element's role then depends on other elements the model wrote, and the boundary's reading of the argv must match the program's own option parser exactly, or the hole reopens.
+  3. **It does not say which floor a promoted position gets.** §2.1 gives a capability one `min_argument_integrity`, which "applies to `instruction` fields". §2.2's illustration gives `program` the floor `attested`. §2.3 says promotion restores "the operator floor". With one value per capability, either `program` rises to `operator` or the promoted position gets only `attested`. The spec does not say whether floors may differ per field.
+  - **Blocked until the operator rules:** per-position roles inside `argv` (an extension of the D-017 field-type language), and the mechanism acceptance test 4b needs. **Not blocked:** everything else in Increment 3. Nothing built here reads or writes argv roles per position. `interpreterVerdict` (Increment 1) already reports which declared positions carry code, so either ruling can be built on it.
+  - **Requested from the operator:** rule on (1), choose (a), (b) or another reading for (2), and say for (3) whether a promoted position's floor is `operator` (per-field floors) or the capability's `min_argument_integrity`.
 
 ## Notes for the next session
-- Once the Increment 2 pull request is merged, Increment 3 (Registry, adapters, conformance suite) is current. Do not start it before the merge.
-- **Operator directives in D-025 apply per increment.** Read D-025 at the start of Increments 3, 5, 6 and 7 and build each directive into that increment's tests: Inc 3 fixed CPU, memory and process-count limits on the workload, each hit by a container test; Inc 5 one runner per journal volume (the journal writer assumes it is the only writer; Increment 5 adds the refusal); Inc 5–6 `ttl` counts wall time including sleep and parked time, `wall_clock` budget counts running time only; Inc 7 criteria name protected paths and verification fails on writes under them. The Inc 2 directive is done.
-- D-024 defers charging a derived grant's invocations to its parent chain until delegation exists (D-006). Nothing in Slice 1 consumes a derived grant.
+- Read D-025 at the start of Increments 5, 6 and 7. The Inc 2 directive is done; the Inc 3 directive is built in this increment.
 - Items later increments must pick up (none is an objection yet):
-  - **Increment 3:** §2.3 rule 2 (code-bearing argv positions promoted to `instruction`, needed for acceptance test 4b) needs per-position roles inside `argv`. The D-017 field-type language cannot express that yet. Increment 3 should extend it and record the decision. `interpreterVerdict` already returns which positions bear code. `work-vol` ownership (the workload runs as 65532) is also Increment 3 work.
-  - **Increments 4 and 5:** §3.3 canonicalization resolves symlinks. A resolved path outside `/work` must be refused, so a symlink inside the work volume cannot point a call at anything else. The journal is still out of reach physically (the workload has no journal mount), but the check belongs in enforcement.
-  - **Increment 5:** §5.3 requires `max_invocations` for `write`, `external` and `irreversible` grants. It also says a whole-filesystem scope needs an Override, and Override is out of Slice 1, so such a grant must be refused. Since D-026, `/` cannot be written as scope at all; the widest path scope is `/work`, the whole capability namespace. Increment 5 must decide whether `/work` counts as "whole-filesystem" for §5.3. If the spec text does not settle it, raise an objection then. Neither rule is enforced in the Grant schema, because both are issuance rules.
-  - **Increments 5 and 6:** §18 and the build plan list `ttl_expired` among the "park on" reasons, but §6.4 and the Increment 6 test say TTL expiry moves the task to `failed`. §6.2's park-reason table has no `ttl_expired`. Raise this as an objection when that increment starts, if the text is still unclear then.
-  - **Increments 5 and 6:** a crash between writing an entry and replacing the head leaves that task's chain failing verification (fails closed, D-027). No recovery is built. If acceptance test 1 (park, stop, resume next day) needs to survive an unclean stop, that is a decision for then.
-- Docker: if `docker info` fails at session start, check `/tmp/dockerd.log`. The hook removes pid files whose PID is not a docker daemon.
-- Increment 0 notes still apply: no `npm install` in Dockerfiles (D-001); the runner has `network_mode: none` until Increment 5 (D-013). Plain `RUN` in exec form (no network) is fine, as the runner image now does for `/journal`.
+  - **Increments 4 and 5:** §3.3 canonicalization resolves symlinks. A resolved path outside `/work` must be refused, so a symlink inside the work volume cannot point a call at anything else.
+  - **Increment 5:** §5.3 requires `max_invocations` for `write`, `external` and `irreversible` grants, and a whole-filesystem scope needs an Override (out of Slice 1). Increment 5 must decide whether `/work` counts as "whole-filesystem". If the spec text does not settle it, raise an objection then.
+  - **Increments 5 and 6:** §18 and the build plan list `ttl_expired` among the "park on" reasons, but §6.4 and the Increment 6 test say TTL expiry moves the task to `failed`. Raise this as an objection when that increment starts, if the text is still unclear then.
+  - **Increments 5 and 6:** a crash between writing a journal entry and replacing the head leaves that task's chain failing verification (fails closed, D-027). No recovery is built.
+- Docker: if `docker info` fails at session start, check `/tmp/dockerd.log`. The hook removes pid files whose PID is not a docker daemon. This cloud host runs cgroup v1 with no swap; CI (`ubuntu-latest`) runs cgroup v2. Container tests must not depend on either.
+- Increment 0 notes still apply: no `npm install` in Dockerfiles (D-001); the runner has `network_mode: none` until Increment 5 (D-013).
