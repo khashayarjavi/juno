@@ -12,5 +12,11 @@ COPY build/stage/package.json ./package.json
 COPY build/stage/node_modules ./node_modules
 COPY dist ./dist
 
+# The journal-vol mount point, owned by the runner user and closed to everyone
+# else. A new named volume takes this ownership and mode on first mount.
+# Exec form: no shell runs here either.
+RUN ["mkdir", "-m", "0700", "/journal"]
+RUN ["chown", "node:node", "/journal"]
+
 USER node
 CMD ["node", "dist/runner/src/main.js"]
