@@ -5,7 +5,7 @@
 
 Branch: `claude/inc-3-registry-ucto18`. The session harness assigned this name and allows pushes only to it, so it is used instead of `inc-3-registry` (D-028). Draft PR: https://github.com/khashayarjavi/juno/pull/5. Increment 2 is in `main` (PR #4 merged).
 
-**Status: done.** Everything in the build plan's Increment 3 scope, the D-025 Inc 3 directive, `work-vol` ownership, and the operator's O-2 ruling (D-036) are built and tested, and `make verify` is green in the cloud session. Waiting for CI on PR #5 and for the operator's review of `shell.run.json` and merge.
+**Status: done.** Everything in the build plan's Increment 3 scope, the D-025 Inc 3 directive, `work-vol` ownership, and the operator's O-2 ruling (D-036) are built and tested, and `make verify` is green in the cloud session and in CI. CI `verify` passed on PR #5 (run 40736968183, commit 6a4a3c8). Waiting for the operator's review of `shell.run.json` and merge.
 
 ## Done in this increment
 Every test names the spec section it proves.
@@ -39,10 +39,10 @@ Every test names the spec section it proves.
 - Decisions D-028 to D-038 recorded.
 
 ## Remaining in this increment
-- Nothing. Waiting for CI `verify` on PR #5, then the operator's review of `packages/registry/definitions/shell.run.json` (D-035) and merge.
+- Nothing. CI `verify` passed on PR #5 (run 40736968183, commit 6a4a3c8). Waiting for the operator's review of `packages/registry/definitions/shell.run.json` (D-035) and merge.
 
 ## make verify
-GREEN as of 2026-10-28 in the cloud session, with D-036 built: 409 unit tests (13 files), 38 container tests (5 files), lint self-test rejected the `exec()` probe. Summary line: `make verify: GREEN`.
+GREEN as of 2026-10-28 in the cloud session and in CI on PR #5, with D-036 built: 409 unit tests (13 files), 38 container tests (5 files), lint self-test rejected the `exec()` probe. Summary line: `make verify: GREEN`.
 
 ## Open objections to the spec
 - None. (O-1 was resolved as D-024; O-2 was resolved by the operator on 2026-10-28 as the per-call, flag-aware reading; see D-036.)
