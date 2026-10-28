@@ -33,6 +33,8 @@ Applied without a review cycle per §0.6. One finding qualified under the standi
 | 2 | **Wildcard `resource_scope` prohibited for `external` capabilities** | Follows from #1: if scope is the destination control, an unbounded scope is no control |
 | 3 | **Admission check 10 tied to derivable fields** — `attendance` and an explicit `requires_live_steer` input | The condition "operator expects live supervision" was not mechanically evaluable |
 
+*Errata applied in place, no semantic change: stale cross-reference in §7.8 (check 11 → check 10); §8.3 note acknowledging the §3.2 wildcard-egress prohibition as a lifecycle sibling of the non-overridable parks.*
+
 ### 0.1.1 Retained from v0.3 → v0.4
 
 Trust-relocation principle (§0.5); adapter structural-channel contract (§2.4); fail-closed field roles and scalar-only instruction fields (§2.2); interpreter test (§2.3); keystroke-only clean compose (§7.5); sensitivity as a routing constraint (§10.3); contention as a runtime sub-state (§3.3); journal read interface (§3.4.1); steer sensitivity propagation (§7.7).
@@ -780,7 +782,7 @@ Delivery depends on whether JUNO controls the next turn boundary and whether it 
 - **`abandon` semantics are weaker.** JUNO can record that a plan step was abandoned, but cannot remove the abandoned work from the model's view. The model may continue to reference it.
 - Therefore `next_turn` timing on `server_held` providers delivers correctly but does not cleanly excise the interrupted step.
 
-**Admission consequence.** A task requiring responsive `next_turn` steering — typically anything the operator expects to supervise live — must be routed to a provider offering `full` capability. This is checked at admission (§5.4 check 11), not discovered at runtime.
+**Admission consequence.** A task requiring responsive `next_turn` steering — typically anything the operator expects to supervise live — must be routed to a provider offering `full` capability. This is checked at admission (§5.4 check 10), not discovered at runtime.
 
 **The incentive survives.** Tasks wanting fast steer responsiveness have a routing reason to prefer providers and capability sets that also give `native` context ownership and prompt caching. §10.2's cheap-path-safe-path property is unaffected.
 
@@ -814,6 +816,8 @@ Generalised from v0.3, where Override targeted only parked tasks while §5.3 alr
 **The general rule, which explains all three:**
 
 > **A park is non-overridable when the operator cannot observe the consequence of proceeding.**
+
+*The same criterion appears once outside this section, at a different point in the lifecycle: §3.2 prohibits wildcard `resource_scope` on `external` capabilities, non-overridably, because the operator cannot observe which destination a given call will choose. That rule prevents issuance rather than clearing a park, so it lives with Grant rather than here — but it is a sibling of the three below, not an inconsistency. Where a consequence is unobservable, the check is unwaivable wherever in the lifecycle it sits.*
 
 Every other park reason presents the operator with a visible, bounded outcome — this grant, this file, this cost. The three below do not: proceeding produces a harm the operator has no way to see at the moment of decision, and the automation-bias evidence (§0.4) says an unobservable harm behind a persuasive prompt will be accepted. In each case a structural remedy exists, and the remedy is the path.
 
