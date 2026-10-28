@@ -1,0 +1,7 @@
+// Deliberately non-conforming code. `make lint` feeds this file to ESLint and
+// requires a failure: proof that the no-shell rule is live (spec §2.4).
+// The disable comment below must have no effect (CLAUDE.md rule 8).
+import { exec } from "node:child_process";
+
+// eslint-disable-next-line juno/no-shell
+exec("ls -la");

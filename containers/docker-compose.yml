@@ -1,0 +1,35 @@
+# Two containers, one file (build plan §1). See DECISIONS.md D-013.
+name: juno
+
+services:
+  runner:
+    build:
+      context: ..
+      dockerfile: containers/runner.Dockerfile
+    image: juno-runner:local
+    user: "1000:1000"
+    network_mode: none          # no provider yet; Increment 5 opens provider endpoints only
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      JUNO_JOURNAL_DIR: /journal
+      JUNO_WORK_DIR: /work
+    volumes:
+      - journal-vol:/journal    # §3.4.1: only the runner mounts the journal
+      - work-vol:/work
+
+  workload:
+    build:
+      context: ..
+      dockerfile: containers/workload.Dockerfile
+    image: juno-workload:local
+    user: "65532:65532"
+    network_mode: none          # never relaxed (CLAUDE.md §5)
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      - work-vol:/work          # no journal-vol, no credentials
+
+volumes:
+  journal-vol:
+  work-vol:

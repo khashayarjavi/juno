@@ -11,6 +11,13 @@ cd "$CLAUDE_PROJECT_DIR" || { echo "session-start: cannot cd to project dir"; ex
 
 # 1. Docker daemon
 if ! docker info >/dev/null 2>&1; then
+  # A resumed VM can carry pid files from a daemon that no longer exists; dockerd refuses to start over them.
+  for pidfile in /var/run/docker.pid /var/run/docker/containerd/containerd.pid; do
+    if [ -f "$pidfile" ] && ! kill -0 "$(cat "$pidfile" 2>/dev/null)" 2>/dev/null; then
+      echo "session-start: removing stale $pidfile"
+      rm -f "$pidfile"
+    fi
+  done
   echo "session-start: Docker not responding, starting dockerd..."
   (nohup dockerd >/tmp/dockerd.log 2>&1 &)
   for _ in $(seq 1 30); do

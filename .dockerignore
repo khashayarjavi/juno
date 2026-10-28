@@ -1,0 +1,4 @@
+# Images receive only host-built output (D-001).
+*
+!dist/
+!build/stage/
