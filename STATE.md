@@ -5,7 +5,7 @@
 
 Branch: `inc-2-journal`. PR: https://github.com/khashayarjavi/juno/pull/4 (draft). Increment 1 is in `main` (PR #3 merged).
 
-**Status: done.** Every Increment 2 property holds under test, and `make verify` is green in the cloud session. Waiting for CI on the pull request and the operator's merge.
+**Status: done.** Every Increment 2 property holds under test, and `make verify` is green in the cloud session and in CI. CI `verify` passed on PR #4 (run 40726168581, commit f29082c). Waiting for the operator to merge.
 
 ## Done in this increment
 Every test names the spec section it proves.
@@ -21,10 +21,10 @@ Every test names the spec section it proves.
 - One unit-test fixture in `packages/contracts/test/grant.test.ts` changed from `/data` to `/work/data`, because the old path can no longer be written as scope. The property it serves is unchanged (D-026).
 
 ## Remaining in this increment
-- Nothing. Waiting for CI `verify` on the pull request and the operator's merge.
+- Nothing. CI `verify` passed on PR #4 (run 40726168581, commit f29082c). Waiting for the operator to merge.
 
 ## make verify
-GREEN as of 2026-10-28 in the cloud session: 313 unit tests (10 files), 23 container tests (2 files), lint self-test rejected the `exec()` probe. Summary line: `make verify: GREEN`.
+GREEN as of 2026-10-28 in the cloud session and in CI on PR #4: 313 unit tests (10 files), 23 container tests (2 files), lint self-test rejected the `exec()` probe. Summary line: `make verify: GREEN`.
 
 ## Open objections to the spec
 - None. (O-1 was resolved by the operator as reading (a); see D-024.)
