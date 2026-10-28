@@ -3,7 +3,7 @@
 ## Current increment
 1 — Contracts and the lattice
 
-Branch: `inc-1-contracts-lattice`. Increment 0 is in `main` (its commits reached `main` through PR #2).
+Branch: `inc-1-contracts-lattice`. Draft PR: https://github.com/khashayarjavi/juno/pull/3 (stays draft until O-1 is ruled on). Increment 0 is in `main` (its commits reached `main` through PR #2).
 
 **Status: not done. One objection (O-1) is open.** Everything else in the increment is built, tested and green. The one piece left is the accept half of the grant attenuation check, which depends on how the operator rules on O-1.
 
