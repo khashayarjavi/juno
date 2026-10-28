@@ -5,7 +5,7 @@
 
 Branch: `claude/inc-3-registry-ucto18`. The session harness assigned this name and allows pushes only to it, so it is used instead of `inc-3-registry` (D-028). Draft PR: https://github.com/khashayarjavi/juno/pull/5. Increment 2 is in `main` (PR #4 merged).
 
-**Status: done.** Everything in the build plan's Increment 3 scope, the D-025 Inc 3 directive, `work-vol` ownership, and the operator's O-2 ruling (D-036) are built and tested, and `make verify` is green in the cloud session and in CI. CI `verify` passed on PR #5 (run 40736968183, commit 6a4a3c8). Waiting for the operator's review of `shell.run.json` and merge.
+**Status: done.** Everything in the build plan's Increment 3 scope, the D-025 Inc 3 directive, `work-vol` ownership, and the operator's O-2 ruling (D-036) are built and tested, and `make verify` is green in the cloud session and in CI. CI `verify` passed on PR #5 (run 40736968183, commit 6a4a3c8). The next run (40737367665, commit 35d71d6, a STATE-only change) failed one control test: the unlimited CPU probe measured 1.28 CPUs, below the 1.5 required, on a busy shared runner. D-039 makes that control take up to three samples, with the 1.5 threshold unchanged; CI on that fix is pending. Waiting for the operator's review of `shell.run.json` and merge.
 
 ## Done in this increment
 Every test names the spec section it proves.
@@ -36,10 +36,10 @@ Every test names the spec section it proves.
   - The shipped `cat` is unchanged: calls with declared flags and plain operands proceed with untrusted argv (property test), `--` lets a file name start with `-`, and an undeclared `cat` flag promotes every element.
   - The end-to-end form (a task run by the runner reaches for `sh -c` and the task parks) needs Increments 4, 5 and 7. Increment 4 calls `checkInstructionFloors` as §2.7 step 3; Increment 7 runs 4b against the real containers.
 - **Mutation-checked (O-2 work):** 14 more deliberate breakages, each caught: uncovered flags or operands ignored; only the element after the flag promoted; a fixed index 0 (the static reading); scanning stopped at the first code flag; the listed-interpreter check off; `--` not ending options; no surface treated as no promotion; promoted floor set to the capability floor; missing provenance passing; a whole-list `min()` over argv; promoted values or scalar instruction fields skipped; the `argv_field` type check off.
-- Decisions D-028 to D-038 recorded.
+- Decisions D-028 to D-039 recorded.
 
 ## Remaining in this increment
-- Nothing. CI `verify` passed on PR #5 (run 40736968183, commit 6a4a3c8). Waiting for the operator's review of `packages/registry/definitions/shell.run.json` (D-035) and merge.
+- Nothing to build. CI must be green on the D-039 commit (see Status). Then waiting for the operator's review of `packages/registry/definitions/shell.run.json` (D-035) and merge.
 
 ## make verify
 GREEN as of 2026-10-28 in the cloud session and in CI on PR #5, with D-036 built: 409 unit tests (13 files), 38 container tests (5 files), lint self-test rejected the `exec()` probe. Summary line: `make verify: GREEN`.

@@ -203,15 +203,21 @@ describe("the workload process-count limit is hit (D-025 Inc 3)", () => {
 describe("the workload CPU limit is hit (D-025 Inc 3)", () => {
   // guards the next test: unlimited, the same probe uses well over one CPU, so its demand exceeds the limit
   it("uses more than 1.5 CPUs with three busy threads when no CPU limit is set", async () => {
-    const outcome = await docker([
-      "run", "--rm", "--network", "none", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
-      WORKLOAD_IMAGE, "-e", CPU_PROBE, "3", "3000",
-    ]);
-    expect(outcome.code).toBe(0);
-    const report = parseAtBoundary("cpu probe", CpuReport, JSON.parse(outcome.stdout));
-    // The proof needs a host with at least two CPUs; on fewer the host, not the limit, would cap the probe.
-    expect(report.hostCpus).toBeGreaterThanOrEqual(2);
-    expect(report.cpusUsed).toBeGreaterThan(1.5);
+    // A shared host can be busy for one 3-second window, so up to three samples are taken; one above
+    // 1.5 CPUs is enough to show the host can serve the demand (D-039). The threshold does not change.
+    const samples: number[] = [];
+    for (let attempt = 0; attempt < 3 && !samples.some((used) => used > 1.5); attempt += 1) {
+      const outcome = await docker([
+        "run", "--rm", "--network", "none", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
+        WORKLOAD_IMAGE, "-e", CPU_PROBE, "3", "3000",
+      ]);
+      expect(outcome.code).toBe(0);
+      const report = parseAtBoundary("cpu probe", CpuReport, JSON.parse(outcome.stdout));
+      // The proof needs a host with at least two CPUs; on fewer the host, not the limit, would cap the probe.
+      expect(report.hostCpus).toBeGreaterThanOrEqual(2);
+      samples.push(report.cpusUsed);
+    }
+    expect(Math.max(...samples)).toBeGreaterThan(1.5);
   });
 
   // proves D-025 Inc 3: under docker-compose.yml the same demand is held to the one-CPU limit
