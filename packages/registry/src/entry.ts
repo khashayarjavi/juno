@@ -16,6 +16,8 @@ export const RegistryEntry = z
     capability: Capability,
     /** The interface field naming the program to run: a scalar `instruction` enum (§2.2, §2.3). */
     program_field: z.string(),
+    /** The interface field holding the program's argv: a `data` list of strings, read per call against the surfaces (D-036, D-038). */
+    argv_field: z.string(),
     /** The declared flag surface of each program in that enum (DECISIONS.md D-018). */
     program_surfaces: z.array(FlagSurface),
   })
@@ -41,6 +43,12 @@ export const RegistryEntry = z
         });
       }
     });
+    const argv = entry.capability.interface[entry.argv_field];
+    if (argv === undefined) {
+      ctx.addIssue({ code: "custom", path: ["argv_field"], message: "must name a field of the capability interface" });
+    } else if (argv.role !== "data" || argv.type.kind !== "list" || argv.type.items.kind !== "string") {
+      ctx.addIssue({ code: "custom", path: ["argv_field"], message: "the argv field must be a data list of strings (spec §2.2, §2.3 rule 2)" });
+    }
     const seen = new Set<string>();
     entry.program_surfaces.forEach((surface, index) => {
       if (seen.has(surface.program)) {

@@ -2,6 +2,7 @@ export * from "./adapter.js";
 export * from "./call.js";
 export * from "./conformance.js";
 export * from "./entry.js";
+export * from "./instruction.js";
 export * from "./registry.js";
 export * from "./review.js";
 export * from "./workload-adapter.js";

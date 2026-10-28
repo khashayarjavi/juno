@@ -15,6 +15,7 @@
     "cost_model": { "expected_cost": 0, "expected_latency_ms": 2000, "cost_of_failure": 0 }
   },
   "program_field": "program",
+  "argv_field": "argv",
   "program_surfaces": [
     {
       "program": "/usr/bin/cat",

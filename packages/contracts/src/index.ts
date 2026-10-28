@@ -3,6 +3,7 @@ export * from "./common.js";
 export * from "./lattice.js";
 export * from "./capability.js";
 export * from "./interpreter.js";
+export * from "./promotion.js";
 export * from "./provenance.js";
 export * from "./reference.js";
 export * from "./grant.js";
