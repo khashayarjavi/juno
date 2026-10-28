@@ -5,7 +5,7 @@
 
 Branch: `claude/laughing-lovelace-bj5e9m`. The session harness assigned this name and allows pushes only to it, so it is used instead of `inc-4-enforcement` (D-040, as D-028 did for Increment 3). Increment 3 is in `main` (PR #5 merged).
 
-**Status: not done.** Everything in Increment 4 that the spec settles is built and tested, and `make verify` is green. Two objections are open (O-3, O-4 below). The parts they touch are not built, and the increment cannot be done until the operator rules on them. Draft PR: see the end of this file.
+**Status: not done.** Everything in Increment 4 that the spec settles is built and tested, and `make verify` is green. Two objections are open (O-3, O-4 below). The parts they touch are not built, and the increment cannot be done until the operator rules on them. Draft PR: https://github.com/khashayarjavi/juno/pull/6.
 
 ## Done in this increment
 Every test names the spec section it proves. All of this is in `packages/enforcement/` (new) plus small additions to `packages/registry/src/registry.ts`.
