@@ -61,6 +61,9 @@ export type NonEmpty<T> = readonly [T, ...T[]];
  * Combining material can only make it more sensitive and less trusted.
  */
 export function join(inputs: NonEmpty<DataClass>): DataClass {
+  if (inputs.length === 0) {
+    throw new RangeError("join needs at least one input (DECISIONS.md D-015)");
+  }
   const [first, ...rest] = inputs;
   let sensitivity = first.sensitivity;
   let integrity = first.integrity;
