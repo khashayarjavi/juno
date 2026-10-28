@@ -5,7 +5,7 @@
 
 Branch: `inc-1-contracts-lattice`. PR: https://github.com/khashayarjavi/juno/pull/3. Increment 0 is in `main` (its commits reached `main` through PR #2).
 
-**Status: done.** Every Increment 1 property holds under test, and `make verify` is green. The operator ruled on O-1 (D-024), and the accept half of the attenuation check is built. Waiting for CI on PR #3 and the operator's merge.
+**Status: done.** Every Increment 1 property holds under test, and `make verify` is green. The operator ruled on O-1 (D-024), and the accept half of the attenuation check is built. CI `verify` passed on PR #3 (run 40722704784, commit 346e829). Waiting for the operator to merge.
 
 ## Done in this increment
 All in `packages/contracts` (pure, no I/O). Every test names the spec section it proves.
@@ -20,10 +20,10 @@ All in `packages/contracts` (pure, no I/O). Every test names the spec section it
 - `scripts/session-start.sh`: a pid file whose PID now belongs to an unrelated process is treated as stale. This session, Docker would not start until the file was removed by hand.
 
 ## Remaining in this increment
-- Nothing in code. CI `verify` must pass on PR #3, then the operator merges it.
+- Nothing. CI `verify` passed on PR #3 (run 40722704784, commit 346e829). Waiting for the operator to merge.
 
 ## make verify
-GREEN as of 2026-10-28 in the cloud session: 255 unit tests (9 files), 14 container tests, lint self-test rejected the `exec()` probe. Summary line: `make verify: GREEN`.
+GREEN as of 2026-10-28 in the cloud session and in CI on PR #3: 255 unit tests (9 files), 14 container tests, lint self-test rejected the `exec()` probe. Summary line: `make verify: GREEN`.
 
 ## Open objections to the spec
 - None. (O-1 was resolved by the operator as reading (a); see D-024.)
