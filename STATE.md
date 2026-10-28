@@ -5,7 +5,7 @@
 
 Branch: `claude/inc-3-registry-ucto18`. The session harness assigned this name and allows pushes only to it, so it is used instead of `inc-3-registry` (D-028). Draft PR: https://github.com/khashayarjavi/juno/pull/5. Increment 2 is in `main` (PR #4 merged).
 
-**Status: not done.** Everything in the build plan's Increment 3 scope, plus the D-025 Inc 3 directive and `work-vol` ownership, is built and green. The operator ruled on objection O-2 (D-036). What is left is building that ruling (per-call promotion of code-bearing argv positions) and its tests, including acceptance test 4b with the code flag moved later in argv.
+**Status: done.** Everything in the build plan's Increment 3 scope, the D-025 Inc 3 directive, `work-vol` ownership, and the operator's O-2 ruling (D-036) are built and tested, and `make verify` is green in the cloud session. Waiting for CI on PR #5 and for the operator's review of `shell.run.json` and merge.
 
 ## Done in this increment
 Every test names the spec section it proves.
@@ -25,19 +25,31 @@ Every test names the spec section it proves.
   - Docker starts the workload with exactly these values. The tests hold on cgroup v1 (this host) and v2 (CI).
 - **`work-vol` ownership** (`test/containers/work-vol.test.ts`, D-031). A new volume is owned by the workload user (65532, mode 0755) whichever container mounts it first. The workload can write it; the runner can read but not write it.
 - **Mutation-checked:** 27 deliberate breakages, each caught by a test. Suite side: parsed-string, discreteness, list-order, program-file and refused-canary checks turned off; canary without metacharacters; fixed canary. Registry side: review skipped; refused entry stored; missing adapter, no provider, or duplicate id allowed; call parsing skipped; NUL allowed; relative program, data-role program field, or duplicate surface allowed. Executor side: stdin left open; non-zero exit rejected. Adapter side: argv joined, `--workdir=`, no entrypoint override. Containers: no pids, memory or CPU limit; swap unbounded; runner image without `/work`.
-- Decisions D-028 to D-035 recorded.
+- **Per-call promotion of code-bearing argv positions (§2.3 rule 2, O-2 ruling D-036; D-037, D-038).** `argvRoles` (`packages/contracts/src/promotion.ts`) reads each call's argv against the program's declared flag surface. The element where a declared code-bearing flag, subcommand or operand sits, and every element after it, become separate `instruction` values at the `operator` floor. Anything the surface does not declare (an unknown flag, a flag cluster like `-ec`, an attached value like `-cCODE`, an undeclared operand, no surface, or a listed interpreter whose surface claims no code) promotes every element. `checkInstructionFloors` (`packages/registry/src/instruction.ts`) judges each instruction value alone against its own floor and returns `park` / `integrity_floor` naming each value that falls short. `argv` stays a `data` list in the definition, so §2.2 rule 2 holds. The definition names its argv field (`argv_field`).
+- **Acceptance test 4b, mechanism part** (`packages/registry/test/promotion.test.ts`). `sh` is forced into the shipped `shell.run` (the same entry registration review refuses in 4a), and calls use model-written argv:
+  - `sh -c CODE` parks `integrity_floor`, naming `argv[0]` and `argv[1]` at the `operator` floor.
+  - **Code flag moved later:** `sh -e -c CODE`, `sh -e -u -x -c CODE`, and a nine-element argv with `-c` at index 5 each park, with promotion starting exactly at `-c`; the flags before it stay `data`. A property test puts any number of non-code flags before `-c` and any operands after CODE: it always parks, and always from `-c` on.
+  - `-ec CODE`, `-cCODE`, `-o errexit -c CODE`, and an undeclared flag after the code all promote every element and park.
+  - `sh` forced in with no surface, or with a surface claiming no code, parks.
+  - The floor is `operator`, not the capability's `attested`: CODE at `attested` parks, at `operator` proceeds. The `program` field keeps `attested`.
+  - No whole-list `min()`: model-written flags before `-c` with operator-authored code proceed; one low promoted element is the only one named. A promoted element with no recorded provenance parks.
+  - The shipped `cat` is unchanged: calls with declared flags and plain operands proceed with untrusted argv (property test), `--` lets a file name start with `-`, and an undeclared `cat` flag promotes every element.
+  - The end-to-end form (a task run by the runner reaches for `sh -c` and the task parks) needs Increments 4, 5 and 7. Increment 4 calls `checkInstructionFloors` as §2.7 step 3; Increment 7 runs 4b against the real containers.
+- **Mutation-checked (O-2 work):** 14 more deliberate breakages, each caught: uncovered flags or operands ignored; only the element after the flag promoted; a fixed index 0 (the static reading); scanning stopped at the first code flag; the listed-interpreter check off; `--` not ending options; no surface treated as no promotion; promoted floor set to the capability floor; missing provenance passing; a whole-list `min()` over argv; promoted values or scalar instruction fields skipped; the `argv_field` type check off.
+- Decisions D-028 to D-038 recorded.
 
 ## Remaining in this increment
-- Build D-036: read each call's `argv` against the program's declared flag surface, promote code-bearing elements to scalar `instruction` values at the `operator` floor, promote every element when the call uses a flag the surface does not cover, and check each instruction value alone against its floor (park reason `integrity_floor`). Tests: acceptance test 4b on the shipped `shell.run` with `sh` forced into the enum, including the code flag moved later in argv.
+- Nothing. Waiting for CI `verify` on PR #5, then the operator's review of `packages/registry/definitions/shell.run.json` (D-035) and merge.
 
 ## make verify
-GREEN as of 2026-10-28 in the cloud session (before the D-036 work): 364 unit tests (11 files), 38 container tests (5 files), lint self-test rejected the `exec()` probe. Summary line: `make verify: GREEN`. Green does not mean done: D-036 is not built yet.
+GREEN as of 2026-10-28 in the cloud session, with D-036 built: 409 unit tests (13 files), 38 container tests (5 files), lint self-test rejected the `exec()` probe. Summary line: `make verify: GREEN`.
 
 ## Open objections to the spec
 - None. (O-1 was resolved as D-024; O-2 was resolved by the operator on 2026-10-28 as the per-call, flag-aware reading; see D-036.)
 
 ## Notes for the next session
-- **Next step:** build D-036 (see "Remaining"), run `make verify`, and mark the increment done. Do not start Increment 4.
+- **Next step:** once PR #5 is merged, Increment 4 (enforcement boundary) is current. Do not start it before the merge. Increment 4 must call `checkInstructionFloors` as §2.7 step 3, with integrity computed per argument by provenance class (§2.6), and record per-element `argv[<index>]` provenance on every `capability_call` (D-022, D-038).
+- The spec text of §2.3 rule 2 should state the D-036 ruling at v0.6 (operator's note). `spec/` is not edited by the build.
 - Read D-025 at the start of Increments 5, 6 and 7. The Inc 2 and Inc 3 directives are done.
 - `packages/registry/definitions/` is not copied into the runner image yet; nothing in the runner loads the registry. Increment 5 must copy it when the runner registers capabilities at start.
 - The adapter calls the `docker` CLI (D-034). Today only the host-side tests call it. Increment 5 must decide how the runner, inside its container, reaches Docker, and record the decision.
@@ -48,7 +60,7 @@ GREEN as of 2026-10-28 in the cloud session (before the D-036 work): 364 unit te
   - **Increment 5:** §5.3 requires `max_invocations` for `write`, `external` and `irreversible` grants, and a whole-filesystem scope needs an Override (out of Slice 1). Increment 5 must decide whether `/work` counts as "whole-filesystem". If the spec text does not settle it, raise an objection then.
   - **Increments 5 and 6:** §18 and the build plan list `ttl_expired` among the "park on" reasons, but §6.4 and the Increment 6 test say TTL expiry moves the task to `failed`. Raise this as an objection when that increment starts, if the text is still unclear then.
   - **Increments 5 and 6:** a crash between writing a journal entry and replacing the head leaves that task's chain failing verification (fails closed, D-027). No recovery is built.
-  - **Increment 7:** acceptance test 3 needs a discovery program (for example `ls`) in the enum and the workload image (D-029). Add it as one reviewable diff that registration review accepts.
+  - **Increment 7:** acceptance test 3 needs a discovery program (for example `ls`) in the enum and the workload image (D-029). Add it as one reviewable diff that registration review accepts. Under D-037, a discovered file name that starts with `-` is read as an undeclared flag and promotes every argv element, so test 3 should pass bound file names after `--`. The discovery program's surface must declare every flag test 3 uses.
 - Docker: if `docker info` fails at session start, check `/tmp/dockerd.log`. The hook removes pid files whose PID is not a docker daemon. This cloud host runs cgroup v1 with no swap; CI (`ubuntu-latest`) runs cgroup v2. The container tests depend on neither. The CPU-limit test needs at least two host CPUs (D-030).
 - `docker compose run` attaches stdin; anything that runs a program through it must close stdin, or a program reading stdin hangs (D-033).
 - Increment 0 notes still apply: no `npm install` in Dockerfiles (D-001); the runner has `network_mode: none` until Increment 5 (D-013). The workload image now has a build stage that only copies files and runs exec-form `mkdir`; it downloads nothing but its pinned base images.
