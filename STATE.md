@@ -3,7 +3,7 @@
 ## Current increment
 2 — Journal
 
-Branch: `inc-2-journal`. Increment 1 is in `main` (PR #3 merged).
+Branch: `inc-2-journal`. PR: https://github.com/khashayarjavi/juno/pull/4 (draft). Increment 1 is in `main` (PR #3 merged).
 
 **Status: done.** Every Increment 2 property holds under test, and `make verify` is green in the cloud session. Waiting for CI on the pull request and the operator's merge.
 
