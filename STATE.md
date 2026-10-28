@@ -16,15 +16,17 @@
 - Mutation-checked: switching the lint rule off fails 23 lint tests. Giving the workload root, a network, capabilities and the journal mount fails 6 container tests. Pointing the shell checks at the runner image (which has a shell) fails them.
 
 ## Remaining in this increment
-- CI (`.github/workflows/verify.yml`) must pass on the increment's pull request. That is the last done-when item.
+- Nothing. **Increment 0 is done.** CI `verify` passed on https://github.com/khashayarjavi/juno/pull/1 (run 40622249955, commit 8a17b29, log ends `make verify: GREEN`). Waiting for the operator to merge.
 
 ## make verify
-GREEN as of 2026-10-28 (local cloud session): 38 unit tests, 14 container tests, lint self-test rejected the `exec()` probe.
+GREEN as of 2026-10-28, in the cloud session and in CI on PR #1: 38 unit tests, 14 container tests, lint self-test rejected the `exec()` probe.
 
 ## Open objections to the spec
 - None
 
 ## Notes for the next session
+- Once PR #1 is merged, Increment 1 (Contracts and the lattice) is current. Change "Current increment" above to 1 at the start of that session.
+- CI warns that `actions/checkout@v4` and `actions/setup-node@v4` target the deprecated Node 20 runtime. It does not fail the check. Bumping them is a one-line workflow change, and the operator decides when.
 - The workload's named volume `work-vol` is root-owned when first created. Writing to it as user 65532 is Increment 2/3 work. The fix is to own the mount point in the image (`COPY --chown`), because distroless has no shell for `RUN`.
 - The runner has `network_mode: none` until Increment 5 adds the provider (D-013).
 - Production dependencies for the images are staged on the host in `build/stage` (`make stage`). Never add `npm install` to a Dockerfile (D-001).
