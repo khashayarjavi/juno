@@ -341,6 +341,12 @@ describe("executeOutbound (§2.4)", () => {
     expect(result).toMatchObject({ exitCode: 3, signal: null });
   });
 
+  // records D-033: no capability has a stdin channel, so a program reading stdin sees end of input instead of waiting
+  it("closes the program's stdin", async () => {
+    const result = await executeOutbound({ file: process.execPath, args: ["-e", 'process.stdin.on("end", () => process.stdout.write("eof")).resume()'] });
+    expect({ exitCode: result.exitCode, stdout: result.stdout.toString("utf8") }).toEqual({ exitCode: 0, stdout: "eof" });
+  });
+
   // records D-033: a program that cannot start is an error, never a result
   it("rejects when the program does not exist", async () => {
     await expect(executeOutbound({ file: "/nonexistent/juno-program", args: [] })).rejects.toThrow();

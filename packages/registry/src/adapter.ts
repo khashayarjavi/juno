@@ -38,7 +38,7 @@ const MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
  */
 export function executeOutbound(invocation: OutboundInvocation): Promise<InvocationResult> {
   return new Promise((resolve, reject) => {
-    execFile(
+    const child = execFile(
       invocation.file,
       [...invocation.args],
       { encoding: "buffer", maxBuffer: MAX_OUTPUT_BYTES, shell: false },
@@ -53,5 +53,7 @@ export function executeOutbound(invocation: OutboundInvocation): Promise<Invocat
         }
       },
     );
+    // No capability has a stdin channel: the program sees end of input at once instead of waiting on it.
+    child.stdin?.end();
   });
 }
