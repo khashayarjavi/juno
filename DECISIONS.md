@@ -114,3 +114,85 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
 - Applies to: `spec/core-semantic-model.md`; matters from Increment 5 (admission checks)
 - Decision: the spec first committed was the v0.5.1 draft from before the two August errata. Both were applied in place, with the text taken verbatim from the August design chat: §7.8's admission-consequence paragraph now cites §5.4 check 10 (the live-steer check), not check 11 (the autonomous zero-grants warning); §8.3 gains a note that §3.2's wildcard-egress prohibition is a sibling of the non-overridable parks; the v0.5.1 changelog records both. `spec/README.md` now names the exact marker for the final version. This is an operator change to `spec/`, not an agent edit.
 - Reason: a cold session implementing admission in Increment 5 would otherwise follow a wrong cross-reference. No semantics changed.
+
+## D-015 — `join` needs at least one input
+- Date: 2026-10-28
+- Status: Accepted
+- Applies to: Increment 1 onward
+- Decision: `join` takes a non-empty list. The type requires one input, and the function throws `RangeError` if called with none. No "empty join" value exists.
+- Reason: §1.2 defines join as max and min over inputs and says nothing about having none. Making up an identity element such as `(public, operator)` would hand material with no recorded source the highest integrity. Refusing the case invents nothing.
+
+## D-016 — Encodings for ids, times, hashes and amounts
+- Date: 2026-10-28
+- Status: Accepted
+- Applies to: Increment 1 onward
+- Decision: ids and refs are printable ASCII with no whitespace, 1 to 256 characters. Timestamps are ISO 8601 UTC with a `Z` suffix. Content addresses are `sha256:` plus 64 lowercase hex digits. Durations (`ttl`, `wall_clock_ms`, `duration_ms`) are whole milliseconds. Token, turn and invocation counts are non-negative integers. Currency is a non-negative finite number in the operator's billing currency. Every contract object rejects unknown keys.
+- Reason: the model names these fields and leaves their encoding open. ISO timestamps and `sha256:` addresses can be read in the journal without tooling (§3.4.5, O9). Rejecting unknown keys means a misspelt field is an error and is never silently dropped (§0.2 D8). For example, `rol: "data"` fails instead of falling back to the `instruction` default.
+
+## D-017 — Capability interface field types
+- Date: 2026-10-28
+- Status: Accepted
+- Applies to: Increment 1 onward
+- Decision: an interface field's type is one of the scalars `string`, `path`, `integer`, `number`, `boolean` or `enum` (non-empty, unique values), or the complex types `list` and `map` of a scalar. Deeper nesting cannot be written. A missing `role` parses as `instruction`; an `instruction` field of type `list` or `map` fails to parse. Capability ids are dotted lowercase semantic ids with at least two segments, e.g. `fs.file.read`.
+- Reason: §2.2 rule 2 forbids lists, maps and nested structures in `instruction` fields. Offering only scalars plus one level of list or map covers `shell.run` and the §2.2.1 example, and leaves nothing that can nest. The rule is checked at parse time, so a capability definition that breaks it never exists as a typed value.
+
+## D-018 — How the interpreter predicate decides
+- Date: 2026-10-28
+- Status: Accepted
+- Applies to: Increment 1 onward (used by registration review in Increment 3)
+- Decision: `interpreterVerdict(program, surface)` judges a program an interpreter if any of these holds: (1) its base name is on the §2.3 list, copied verbatim, whatever surface is declared; (2) no flag surface is declared for it; (3) the declared surface names a different program (exact match); (4) any declared argv position (flag, subcommand or operand) is marked `executes_code`. Otherwise it is not an interpreter. The base name is the last path segment with any trailing version number removed, so `/usr/bin/python3.12` is checked as `python`. This normalisation applies only to the list check.
+- Reason: §2.3 makes the test primary and the list illustrative. A program with no declared surface cannot be shown to pass the test, so under §0.2 D8 it fails closed. List membership overrides a surface because the list states that its members are interpreters, so a surface claiming otherwise is wrong. Normalising names only ever adds programs to the interpreter side.
+
+## D-019 — The exact `${<seq>.<path>}` grammar
+- Date: 2026-10-28
+- Status: Accepted
+- Applies to: Increment 1 onward
+- Decision: a reference is the whole text `${seq.path}`. `seq` is a decimal integer with no leading zero. `path` is a first step (identifier or bracket) followed by `.identifier` or `[index]` or `["json string key"]` steps. Rejections are classed as `cross_task` (the seq position carries a task name: `task:12`, `12@task`, `task/12`, `task#12`, `task.12`), `ambiguous` (`*`, `..`, slices, unions, filters, negative indices, leading zeros), `unresolvable` (missing seq or path, empty segments or brackets, numbers above 2^53−1) or `malformed` (anything else, including whitespace, single quotes, and any text around the reference). The limit is 1024 characters. `formatReference` writes the canonical text, and parsing that text gives back the same reference.
+- Reason: O9 asks for a JSONPath-style accessor chosen for auditability and requires ambiguous, unresolvable and cross-task forms to be rejected. The grammar keeps only the part of JSONPath that names exactly one value. A reference with text around it would be a template, and §2.6 says a template the model fills is `synthesized`, so such text is not a reference at all.
+
+## D-020 — Grant selector shapes and attenuation dimensions
+- Date: 2026-10-28
+- Status: Accepted
+- Applies to: Increment 1 onward
+- Decision: `capability_selector` is a non-empty, duplicate-free list of capability ids. `resource_scope` is a list of selectors: `path` (an absolute, normalised prefix that reaches itself and everything under it at a `/` boundary), `repo` and `record` (exact ids with no `*` or `?`), and `host` (an exact lowercase host name plus a mandatory port). No wildcard form exists. A grant must expire after it is issued. Attenuation compares seven authority dimensions: principal (must be equal), capability set, resource scope, max sensitivity, min integrity, expiry, and invocation cap (`null` means no cap). `issuance`, `issued_by`, `issued_at`, `id`, `attenuation_parent` and `revoked_at` are metadata or runtime state, not dimensions.
+- Reason: §3.2 calls the capability selector "one capability or a bounded set", and an enumerated set is the reading that is bounded by construction. §2.2.1 and §3.2 require egress destinations to be enumerated. A grammar with no wildcard, and a host that always names its port, makes the prohibited unbounded scope impossible to write rather than something checked later. Prefix containment at a segment boundary follows the containment semantics of §3.3. Whether a child may be *equal* to its parent on a dimension is not decided here: that is objection O-1.
+
+## D-021 — Task fields the model leaves as "structured"
+- Date: 2026-10-28
+- Status: Accepted
+- Applies to: Increment 1 onward (criterion contents are fixed in Increment 5)
+- Decision: `model_policy` is `{ permitted_providers (non-empty), posture (text), conversation_state: "stateless" | "any" }`. `budget` is `{ tokens, currency, wall_clock_ms, turns }`, all required. `criterion` is a JSON object or `null`, with its contents left to admission. `ttl` is a positive number of milliseconds. `context_ownership` and `steer_capability` are `null` exactly while the task is a `draft`, because admission derives them. `runtime_substate` is `null` outside `running`. A missing `requires_live_steer` is filled in from `attendance` as §3.1 specifies.
+- Reason: §3.1 names these fields and their parts without fixing a shape. A value derived at admission cannot exist before admission, and every task past `draft` must have it. §3.3 makes `blocked` a sub-state of `running` only.
+
+## D-022 — Trajectory entry, closure and artifact details
+- Date: 2026-10-28
+- Status: Accepted
+- Applies to: Increment 1 onward
+- Decision: `argument_provenance` is a list of `{ argument, class, integrity }`. It is required on `capability_call` entries and forbidden on every other kind. `binding_candidates` is a list of two or more distinct prior `seq` numbers, allowed only on `binding_resolution`. `provider` is `null` for entries no provider served (e.g. a park written by the runner). `hash_prev` is `null` only on a task's first entry (Increment 2 enforces the chain). On a closure, `criterion_ref` and `verification_method` may be `null` for tasks admitted without them. `verified` needs both, `criterion_integrity = operator`, and a `pass` result. `closureSchemaFor(executingActors)` adds the rule that `verifier_identity` is none of the executing actors, because the closure record does not carry the executing actor itself. Artifact `inputs` are references to artifacts or trajectory entries, and an artifact cannot supersede itself.
+- Reason: §3.4.2 says provenance appears "on `capability_call`" and candidates "on `binding_resolution`". §3.4.4 and §5.1 state the `verified` conditions. Building the verifier rule into the schema means Increment 5 cannot write a self-verified closure even by mistake.
+
+## D-023 — Property-based tests use fast-check
+- Date: 2026-10-28
+- Status: Accepted
+- Applies to: Increment 1 onward
+- Decision: `fast-check` 4.10.2, pinned exactly, is a dev dependency. It supplies the property-based tests the build plan requires for the join, the reference grammar and attenuation. Because the lattice has only 16 elements, commutativity and associativity are also checked on every pair and triple.
+- Reason: it is the standard property-based testing library for TypeScript and runs inside Vitest. It is test-only and never reaches the images.
+
+## D-024 — Grant attenuation: a child may equal its parent (O-1 resolved)
+- Date: 2026-10-28
+- Status: Accepted (operator ruling on objection O-1, 2026-10-28)
+- Applies to: Increment 1 onward
+- Decision: the operator chose reading (a) of §3.2's "a strict subset of its parent on every dimension". A derived grant is a valid attenuation when it is no wider than its parent on every dimension; equality on a dimension is permitted, so an identical copy is valid. A child's `max_invocations` must not exceed the parent's: a `null` parent cap is unbounded, so any child cap is allowed under it, and a `null` child cap under a bounded parent is a widening. Invocations of a derived grant will be charged against the parent chain, mirroring §3.1's budget attenuation ("spend is attributed to the child and charged to the parent chain"). Enforcing that charge is deferred with delegation (D-006), because Slice 1 has no delegation and nothing consumes a derived grant. `isValidAttenuation` in `packages/contracts/src/attenuation.ts` implements the accept rule. This settles the point D-020 left open.
+- Reason: reading (c) makes many grants impossible to attenuate (a single-capability grant, a grant already at `(public, operator)`, any grant with a fixed principal). Reading (b) adds nothing to safety, because an identical copy grants no authority the parent lacks. Charging the parent chain stops a child grant from multiplying the parent's invocation cap by being copied.
+
+## D-025 — Operator directives for later increments (not spec changes)
+- Date: 2026-10-28
+- Status: Accepted (operator, 2026-10-28)
+- Applies to: each item applies only in the increment it names. None of them is in force in Increment 1.
+- Decision:
+  - **Increment 2:** the hash chain covers each payload's digest, never its bytes. Deleting a blob leaves the chain verifiable.
+  - **Increment 3:** the workload container gets fixed CPU, memory and process-count limits, proven by container tests that hit each limit.
+  - **Increment 5:** one runner per journal volume. A second runner refuses to start.
+  - **Increments 5 and 6:** `ttl` counts wall time, including host sleep and time spent parked. The `wall_clock` budget counts elapsed running time only.
+  - **Increment 7:** every acceptance criterion names protected paths, and verification fails if the task wrote under them.
+- Reason: operator directives that settle choices the model leaves to the build. They are recorded now so the session that reaches each increment applies them and cannot miss them. They do not change `spec/`.
