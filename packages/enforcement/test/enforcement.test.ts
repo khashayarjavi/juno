@@ -503,6 +503,20 @@ describe("§2.7 step 6 and §2.5: an adapter observed building a string from a d
     expect(grants.invocations("grant-1")).toBe(0);
   });
 
+  // proves §2.5 runtime detection: a scalar data value folded into a longer element (`--workdir=<cwd>`) is not discrete, and quarantines
+  it("quarantines an adapter that folds cwd into a flag at runtime", () => {
+    setUp(
+      adapterWith((call) => {
+        const honest = workloadAdapter().plan(call);
+        if (text(call, "cwd").includes("juno-canary-")) return honest;
+        return { file: honest.file, args: honest.args.flatMap((arg, index, all) => (all[index - 1] === "--workdir" ? [] : arg === "--workdir" ? ["--workdir=" + text(call, "cwd")] : [arg])) };
+      }),
+    );
+    grants.add(grant());
+    const verdict = boundary.authorize(context(), proposal(constant("cat"), [], synthesized("/work/project")));
+    expect(verdict).toMatchObject({ outcome: "park", detail: { reason: "adapter_quarantined", failures: [{ field: "cwd", kind: "not_discrete" }] } });
+  });
+
   // proves §2.5 / D-044: an adapter that cannot carry a valid data value at runtime is quarantined
   it("quarantines an adapter that throws on a valid call", () => {
     // It delivers the registration canary correctly, so it registers, and refuses real values later.
