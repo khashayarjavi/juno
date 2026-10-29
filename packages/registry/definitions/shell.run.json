@@ -16,6 +16,7 @@
   },
   "program_field": "program",
   "argv_field": "argv",
+  "cwd_field": "cwd",
   "program_surfaces": [
     {
       "program": "/usr/bin/cat",

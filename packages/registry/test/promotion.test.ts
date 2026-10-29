@@ -243,3 +243,22 @@ describe("the definition names its argv field (D-038)", () => {
     expect(shipped().argv_field).toBe("argv");
   });
 });
+
+describe("the definition names its cwd field (D-047)", () => {
+  // records D-047: cwd_field must exist and name a scalar data path, because relative argv operands are scope-checked against it
+  it.each([
+    ["no cwd field", (entry: Record<string, unknown>) => { delete entry["cwd_field"]; }],
+    ["a cwd field naming no field", (entry: Record<string, unknown>) => { entry["cwd_field"] = "dir"; }],
+    ["a cwd field that is a list", (entry: Record<string, unknown>) => { entry["cwd_field"] = "argv"; }],
+    ["a cwd field that is the program", (entry: Record<string, unknown>) => { entry["cwd_field"] = "program"; }],
+  ])("refuses %s", (_name, mutate) => {
+    const entry = raw();
+    mutate(entry);
+    expect(RegistryEntry.safeParse(entry).success).toBe(false);
+  });
+
+  // records D-047: the shipped file names cwd
+  it("ships cwd as the cwd field", () => {
+    expect(shipped().cwd_field).toBe("cwd");
+  });
+});

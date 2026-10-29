@@ -1,6 +1,6 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { type ArgvRoles, type FlagSurface, argvRoles } from "../src/index.js";
+import { type ArgvRoles, type FlagSurface, argvRoles, argvTokenKinds } from "../src/index.js";
 
 /** A program not on the §2.3 list, so only its declared surface decides. */
 const TOOL = "/opt/tools/bin/runner-tool";
@@ -134,5 +134,43 @@ describe("argv positions are read per call against the declared surface (§2.3 r
       { numRuns: 500 },
     );
     expect(checked).toBeGreaterThan(50);
+  });
+});
+
+describe("the same argv reading classes elements for the scope check (D-047)", () => {
+  // records D-047: flags, subcommands and operands are classed by the one D-037 reading, and `--` ends options
+  it("classes each element as promotion reads it", () => {
+    expect(argvTokenKinds(TOOL, toolSurface, ["-q", "show", "file.txt", "--", "-q", "show", "-"])).toEqual([
+      "flag",
+      "subcommand",
+      "operand",
+      "flag",
+      "operand",
+      "operand",
+      "operand",
+    ]);
+    // An undeclared flag is still a flag token; an undeclared `--` does not end options.
+    const noEnd: FlagSurface = { program: TOOL, positions: toolSurface.positions.filter((entry) => !(entry.position.kind === "flag" && entry.position.flag === "--")) };
+    expect(argvTokenKinds(TOOL, noEnd, ["-Z", "--", "-q", "x"])).toEqual(["flag", "flag", "flag", "operand"]);
+  });
+
+  // records D-047: with no usable surface nothing is known, so every element is read as an operand (the reading the scope check checks most)
+  it("reads every element as an operand when the surface is missing or names another program", () => {
+    expect(argvTokenKinds(TOOL, undefined, ["-q", "x"])).toEqual(["operand", "operand"]);
+    expect(argvTokenKinds("/usr/bin/other", toolSurface, ["-q", "x"])).toEqual(["operand", "operand"]);
+  });
+
+  // records D-047: the kinds and the D-037 promotion reading agree; an element is code-bearing only where it sits in a declared code position
+  it("agrees with promotion on every argv", () => {
+    const token = fc.constantFrom("-q", "--verbose", "--hook", "--", "show", "run", "file.txt", "-", "-Z");
+    fc.assert(
+      fc.property(fc.array(token, { maxLength: 8 }), (argv) => {
+        const kinds = argvTokenKinds(TOOL, toolSurface, argv);
+        const roles = argvRoles(TOOL, toolSurface, argv);
+        expect(kinds).toHaveLength(argv.length);
+        // Fail-closed happens exactly when the reading finds an undeclared flag token (this surface declares an operand).
+        expect(roles.failClosed).toBe(argv.some((element, index) => kinds[index] === "flag" && element === "-Z"));
+      }),
+    );
   });
 });
