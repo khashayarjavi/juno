@@ -25,7 +25,6 @@ import {
   type InvocationResult,
   type OutboundInvocation,
   PROMOTED_ARGV_FLOOR,
-  type PlannedInvocation,
   type RegistryEntry,
   RegistryError,
   callSchemaFor,
@@ -36,14 +35,18 @@ import {
 import { type ResolutionFailureCode, resolveReference } from "./binding.js";
 import { type DeliveryFailure, deliveryFailures } from "./delivery.js";
 import type { GrantRefusal, GrantStore } from "./grants.js";
-import { type ArgumentSource, ProposedCall, type TaskContext } from "./proposal.js";
+import { ArgumentSource, ProposalEnvelope, ProposedCall, type TaskContext } from "./proposal.js";
 import { type ScopeViolation, scopeViolations } from "./scope.js";
 
 /**
  * The enforcement boundary (spec §2.6–2.7, §3.2; build plan Increment 4;
- * DECISIONS.md D-041 to D-049). It runs in the runner, holds the grants and
+ * DECISIONS.md D-041 to D-054). It runs in the runner, holds the grants and
  * writes the journal; the model only proposes. For each proposed call:
  *
+ *   0. Walk every argument value, in whatever shape it arrives (scalar, list,
+ *      map, nested). Shape never outranks provenance: nothing about the
+ *      proposal's shape is required until step 3 has judged every value placed
+ *      under an instruction field (D-052, D-054).
  *   1. Resolve every `bound` reference against the task's own trajectory and
  *      record a `binding_resolution` entry for each, with the candidate set
  *      when the reference's path matches more than one entry.
@@ -55,9 +58,13 @@ import { type ScopeViolation, scopeViolations } from "./scope.js";
  *      every instruction value's floor (never a data field's); when no
  *      candidate's floors are met, the call parks `integrity_floor` too (D-046).
  *      Not overridable (§8.3). Step 3 runs before any rejection but an unknown
- *      capability: a bound instruction value whose reference does not resolve is
- *      judged `untrusted`, and an unresolved or malformed call is rejected only
- *      once every instruction value has passed (D-045, D-048).
+ *      capability. Every value under an instruction field is judged at that
+ *      field's floor, in any shape and at any depth. A bound value whose
+ *      reference does not resolve is judged `untrusted`; a value that states no
+ *      provenance has none and fails every floor. With no established program,
+ *      or one with no declared surface, every argv element is promoted. An
+ *      unresolved or malformed call is rejected only once every instruction
+ *      value has passed (D-045, D-048, D-052, D-054).
  *   G. No grant covers the call: park `awaiting_grant`. Decided only after
  *      step 3 passes, so an injected instruction is never presented as a
  *      missing grant (D-045, D-046).
@@ -73,8 +80,10 @@ import { type ScopeViolation, scopeViolations } from "./scope.js";
  * proceeds under the first remaining candidate, in the order the task lists
  * its grants, is charged to that grant, and the journal names it. Every
  * proposal that gets past parsing leaves exactly one `capability_call` entry,
- * carrying the per-argument provenance (D-022) and the verdict. `perform`
- * runs exactly the invocation that was inspected.
+ * carrying the per-argument provenance (D-022) and the verdict. The serving
+ * adapter's planned invocation is read exactly once, into a frozen copy; that
+ * copy is the one inspected at step 6, journalled, carried in the
+ * Authorization, and run by `perform` (D-053).
  */
 
 export const ENFORCEMENT_ACTOR = "juno.enforcement";
@@ -115,6 +124,8 @@ export type ParkDetail =
       readonly adapter: string;
       readonly observation: string;
       readonly failures: readonly DeliveryFailure[];
+      /** The one copy of the invocation the adapter planned, when it planned one now (D-053). */
+      readonly invocation: OutboundInvocation | null;
     };
 
 export type UnresolvedArgument = {
@@ -177,15 +188,59 @@ type ArgumentRecord = {
   readonly origin: Origin;
 };
 
-type Named = { readonly argument: string; readonly source: ArgumentSource };
-
 const NO_COST: EntryCost = { tokens_in: 0, tokens_out: 0, tokens_cached: 0, currency: 0, duration_ms: 0 };
 
-/** Names each source as `argument_provenance` names it: a field, or `<field>[<index>]` for a list element (D-022). */
-function named(sources: ProposedCall["arguments"]): Named[] {
-  return Object.entries(sources).flatMap(([field, value]) =>
-    Array.isArray(value) ? value.map((source, index) => ({ argument: `${field}[${String(index)}]`, source })) : [{ argument: field, source: value }],
-  );
+/**
+ * One value in a proposal's arguments, wherever it sits (D-052, D-054). It is
+ * named as `argument_provenance` names it: a field, `<field>[<index>]` for a
+ * list element (D-022), `<field>["<key>"]` for a map member, and so on down.
+ */
+type Leaf = {
+  readonly argument: string;
+  /** The top-level argument key it sits under. */
+  readonly field: string;
+  /** Its stated provenance; `undefined` when the value states none. */
+  readonly source: ArgumentSource | undefined;
+  /** The value itself, kept only when it states no provenance. */
+  readonly raw: unknown;
+};
+
+/** How deep the boundary walks an argument value; anything deeper is one value that states no provenance (D-054). */
+export const MAX_ARGUMENT_DEPTH = 16;
+
+/** A plain argument key; any other key is named in quotes and brackets, so it can never collide with a list element's name (D-054). */
+const IDENTIFIER = /^[a-z_][a-z0-9_]*$/;
+
+/**
+ * Every value in a proposal's arguments, in any shape. An object that is an
+ * argument source is one value. Any other list or object is walked into, so a
+ * value cannot hide from step 3 by being wrapped. Anything else (a bare
+ * scalar, `null`, or a structure deeper than `MAX_ARGUMENT_DEPTH`) is one
+ * value that states no provenance (D-052, D-054).
+ */
+function leavesOf(args: Readonly<Record<string, unknown>>): Leaf[] {
+  const leaves: Leaf[] = [];
+  const walk = (field: string, argument: string, value: unknown, depth: number): void => {
+    const source = ArgumentSource.safeParse(value);
+    if (source.success) {
+      leaves.push({ argument, field, source: source.data, raw: undefined });
+    } else if (typeof value === "object" && value !== null && depth < MAX_ARGUMENT_DEPTH) {
+      const children: [string, unknown][] = Array.isArray(value)
+        ? value.map((item: unknown, index): [string, unknown] => [`[${String(index)}]`, item])
+        : Object.entries(value).map(([key, item]): [string, unknown] => [`[${JSON.stringify(key)}]`, item]);
+      for (const [step, item] of children) walk(field, `${argument}${step}`, item, depth + 1);
+    } else {
+      leaves.push({ argument, field, source: undefined, raw: value });
+    }
+  };
+  for (const [field, value] of Object.entries(args)) walk(field, IDENTIFIER.test(field) ? field : `[${JSON.stringify(field)}]`, value, 0);
+  return leaves;
+}
+
+/** How a value that states no provenance is described in the record: its shape, never its content. */
+function shapeOf(raw: unknown): string {
+  if (raw === null) return "null";
+  return Array.isArray(raw) ? "list" : typeof raw;
 }
 
 /** The call's argument values, shaped as the proposal shaped them. */
@@ -228,14 +283,12 @@ type Judged = { readonly argument: string; readonly class: ProvenanceClass; read
  * D-048: every argument whose integrity is established, in proposal order. A
  * `bound` argument whose reference did not resolve has no established
  * integrity, so it is judged `untrusted` (§1.5 fail-closed). A constant slot
- * never fixed is not judged at all; it is rejected once step 3 has passed.
+ * never fixed is not judged at all; it is rejected once step 3 has passed. A
+ * value that states no provenance is left out too, so step 3 holds it to its
+ * floor with no integrity at all, and it fails every floor (D-054).
  */
-function judgedArguments(
-  proposal: ProposedCall,
-  records: readonly ArgumentRecord[],
-  failures: readonly UnresolvedArgument[],
-): Judged[] {
-  return named(proposal.arguments).flatMap(({ argument }): Judged[] => {
+function judgedArguments(leaves: readonly Leaf[], records: readonly ArgumentRecord[], failures: readonly UnresolvedArgument[]): Judged[] {
+  return leaves.flatMap(({ argument }): Judged[] => {
     const record = records.find((candidate) => candidate.argument === argument);
     if (record !== undefined) return [{ argument, class: record.class, integrity: record.data_class.integrity }];
     const failure = failures.find((candidate) => candidate.argument === argument);
@@ -272,7 +325,7 @@ function standIn(entry: RegistryEntry, argument: string): CallScalar {
 }
 
 type StepThree = {
-  /** Every instruction value step 3 could establish, each with its own floor. */
+  /** Every instruction value step 3 judged, each with its own floor. */
   readonly values: readonly InstructionValue[];
   /** The values below their own floor. */
   readonly violations: readonly FloorViolation[];
@@ -280,52 +333,126 @@ type StepThree = {
   readonly parsed: { readonly ok: true; readonly call: CapabilityCall } | { readonly ok: false; readonly message: string };
 };
 
+/** What step 3 reads a proposal from. */
+type StepThreeInput = {
+  readonly entry: RegistryEntry;
+  /** The proposal's arguments as they arrived, in any shape. */
+  readonly args: Readonly<Record<string, unknown>>;
+  readonly leaves: readonly Leaf[];
+  /** The proposal, when it has the `ProposedCall` shape. */
+  readonly proposal: ProposedCall | undefined;
+  /** Each value as step 3 reads it: resolved, a stand-in (D-048), or a bare scalar as written. */
+  readonly valueOf: ReadonlyMap<string, CallScalar>;
+  /** The values whose provenance is established: they carry their own value, not a stand-in. */
+  readonly established: ReadonlySet<string>;
+  readonly judged: readonly Judged[];
+  /** Arguments step 3 does not judge: constant slots never fixed (D-048). */
+  readonly unjudged: ReadonlySet<string>;
+};
+
 /**
- * §2.7 step 3 is `checkInstructionFloors` (D-038). When the call does not parse
- * against the interface, its argv cannot be read, but each scalar instruction
- * field that was supplied can still be judged on its own provenance: an
- * instruction from untrusted content parks whether or not its value is valid
- * (D-045). When the program itself did not resolve, the argv is read against
- * no surface, so every element is promoted (D-037, D-048). Arguments that are
- * not judged (a constant slot never fixed) are left out.
+ * The program the argv is read against: the program field's one value, when
+ * it is a single value whose provenance is established. Otherwise there is no
+ * program, so no declared surface (D-048, D-052).
  */
-function stepThree(entry: RegistryEntry, call: CapabilityCall, judged: readonly Judged[], programUnresolved: boolean): StepThree {
+function establishedProgram({ entry, leaves, valueOf, established }: StepThreeInput): string | undefined {
+  const values = leaves.filter((leaf) => leaf.field === entry.program_field);
+  const [only] = values;
+  if (values.length !== 1 || only === undefined || only.argument !== entry.program_field || !established.has(only.argument)) return undefined;
+  const value = valueOf.get(only.argument);
+  return value === undefined ? undefined : String(value);
+}
+
+/**
+ * §2.7 step 3 is `checkInstructionFloors` (D-038) whenever the call parses.
+ * When it does not, step 3 still judges, before any rejection (D-045, D-048,
+ * D-052, D-054):
+ *   - every value under an instruction field, in any shape and at any depth,
+ *     at that field's floor;
+ *   - the argv read against the established program's declared surface. With
+ *     no established program, or a program with no declared surface, there is
+ *     none, so every element is promoted (D-037). An argv that is not a list of
+ *     single values cannot be read at all, so every value in it is promoted.
+ * Arguments that are not judged (a constant slot never fixed) are left out.
+ */
+function stepThree(input: StepThreeInput): StepThree {
+  const { entry, proposal, valueOf, judged, unjudged } = input;
   const integrityOf = new Map(judged.map((item) => [item.argument, item.integrity]));
-  const established = (value: InstructionValue | FloorViolation): boolean => integrityOf.has(value.argument);
-  try {
-    const verdict = checkInstructionFloors(entry, call, judged);
-    const parsedCall = callSchemaFor(entry.capability.interface).parse(call);
-    return {
-      values: instructionValues(entry, parsedCall).filter(established),
-      violations: verdict.outcome === "park" ? verdict.violations.filter(established) : [],
-      parsed: { ok: true, call: parsedCall },
-    };
-  } catch (error: unknown) {
-    if (!(error instanceof BoundaryError)) throw error;
-    const { capability, argv_field: argvField } = entry;
-    const values: InstructionValue[] = [];
-    for (const [name, field] of Object.entries(capability.interface)) {
-      if (field.role === "instruction") values.push({ argument: name, floor: capability.min_argument_integrity, source: { kind: "instruction_field" } });
+  const considered = (value: InstructionValue | FloorViolation): boolean => !unjudged.has(value.argument);
+  if (proposal !== undefined) {
+    const call = assemble(proposal.arguments, valueOf);
+    try {
+      const verdict = checkInstructionFloors(entry, call, judged);
+      const parsedCall = callSchemaFor(entry.capability.interface).parse(call);
+      return {
+        values: instructionValues(entry, parsedCall).filter(considered),
+        violations: verdict.outcome === "park" ? verdict.violations.filter(considered) : [],
+        parsed: { ok: true, call: parsedCall },
+      };
+    } catch (error: unknown) {
+      if (!(error instanceof BoundaryError)) throw error;
+      return { ...judgeUnparsed(input, integrityOf, considered), parsed: { ok: false, message: error.message } };
     }
-    const argv = call[argvField];
-    if (programUnresolved && Array.isArray(argv)) {
-      for (const element of argvRoles("", undefined, argv.map(String)).elements) {
-        if (element.role === "instruction") {
-          values.push({
-            argument: `${argvField}[${String(element.index)}]`,
-            floor: PROMOTED_ARGV_FLOOR,
-            source: { kind: "promoted_argv", reason: element.reason, at: element.at },
-          });
-        }
+  }
+  return { ...judgeUnparsed(input, integrityOf, considered), parsed: { ok: false, message: "the proposal is not a capability call proposal" } };
+}
+
+function judgeUnparsed(
+  input: StepThreeInput,
+  integrityOf: ReadonlyMap<string, Integrity>,
+  considered: (value: InstructionValue | FloorViolation) => boolean,
+): Pick<StepThree, "values" | "violations"> {
+  const { entry, args, leaves, valueOf } = input;
+  const { capability, argv_field: argvField } = entry;
+  const values: InstructionValue[] = [];
+  for (const [name, field] of Object.entries(capability.interface)) {
+    if (field.role !== "instruction") continue;
+    for (const leaf of leaves) {
+      if (leaf.field === name) values.push({ argument: leaf.argument, floor: capability.min_argument_integrity, source: { kind: "instruction_field" } });
+    }
+  }
+  const argv = leaves.filter((leaf) => leaf.field === argvField);
+  const raw = args[argvField];
+  const readable = Array.isArray(raw) && argv.length === raw.length && argv.every((leaf, index) => leaf.argument === `${argvField}[${String(index)}]`);
+  if (readable) {
+    const program = establishedProgram(input);
+    const surface = program === undefined ? undefined : entry.program_surfaces.find((candidate) => candidate.program === program);
+    const elements = argv.map((leaf) => String(valueOf.get(leaf.argument) ?? ""));
+    for (const element of argvRoles(program ?? "", surface, elements).elements) {
+      if (element.role === "instruction") {
+        values.push({
+          argument: `${argvField}[${String(element.index)}]`,
+          floor: PROMOTED_ARGV_FLOOR,
+          source: { kind: "promoted_argv", reason: element.reason, at: element.at },
+        });
       }
     }
-    const supplied = values.filter(established);
-    const violations = supplied.flatMap((value): FloorViolation[] => {
-      const integrity = integrityOf.get(value.argument) ?? null;
-      return integrity === null || compareIntegrity(integrity, value.floor) < 0 ? [{ ...value, integrity }] : [];
-    });
-    return { values: supplied, violations, parsed: { ok: false, message: error.message } };
+  } else {
+    for (const leaf of argv) {
+      values.push({ argument: leaf.argument, floor: PROMOTED_ARGV_FLOOR, source: { kind: "promoted_argv", reason: "argv_not_a_list", at: null } });
+    }
   }
+  const judgedValues = values.filter(considered);
+  const violations = judgedValues.flatMap((value): FloorViolation[] => {
+    const integrity = integrityOf.get(value.argument) ?? null;
+    return integrity === null || compareIntegrity(integrity, value.floor) < 0 ? [{ ...value, integrity }] : [];
+  });
+  return { values: judgedValues, violations };
+}
+
+/**
+ * D-053: reads an adapter's planned invocation exactly once (`file` once,
+ * `args` once, each element once) into a frozen copy of plain strings. An
+ * adapter that returns anything else has not planned an invocation; the
+ * caller treats the throw as an adapter refusing a valid call.
+ */
+function copyInvocation(planned: OutboundInvocation): OutboundInvocation {
+  const file: unknown = planned.file;
+  const args: unknown = planned.args;
+  if (typeof file !== "string" || !Array.isArray(args)) throw new TypeError("the adapter did not plan a program and an argv array");
+  const copied: unknown[] = Array.from(args as readonly unknown[]);
+  if (!copied.every((element): element is string => typeof element === "string")) throw new TypeError("the adapter planned an argv element that is not a string");
+  return Object.freeze({ file, args: Object.freeze(copied) });
 }
 
 /**
@@ -371,31 +498,47 @@ export class EnforcementBoundary {
   authorize(context: TaskContext, input: unknown): Verdict {
     const { task } = context;
     if (task.state !== "running") throw new EnforcementError(`task ${task.id} is ${task.state}; only a running task makes capability calls (spec §6)`);
-    const proposal = parseAtBoundary("capability call proposal", ProposedCall, input);
+    // Only a capability id and an object of arguments are required before step 3 (D-052, D-054).
+    const envelope = parseAtBoundary("capability call proposal", ProposalEnvelope, input);
+    const proposal = ProposedCall.safeParse(input);
     const synthesized = synthesizedClass(context);
+    const leaves = leavesOf(envelope.arguments);
 
-    // Step 1 and step 2: resolve and classify every argument.
-    const { records, failures } = this.#resolve(context, proposal, synthesized);
-    const judged = judgedArguments(proposal, records, failures);
+    // Step 1 and step 2: resolve and classify every value, in whatever shape it arrived.
+    const { records, failures } = this.#resolve(context, envelope.capability, leaves, synthesized);
+    const unprovenanced = leaves.filter((leaf) => leaf.source === undefined);
+    const judged = judgedArguments(leaves, records, failures);
     const record = (verdict: Readonly<Record<string, unknown>>, grant: string | null): number =>
-      this.#recordCall(task.id, proposal.capability, records, judged, failures, synthesized, verdict, grant);
+      this.#recordCall(task.id, envelope.capability, records, judged, failures, unprovenanced, synthesized, verdict, grant);
     const park = (detail: ParkDetail): Verdict => ({ outcome: "park", call_seq: record({ outcome: "park", ...detail }, null), detail });
     const reject = (detail: RejectDetail): Verdict => ({ outcome: "reject", call_seq: record({ outcome: "reject", ...detail }, null), detail });
 
-    const entry = this.#registry.entry(proposal.capability);
+    const entry = this.#registry.entry(envelope.capability);
     if (entry === undefined) return reject(failures.length > 0 ? { reason: "unresolved_argument", failures } : { reason: "unknown_capability" });
     const { capability } = entry;
-    const values = new Map<string, CallScalar>(failures.map((failure) => [failure.argument, standIn(entry, failure.argument)]));
-    for (const item of records) values.set(item.argument, item.value);
-    const call = assemble(proposal.arguments, values);
+    const valueOf = new Map<string, CallScalar>();
+    for (const leaf of unprovenanced) {
+      if (typeof leaf.raw === "string" || typeof leaf.raw === "boolean" || (typeof leaf.raw === "number" && Number.isFinite(leaf.raw))) valueOf.set(leaf.argument, leaf.raw);
+    }
+    for (const failure of failures) valueOf.set(failure.argument, standIn(entry, failure.argument));
+    for (const item of records) valueOf.set(item.argument, item.value);
 
     // The candidate grants, looked up before step 3 because their bounds raise its floors (D-046).
     const coverage = this.#grants.coverage(task, capability.id, this.#clock());
 
-    // Step 3: each value against its own floor, then against each candidate's raised floors. It runs
-    // before any rejection, so a resolution or parse failure cannot mask an instruction below its floor (D-045, D-048).
-    const programUnresolved = failures.some((failure) => failure.argument === entry.program_field);
-    const floors = stepThree(entry, call, judged, programUnresolved);
+    // Step 3: each value against its own floor, then against each candidate's raised floors. It runs before any
+    // rejection, so neither a resolution failure nor the proposal's shape can mask an instruction below its floor
+    // (D-045, D-048, D-052).
+    const floors = stepThree({
+      entry,
+      args: envelope.arguments,
+      leaves,
+      proposal: proposal.success ? proposal.data : undefined,
+      valueOf,
+      established: new Set(records.map((item) => item.argument)),
+      judged,
+      unjudged: new Set(failures.filter((failure) => failure.class === "constant").map((failure) => failure.argument)),
+    });
     if (floors.violations.length > 0) return park({ reason: "integrity_floor", violations: floors.violations, grants: [] });
     const integrityOf = new Map(judged.map((item) => [item.argument, item.integrity]));
     const raised = coverage.covering.map((grant) => ({ grant, violations: grantFloorViolations(floors.values, integrityOf, grant) }));
@@ -404,8 +547,10 @@ export class EnforcementBoundary {
       return park({ reason: "integrity_floor", violations: [], grants: raised.map(({ grant, violations }) => ({ grant: grant.id, violations })) });
     }
     if (failures.length > 0) return reject({ reason: "unresolved_argument", failures });
+    if (!proposal.success) return reject({ reason: "malformed_call", message: `not a capability call proposal: ${proposal.error.message}` });
     if (!floors.parsed.ok) return reject({ reason: "malformed_call", message: floors.parsed.message });
-    const parsedCall = floors.parsed.call;
+    // One frozen copy of the inspected call: the adapter plans from it, and the Authorization carries it (D-053).
+    const parsedCall = frozenCall(floors.parsed.call);
 
     // The grant check, decided only now that step 3 has passed.
     if (coverage.covering.length === 0) return park({ reason: "awaiting_grant", refused: coverage.refused });
@@ -440,18 +585,20 @@ export class EnforcementBoundary {
     // Step 6.
     const planned = this.#plan(capability, parsedCall);
     if (!planned.ok) return park(planned.detail);
+    const { adapter, invocation } = planned;
 
     this.#grants.charge(chosen.id);
-    const callSeq = record({ outcome: "proceed" }, chosen.id);
+    // The journal records the same copy the Authorization carries and `perform` runs (D-053).
+    const callSeq = record({ outcome: "proceed", adapter, invocation }, chosen.id);
     // Frozen, with frozen copies of what was inspected: what `perform` runs cannot be changed after inspection.
     const authorization: Authorization = Object.freeze({
       task_id: task.id,
       call_seq: callSeq,
       capability: capability.id,
       grant: chosen.id,
-      adapter: planned.planned.adapter,
-      call: frozenCall(planned.planned.call),
-      invocation: Object.freeze({ file: planned.planned.invocation.file, args: Object.freeze([...planned.planned.invocation.args]) }),
+      adapter,
+      call: parsedCall,
+      invocation,
       input_class: Object.freeze({ ...inputClass }),
     });
     this.#issued.add(authorization);
@@ -468,7 +615,8 @@ export class EnforcementBoundary {
 
   #resolve(
     context: TaskContext,
-    proposal: ProposedCall,
+    capability: string,
+    leaves: readonly Leaf[],
     synthesized: DataClass,
   ): { records: ArgumentRecord[]; failures: UnresolvedArgument[] } {
     const { task, constants } = context;
@@ -493,8 +641,11 @@ export class EnforcementBoundary {
 
     const records: ArgumentRecord[] = [];
     const failures: UnresolvedArgument[] = [];
-    for (const { argument, source } of named(proposal.arguments)) {
-      if (source.class === "synthesized") {
+    for (const { argument, source } of leaves) {
+      if (source === undefined) {
+        // States no provenance: nothing to resolve or classify. Step 3 holds it to its floor with no integrity (D-054).
+        continue;
+      } else if (source.class === "synthesized") {
         // Invariant 7: no comparison with prior values is made; only the reference mechanism confers `bound`.
         records.push({ argument, class: "synthesized", data_class: synthesized, value: source.value, origin: { class: "synthesized" } });
       } else if (source.class === "constant") {
@@ -506,7 +657,7 @@ export class EnforcementBoundary {
         }
       } else {
         const resolution = resolveReference(source.reference, trajectory, payloadOf);
-        const base = { capability: proposal.capability, argument, reference: source.reference };
+        const base = { capability, argument, reference: source.reference };
         if (resolution.ok) {
           const candidates = resolution.candidates.length > 1 ? { binding_candidates: [...resolution.candidates] } : {};
           const bindingEntry = this.#append(
@@ -535,31 +686,38 @@ export class EnforcementBoundary {
     return { records, failures };
   }
 
-  /** Step 6: the quarantine check, then the runtime observation of the planned invocation (§2.4, §2.5). */
-  #plan(definition: Capability, call: CapabilityCall): { ok: true; planned: PlannedInvocation } | { ok: false; detail: ParkDetail } {
+  /**
+   * Step 6: the quarantine check, then the runtime observation of the planned
+   * invocation (§2.4, §2.5). The adapter's plan is read exactly once, into a
+   * frozen copy; only that copy is inspected and returned (D-053).
+   */
+  #plan(
+    definition: Capability,
+    call: CapabilityCall,
+  ): { ok: true; adapter: string; invocation: OutboundInvocation } | { ok: false; detail: ParkDetail } {
     const capability = definition.id;
     const adapter = this.#registry.servingAdapter(capability);
     if (adapter === undefined) throw new EnforcementError(`capability ${capability} has no serving adapter`);
     const known = this.#registry.quarantined(capability, adapter);
-    if (known !== undefined) return { ok: false, detail: { reason: "adapter_quarantined", adapter, observation: known.observation, failures: [] } };
+    if (known !== undefined) return { ok: false, detail: { reason: "adapter_quarantined", adapter, observation: known.observation, failures: [], invocation: null } };
 
-    let planned: PlannedInvocation;
+    let invocation: OutboundInvocation;
     try {
-      planned = this.#registry.plan(capability, call);
+      invocation = copyInvocation(this.#registry.plan(capability, call).invocation);
     } catch (error: unknown) {
       if (error instanceof RegistryError || error instanceof BoundaryError) throw error;
       // An adapter that cannot carry a valid data value does not deliver it structurally (D-033, D-044).
       const observation = `the adapter refused a valid call: ${error instanceof Error ? error.message : String(error)}`;
       this.#registry.quarantine({ capability, adapter, observation });
-      return { ok: false, detail: { reason: "adapter_quarantined", adapter, observation, failures: [] } };
+      return { ok: false, detail: { reason: "adapter_quarantined", adapter, observation, failures: [], invocation: null } };
     }
-    const failures = deliveryFailures(definition, planned.call, planned.invocation);
+    const failures = deliveryFailures(definition, call, invocation);
     if (failures.length > 0) {
       const observation = `data not delivered as discrete argv elements: ${failures.map((failure) => failure.field).join(", ")}`;
       this.#registry.quarantine({ capability, adapter, observation });
-      return { ok: false, detail: { reason: "adapter_quarantined", adapter, observation, failures } };
+      return { ok: false, detail: { reason: "adapter_quarantined", adapter, observation, failures, invocation } };
     }
-    return { ok: true, planned };
+    return { ok: true, adapter, invocation };
   }
 
   #draft(kind: EntryDraft["kind"], dataClass: DataClass): EntryDraft {
@@ -576,6 +734,7 @@ export class EnforcementBoundary {
     records: readonly ArgumentRecord[],
     judged: readonly Judged[],
     failures: readonly UnresolvedArgument[],
+    unprovenanced: readonly Leaf[],
     synthesized: DataClass,
     verdict: Readonly<Record<string, unknown>>,
     grant: string | null,
@@ -595,6 +754,8 @@ export class EnforcementBoundary {
         origin: { ...origin },
       })),
       unresolved: failures.map((failure) => ({ ...failure })),
+      // Values that stated no provenance: named, with their shape, never their content (D-054).
+      unprovenanced: unprovenanced.map(({ argument, raw }) => ({ argument, shape: shapeOf(raw) })),
       grant,
       verdict,
     };

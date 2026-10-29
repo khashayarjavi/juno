@@ -24,7 +24,12 @@ export type PromotionReason =
   /** The element at `at` is an operand, and the surface declares no operand. */
   | "uncovered_operand"
   /** The element at `at` is declared as executing code; it and everything after it carry code. */
-  | "code_bearing_position";
+  | "code_bearing_position"
+  /**
+   * The argv field is not a list of single values, so it cannot be read against any surface
+   * (the enforcement boundary's reading of a malformed proposal, DECISIONS.md D-054). `argvRoles` never returns it.
+   */
+  | "argv_not_a_list";
 
 export type ArgvElementRole =
   | { readonly index: number; readonly role: "data" }

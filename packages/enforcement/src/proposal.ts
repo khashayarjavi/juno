@@ -32,6 +32,20 @@ export const ProposedCall = z.strictObject({
 });
 export type ProposedCall = z.infer<typeof ProposedCall>;
 
+/**
+ * The least a proposal must be for the boundary to judge it: a capability id
+ * and an object of arguments. Nothing else about its shape is required here.
+ * Every value under an instruction field is judged on its provenance, in
+ * whatever shape it arrives, before the proposal is checked against
+ * `ProposedCall` or the interface (DECISIONS.md D-052, D-054). A proposal
+ * that is not `ProposedCall` is rejected `malformed_call`, but only after that.
+ */
+export const ProposalEnvelope = z.object({
+  capability: z.string(),
+  arguments: z.record(z.string(), z.unknown()),
+});
+export type ProposalEnvelope = z.infer<typeof ProposalEnvelope>;
+
 /** A value the runtime fixed at admission, with the data class admission gave it (§2.6 `constant`). */
 export type Constant = {
   readonly value: CallScalar;
