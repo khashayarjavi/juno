@@ -5,7 +5,7 @@
 
 Branch: `claude/great-keller-clbbvy`. The session harness assigned this name and allows pushes only to it, so it is used instead of `inc-5-runner` (D-056, as D-028 and D-040 did). Increment 4 is in `main` (PR #6 merged).
 
-**Status: done, pending independent review and the operator's merge.** Every test the build plan lists for Increment 5 exists and names the section it proves. `make verify` is green. One item is for the operator to decide before Increment 7, not before this merge: how the containerised runner reaches Docker (D-065, recommendation given). The pull request is a draft for independent review (runbook prompt 3).
+**Status: done, pending independent review and the operator's merge.** Every test the build plan lists for Increment 5 exists and names the section it proves. `make verify` is green. One item is for the operator to decide before Increment 7, not before this merge: how the containerised runner reaches Docker (D-065, recommendation given). Draft PR: https://github.com/khashayarjavi/juno/pull/7, left as a draft for independent review (runbook prompt 3).
 
 ## Done in this increment
 All new code is in `packages/runner/` plus `packages/contracts/src/provider.ts`. No earlier package changed.
