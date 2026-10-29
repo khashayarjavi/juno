@@ -524,6 +524,10 @@ describe("turn loop (§6, §2.7 through the boundary)", () => {
       },
     });
     expect(toProposal("shell.run", { program: { slot: "cat", extra: 1 } })).toEqual({ capability: "shell.run", arguments: { program: { slot: "cat", extra: 1 } } });
+    expect(toProposal("shell.run", { argv: [{ ref: "${3.stdout}", class: "constant" }] })).toEqual({
+      capability: "shell.run",
+      arguments: { argv: [{ ref: "${3.stdout}", class: "constant" }] },
+    });
     expect(toProposal("shell.run", ["/usr/bin/cat"])).toBeNull();
   });
 
