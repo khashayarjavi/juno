@@ -71,7 +71,7 @@ Every test names the spec section it proves. All of this is in `packages/enforce
 - The operator's merge of PR #6. Nothing else.
 
 ## make verify
-PENDING — the session is running `make verify` on the second-review changes. Unit tests alone: 512 passed (14 files). CI `verify` passed on PR #6 before the review changes (run 40794657374, commit b8a48f0) and on the first review commit (run 40799040134, commit 4763e0c).
+GREEN as of 2026-10-29 in the cloud session, with D-052 to D-054 and the D-048 amendment built: 512 unit tests (14 files), 38 container tests (5 files), lint self-test rejected the `exec()` probe. Summary line: `make verify: GREEN`. CI `verify` passed on PR #6 before the review changes (run 40794657374, commit b8a48f0) and on the first review commit (run 40799040134, commit 4763e0c).
 
 ## Open objections to the spec
 - None. O-3 was resolved as D-046 and O-4 as D-047 (operator, 2026-10-29).
