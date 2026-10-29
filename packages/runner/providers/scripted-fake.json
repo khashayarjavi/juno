@@ -1,0 +1,14 @@
+{
+  "id": "scripted-fake",
+  "mid_stream_cancellation": false,
+  "prompt_cache": { "supported": false, "granularity": null, "ttl_ms": null },
+  "conversation_state": "stateless",
+  "turn_control": "client",
+  "server_interrupt": false,
+  "replay_fidelity": "partial",
+  "native_tool_calling": { "supported": true, "parallel": false },
+  "native_context_management": true,
+  "context_window": 200000,
+  "cost": { "input": 0.000003, "output": 0.000015, "cached": 0.0000003 },
+  "jurisdiction": "local"
+}

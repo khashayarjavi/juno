@@ -12,3 +12,4 @@ export * from "./task.js";
 export * from "./trajectory.js";
 export * from "./closure.js";
 export * from "./artifact.js";
+export * from "./provider.js";
