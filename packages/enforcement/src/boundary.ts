@@ -79,7 +79,7 @@ import { type ScopeViolation, scopeViolations } from "./scope.js";
  * none decides the verdict. A call proceeds only when every check passes. It
  * proceeds under the first remaining candidate, in the order the task lists
  * its grants, is charged to that grant, and the journal names it. Every
- * proposal that gets past parsing leaves exactly one `capability_call` entry,
+ * proposal with a capability id and an object of arguments leaves exactly one `capability_call` entry,
  * carrying the per-argument provenance (D-022) and the verdict. The serving
  * adapter's planned invocation is read exactly once, into a frozen copy; that
  * copy is the one inspected at step 6, journalled, carried in the

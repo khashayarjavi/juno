@@ -5,7 +5,7 @@
 
 Branch: `claude/laughing-lovelace-bj5e9m`. The session harness assigned this name and allows pushes only to it, so it is used instead of `inc-4-enforcement` (D-040, as D-028 did for Increment 3). Increment 3 is in `main` (PR #5 merged). Draft PR: https://github.com/khashayarjavi/juno/pull/6.
 
-**Status: done, pending the operator's merge.** The operator ruled on O-3 and O-4 on 2026-10-29 (D-046, D-047). The independent review of PR #6 found one gap, and the operator ruled on it the same day (D-048). That ruling and the review's smaller items (D-049, D-050, D-051, the frozen Authorization) are built and tested, and `make verify` is green (see below). The PR stays a draft; the operator merges.
+**Status: done, pending the operator's merge.** The operator ruled on O-3 and O-4 on 2026-10-29 (D-046, D-047). The independent review of PR #6 found one gap, and the operator ruled on it the same day (D-048). That ruling and the review's smaller items (D-049, D-050, D-051, the frozen Authorization) are built and tested. The second review found that step 3 could be bypassed by the shape of a value, for example `program: [cmd]`. The operator ruled on that the same day, and the three rulings are built and tested (D-052, D-053, D-054, D-048 amended). `make verify` is green (see below). The PR stays a draft; the operator merges.
 
 ## Done in this increment
 Every test names the spec section it proves. All of this is in `packages/enforcement/` (new), plus small additions to `packages/registry/src/registry.ts`, `packages/registry/src/entry.ts` and `packages/contracts/src/promotion.ts`.
@@ -51,19 +51,34 @@ Every test names the spec section it proves. All of this is in `packages/enforce
   - **Undeclared flags and scope (D-051).** `--x=/etc/passwd` skips the scope check only because it promotes the whole argv to instruction; from the model it parks `integrity_floor`.
   - **The Authorization is frozen**, with frozen copies of the call and invocation, so what `perform` runs cannot be changed after inspection.
   - 13 further deliberate breakages, each caught by a test.
-- Decisions D-040 to D-051 recorded. D-042 and D-045 are marked as amended by D-046; D-045's exception is extended by D-048.
+- **After the second review (2026-10-29)** — 15 more tests in `enforcement.test.ts` (95 in all), each naming what it proves:
+  - **Shape never outranks provenance (D-052, operator ruling).** Before the proposal's shape is checked, every value under an instruction field is judged at that field's floor (raised by any candidate grant), in any shape and at any depth. Proven by a property test: 300 random proposals, each with a synthesized or unresolved value somewhere under `program`, in random lists, maps and nesting. Each one gets random argv, cwd and extra fields, with or without broken references and with or without a grant. Every one parks `integrity_floor`; none is rejected or proceeds. Explicit tests cover `program: [cmd]`, `program: [<broken reference>]`, a map and nested lists, and a grant's raised floor on a wrapped value.
+  - **A missing program means no declared surface (D-048 amended, operator ruling).** A synthesized `-c` with a broken `cwd` and no program field parks `integrity_floor`, with and without a grant. Every argv element is promoted.
+  - **The planned command is copied exactly once (D-053, operator ruling).** A test adapter returns its command through getters: one command on the first read, a different one on every later read. The boundary reads each getter once. The first command is the one inspected, journalled, carried in the Authorization and run. When the first read is the interpolated command, that is what is judged, and the adapter is quarantined.
+  - **The build decisions under these rulings (D-054).**
+    - A value that states no provenance (a bare string, `null`) fails every floor. It never proceeds, even as data.
+    - An argv that is not a list is promoted whole.
+    - A program outside the enum has no declared surface, so its argv is promoted.
+    - Keys that are not identifiers are named so they cannot collide.
+    - Nesting deeper than 16 levels is one unprovenanced value.
+  - **Two existing tests changed, neither weakened** (details in D-054):
+    - "rejects a program outside the enum when its provenance meets the floor" now gives an operator-constant argv, so its claim still holds. Its old input (`/bin/sh` with a synthesized `-c`) is a new test that parks.
+    - "parks a synthesized command string alongside a broken data reference" now also expects the promoted `argv[0]`.
+  - 12 further deliberate breakages, each caught by a test. They were: only top-level instruction values judged (the reviewed bug: the property test and five explicit tests fail); maps not walked; depth limit wrong; unresolved instruction value not judged; unprovenanced value given integrity; missing program skipping the argv; a program outside the enum read with `cat`'s surface; an argv that is not a list left unjudged; the invocation re-read instead of copied; keys not bracketed; an unprovenanced data value let through. One more (the explicit non-`ProposedCall` rejection removed) is equivalent on its own, because step 3 already reports such a proposal as unparsed; with both removed, a test fails.
+- Decisions D-040 to D-054 recorded. D-042 and D-045 are marked as amended by D-046; D-045's exception is extended by D-048 and D-052/D-054; D-048 is amended by the second-review ruling.
 
 ## Remaining in this increment
 - The operator's merge of PR #6. Nothing else.
 
 ## make verify
-GREEN as of 2026-10-29 in the cloud session, with D-048 to D-051 built: 497 unit tests (14 files), 38 container tests (5 files), lint self-test rejected the `exec()` probe. Summary line: `make verify: GREEN`. CI `verify` passed on PR #6 before the review changes (run 40794657374, commit b8a48f0) and on the review commit (run 40799040134, commit 4763e0c).
+PENDING — the session is running `make verify` on the second-review changes. Unit tests alone: 512 passed (14 files). CI `verify` passed on PR #6 before the review changes (run 40794657374, commit b8a48f0) and on the first review commit (run 40799040134, commit 4763e0c).
 
 ## Open objections to the spec
 - None. O-3 was resolved as D-046 and O-4 as D-047 (operator, 2026-10-29).
 
 ## Notes for the next session
 - **Next step:** once PR #6 is reviewed and merged, Increment 5 (runner) is current. Do not start it before the merge.
+- **Increment 5 and the proposal shape (D-054):** the runner should always build `ProposedCall`-shaped proposals (one source per scalar field, one per list element). Anything else the boundary judges and then rejects `malformed_call`, or parks if it touches an instruction field. A runner bug that sends bare values therefore never runs, but it can park a task.
 - **Accepted residual, with a gate (D-047):** scope is judged on the path as written. A symlink already present in the work content can reach outside the scope. Resolving symlinks (§3.3's canonical form) must be built **before JUNO operates on any content it did not create (Slice 1.5)**, not only when a link-creating program is admitted.
 - **Increment 5 must reach the registry only through the boundary.** The runner may cause an effect only by `authorize` and then `perform` on the authorization it returns. It must never call `CapabilityRegistry.invoke` (or `plan` plus its own execution). Increment 5 must prove this with a test: for example, a registry whose `invoke` throws, with the runner's whole call path still working; or a check that no runner module calls `invoke`.
 - **What Increment 5 must supply to the boundary** (D-041): the task (running), a constants table fixed at admission (each slot with its data class; integrity = the admitting source's), and the producing turn's sensitivity (plus the volatile region's integrities under `owned` context). It must turn the model's tool call into a proposal: a reference text becomes `bound`, a runtime-filled slot becomes `constant`, anything else becomes `synthesized`. It then calls `authorize`; on `proceed`, `perform`, then journals the `capability_result` using `authorization.input_class` for the §2.1 output class. On `park`, the runner writes the `park` entry and changes the task state. On `reject`, it tells the model.
