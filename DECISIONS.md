@@ -337,7 +337,7 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
 
 ## D-045 — Check order, the five checks, and outcomes that are not parks
 - Date: 2026-10-28
-- Status: Accepted (where candidate grants are looked up is amended by D-046; the guarantee is kept)
+- Status: Accepted (where candidate grants are looked up is amended by D-046; the guarantee is kept. Its exception is extended by D-048: step 3 runs before every rejection but an unknown capability)
 - Applies to: Increment 4 onward
 - Decision: the build plan's "five enforcement checks" are the grant check plus §2.7 steps 3 to 6. They run in this order: steps 1 and 2 (resolve, classify), step 3 (`checkInstructionFloors`, D-038), the grant check (`awaiting_grant`), step 4, step 5, step 6. The first check that fails decides the park. A call proceeds only when all pass. Three outcomes are rejections, not parks: an argument that does not resolve (a rejected reference, or a constant slot never fixed), an unregistered capability, and a call that does not parse against the interface. In each, nothing runs, nothing is charged, the `capability_call` entry records the rejection, and the task keeps running. One exception keeps step 3 ahead of parsing: when a call does not parse, each scalar `instruction` field that was supplied is still judged on its own provenance, and one below its floor parks `integrity_floor`. A proposal that is not even the proposal shape throws `BoundaryError`, and a task not in `running` cannot call at all.
 - Reason: §2.7 lists steps 3 to 6 in order and does not place the grant check. Step 4 needs "the Grant", so the grant check must come before it. Putting it after step 3 keeps §2.7's order intact, and it means an injected instruction (`integrity_floor`, not overridable, §8.3) is never presented as a missing grant. Otherwise the operator would be asked, at the cost of an interruption (D9), for a grant on a call that can never run. O9 says the runtime "rejects" bad references. §2.7 says "rejects … → park" when it means a park. No §6.2 reason fits, and no operator decision can repair a model's malformed call. Judging a supplied instruction field before parsing means a synthesized command string parks `integrity_floor` whether or not it happens to be a valid enum value (acceptance test 2): the defence fires on provenance, not on the value's shape. Objection O-3 may move the grant check before step 3, if the ruling makes a grant's bounds part of step 3.
@@ -366,3 +366,38 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   - a registry entry gains a required `cwd_field`, which must name a scalar `data` path. `shell.run.json` names `cwd`. This is a reviewable change to the definition file (§2.5).
 - Reason: operator ruling. One shared reading means the boundary cannot class an element as a flag for one purpose and as an operand for another. Naming the working-directory field in the definition keeps that an operator-authored choice instead of a guess from field names (as D-038 did for argv).
   Accepted residual (§0.5 corollary), recorded at the operator's direction: a symlink already present in the work content can reach outside the scope. Resolving symlinks (§3.3's canonical form) is a gate that must be built **before JUNO operates on any content it did not create (Slice 1.5)**, not only when a program that can create a link is admitted. In Slice 1 the work content is the operator's, and no capability can create a link.
+
+## D-048 — Integrity is judged before an unresolved argument is rejected
+- Date: 2026-10-29
+- Status: Accepted (operator ruling on the independent review of PR #6, 2026-10-29; extends the D-045 exception)
+- Applies to: Increment 4 onward
+- Decision: step 3 runs before any rejection except an unknown capability (there is no interface to judge against then).
+  - Every instruction value whose integrity is established is held to its own floor, then to each candidate grant's raised floor (D-046). Established means a `constant` from a fixed slot, a `synthesized` value, or a `bound` reference that resolves.
+  - An instruction value whose own `bound` reference does not resolve has no established integrity. It is judged `untrusted`, so it parks `integrity_floor`. The `capability_call` entry records it as `bound` / `untrusted`, and its payload lists every unresolved argument under `unresolved`.
+  - Only when every instruction value passes does an unresolved argument produce the `unresolved_argument` rejection. A call that does not parse is rejected `malformed_call` after that.
+  - How the call is read while an argument is unresolved: the missing value stands in as a plain operand (an argv string), the root `/` (a path), or a neutral value, so the rest of the call can still be read. The program field gets no stand-in its enum accepts: with no program, the argv is read against no surface, so every element is promoted (D-037 `no_declared_surface`). A stand-in never goes past step 3.
+  - A constant slot that admission never fixed is not judged at all, neither as untrusted nor at any floor. The ruling names bound references only, and D-045's test of an unfixed slot stays a rejection. It still cannot mask anything: every other instruction value is judged first.
+  - Grant floors are now applied before the `malformed_call` rejection too, because they are part of step 3 (D-046).
+- Reason: operator ruling. §8.3 makes an instruction value below its floor not overridable, and a resolution failure must not hide it behind a rejection the model can simply retry. §1.5 fails closed, so a value whose provenance cannot be established gets the lowest integrity. Reading an unresolved argv element as an operand, not as an undeclared token, keeps the build plan's test 4 (a cross-task reference is rejected) and the ruling's third test true. It does not loosen anything, because a call with an unresolved argument never runs.
+  Accepted residual: an unresolved argv element whose real value would have been a code-bearing flag cannot be read as one. The elements after it are then read as if it were an operand. The call is still rejected and nothing runs; when the model retries with a reference that resolves, the full D-037 reading applies.
+
+## D-049 — A call with no argument values is not below every ceiling
+- Date: 2026-10-29
+- Status: Accepted (from the independent review of PR #6)
+- Applies to: Increment 4 onward
+- Decision: the input class of a call (`callInputClass`, `packages/enforcement/src/boundary.ts`) is the join of its argument values' classes. With no argument values, it is the synthesized class of the producing turn. Step 5 always judges that class's sensitivity against the capability's and each candidate grant's ceiling. There is no "no input" case that passes every ceiling.
+- Reason: the proposal itself is text the producing turn composed (D-043 classes the `capability_call` entry the same way), so even an empty call carries that turn's sensitivity (§1.2). Treating "no arguments" as "below every ceiling" was a fail-open special case (§0.2 D8). No registered capability can make such a call today (every registry entry has a program, argv and cwd field), so the rule is proven on `callInputClass` directly.
+
+## D-050 — A path held in a map-typed data field fails the scope check
+- Date: 2026-10-29
+- Status: Accepted (from the independent review of PR #6)
+- Applies to: Increment 4 onward
+- Decision: at §2.7 step 4, every value of a `map` data field whose value type is `path` is a `scope_violation`, whether or not it lies inside the scope. The violation names the argument `<field>["<key>"]` and the value as written. A map of another value type is not a resource and is not checked. An empty map yields nothing.
+- Reason: D-047 rules how path fields and argv operands are read. It says nothing about paths held in a map, and the check previously skipped them, which fails open. No shipped definition has such a field. Until the operator rules how a map's paths are read, refusing them is the fail-closed reading (§0.2 D8).
+
+## D-051 — An undeclared flag skips the scope check only because it promotes the whole argv
+- Date: 2026-10-29
+- Status: Accepted (recorded at the operator's direction after the independent review of PR #6)
+- Applies to: Increment 4 onward
+- Decision: the scope check (D-047) reads only operands as paths. A flag token is never a resource, including a flag the program's surface does not declare, even when its text carries a path (for example `--x=/etc/passwd`). Such a flag is let through step 4 **only because** D-037 promotes the whole argv to instruction values at the `operator` floor whenever any element is undeclared. So it reaches step 4 only when every argv element has `operator` integrity: written by the operator, never by the model or by content.
+- Reason: making the dependency explicit means a later change to either rule is seen to affect the other. If D-037's fail-closed promotion is ever relaxed, undeclared flags must be scope-checked (or refused) in the same change.

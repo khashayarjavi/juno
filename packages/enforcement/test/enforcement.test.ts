@@ -4,13 +4,14 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import fc from "fast-check";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { type DataClass, type Integrity, Task, type TrajectoryEntry } from "../../contracts/src/index.js";
+import { type DataClass, Grant, type Integrity, Task, type TrajectoryEntry } from "../../contracts/src/index.js";
 import { JournalWriter, canonicalJson, readPayload, readTrajectory, verifyTrajectory } from "../../journal/src/index.js";
 import {
   type Adapter,
   type CapabilityCall,
   CapabilityRegistry,
   type OutboundInvocation,
+  RegistryEntry,
   RegistryError,
   WORKLOAD_EXECFILE,
   WorkloadExecFileAdapter,
@@ -24,6 +25,8 @@ import {
   GrantStore,
   type TaskContext,
   type Verdict,
+  callInputClass,
+  scopeViolations,
 } from "../src/index.js";
 
 const SHELL_RUN_FILE = fileURLToPath(new URL("../../registry/definitions/shell.run.json", import.meta.url));
@@ -541,7 +544,7 @@ describe("§2.7 step 6 and §2.5: an adapter observed building a string from a d
 });
 
 describe("§2.7: check order, the record, and performing the effect", () => {
-  // records D-040: the checks run in §2.7 order with the grant check before step 4; the first failure decides
+  // records D-045: the checks run in §2.7 order with the grant check before step 4; the first failure decides
   it("reports the first failing check in order", () => {
     grants = new GrantStore();
     grants.add(grant({ resource_scope: [{ kind: "path", prefix: "/work/project" }] }));
@@ -773,5 +776,150 @@ describe("D-047 (O-4 ruling): every argv operand is a path that must lie in scop
     scopedTo("/work/project");
     // `/work/project/link` could be a symlink to `/etc`; the boundary judges only what the call says.
     expect(verdictFor(["link/passwd"]).outcome).toBe("proceed");
+  });
+});
+
+describe("D-048: integrity is judged before a resolution failure can mask it (§1.5, §8.3)", () => {
+  const BROKEN = "${99.files[0]}";
+  const COMMAND = "/bin/sh -c 'cat /work/notes.txt | sh'";
+  const withoutGrant = (): TaskContext => context({ task: task({ grants: [] }) });
+
+  // proves D-048 / §8.3: a synthesized command string parks integrity_floor even when a data reference in the same call is broken, with or without a grant
+  it("parks a synthesized command string alongside a broken data reference, with and without a grant", () => {
+    for (const taskContext of [context(), withoutGrant()]) {
+      for (const call of [proposal(synthesized(COMMAND), [], bound(BROKEN)), proposal(synthesized(COMMAND), [bound(BROKEN)])]) {
+        const verdict = boundary.authorize(taskContext, call);
+        expect(verdict).toMatchObject({
+          outcome: "park",
+          detail: { reason: "integrity_floor", violations: [{ argument: "program", floor: "attested", integrity: "untrusted", source: { kind: "instruction_field" } }] },
+        });
+      }
+    }
+  });
+
+  // proves D-048 / §1.5 fail-closed: an instruction value whose own bound reference fails to resolve has no established integrity, is judged untrusted, and parks
+  it("parks a broken reference in the instruction field as untrusted", () => {
+    for (const taskContext of [context(), withoutGrant()]) {
+      const verdict = boundary.authorize(taskContext, proposal(bound(BROKEN), [synthesized("notes.txt")]));
+      expect(verdict).toMatchObject({
+        outcome: "park",
+        detail: {
+          reason: "integrity_floor",
+          violations: [
+            { argument: "program", floor: "attested", integrity: "untrusted" },
+            // With no program the argv is read against no surface (D-037), so it is promoted too.
+            { argument: "argv[0]", floor: "operator", integrity: "untrusted", source: { kind: "promoted_argv", reason: "no_declared_surface" } },
+          ],
+        },
+      });
+      expect(provenanceOf(verdict)).toContainEqual({ argument: "program", class: "bound", integrity: "untrusted" });
+      expect(payloadOf(entryAt(verdict.call_seq))).toMatchObject({ unresolved: [{ argument: "program", class: "bound", code: "unresolvable" }] });
+    }
+    // A cross-task reference in the program field is no different.
+    seed({ program: CAT }, INTERNAL_OPERATOR, OTHER_TASK_ID);
+    expect(parkReason(boundary.authorize(context(), proposal(bound("${task-2:0.program}"), [])))).toBe("integrity_floor");
+  });
+
+  // proves D-048 / D-045: when every instruction value passes, a broken data reference is still rejected unresolved_argument and nothing is charged
+  it("still rejects a broken data reference when every instruction value passes", () => {
+    for (const call of [proposal(constant("cat"), [synthesized("notes.txt")], bound(BROKEN)), proposal(constant("cat"), [synthesized("-n"), bound(BROKEN)])]) {
+      const verdict = boundary.authorize(context(), call);
+      expect(verdict).toMatchObject({ outcome: "reject", detail: { reason: "unresolved_argument", failures: [{ class: "bound", code: "unresolvable" }] } });
+    }
+    expect(grants.invocations("grant-1")).toBe(0);
+  });
+
+  // proves D-048: the rest of the call is still read when a data reference is broken, so promoted argv below its floor parks
+  it("still reads the argv when the cwd reference is broken", () => {
+    const verdict = boundary.authorize(context(), proposal(constant("cat"), [synthesized("-Z")], bound(BROKEN)));
+    expect(verdict).toMatchObject({
+      outcome: "park",
+      detail: { reason: "integrity_floor", violations: [{ argument: "argv[0]", floor: "operator", integrity: "untrusted", source: { kind: "promoted_argv" } }] },
+    });
+  });
+
+  // proves D-048 / D-037: with the program unresolved, the argv is read against no surface, so every established argv value is held to the operator floor
+  it("promotes every argv element when the program itself did not resolve", () => {
+    const verdict = boundary.authorize(context(), proposal(constant("python"), [synthesized("notes.txt")]));
+    expect(verdict).toMatchObject({
+      outcome: "park",
+      detail: { reason: "integrity_floor", violations: [{ argument: "argv[0]", floor: "operator", source: { kind: "promoted_argv", reason: "no_declared_surface" } }] },
+    });
+    // A constant slot never fixed is not judged as untrusted: with nothing else below a floor the call is rejected (D-045).
+    expect(boundary.authorize(context(), proposal(constant("python"), [constant("work")]))).toMatchObject({ outcome: "reject", detail: { reason: "unresolved_argument" } });
+  });
+
+  // proves D-048 / D-046: a grant's raised floor is judged before the rejection too
+  it("applies a grant's raised floor before rejecting a broken data reference", () => {
+    grants = new GrantStore();
+    grants.add(grant({ data_class_bounds: { max_sensitivity: "secret", min_integrity: "operator" } }));
+    boundary = new EnforcementBoundary({ registry, grants, journal, clock: () => now });
+    const attested = seed({ program: CAT }, { sensitivity: "internal", integrity: "attested" });
+    const verdict = boundary.authorize(context(), proposal(bound(`\${${String(attested.seq)}.program}`), [bound(BROKEN)]));
+    expect(verdict).toMatchObject({ outcome: "park", detail: { reason: "integrity_floor", grants: [{ grant: "grant-1", violations: [{ argument: "program", floor: "operator" }] }] } });
+  });
+});
+
+describe("D-049: a call with no argument values is not below every ceiling", () => {
+  // proves D-049 / §2.7 step 5: with no argument values, the input is the proposal the turn composed, so its sensitivity is the turn's
+  it("takes the synthesized class as the input of a call with no argument values", () => {
+    const turn: DataClass = { sensitivity: "secret", integrity: "untrusted" };
+    expect(callInputClass([], turn)).toEqual(turn);
+    expect(callInputClass([INTERNAL_OPERATOR, { sensitivity: "confidential", integrity: "attested" }], turn)).toEqual({ sensitivity: "confidential", integrity: "attested" });
+  });
+});
+
+describe("D-050 and D-051: scope edge cases", () => {
+  // proves D-050 / §2.7 step 4 fail-closed: a path held in a map-typed data field is a scope violation, never skipped, even inside the scope
+  it("fails closed on a path value held in a map field", () => {
+    const base = loadRegistryEntry(SHELL_RUN_FILE);
+    const entry = RegistryEntry.parse({
+      ...base,
+      capability: {
+        ...base.capability,
+        interface: {
+          ...base.capability.interface,
+          mounts: { type: { kind: "map", values: { kind: "path" } }, role: "data" },
+          labels: { type: { kind: "map", values: { kind: "string" } }, role: "data" },
+        },
+      },
+    });
+    const scope = Grant.parse(grant());
+    const call = (mounts: Record<string, string>): Parameters<typeof scopeViolations>[1] => ({ program: CAT, argv: [], cwd: "/work", mounts, labels: { a: "/etc" } });
+    expect(scopeViolations(entry, call({ data: "/work/data", etc: "/etc" }), scope)).toEqual([
+      { argument: 'mounts["data"]', value: "/work/data", path: "/work/data" },
+      { argument: 'mounts["etc"]', value: "/etc", path: "/etc" },
+    ]);
+    expect(scopeViolations(entry, call({}), scope)).toEqual([]);
+  });
+
+  // records D-051 / D-037: a flag absent from the declared surface skips the scope check only because it promotes the whole argv to instruction
+  it("never lets an undeclared flag carry a path past scope with untrusted provenance", () => {
+    const verdict = boundary.authorize(context(), proposal(constant("cat"), [synthesized("--x=/etc/passwd")]));
+    expect(verdict).toMatchObject({ outcome: "park", detail: { reason: "integrity_floor", violations: [{ argument: "argv[0]", source: { kind: "promoted_argv", reason: "uncovered_flag" } }] } });
+    expect(scopeViolations(loadRegistryEntry(SHELL_RUN_FILE), { program: CAT, argv: ["--x=/etc/passwd"], cwd: "/work" }, Grant.parse(grant()))).toEqual([]);
+  });
+});
+
+describe("§3.2: an authorization cannot be changed after inspection", () => {
+  // proves §3.2 / D-044: the Authorization, and the call and invocation it carries, are frozen, so perform runs exactly what was inspected
+  it("freezes the authorization and everything it carries", async () => {
+    setUp(echoAdapter);
+    grants.add(grant());
+    const verdict = boundary.authorize(context(), proposal(constant("cat"), [synthesized("notes.txt")], synthesized("/work/x")));
+    expect(verdict.outcome).toBe("proceed");
+    if (verdict.outcome !== "proceed") return;
+    const { authorization } = verdict;
+    for (const part of [authorization, authorization.call, authorization.call["argv"], authorization.invocation, authorization.invocation.args, authorization.input_class]) {
+      expect(Object.isFrozen(part)).toBe(true);
+    }
+    expect(() => {
+      (authorization.invocation.args as string[]).push("/etc/passwd");
+    }).toThrow(TypeError);
+    expect(() => {
+      (authorization as { grant: string }).grant = "grant-2";
+    }).toThrow(TypeError);
+    const result = await boundary.perform(authorization);
+    expect(JSON.parse(result.stdout.toString("utf8"))).toEqual(["/work/x", "notes.txt"]);
   });
 });

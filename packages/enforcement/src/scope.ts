@@ -12,6 +12,7 @@ import type { CallValue, CapabilityCall, RegistryEntry } from "../../registry/sr
  *     (`.` and `..` resolved as written). Flags and subcommands are not
  *     resources. Plain text resolves under `cwd`, so it passes whenever `cwd`
  *     does; an absolute path or a `..` escape outside the scope does not.
+ *   - A path value held in a `map` data field always fails (D-050).
  *
  * Scope is judged on the normalised path as written; symlinks are not
  * resolved. Accepted residual (§0.5 corollary): a symlink already present in
@@ -60,7 +61,14 @@ export function scopeViolations(entry: RegistryEntry, call: CapabilityCall, gran
     const value = call[name];
     if (field.type.kind === "list") {
       if (isPath(field.type.items) && Array.isArray(value)) value.forEach((item, index) => check(`${name}[${String(index)}]`, item));
-    } else if (field.type.kind !== "map" && isPath(field.type)) {
+    } else if (field.type.kind === "map") {
+      // D-050: no ruling says what a path held in a map names, so each one fails closed, in scope or not.
+      if (isPath(field.type.values) && typeof value === "object" && !Array.isArray(value)) {
+        for (const [key, item] of Object.entries(value)) {
+          violations.push({ argument: `${name}[${JSON.stringify(key)}]`, value: String(item), path: String(item) });
+        }
+      }
+    } else if (isPath(field.type)) {
       check(name, value);
     }
   }

@@ -5,7 +5,7 @@
 
 Branch: `claude/laughing-lovelace-bj5e9m`. The session harness assigned this name and allows pushes only to it, so it is used instead of `inc-4-enforcement` (D-040, as D-028 did for Increment 3). Increment 3 is in `main` (PR #5 merged). Draft PR: https://github.com/khashayarjavi/juno/pull/6.
 
-**Status: done, pending independent review.** The operator ruled on O-3 and O-4 on 2026-10-29 (D-046, D-047). Both rulings are built and tested, and `make verify` is green (see below). The PR stays a draft until the independent review the operator asked for; then the operator merges.
+**Status: done, pending the operator's merge.** The operator ruled on O-3 and O-4 on 2026-10-29 (D-046, D-047). The independent review of PR #6 found one gap, and the operator ruled on it the same day (D-048). That ruling and the review's smaller items (D-049, D-050, D-051, the frozen Authorization) are built and tested, and `make verify` is green (see below). The PR stays a draft; the operator merges.
 
 ## Done in this increment
 Every test names the spec section it proves. All of this is in `packages/enforcement/` (new), plus small additions to `packages/registry/src/registry.ts`, `packages/registry/src/entry.ts` and `packages/contracts/src/promotion.ts`.
@@ -44,13 +44,20 @@ Every test names the spec section it proves. All of this is in `packages/enforce
   - absolute, relative and `..` operands; flags exempt; text after `--` checked; a bound file name in scope; a property test that judges every operand by its normalised path.
   The contracts and registry tests cover the shared argv reader and `cwd_field`.
 - **Mutation-checked:** 29 deliberate breakages from the first session plus 16 for the rulings, each caught by a test. The rulings' breakages: grant floor ignored, raised-floor park skipped, candidates not filtered by floors, the grant check moved before step 3, capability or grant ceiling skipped, scope filter skipped, argv operands unchecked, relative operands not read against `cwd`, `..` unresolved, path fields unchecked, prefix without a segment boundary, `cwd_field` unvalidated, `--` never ending options, subcommands read as operands, no-surface reading wrong. One further breakage (a grant floor allowed to lower a value's own floor) is equivalent and cannot be caught: step 3 already holds each value to its own floor first.
-- Decisions D-040 to D-047 recorded. D-042 and D-045 are marked as amended by D-046.
+- **After the independent review (2026-10-29)** — 10 more tests in `enforcement.test.ts` (80 in all), each naming what it proves:
+  - **Integrity before resolution failures (D-048, operator ruling; §1.5, §8.3).** Step 3 now runs before any rejection except an unknown capability. A synthesized command string plus one broken data reference parks `integrity_floor`, with and without a grant. A broken reference in the `program` field is judged `untrusted` and parks `integrity_floor`. A broken data reference with every instruction value passing is still rejected `unresolved_argument`. Also shown: with the `cwd` reference broken, the argv is still read and an untrusted promoted element parks; with no program, every argv element is promoted; a grant's raised floor is judged before the rejection.
+  - **No argument values is not below every ceiling (D-049).** Such a call's input is the producing turn's class.
+  - **A path inside a map-typed field fails closed (D-050).** It is a `scope_violation` even when it lies in scope.
+  - **Undeclared flags and scope (D-051).** `--x=/etc/passwd` skips the scope check only because it promotes the whole argv to instruction; from the model it parks `integrity_floor`.
+  - **The Authorization is frozen**, with frozen copies of the call and invocation, so what `perform` runs cannot be changed after inspection.
+  - 13 further deliberate breakages, each caught by a test.
+- Decisions D-040 to D-051 recorded. D-042 and D-045 are marked as amended by D-046; D-045's exception is extended by D-048.
 
 ## Remaining in this increment
-- An independent review of the Increment 4 pull request (operator's instruction), then the operator's merge. Nothing else.
+- The operator's merge of PR #6. Nothing else.
 
 ## make verify
-GREEN as of 2026-10-29 in the cloud session, with D-046 and D-047 built: 487 unit tests (14 files), 38 container tests (5 files), lint self-test rejected the `exec()` probe. Summary line: `make verify: GREEN`. CI `verify` passed on PR #6 (run 40794657374, commit b8a48f0).
+GREEN as of 2026-10-29 in the cloud session, with D-048 to D-051 built: 497 unit tests (14 files), 38 container tests (5 files), lint self-test rejected the `exec()` probe. Summary line: `make verify: GREEN`. CI `verify` passed on PR #6 before the review changes (run 40794657374, commit b8a48f0); the CI result for the review commit is pending.
 
 ## Open objections to the spec
 - None. O-3 was resolved as D-046 and O-4 as D-047 (operator, 2026-10-29).
@@ -58,6 +65,7 @@ GREEN as of 2026-10-29 in the cloud session, with D-046 and D-047 built: 487 uni
 ## Notes for the next session
 - **Next step:** once PR #6 is reviewed and merged, Increment 5 (runner) is current. Do not start it before the merge.
 - **Accepted residual, with a gate (D-047):** scope is judged on the path as written. A symlink already present in the work content can reach outside the scope. Resolving symlinks (§3.3's canonical form) must be built **before JUNO operates on any content it did not create (Slice 1.5)**, not only when a link-creating program is admitted.
+- **Increment 5 must reach the registry only through the boundary.** The runner may cause an effect only by `authorize` and then `perform` on the authorization it returns. It must never call `CapabilityRegistry.invoke` (or `plan` plus its own execution). Increment 5 must prove this with a test: for example, a registry whose `invoke` throws, with the runner's whole call path still working; or a check that no runner module calls `invoke`.
 - **What Increment 5 must supply to the boundary** (D-041): the task (running), a constants table fixed at admission (each slot with its data class; integrity = the admitting source's), and the producing turn's sensitivity (plus the volatile region's integrities under `owned` context). It must turn the model's tool call into a proposal: a reference text becomes `bound`, a runtime-filled slot becomes `constant`, anything else becomes `synthesized`. It then calls `authorize`; on `proceed`, `perform`, then journals the `capability_result` using `authorization.input_class` for the §2.1 output class. On `park`, the runner writes the `park` entry and changes the task state. On `reject`, it tells the model.
 - **Acceptance test 3 consequence:** `program` is an instruction field at the `attested` floor. A model-typed program is `synthesized` and therefore `untrusted` under native context, so it parks. Test 3 (Increment 7) must give `program` as a constant or as a bound reference to an `attested`-or-better entry.
 - **Acceptance test 4b consequence:** the boundary works on registered capabilities, and registration refuses `sh`. Increment 7's end-to-end 4b must decide how the forced entry is registered (for example a test-only path that skips review), and record it.

@@ -7,6 +7,7 @@ import {
   type Integrity,
   type ProvenanceClass,
   type Sensitivity,
+  argvRoles,
   compareIntegrity,
   compareSensitivity,
   join,
@@ -23,6 +24,7 @@ import {
   type InstructionValue,
   type InvocationResult,
   type OutboundInvocation,
+  PROMOTED_ARGV_FLOOR,
   type PlannedInvocation,
   type RegistryEntry,
   RegistryError,
@@ -39,7 +41,7 @@ import { type ScopeViolation, scopeViolations } from "./scope.js";
 
 /**
  * The enforcement boundary (spec §2.6–2.7, §3.2; build plan Increment 4;
- * DECISIONS.md D-041 to D-047). It runs in the runner, holds the grants and
+ * DECISIONS.md D-041 to D-049). It runs in the runner, holds the grants and
  * writes the journal; the model only proposes. For each proposed call:
  *
  *   1. Resolve every `bound` reference against the task's own trajectory and
@@ -52,7 +54,10 @@ import { type ScopeViolation, scopeViolations } from "./scope.js";
  *      `integrity_floor`. Then each candidate grant's `min_integrity` raises
  *      every instruction value's floor (never a data field's); when no
  *      candidate's floors are met, the call parks `integrity_floor` too (D-046).
- *      Not overridable (§8.3).
+ *      Not overridable (§8.3). Step 3 runs before any rejection but an unknown
+ *      capability: a bound instruction value whose reference does not resolve is
+ *      judged `untrusted`, and an unresolved or malformed call is rejected only
+ *      once every instruction value has passed (D-045, D-048).
  *   G. No grant covers the call: park `awaiting_grant`. Decided only after
  *      step 3 passes, so an injected instruction is never presented as a
  *      missing grant (D-045, D-046).
@@ -194,6 +199,15 @@ function assemble(sources: ProposedCall["arguments"], values: ReadonlyMap<string
   return call;
 }
 
+/** A frozen copy of an inspected call: each list or map value is copied and frozen too. */
+function frozenCall(call: CapabilityCall): CapabilityCall {
+  const copy: Record<string, CallValue> = {};
+  for (const [field, value] of Object.entries(call)) {
+    copy[field] = Array.isArray(value) ? Object.freeze([...(value as readonly CallScalar[])]) : typeof value === "object" ? Object.freeze({ ...value }) : value;
+  }
+  return Object.freeze(copy);
+}
+
 /** The data class of what the model composed in this turn (§2.6 `synthesized`). */
 function synthesizedClass({ task, synthesis }: TaskContext): DataClass {
   if (task.context_ownership !== "owned") {
@@ -207,41 +221,122 @@ function synthesizedClass({ task, synthesis }: TaskContext): DataClass {
   return { sensitivity: synthesis.sensitivity, integrity: rest.reduce<Integrity>(minIntegrity, first) };
 }
 
-type FloorOutcome =
-  | { readonly kind: "proceed" }
-  | { readonly kind: "park"; readonly violations: readonly FloorViolation[] }
-  | { readonly kind: "malformed"; readonly message: string };
+/** An argument as step 3 judges it: its provenance class and the integrity it is held to. */
+type Judged = { readonly argument: string; readonly class: ProvenanceClass; readonly integrity: Integrity };
+
+/**
+ * D-048: every argument whose integrity is established, in proposal order. A
+ * `bound` argument whose reference did not resolve has no established
+ * integrity, so it is judged `untrusted` (§1.5 fail-closed). A constant slot
+ * never fixed is not judged at all; it is rejected once step 3 has passed.
+ */
+function judgedArguments(
+  proposal: ProposedCall,
+  records: readonly ArgumentRecord[],
+  failures: readonly UnresolvedArgument[],
+): Judged[] {
+  return named(proposal.arguments).flatMap(({ argument }): Judged[] => {
+    const record = records.find((candidate) => candidate.argument === argument);
+    if (record !== undefined) return [{ argument, class: record.class, integrity: record.data_class.integrity }];
+    const failure = failures.find((candidate) => candidate.argument === argument);
+    return failure?.class === "bound" ? [{ argument, class: "bound", integrity: "untrusted" }] : [];
+  });
+}
+
+/**
+ * D-048: what an argument that did not resolve stands as while step 3 reads
+ * the call, so the rest of the call can still be read: a string reads as an
+ * operand, a path as the root, a data enum as its first value. The program
+ * field gets a value its enum never holds, so with no program the argv is
+ * read against no surface. A stand-in never reaches a later step: once step 3
+ * passes, a call with an unresolved argument is rejected.
+ */
+function standIn(entry: RegistryEntry, argument: string): CallScalar {
+  const field = argument.replace(/\[\d+\]$/, "");
+  const declared = entry.capability.interface[field]?.type;
+  const type = declared?.kind === "list" ? declared.items : declared;
+  if (field === entry.program_field || type === undefined || type.kind === "map") return "";
+  switch (type.kind) {
+    case "path":
+      return "/";
+    case "integer":
+    case "number":
+      return 0;
+    case "boolean":
+      return false;
+    case "enum":
+      return type.values[0] ?? "";
+    case "string":
+      return "";
+  }
+}
+
+type StepThree = {
+  /** Every instruction value step 3 could establish, each with its own floor. */
+  readonly values: readonly InstructionValue[];
+  /** The values below their own floor. */
+  readonly violations: readonly FloorViolation[];
+  /** The call parsed against the interface, or why it does not parse. */
+  readonly parsed: { readonly ok: true; readonly call: CapabilityCall } | { readonly ok: false; readonly message: string };
+};
 
 /**
  * §2.7 step 3 is `checkInstructionFloors` (D-038). When the call does not parse
  * against the interface, its argv cannot be read, but each scalar instruction
  * field that was supplied can still be judged on its own provenance: an
  * instruction from untrusted content parks whether or not its value is valid
- * (D-045). Otherwise the call is malformed.
+ * (D-045). When the program itself did not resolve, the argv is read against
+ * no surface, so every element is promoted (D-037, D-048). Arguments that are
+ * not judged (a constant slot never fixed) are left out.
  */
-function instructionFloors(entry: RegistryEntry, call: CapabilityCall, records: readonly ArgumentRecord[]): FloorOutcome {
-  const provenance = records.map(({ argument, class: kind, data_class }) => ({ argument, class: kind, integrity: data_class.integrity }));
+function stepThree(entry: RegistryEntry, call: CapabilityCall, judged: readonly Judged[], programUnresolved: boolean): StepThree {
+  const integrityOf = new Map(judged.map((item) => [item.argument, item.integrity]));
+  const established = (value: InstructionValue | FloorViolation): boolean => integrityOf.has(value.argument);
   try {
-    const verdict = checkInstructionFloors(entry, call, provenance);
-    return verdict.outcome === "park" ? { kind: "park", violations: verdict.violations } : { kind: "proceed" };
+    const verdict = checkInstructionFloors(entry, call, judged);
+    const parsedCall = callSchemaFor(entry.capability.interface).parse(call);
+    return {
+      values: instructionValues(entry, parsedCall).filter(established),
+      violations: verdict.outcome === "park" ? verdict.violations.filter(established) : [],
+      parsed: { ok: true, call: parsedCall },
+    };
   } catch (error: unknown) {
     if (!(error instanceof BoundaryError)) throw error;
-    const { capability } = entry;
-    const violations: FloorViolation[] = [];
+    const { capability, argv_field: argvField } = entry;
+    const values: InstructionValue[] = [];
     for (const [name, field] of Object.entries(capability.interface)) {
-      const record = records.find((candidate) => candidate.argument === name);
-      if (field.role !== "instruction" || record === undefined) continue;
-      if (compareIntegrity(record.data_class.integrity, capability.min_argument_integrity) < 0) {
-        violations.push({
-          argument: name,
-          floor: capability.min_argument_integrity,
-          integrity: record.data_class.integrity,
-          source: { kind: "instruction_field" },
-        });
+      if (field.role === "instruction") values.push({ argument: name, floor: capability.min_argument_integrity, source: { kind: "instruction_field" } });
+    }
+    const argv = call[argvField];
+    if (programUnresolved && Array.isArray(argv)) {
+      for (const element of argvRoles("", undefined, argv.map(String)).elements) {
+        if (element.role === "instruction") {
+          values.push({
+            argument: `${argvField}[${String(element.index)}]`,
+            floor: PROMOTED_ARGV_FLOOR,
+            source: { kind: "promoted_argv", reason: element.reason, at: element.at },
+          });
+        }
       }
     }
-    return violations.length > 0 ? { kind: "park", violations } : { kind: "malformed", message: error.message };
+    const supplied = values.filter(established);
+    const violations = supplied.flatMap((value): FloorViolation[] => {
+      const integrity = integrityOf.get(value.argument) ?? null;
+      return integrity === null || compareIntegrity(integrity, value.floor) < 0 ? [{ ...value, integrity }] : [];
+    });
+    return { values: supplied, violations, parsed: { ok: false, message: error.message } };
   }
+}
+
+/**
+ * The class of a call's input (§2.1 `output_class`, §2.7 step 5): the join of
+ * its argument values' classes. A call with no argument values still carries
+ * the proposal the producing turn composed, so its input is the synthesized
+ * class, never an input below every ceiling (D-049).
+ */
+export function callInputClass(argumentClasses: readonly DataClass[], synthesized: DataClass): DataClass {
+  const [first, ...rest] = argumentClasses;
+  return first === undefined ? synthesized : join([first, ...rest]);
 }
 
 /**
@@ -281,32 +376,36 @@ export class EnforcementBoundary {
 
     // Step 1 and step 2: resolve and classify every argument.
     const { records, failures } = this.#resolve(context, proposal, synthesized);
+    const judged = judgedArguments(proposal, records, failures);
     const record = (verdict: Readonly<Record<string, unknown>>, grant: string | null): number =>
-      this.#recordCall(task.id, proposal.capability, records, synthesized, verdict, grant);
+      this.#recordCall(task.id, proposal.capability, records, judged, failures, synthesized, verdict, grant);
     const park = (detail: ParkDetail): Verdict => ({ outcome: "park", call_seq: record({ outcome: "park", ...detail }, null), detail });
     const reject = (detail: RejectDetail): Verdict => ({ outcome: "reject", call_seq: record({ outcome: "reject", ...detail }, null), detail });
 
-    if (failures.length > 0) return reject({ reason: "unresolved_argument", failures });
     const entry = this.#registry.entry(proposal.capability);
-    if (entry === undefined) return reject({ reason: "unknown_capability" });
+    if (entry === undefined) return reject(failures.length > 0 ? { reason: "unresolved_argument", failures } : { reason: "unknown_capability" });
     const { capability } = entry;
-    const call = assemble(proposal.arguments, new Map(records.map((item) => [item.argument, item.value])));
+    const values = new Map<string, CallScalar>(failures.map((failure) => [failure.argument, standIn(entry, failure.argument)]));
+    for (const item of records) values.set(item.argument, item.value);
+    const call = assemble(proposal.arguments, values);
 
     // The candidate grants, looked up before step 3 because their bounds raise its floors (D-046).
     const coverage = this.#grants.coverage(task, capability.id, this.#clock());
 
-    // Step 3: each value against its own floor, then against each candidate's raised floors.
-    const floors = instructionFloors(entry, call, records);
-    if (floors.kind === "park") return park({ reason: "integrity_floor", violations: floors.violations, grants: [] });
-    if (floors.kind === "malformed") return reject({ reason: "malformed_call", message: floors.message });
-    const parsedCall = callSchemaFor(capability.interface).parse(call);
-    const values = instructionValues(entry, parsedCall);
-    const integrityOf = new Map(records.map((item) => [item.argument, item.data_class.integrity]));
-    const raised = coverage.covering.map((grant) => ({ grant, violations: grantFloorViolations(values, integrityOf, grant) }));
+    // Step 3: each value against its own floor, then against each candidate's raised floors. It runs
+    // before any rejection, so a resolution or parse failure cannot mask an instruction below its floor (D-045, D-048).
+    const programUnresolved = failures.some((failure) => failure.argument === entry.program_field);
+    const floors = stepThree(entry, call, judged, programUnresolved);
+    if (floors.violations.length > 0) return park({ reason: "integrity_floor", violations: floors.violations, grants: [] });
+    const integrityOf = new Map(judged.map((item) => [item.argument, item.integrity]));
+    const raised = coverage.covering.map((grant) => ({ grant, violations: grantFloorViolations(floors.values, integrityOf, grant) }));
     const meetFloors = raised.filter((candidate) => candidate.violations.length === 0).map((candidate) => candidate.grant);
     if (raised.length > 0 && meetFloors.length === 0) {
       return park({ reason: "integrity_floor", violations: [], grants: raised.map(({ grant, violations }) => ({ grant: grant.id, violations })) });
     }
+    if (failures.length > 0) return reject({ reason: "unresolved_argument", failures });
+    if (!floors.parsed.ok) return reject({ reason: "malformed_call", message: floors.parsed.message });
+    const parsedCall = floors.parsed.call;
 
     // The grant check, decided only now that step 3 has passed.
     if (coverage.covering.length === 0) return park({ reason: "awaiting_grant", refused: coverage.refused });
@@ -319,19 +418,20 @@ export class EnforcementBoundary {
     }
 
     // Step 5: the capability's ceiling, then each remaining candidate's lower ceiling.
-    const [firstRecord, ...restRecords] = records;
-    const inputClass = firstRecord === undefined ? synthesized : join([firstRecord.data_class, ...restRecords.map((item) => item.data_class)]);
-    // With no argument there is no input, so nothing can exceed a ceiling.
-    const aggregate = firstRecord === undefined ? null : inputClass.sensitivity;
+    const inputClass = callInputClass(
+      records.map((item) => item.data_class),
+      synthesized,
+    );
+    const aggregate = inputClass.sensitivity;
     const ceiling = capability.max_input_sensitivity;
-    if (aggregate !== null && compareSensitivity(aggregate, ceiling) > 0) {
+    if (compareSensitivity(aggregate, ceiling) > 0) {
       return park({ reason: "sensitivity_ceiling", aggregate, ceiling, grants: [] });
     }
-    const chosen = inScope.find((grant) => aggregate === null || compareSensitivity(aggregate, grant.data_class_bounds.max_sensitivity) <= 0);
+    const chosen = inScope.find((grant) => compareSensitivity(aggregate, grant.data_class_bounds.max_sensitivity) <= 0);
     if (chosen === undefined) {
       return park({
         reason: "sensitivity_ceiling",
-        aggregate: aggregate ?? ceiling,
+        aggregate,
         ceiling,
         grants: inScope.map((grant) => ({ grant: grant.id, max_sensitivity: grant.data_class_bounds.max_sensitivity })),
       });
@@ -343,16 +443,17 @@ export class EnforcementBoundary {
 
     this.#grants.charge(chosen.id);
     const callSeq = record({ outcome: "proceed" }, chosen.id);
-    const authorization: Authorization = {
+    // Frozen, with frozen copies of what was inspected: what `perform` runs cannot be changed after inspection.
+    const authorization: Authorization = Object.freeze({
       task_id: task.id,
       call_seq: callSeq,
       capability: capability.id,
       grant: chosen.id,
       adapter: planned.planned.adapter,
-      call: planned.planned.call,
-      invocation: planned.planned.invocation,
-      input_class: inputClass,
-    };
+      call: frozenCall(planned.planned.call),
+      invocation: Object.freeze({ file: planned.planned.invocation.file, args: Object.freeze([...planned.planned.invocation.args]) }),
+      input_class: Object.freeze({ ...inputClass }),
+    });
     this.#issued.add(authorization);
     return { outcome: "proceed", call_seq: callSeq, authorization };
   }
@@ -473,11 +574,14 @@ export class EnforcementBoundary {
     taskId: string,
     capability: string,
     records: readonly ArgumentRecord[],
+    judged: readonly Judged[],
+    failures: readonly UnresolvedArgument[],
     synthesized: DataClass,
     verdict: Readonly<Record<string, unknown>>,
     grant: string | null,
   ): number {
-    const provenance = records.map(({ argument, class: kind, data_class }) => ({ argument, class: kind, integrity: data_class.integrity }));
+    // The provenance step 3 judged: an unresolved bound argument is recorded as the `untrusted` it was held to (D-048).
+    const provenance = judged.map(({ argument, class: kind, integrity }) => ({ argument, class: kind, integrity }));
     // The entry holds the proposal itself, which the model composed, and every argument value.
     const dataClass = join([synthesized, ...records.map((item) => item.data_class)]);
     const payload = {
@@ -490,6 +594,7 @@ export class EnforcementBoundary {
         value,
         origin: { ...origin },
       })),
+      unresolved: failures.map((failure) => ({ ...failure })),
       grant,
       verdict,
     };
