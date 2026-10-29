@@ -50,7 +50,7 @@ Every test names the spec section it proves. All of this is in `packages/enforce
 - An independent review of the Increment 4 pull request (operator's instruction), then the operator's merge. Nothing else.
 
 ## make verify
-GREEN as of 2026-10-29 in the cloud session, with D-046 and D-047 built: 487 unit tests (14 files), 38 container tests (5 files), lint self-test rejected the `exec()` probe. Summary line: `make verify: GREEN`. CI on PR #6 runs the same command on the pushed commit.
+GREEN as of 2026-10-29 in the cloud session, with D-046 and D-047 built: 487 unit tests (14 files), 38 container tests (5 files), lint self-test rejected the `exec()` probe. Summary line: `make verify: GREEN`. CI `verify` passed on PR #6 (run 40794657374, commit b8a48f0).
 
 ## Open objections to the spec
 - None. O-3 was resolved as D-046 and O-4 as D-047 (operator, 2026-10-29).
