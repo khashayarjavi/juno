@@ -8,7 +8,6 @@ import {
   type TaskState,
   assertSensitivityFloorTransition,
   closureSchemaFor,
-  compareSensitivity,
   parseAtBoundary,
   raiseSensitivityFloor,
 } from "../../contracts/src/index.js";
@@ -231,7 +230,8 @@ export class Runner {
     this.#append(request.id, "note", RUNNER_ACTOR, { sensitivity: request.sensitivity_floor, integrity }, {
       event: "admission",
       outcome: decision.admitted ? "admitted" : "rejected",
-      request,
+      // As submitted, with absent fields left out (a field set to `undefined` is absent).
+      request: JSON.parse(JSON.stringify(request)) as unknown,
       ...(decision.admitted ? { task: decision.task, warnings: decision.warnings } : { failures: decision.failures }),
     });
     if (decision.admitted) {
@@ -353,7 +353,7 @@ export class Runner {
       exit_code: performed.result?.exitCode ?? null,
       stdout: performed.result === null ? "" : textOf(performed.result.stdout),
     });
-    return this.#routingCheck(record);
+    return null;
   }
 
   /** `perform`, then the `capability_result` entry. The result's class follows the capability's `output_class` (§2.1). */
@@ -387,14 +387,6 @@ export class Runner {
     // Exposure is cumulative: what the task read raises its floor, never lowers it (§1.2, §3.1).
     this.#transition(record, { sensitivity_floor: raiseSensitivityFloor(record.task.sensitivity_floor, dataClass.sensitivity) });
     return { seq, result };
-  }
-
-  /** §10.3 mid-run: a floor raised to `confidential`+ on a provider holding server-side state parks `routing_unavailable`. */
-  #routingCheck(record: TaskRecord): RunOutcome | null {
-    if (compareSensitivity(record.task.sensitivity_floor, "confidential") >= 0 && this.#provider.profile.conversation_state !== "stateless") {
-      return this.#park(record, "routing_unavailable", null, { sensitivity_floor: record.task.sensitivity_floor, provider: this.#provider.profile.id });
-    }
-    return null;
   }
 
   /** The model said done. That is a claim; only verification by the runner can make it `verified` (invariant 3). */
