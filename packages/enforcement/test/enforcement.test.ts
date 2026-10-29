@@ -63,7 +63,7 @@ function grant(overrides: Record<string, unknown> = {}): Record<string, unknown>
     principal: PRINCIPAL,
     capability_selector: { capabilities: ["shell.run"] },
     resource_scope: [{ kind: "path", prefix: "/work" }],
-    // The widest bounds, so nothing here depends on how objection O-3 is ruled.
+    // The widest bounds: only the tests that set bounds themselves depend on them (D-046).
     data_class_bounds: { max_sensitivity: "secret", min_integrity: "untrusted" },
     issuance: "preissued",
     issued_by: PRINCIPAL,
@@ -598,5 +598,180 @@ describe("§2.7: check order, the record, and performing the effect", () => {
     const verdict = boundary.authorize(context(), { capability: "fs.file.read", arguments: { path: constant("work") } });
     expect(verdict).toMatchObject({ outcome: "reject", detail: { reason: "unknown_capability" } });
     expect(() => boundary.authorize(context({ task: task({ state: "parked", runtime_substate: null }) }), proposal(constant("cat"), []))).toThrow(EnforcementError);
+  });
+});
+
+describe("D-046 (O-3 ruling): a grant's data_class_bounds tighten steps 3 and 5", () => {
+  const useGrants = (...overrides: Record<string, unknown>[]): string[] => {
+    grants = new GrantStore();
+    const ids = overrides.map((override, index) => grants.add(grant({ id: `grant-${String(index + 1)}`, ...override })).id);
+    boundary = new EnforcementBoundary({ registry, grants, journal, clock: () => now });
+    return ids;
+  };
+  const bounds = (min_integrity: Integrity, max_sensitivity = "secret"): Record<string, unknown> => ({ data_class_bounds: { max_sensitivity, min_integrity } });
+  const attestedProgram = (): ArgumentSource => bound(`\${${String(seed({ program: CAT }, { sensitivity: "internal", integrity: "attested" }).seq)}.program}`);
+
+  // proves D-046 / §3.2 data_class_bounds / §2.7 step 3: a grant's min_integrity raises an instruction value's floor, and a breach parks integrity_floor
+  it("parks integrity_floor when a value meets the capability's floor but not the grant's", () => {
+    useGrants(bounds("operator"));
+    const verdict = boundary.authorize(context(), proposal(attestedProgram(), []));
+    expect(verdict).toMatchObject({
+      outcome: "park",
+      detail: { reason: "integrity_floor", violations: [], grants: [{ grant: "grant-1", violations: [{ argument: "program", floor: "operator", integrity: "attested" }] }] },
+    });
+    useGrants(bounds("attested"));
+    expect(boundary.authorize(context(), proposal(attestedProgram(), [])).outcome).toBe("proceed");
+  });
+
+  // proves D-046 / §2.2.1: a grant's min_integrity never applies to data fields; untrusted argv and cwd still pass under an operator-minimum grant
+  it("never raises the floor of a data field", () => {
+    useGrants(bounds("operator"));
+    const listing = seed({ files: ["notes.txt"] });
+    const verdict = boundary.authorize(context(), proposal(constant("cat"), [synthesized("-n"), bound(`\${${String(listing.seq)}.files[0]}`)], synthesized("/work")));
+    expect(verdict.outcome).toBe("proceed");
+  });
+
+  // proves D-046: a raised floor also applies to argv promoted under §2.3 rule 2 (already at operator, so the grant cannot lower it)
+  it("keeps promoted argv at the operator floor whatever the grant allows", () => {
+    useGrants(bounds("untrusted"));
+    expect(parkReason(boundary.authorize(context(), proposal(constant("cat"), [synthesized("-Z")])))).toBe("integrity_floor");
+  });
+
+  // proves D-046 / D-045: candidates are looked up before step 3, but awaiting_grant is decided only after it passes
+  it("never presents an injected instruction as a missing grant", () => {
+    useGrants(bounds("operator"), { capability_selector: { capabilities: ["fs.file.read"] } });
+    expect(parkReason(boundary.authorize(context({ task: task({ grants: [] }) }), proposal(synthesized(CAT), [])))).toBe("integrity_floor");
+    // With no candidate at all, step 3 uses the values' own floors and then the grant check decides.
+    expect(parkReason(boundary.authorize(context({ task: task({ grants: ["grant-2"] }) }), proposal(attestedProgram(), [])))).toBe("awaiting_grant");
+    // A candidate whose raised floor is not met parks integrity_floor, not awaiting_grant or scope.
+    expect(parkReason(boundary.authorize(context({ task: task({ grants: ["grant-1"] }) }), proposal(attestedProgram(), [], synthesized("/etc"))))).toBe("integrity_floor");
+  });
+
+  // proves D-046 / §2.7 step 5: a grant's max_sensitivity lowers the ceiling, and a breach parks sensitivity_ceiling
+  it("parks sensitivity_ceiling above the grant's max_sensitivity", () => {
+    useGrants(bounds("untrusted", "public"));
+    const verdict = boundary.authorize(context(), proposal(constant("cat"), [synthesized("notes.txt")]));
+    expect(verdict).toMatchObject({
+      outcome: "park",
+      detail: { reason: "sensitivity_ceiling", aggregate: "internal", ceiling: "internal", grants: [{ grant: "grant-1", max_sensitivity: "public" }] },
+    });
+    // Every argument public, so the aggregate is public (the admission constants are internal).
+    const publicCall = proposal(bound(`\${${String(seed({ program: CAT }, { sensitivity: "public", integrity: "operator" }).seq)}.program}`), [synthesized("notes.txt")], synthesized("/work"));
+    expect(boundary.authorize(context({ synthesis: { sensitivity: "public" } }), publicCall).outcome).toBe("proceed");
+  });
+
+  // proves D-046: of several covering grants the call proceeds under one whose bounds it meets, is charged to it, and the journal names it
+  it("proceeds under a grant whose bounds the call meets, and records which", () => {
+    useGrants(bounds("operator"), bounds("untrusted", "public"), bounds("attested", "internal"));
+    const verdict = boundary.authorize(context({ task: task({ grants: ["grant-1", "grant-2", "grant-3"] }) }), proposal(attestedProgram(), [synthesized("notes.txt")]));
+    expect(verdict).toMatchObject({ outcome: "proceed", authorization: { grant: "grant-3" } });
+    expect([grants.invocations("grant-1"), grants.invocations("grant-2"), grants.invocations("grant-3")]).toEqual([0, 0, 1]);
+    expect(payloadOf(entryAt(verdict.call_seq))).toMatchObject({ grant: "grant-3", verdict: { outcome: "proceed" } });
+  });
+
+  // proves D-046 as a property: under one grant, a call proceeds exactly when the program meets max(attested, min_integrity) and the input sensitivity is at most min(internal, max_sensitivity)
+  it("proceeds exactly when the call meets both the capability's and the grant's bounds", () => {
+    const integrities = ["untrusted", "derived", "attested", "operator"] as const;
+    const sensitivities = ["public", "internal", "confidential", "secret"] as const;
+    fc.assert(
+      fc.property(fc.constantFrom(...integrities), fc.constantFrom(...sensitivities), fc.constantFrom(...integrities), fc.constantFrom(...sensitivities), (programIntegrity, turn, minimum, maximum) => {
+        useGrants(bounds(minimum, maximum));
+        const program = seed({ program: CAT }, { sensitivity: "public", integrity: programIntegrity });
+        const verdict = boundary.authorize(
+          context({ synthesis: { sensitivity: turn } }),
+          proposal(bound(`\${${String(program.seq)}.program}`), [synthesized("notes.txt")], synthesized("/work")),
+        );
+        const rank = (level: string, levels: readonly string[]): number => levels.indexOf(level);
+        const floorMet = rank(programIntegrity, integrities) >= Math.max(rank("attested", integrities), rank(minimum, integrities));
+        const ceilingMet = rank(turn, sensitivities) <= Math.min(rank("internal", sensitivities), rank(maximum, sensitivities));
+        expect(verdict.outcome).toBe(floorMet && ceilingMet ? "proceed" : "park");
+        if (!floorMet) expect(parkReason(verdict)).toBe("integrity_floor");
+        else if (!ceilingMet) expect(parkReason(verdict)).toBe("sensitivity_ceiling");
+      }),
+      { numRuns: 120 },
+    );
+  });
+});
+
+describe("D-047 (O-4 ruling): every argv operand is a path that must lie in scope", () => {
+  const scopedTo = (prefix: string): void => {
+    grants = new GrantStore();
+    grants.add(grant({ resource_scope: [{ kind: "path", prefix }] }));
+    boundary = new EnforcementBoundary({ registry, grants, journal, clock: () => now });
+  };
+  const verdictFor = (argv: readonly string[], cwd = "/work/project"): Verdict =>
+    boundary.authorize(context(), proposal(constant("cat"), argv.map(synthesized), synthesized(cwd)));
+
+  // proves D-047 / §2.2 / §2.7 step 4: an absolute operand outside the grant's scope parks scope_violation, naming the normalised path
+  it("parks an absolute path outside the scope", () => {
+    scopedTo("/work/project");
+    expect(verdictFor(["/work/other/secret"])).toMatchObject({
+      outcome: "park",
+      detail: { reason: "scope_violation", grants: [{ grant: "grant-1", outside: [{ argument: "argv[0]", value: "/work/other/secret", path: "/work/other/secret" }] }] },
+    });
+    expect(parkReason(verdictFor(["/etc/passwd"]))).toBe("scope_violation");
+  });
+
+  // proves D-047: a relative operand is read against cwd, and a `..` escape outside the scope parks
+  it.each([
+    ["../other/secret", "/work/other/secret"],
+    ["sub/../../other", "/work/other"],
+    ["../../../../etc/passwd", "/etc/passwd"],
+    ["/work/project/../other", "/work/other"],
+    ["../projectile/x", "/work/projectile/x"],
+  ])("parks %s (it names %s)", (operand, path) => {
+    scopedTo("/work/project");
+    expect(verdictFor(["-n", operand])).toMatchObject({ outcome: "park", detail: { reason: "scope_violation", grants: [{ outside: [{ argument: "argv[1]", path }] }] } });
+  });
+
+  // proves D-047: operands that stay inside the scope pass, including plain text, `.`, `-` and a `..` that returns inside it
+  it.each([["notes.txt"], ["./notes.txt"], ["sub/../notes.txt"], ["/work/project/src/a.ts"], [""], ["-"], ["two words"], ["$(id)"]])("passes %j", (operand) => {
+    scopedTo("/work/project");
+    expect(verdictFor([operand]).outcome).toBe("proceed");
+  });
+
+  // proves D-047: flags are not resources and are never scope-checked; after `--` the same text is an operand and is
+  it("does not scope-check flags, but does check what follows --", () => {
+    scopedTo("/work/project");
+    expect(verdictFor(["-n", "--show-all", "notes.txt"]).outcome).toBe("proceed");
+    expect(verdictFor(["--", "-n"]).outcome).toBe("proceed");
+    expect(parkReason(verdictFor(["--", "/etc/passwd"]))).toBe("scope_violation");
+  });
+
+  // proves D-047 with acceptance test 3's shape: a runtime-discovered file name, bound after `--`, lies in scope and proceeds
+  it("passes a bound file name relative to cwd", () => {
+    scopedTo("/work/project");
+    const listing = seed({ files: ["-starts-with-dash.txt"] });
+    const verdict = boundary.authorize(context(), proposal(constant("cat"), [synthesized("--"), bound(`\${${String(listing.seq)}.files[0]}`)], synthesized("/work/project")));
+    expect(verdict.outcome).toBe("proceed");
+  });
+
+  // proves D-047 as a property: an operand is in scope exactly when its normalised path lies under the scope prefix
+  it("judges every operand by its normalised path", () => {
+    scopedTo("/work/project");
+    const segment = fc.constantFrom("..", ".", "project", "other", "src", "a.txt", "");
+    fc.assert(
+      fc.property(fc.boolean(), fc.array(segment, { minLength: 1, maxLength: 6 }), (absolute, segments) => {
+        const operand = (absolute ? "/" : "") + segments.join("/");
+        if (operand.startsWith("-")) return;
+        const parts: string[] = [];
+        for (const part of (operand.startsWith("/") ? operand : "/work/project/" + operand).split("/")) {
+          if (part === "" || part === ".") continue;
+          if (part === "..") parts.pop();
+          else parts.push(part);
+        }
+        const path = "/" + parts.join("/");
+        const inside = path === "/work/project" || path.startsWith("/work/project/");
+        expect(verdictFor([operand]).outcome).toBe(inside ? "proceed" : "park");
+      }),
+      { numRuns: 80 },
+    );
+  });
+
+  // records D-047 accepted residual: scope is judged on the path as written; a symlink is not followed (resolution is a Slice 1.5 gate)
+  it("judges the written path without touching the file system", () => {
+    scopedTo("/work/project");
+    // `/work/project/link` could be a symlink to `/etc`; the boundary judges only what the call says.
+    expect(verdictFor(["link/passwd"]).outcome).toBe("proceed");
   });
 });

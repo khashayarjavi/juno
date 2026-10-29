@@ -3,6 +3,7 @@ import {
   type Capability,
   type DataClass,
   type EntryCost,
+  type Grant,
   type Integrity,
   type ProvenanceClass,
   type Sensitivity,
@@ -19,6 +20,7 @@ import {
   type CapabilityCall,
   type CapabilityRegistry,
   type FloorViolation,
+  type InstructionValue,
   type InvocationResult,
   type OutboundInvocation,
   type PlannedInvocation,
@@ -27,6 +29,7 @@ import {
   callSchemaFor,
   checkInstructionFloors,
   executeOutbound,
+  instructionValues,
 } from "../../registry/src/index.js";
 import { type ResolutionFailureCode, resolveReference } from "./binding.js";
 import { type DeliveryFailure, deliveryFailures } from "./delivery.js";
@@ -36,27 +39,37 @@ import { type ScopeViolation, scopeViolations } from "./scope.js";
 
 /**
  * The enforcement boundary (spec §2.6–2.7, §3.2; build plan Increment 4;
- * DECISIONS.md D-041 to D-045). It runs in the runner, holds the grants and
+ * DECISIONS.md D-041 to D-047). It runs in the runner, holds the grants and
  * writes the journal; the model only proposes. For each proposed call:
  *
  *   1. Resolve every `bound` reference against the task's own trajectory and
  *      record a `binding_resolution` entry for each, with the candidate set
  *      when the reference's path matches more than one entry.
  *   2. Compute each argument's provenance class and data class (§2.6).
+ *      The candidate grants (those that cover the call) are looked up here.
  *   3. `checkInstructionFloors` (D-038): any instruction value, including an
  *      argv element promoted under §2.3 rule 2, below its floor parks
- *      `integrity_floor`. Not overridable (§8.3).
- *   G. No grant covers the call: park `awaiting_grant`.
- *   4. A data field outside every covering grant's scope: park `scope_violation`.
- *   5. Aggregate input sensitivity above `max_input_sensitivity`: park `sensitivity_ceiling`.
+ *      `integrity_floor`. Then each candidate grant's `min_integrity` raises
+ *      every instruction value's floor (never a data field's); when no
+ *      candidate's floors are met, the call parks `integrity_floor` too (D-046).
+ *      Not overridable (§8.3).
+ *   G. No grant covers the call: park `awaiting_grant`. Decided only after
+ *      step 3 passes, so an injected instruction is never presented as a
+ *      missing grant (D-045, D-046).
+ *   4. A data field or argv operand outside the scope of every remaining
+ *      candidate: park `scope_violation` (D-047).
+ *   5. Aggregate input sensitivity above `max_input_sensitivity`, or above the
+ *      `max_sensitivity` of every remaining candidate: park `sensitivity_ceiling` (D-046).
  *   6. The serving adapter is quarantined, or is observed now not delivering a
  *      data value structurally (and is quarantined for it): park `adapter_quarantined`.
  *
- * The first check that fails decides the verdict. Every proposal that gets
- * past parsing leaves exactly one `capability_call` entry, carrying the
- * per-argument provenance (D-022) and the verdict. A call proceeds only when
- * every check passes; it is then charged to the grant that covers it, and
- * `perform` runs exactly the invocation that was inspected.
+ * Each step keeps the candidates the call meets; the first step that leaves
+ * none decides the verdict. A call proceeds only when every check passes. It
+ * proceeds under the first remaining candidate, in the order the task lists
+ * its grants, is charged to that grant, and the journal names it. Every
+ * proposal that gets past parsing leaves exactly one `capability_call` entry,
+ * carrying the per-argument provenance (D-022) and the verdict. `perform`
+ * runs exactly the invocation that was inspected.
  */
 
 export const ENFORCEMENT_ACTOR = "juno.enforcement";
@@ -71,11 +84,27 @@ export const ENFORCEMENT_PARK_REASONS = [
 ] as const;
 export type EnforcementParkReason = (typeof ENFORCEMENT_PARK_REASONS)[number];
 
+/** Why one candidate grant was not usable for the call. */
+export type GrantFloorViolations = { readonly grant: string; readonly violations: readonly FloorViolation[] };
+
 export type ParkDetail =
-  | { readonly reason: "integrity_floor"; readonly violations: readonly FloorViolation[] }
+  | {
+      readonly reason: "integrity_floor";
+      /** Values below their own floor (the capability's, or `operator` for promoted argv). */
+      readonly violations: readonly FloorViolation[];
+      /** When every value met its own floor: each candidate grant, with the values below the floor its `min_integrity` raised (D-046). */
+      readonly grants: readonly GrantFloorViolations[];
+    }
   | { readonly reason: "awaiting_grant"; readonly refused: readonly GrantRefusal[] }
   | { readonly reason: "scope_violation"; readonly grants: readonly { readonly grant: string; readonly outside: readonly ScopeViolation[] }[] }
-  | { readonly reason: "sensitivity_ceiling"; readonly aggregate: Sensitivity; readonly ceiling: Sensitivity }
+  | {
+      readonly reason: "sensitivity_ceiling";
+      readonly aggregate: Sensitivity;
+      /** The capability's `max_input_sensitivity`. */
+      readonly ceiling: Sensitivity;
+      /** When the capability's ceiling was met: each remaining candidate grant and its lower `max_sensitivity` (D-046). */
+      readonly grants: readonly { readonly grant: string; readonly max_sensitivity: Sensitivity }[];
+    }
   | {
       readonly reason: "adapter_quarantined";
       readonly adapter: string;
@@ -215,6 +244,20 @@ function instructionFloors(entry: RegistryEntry, call: CapabilityCall, records: 
   }
 }
 
+/**
+ * D-046: a candidate grant's `min_integrity` raises the floor of every
+ * instruction value (scalar instruction fields and promoted argv; never a
+ * data field) to at least itself. The violations of the raised floors.
+ */
+function grantFloorViolations(values: readonly InstructionValue[], integrityOf: ReadonlyMap<string, Integrity>, grant: Grant): FloorViolation[] {
+  const minimum = grant.data_class_bounds.min_integrity;
+  return values.flatMap((value) => {
+    const floor = compareIntegrity(minimum, value.floor) > 0 ? minimum : value.floor;
+    const integrity = integrityOf.get(value.argument) ?? null;
+    return integrity === null || compareIntegrity(integrity, floor) < 0 ? [{ argument: value.argument, floor, integrity, source: value.source }] : [];
+  });
+}
+
 export class EnforcementBoundary {
   readonly #registry: CapabilityRegistry;
   readonly #grants: GrantStore;
@@ -249,27 +292,49 @@ export class EnforcementBoundary {
     const { capability } = entry;
     const call = assemble(proposal.arguments, new Map(records.map((item) => [item.argument, item.value])));
 
-    // Step 3.
+    // The candidate grants, looked up before step 3 because their bounds raise its floors (D-046).
+    const coverage = this.#grants.coverage(task, capability.id, this.#clock());
+
+    // Step 3: each value against its own floor, then against each candidate's raised floors.
     const floors = instructionFloors(entry, call, records);
-    if (floors.kind === "park") return park({ reason: "integrity_floor", violations: floors.violations });
+    if (floors.kind === "park") return park({ reason: "integrity_floor", violations: floors.violations, grants: [] });
     if (floors.kind === "malformed") return reject({ reason: "malformed_call", message: floors.message });
     const parsedCall = callSchemaFor(capability.interface).parse(call);
+    const values = instructionValues(entry, parsedCall);
+    const integrityOf = new Map(records.map((item) => [item.argument, item.data_class.integrity]));
+    const raised = coverage.covering.map((grant) => ({ grant, violations: grantFloorViolations(values, integrityOf, grant) }));
+    const meetFloors = raised.filter((candidate) => candidate.violations.length === 0).map((candidate) => candidate.grant);
+    if (raised.length > 0 && meetFloors.length === 0) {
+      return park({ reason: "integrity_floor", violations: [], grants: raised.map(({ grant, violations }) => ({ grant: grant.id, violations })) });
+    }
 
-    // The grant check, then step 4 against the grants that cover the call.
-    const coverage = this.#grants.coverage(task, capability.id, this.#clock());
+    // The grant check, decided only now that step 3 has passed.
     if (coverage.covering.length === 0) return park({ reason: "awaiting_grant", refused: coverage.refused });
-    const scoped = coverage.covering.map((grant) => ({ grant, outside: scopeViolations(capability, parsedCall, grant) }));
-    const chosen = scoped.find((candidate) => candidate.outside.length === 0)?.grant;
-    if (chosen === undefined) {
+
+    // Step 4.
+    const scoped = meetFloors.map((grant) => ({ grant, outside: scopeViolations(entry, parsedCall, grant) }));
+    const inScope = scoped.filter((candidate) => candidate.outside.length === 0).map((candidate) => candidate.grant);
+    if (inScope.length === 0) {
       return park({ reason: "scope_violation", grants: scoped.map(({ grant, outside }) => ({ grant: grant.id, outside })) });
     }
 
-    // Step 5.
-    const exceeding = records.filter((item) => compareSensitivity(item.data_class.sensitivity, capability.max_input_sensitivity) > 0);
-    const [firstExceeding, ...moreExceeding] = exceeding;
-    if (firstExceeding !== undefined) {
-      const aggregate = join([firstExceeding.data_class, ...moreExceeding.map((item) => item.data_class)]).sensitivity;
-      return park({ reason: "sensitivity_ceiling", aggregate, ceiling: capability.max_input_sensitivity });
+    // Step 5: the capability's ceiling, then each remaining candidate's lower ceiling.
+    const [firstRecord, ...restRecords] = records;
+    const inputClass = firstRecord === undefined ? synthesized : join([firstRecord.data_class, ...restRecords.map((item) => item.data_class)]);
+    // With no argument there is no input, so nothing can exceed a ceiling.
+    const aggregate = firstRecord === undefined ? null : inputClass.sensitivity;
+    const ceiling = capability.max_input_sensitivity;
+    if (aggregate !== null && compareSensitivity(aggregate, ceiling) > 0) {
+      return park({ reason: "sensitivity_ceiling", aggregate, ceiling, grants: [] });
+    }
+    const chosen = inScope.find((grant) => aggregate === null || compareSensitivity(aggregate, grant.data_class_bounds.max_sensitivity) <= 0);
+    if (chosen === undefined) {
+      return park({
+        reason: "sensitivity_ceiling",
+        aggregate: aggregate ?? ceiling,
+        ceiling,
+        grants: inScope.map((grant) => ({ grant: grant.id, max_sensitivity: grant.data_class_bounds.max_sensitivity })),
+      });
     }
 
     // Step 6.
@@ -277,8 +342,6 @@ export class EnforcementBoundary {
     if (!planned.ok) return park(planned.detail);
 
     this.#grants.charge(chosen.id);
-    const [firstRecord, ...restRecords] = records;
-    const inputClass = firstRecord === undefined ? synthesized : join([firstRecord.data_class, ...restRecords.map((item) => item.data_class)]);
     const callSeq = record({ outcome: "proceed" }, chosen.id);
     const authorization: Authorization = {
       task_id: task.id,

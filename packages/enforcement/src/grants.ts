@@ -9,8 +9,9 @@ import { Grant, instant, parseAtBoundary } from "../../contracts/src/index.js";
  * expired, it has not been revoked, and its invocation cap is not used up.
  * A call with no covering grant parks `awaiting_grant` (§6.2).
  *
- * `data_class_bounds` are not applied here: no section of the spec says what
- * they bound or which park a breach produces (objection O-3 in STATE.md).
+ * Coverage is independent of the call's values. A covering grant's
+ * `data_class_bounds` are applied by the boundary at §2.7 steps 3 and 5,
+ * where a breach parks `integrity_floor` or `sensitivity_ceiling` (D-046).
  */
 
 /** Why one grant the task holds does not cover a call. Checked in this order; the first that applies is reported. */
