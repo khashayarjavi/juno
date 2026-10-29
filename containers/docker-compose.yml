@@ -8,7 +8,7 @@ services:
       dockerfile: containers/runner.Dockerfile
     image: juno-runner:local
     user: "1000:1000"
-    network_mode: none          # no provider yet; Increment 5 opens provider endpoints only
+    network_mode: none          # the scripted provider needs no network (D-002); a real provider opens its endpoints only
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     environment:

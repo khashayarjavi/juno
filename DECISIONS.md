@@ -440,3 +440,105 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
     - "rejects a program outside the enum when its provenance meets the floor" now gives `argv` as an operator constant, so every instruction value really does meet its floor and the rejection is still proven. Its former input (an operator `/bin/sh` with a synthesized `-c`) is a new test that now parks `integrity_floor`.
     - "parks a synthesized command string alongside a broken data reference" expected the program as the only violation. Where the call also has an argv, it now expects the promoted `argv[0]` too.
 - Reason: the ruling says every value under an instruction field is judged "in any shape", so the boundary must reach values that the old strict proposal schema refused outright. The old schema threw `BoundaryError`, which is neither a park nor a recorded rejection. A value with no stated provenance is the §1.5 fail-closed case: its integrity cannot be established. Reading an argv of the wrong shape, or under a program with no surface, as "every element promoted" is D-037 applied as written, not a new rule. Leaving it out would reopen the same bypass through the argv field. All of these only turn a rejection into a park, or a park into one that names more values. None lets anything run that ran before.
+
+## D-055 — TTL expiry fails the task; it is never a park
+- Date: 2026-10-29
+- Status: Accepted (operator ruling, 2026-10-29, given at the start of Increment 5)
+- Applies to: Increment 5 onward
+- Decision: when a task's `ttl` runs out, the runner moves it to `failed` with the reason `ttl_expired`. It writes a `note` entry (`event: state`, `to: failed`, `reason: ttl_expired`) and no `park` entry. The build plan's "park on … `ttl_expired`" (Increment 5) and §18's park list are summaries; §6.4 and §6.2 govern.
+- Reason: operator ruling. §6.4 says "On expiry → `failed` with `ttl_expired`", and §6.2's table of park reasons has no `ttl_expired`. This settles the item STATE.md carried forward from Increment 3.
+
+## D-056 — Increment 5 branch name
+- Date: 2026-10-29
+- Status: Accepted
+- Applies to: Increment 5
+- Decision: Increment 5 is built on `claude/great-keller-clbbvy`, not `inc-5-runner`. The cloud session harness created that branch and allows pushes only to it. The pull request still goes into `main`.
+- Reason: as D-028 and D-040.
+
+## D-057 — The Provider Capability Profile and the one provider
+- Date: 2026-10-29
+- Status: Accepted
+- Applies to: Increment 5 onward
+- Decision: `ProviderProfile` (`packages/contracts/src/provider.ts`) carries every §13.1 field. `conversation_state` is `stateless | server_held`, `turn_control` is `client | server`, `prompt_cache` is `{ supported, granularity, ttl_ms }`, and `cost` is a price per input, output and cached token. A profile is a JSON file parsed at load (`loadProviderProfile`). The one provider adapter is the scripted fake (`ScriptedProvider`, D-002); its profile is `packages/runner/providers/scripted-fake.json`: stateless, client turn control, native context management, `replay_fidelity: partial`, and non-zero token prices so the currency budget is exercised. A provider's response is a boundary input and is parsed (`TurnResponse`): model id, model version, output (`tool_call`, `done` or `text`) and token usage.
+- Reason: §13.1 makes the profile configuration data, so adding a provider never needs a release. `partial` is what a provider under `native` context can honestly claim (§3.4.3: JUNO does not hash an assembled context it does not assemble). Non-zero prices let the currency axis be tested without a special case.
+
+## D-058 — Admission: the request, the checks, and what Slice 1 does with each
+- Date: 2026-10-29
+- Status: Accepted (the spend-ceiling rule is the operator's ruling of 2026-10-29)
+- Applies to: Increment 5 onward
+- Decision: `admit` (`packages/runner/src/admission.ts`) takes an admission request and returns an admitted Task (state `admitted`) or every failed check. Fields a check decides (objective, criterion, verification, each budget axis, ttl) may be absent from the request, so that their absence is a recorded rejection. A request that does not parse at all throws `BoundaryError`. The runner journals every decision as a `note` under the task's id (`event: admission`), and refuses any id that already has a trajectory. Check by check:
+  1. A missing or blank objective is rejected.
+  2. A criterion must be the Slice 1 command criterion (D-063) and parse against a registered capability, or the task is rejected. A verification method other than `juno.verify.exit_code` is rejected. `closure_mode` is derived: `verified` only when a criterion, a method and `criterion_integrity = operator` are all present; otherwise `accepted`. `attested` needs a second, differently configured actor, which Slice 1 does not have.
+  3. `criterion_integrity` comes from the request's `criterion_author`: `operator` → `operator`, `model` → `derived` (§5.2). A criterion without an author is rejected. A task with no criterion records `untrusted`, the integrity that licenses nothing. Promotion by explicit operator acceptance (§5.2) is not built: it needs the acceptance surface, which is approval interface (out of scope).
+  4. The sources are the resource selectors of the task's grants. Each must lie within an operator-registered source (`SourceRegistration`: a selector and a data class, or the `unclassified` marker). A selector no source covers, or a source marked `unclassified`, rejects the task (§1.5).
+  5. The registered provider must be in `permitted_providers`. When the policy asks for `stateless`, or the task's sensitivity is `confidential` or above (§10.3), the provider must be stateless. `posture` is free text and is not evaluated.
+  6. Every budget axis must be declared. **There is no default ceiling in code, for spend or any axis** (operator ruling): a request without `budget.currency` is rejected and nothing is filled in. The estate part of check 6 is not built: estate budgets are out of scope for Slice 1 (CLAUDE.md rule 9).
+  7. A missing ttl is rejected.
+  8. See D-059.
+  9. Each capability the task's grants select must be registered, and its serving adapter must not be quarantined; registration already ran the §2.4 suite. A listed grant that is not stored, belongs to another principal, or is listed twice is also rejected here.
+  10. See D-059.
+  11. An autonomous task with zero grants is admitted with a warning, recorded in the admission note.
+  Outside the numbered list: only the `direct` strategy is admitted (no planning logic in Slice 1); a grant selecting a `write`, `external` or `irreversible` capability without `max_invocations` is rejected (§5.3); constant slot names `criterion.*` are reserved. §5.3's whole-filesystem scope cannot be written at all (D-026 bounds every path selector to `/work`), and `/work` is not "the whole machine", so no Override question arises in Slice 1. Constants the operator fixes with the objective carry `(task sensitivity_floor, operator)`.
+- Reason: §5.4 lists the checks without fixing an input format. Rejecting rather than defaulting is §0.2 D8. Recording every decision makes "why was this refused" answerable from the journal (§3.4.5). Deriving `closure_mode` rather than taking it from the request means a request cannot ask for a mode its criterion does not license.
+
+## D-059 — `context_ownership` and `steer_capability` derivation in Slice 1
+- Date: 2026-10-29
+- Status: Accepted
+- Applies to: Increment 5 onward
+- Decision: §10.2's first condition ("may synthesize instruction-field arguments") is read from the capability set: a task may synthesize instruction values when a capability its grants select (or its criterion names) has a scalar `instruction` field that is not an `enum`. A free-text instruction field such as a command string can only be filled by the model, while an enum field's values are operator-authored and arrive as constants or bound references. No Slice 1 input requires `replay_fidelity: full`. So `shell.run` derives `native`. A task that derives `owned` is **rejected** (check 8), because owned context assembly (the volatile region whose integrities §2.6 needs) is not built in Slice 1, and §5.4 check 8 forbids degrading silently. `native` with a provider lacking native context management is rejected (check 8). `steer_capability` follows §7.8's table from the derived ownership and the provider's `conversation_state`, `turn_control` and `server_interrupt`; `requires_live_steer` (defaulting from attendance) with anything but `full` is rejected (check 10).
+- Reason: §10.2 states the conditions but Slice 1 has no Strategy declarations to read them from. The enum reading matches the spec's own example (typed capabilities with bound references get native; raw shell with synthesized command strings pays for owning context). A capability with a free-text instruction field must make whoever adds it build owned assembly first, rather than run under a rule that would judge every synthesized value `untrusted` and park it.
+
+## D-060 — How the runner turns a model's tool call into a proposal
+- Date: 2026-10-29
+- Status: Accepted
+- Applies to: Increment 5 onward
+- Decision: the provider's tool call names a capability and gives an object of arguments; a list field gives one value per element. Each value's provenance is read from its shape, never its content (`toProposal`, `packages/runner/src/runner.ts`): `{"ref": "${seq.path}"}` (exactly that one key) is `bound`; `{"slot": "<name>"}` (exactly that one key) is `constant`; a bare string, number or boolean is `synthesized`. Anything else (an object with other keys, a nested list, `null`) is passed to the boundary as written, where it states no provenance (D-054). A bare string that looks like a reference is still `synthesized`. A tool call whose input is not an object never reaches the boundary: the runner journals a `malformed_tool_call` note and tells the model the call was rejected. A `text` output does nothing; a `done` output is a claim, handled by D-063.
+- Reason: invariant 7. A structured marker is a mechanism; recognising `${…}` inside free text would be inspection of content. The slot form is how the model names a value "filled by the runtime" (§2.6) without composing it.
+
+## D-061 — The turn loop and the entries the runner writes
+- Date: 2026-10-29
+- Status: Accepted
+- Applies to: Increment 5 onward
+- Decision: the loop is: check ttl, check every budget axis → assemble the turn's input (under `native` context, only what is new: the objective and constants on the first turn, then each result, rejection or "no action") → call the provider → journal a `turn` entry → check ttl and budgets again → act. A proposal goes to `authorize`; on `proceed` the runner calls `perform` on that authorization and journals a `capability_result`; on `park` it writes a `park` entry and parks; on `reject` it tells the model. **The runner reaches a capability only through `authorize` then `perform`**: it never calls the registry's `invoke` or `plan`, or runs anything itself. Every runner unit test uses a registry whose `invoke` throws, and a test scans the runner's sources for `.invoke(`, `.plan(`, `executeOutbound` and `child_process`. Entries:
+  - `turn`: actor = the model id, provider = the profile id, cost = tokens and currency, payload = turn number, model and version, a digest of the request, the input sent and the output. Its data class is the synthesized class `(sensitivity_floor, untrusted)` under `native`, so a reference into a turn can never gain integrity.
+  - `capability_result`: actor `juno.enforcement` (the boundary performed it), provider = the adapter, class = the capability's `output_class` applied to the authorization's input class (§2.1). Payload: call seq, grant, adapter, exit code, signal, `stdout`, `stdout_lines` (so a reference can bind one line, e.g. a file name), `stderr`. A program that could not start is recorded as `outcome: not_run` and reported to the model. The task's `sensitivity_floor` is raised to the result's sensitivity (monotonic).
+  - `park`: reason, the `capability_call` seq where one exists, and the detail.
+  - `note` (actor `juno.runner` or `juno.verifier`): admission, state changes, verification, closure, malformed tool calls.
+  Every runner-written entry other than the admission note is classed `(sensitivity_floor, untrusted)`: a runner record can never lend integrity to a bound reference. The admission note is classed `(sensitivity_floor, criterion_integrity)`.
+  §10.3's mid-run `routing_unavailable` park is not built here: with Slice 1's only capability (input ceiling `internal`) and check 5, no running task can reach `confidential`. Increment 6 re-evaluates routing on resume (§6.3).
+- Reason: the build plan's "assemble → call → capability invocation → journal → repeat", with the Increment 4 forward record that the runner may cause an effect only by `authorize` then `perform`. Classing runner entries at the lowest integrity is fail-closed: they quote model and tool text.
+
+## D-062 — Budget accounting
+- Date: 2026-10-29
+- Status: Accepted (the wall-clock and ttl clocks are the operator's directive D-025)
+- Applies to: Increment 5 onward
+- Decision: tokens = input + output + cached tokens reported by the provider. Currency = each count times the profile's price. Turns = provider calls. `wall_clock` = running time only, measured on a monotonic clock (`performance.now()`, which does not advance while the host sleeps), accumulated only while `run` is executing. `ttl` = wall time since admission, on the wall clock, so it includes host sleep and parked time. Before every turn, any axis with nothing left (used ≥ ceiling) parks `budget_exceeded`. After every turn, any axis overrun (used > ceiling) parks `budget_exceeded`, and that turn's output is journalled but not acted on. The park names the axes, the usage and the budget. A ceiling of 0 therefore allows no turn at all.
+- Reason: §9 parks on exhaustion of any axis. A turn's cost is known only after it, so the check runs on both sides of it; acting on a turn that overran would spend authority the budget no longer covers. D-025 fixes which clock each axis uses.
+
+## D-063 — Verification and closure
+- Date: 2026-10-29
+- Status: Accepted
+- Applies to: Increment 5 onward
+- Decision: the Slice 1 criterion is `{ capability, arguments, exit_code }`: a command, as a call to a registered capability, and the exit code that means done. The method is `juno.verify.exit_code`. Admission fixes every argument as a constant slot (`criterion.program`, `criterion.argv[0]`, …) at the criterion's integrity. When the model says `done`:
+  - a task whose `closure_mode` is not `verified` moves to `complete_unverified`, and nothing runs;
+  - otherwise the verifier (`juno.verifier`) runs the criterion's command **through the boundary**, every argument a constant, under the task's grants, and journals it like any call. Pass (the exit code matches) → closure `verified`, state `verified`. Fail → state `failed` with `verification_failed`, and no closure. Rejected → `inconclusive`, state `complete_unverified`. Parked (for example no grant covers it) → the task parks with that reason.
+  The closure is written by `writeClosure`, as a `note` entry (`event: closure`). At write time it reads the task's `turn` entries from the journal and parses the closure with `closureSchemaFor(those actors)`, so a `verifier_identity` equal to any executing model is refused and nothing is written. The operator's only closing act built is `closeAccepted(task, principal)`: a `complete_unverified` task, by its principal only, closed `accepted` with `verification_result: inconclusive` (§6.1: closing without a passing check yields `accepted`). Operator-triggered verification of a `complete_unverified` task is not built: the boundary authorizes calls only for a `running` task, and changing that is a boundary decision for the increment that adds the operator interface.
+- Reason: §3.4.4 and the build plan: "closure written by the runner, never the model; `verifier_identity ≠ executing actor` asserted at write time". Running verification through the boundary keeps the Increment 4 rule that every effect is authorized and journalled; it is charged to the task's grant because the verifier has no authority of its own in Slice 1. A failed check is a terminal state, not a closure mode (§6), so it writes no closure.
+
+## D-064 — One runner per journal volume: a Unix-socket lock
+- Date: 2026-10-29
+- Status: Accepted (implements the operator's directive D-025 for Increment 5)
+- Applies to: Increment 5 onward
+- Decision: a runner listens on the Unix socket `<journal root>/runner.lock` while it runs (`acquireRunnerLock`). `Runner.open` and the container entrypoint take it before anything else. A second runner finds the socket answering and refuses to start with `RunnerLockError`. When the holder exits, however it exits, the kernel stops answering; a socket file nobody answers is stale and is replaced. Anything at that path that is not a socket refuses the start. Proven in unit tests (including a holder killed with SIGKILL) and in the runner container (a holder container, a refused second runner, and a clean start after the holder is killed).
+- Reason: a lock file cannot tell a crashed holder from a live one, and the operator must not be asked to delete files after a crash. Accepted residual (§0.5 corollary): two runners that find the same stale socket in the same instant can both replace it; the window is one failed connect and one bind, after a crash.
+
+## D-065 — How the containerised runner reaches Docker (operator decision needed)
+- Date: 2026-10-29
+- Status: Proposed — for the operator to decide before Increment 7
+- Applies to: Increment 7 (acceptance end to end against the real containers)
+- Decision: not decided in Increment 5. The turn loop is proven against the real workload container from a runner process on the host (`test/containers/runner.test.ts`); the runner container's entrypoint takes the lock, opens the journal, reports ready and exits. For the runner to run tasks from inside its container, it must start workload containers, and every option moves trust:
+  - (a) mount the host's Docker socket into the runner container, and add a Docker CLI to the runner image (copied in from the host under D-001). The runner already is the trusted boundary, but the socket is root-equivalent on the host, so a runner compromise becomes a host compromise.
+  - (b) run the runner process on the host for Slice 1, keeping the journal on a host directory outside `/work` (D-026 still holds); the runner container stays a placement test.
+  - (c) a rootless Docker or socket proxy that permits only `compose run` of the workload service.
+  Recommendation: (b) for Slice 1, because it adds no new trust root and the §3.4.1 property (the workload cannot reach the journal) does not depend on where the runner runs. (a) and (c) belong with the hosted product (D4).
+- Reason: the Increment 3 forward record (D-034) asked Increment 5 to decide. It is a trust-placement choice (§0.5), so it is the operator's.
