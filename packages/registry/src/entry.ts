@@ -18,6 +18,8 @@ export const RegistryEntry = z
     program_field: z.string(),
     /** The interface field holding the program's argv: a `data` list of strings, read per call against the surfaces (D-036, D-038). */
     argv_field: z.string(),
+    /** The interface field holding the working directory: a scalar `data` path. Relative argv operands are read against it (D-047). */
+    cwd_field: z.string(),
     /** The declared flag surface of each program in that enum (DECISIONS.md D-018). */
     program_surfaces: z.array(FlagSurface),
   })
@@ -48,6 +50,12 @@ export const RegistryEntry = z
       ctx.addIssue({ code: "custom", path: ["argv_field"], message: "must name a field of the capability interface" });
     } else if (argv.role !== "data" || argv.type.kind !== "list" || argv.type.items.kind !== "string") {
       ctx.addIssue({ code: "custom", path: ["argv_field"], message: "the argv field must be a data list of strings (spec §2.2, §2.3 rule 2)" });
+    }
+    const cwd = entry.capability.interface[entry.cwd_field];
+    if (cwd === undefined) {
+      ctx.addIssue({ code: "custom", path: ["cwd_field"], message: "must name a field of the capability interface" });
+    } else if (cwd.role !== "data" || cwd.type.kind !== "path") {
+      ctx.addIssue({ code: "custom", path: ["cwd_field"], message: "the cwd field must be a scalar data path (spec §2.2; D-047)" });
     }
     const seen = new Set<string>();
     entry.program_surfaces.forEach((surface, index) => {

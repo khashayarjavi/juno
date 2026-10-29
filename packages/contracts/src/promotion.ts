@@ -24,7 +24,12 @@ export type PromotionReason =
   /** The element at `at` is an operand, and the surface declares no operand. */
   | "uncovered_operand"
   /** The element at `at` is declared as executing code; it and everything after it carry code. */
-  | "code_bearing_position";
+  | "code_bearing_position"
+  /**
+   * The argv field is not a list of single values, so it cannot be read against any surface
+   * (the enforcement boundary's reading of a malformed proposal, DECISIONS.md D-054). `argvRoles` never returns it.
+   */
+  | "argv_not_a_list";
 
 export type ArgvElementRole =
   | { readonly index: number; readonly role: "data" }
@@ -40,6 +45,57 @@ const OPTIONS_END = "--";
 
 function isFlagToken(element: string): boolean {
   return element.startsWith("-") && element !== "-";
+}
+
+/** How the D-037 reading classes one argv element. */
+export type ArgvTokenKind = "flag" | "subcommand" | "operand";
+
+type Token = {
+  readonly kind: ArgvTokenKind;
+  /** Whether the declared position executes code; `undefined` when the surface does not declare it. */
+  readonly executesCode: boolean | undefined;
+};
+
+/**
+ * The one reading of an argv against a declared surface (D-037), shared by
+ * promotion and by the scope check (D-047), so the two can never read the
+ * same argv differently:
+ *   - `--`, when declared, ends option parsing; every later element is an operand.
+ *   - A token starting with `-` (other than `-` alone) is a flag, matched exactly.
+ *   - Any other token is a declared subcommand if one has that name, else an operand.
+ */
+function readTokens(surface: FlagSurface, argv: readonly string[]): Token[] {
+  const flags = new Map<string, boolean>();
+  const subcommands = new Map<string, boolean>();
+  let operand: boolean | undefined;
+  for (const { position, executes_code } of surface.positions) {
+    // A position declared twice counts as code if either declaration says so.
+    if (position.kind === "flag") flags.set(position.flag, (flags.get(position.flag) ?? false) || executes_code);
+    else if (position.kind === "subcommand") subcommands.set(position.name, (subcommands.get(position.name) ?? false) || executes_code);
+    else operand = (operand ?? false) || executes_code;
+  }
+  let optionsEnded = false;
+  return argv.map((element) => {
+    if (!optionsEnded && isFlagToken(element)) {
+      const declared = flags.get(element);
+      if (declared !== undefined && element === OPTIONS_END) optionsEnded = true;
+      return { kind: "flag", executesCode: declared };
+    }
+    const subcommand = optionsEnded ? undefined : subcommands.get(element);
+    if (subcommand !== undefined) return { kind: "subcommand", executesCode: subcommand };
+    return { kind: "operand", executesCode: operand };
+  });
+}
+
+/**
+ * How each element of one call's argv is read (D-037, D-047). With no
+ * surface for `program`, or one naming another program, nothing about the
+ * argv is known, so every element is read as an operand: for the scope check
+ * that is the reading that checks the most.
+ */
+export function argvTokenKinds(program: string, surface: FlagSurface | undefined, argv: readonly string[]): ArgvTokenKind[] {
+  if (surface === undefined || surface.program !== program) return argv.map(() => "operand");
+  return readTokens(surface, argv).map((token) => token.kind);
 }
 
 /**
@@ -61,37 +117,15 @@ export function argvRoles(program: string, surface: FlagSurface | undefined, arg
   });
   if (surface === undefined) return all("no_declared_surface", null);
   if (surface.program !== program) return all("surface_names_another_program", null);
-
-  const flags = new Map<string, boolean>();
-  const subcommands = new Map<string, boolean>();
-  let operand: boolean | undefined;
-  for (const { position, executes_code } of surface.positions) {
-    // A position declared twice counts as code if either declaration says so.
-    if (position.kind === "flag") flags.set(position.flag, (flags.get(position.flag) ?? false) || executes_code);
-    else if (position.kind === "subcommand") subcommands.set(position.name, (subcommands.get(position.name) ?? false) || executes_code);
-    else operand = (operand ?? false) || executes_code;
-  }
   if (KNOWN_INTERPRETERS.has(programBaseName(program)) && !surface.positions.some((entry) => entry.executes_code)) {
     return all("known_interpreter_without_code_position", null);
   }
 
-  let optionsEnded = false;
   let codeFrom: number | undefined;
-  for (const [index, element] of argv.entries()) {
-    let executesCode: boolean;
-    if (!optionsEnded && isFlagToken(element)) {
-      const declared = flags.get(element);
-      if (declared === undefined) return all("uncovered_flag", index);
-      executesCode = declared;
-      if (element === OPTIONS_END) optionsEnded = true;
-    } else {
-      const subcommand = optionsEnded ? undefined : subcommands.get(element);
-      if (subcommand !== undefined) executesCode = subcommand;
-      else if (operand === undefined) return all("uncovered_operand", index);
-      else executesCode = operand;
-    }
+  for (const [index, token] of readTokens(surface, argv).entries()) {
+    if (token.executesCode === undefined) return all(token.kind === "flag" ? "uncovered_flag" : "uncovered_operand", index);
     // Keep reading after the first code-bearing element: an undeclared element anywhere still promotes all.
-    if (executesCode && codeFrom === undefined) codeFrom = index;
+    if (token.executesCode && codeFrom === undefined) codeFrom = index;
   }
 
   return {

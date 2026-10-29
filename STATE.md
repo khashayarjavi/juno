@@ -1,66 +1,97 @@
 # STATE
 
 ## Current increment
-3 — Registry, adapters, and the conformance suite
+4 — Enforcement boundary
 
-Branch: `claude/inc-3-registry-ucto18`. The session harness assigned this name and allows pushes only to it, so it is used instead of `inc-3-registry` (D-028). Draft PR: https://github.com/khashayarjavi/juno/pull/5. Increment 2 is in `main` (PR #4 merged).
+Branch: `claude/laughing-lovelace-bj5e9m`. The session harness assigned this name and allows pushes only to it, so it is used instead of `inc-4-enforcement` (D-040, as D-028 did for Increment 3). Increment 3 is in `main` (PR #5 merged). Draft PR: https://github.com/khashayarjavi/juno/pull/6.
 
-**Status: done.** Everything in the build plan's Increment 3 scope, the D-025 Inc 3 directive, `work-vol` ownership, and the operator's O-2 ruling (D-036) are built and tested, and `make verify` is green in the cloud session and in CI. CI `verify` passed on PR #5 (run 40736968183, commit 6a4a3c8). The next run (40737367665, commit 35d71d6, a STATE-only change) failed one control test: the unlimited CPU probe measured 1.28 CPUs, below the 1.5 required, on a busy shared runner. D-039 makes that control take up to three samples, with the 1.5 threshold unchanged; CI `verify` passed on that fix (run 40737951667, commit 3bbe69b). Waiting for the operator's review of `shell.run.json` and merge.
+**Status: done, pending the operator's merge.** The operator ruled on O-3 and O-4 on 2026-10-29 (D-046, D-047). The independent review of PR #6 found one gap, and the operator ruled on it the same day (D-048). That ruling and the review's smaller items (D-049, D-050, D-051, the frozen Authorization) are built and tested. The second review found that step 3 could be bypassed by the shape of a value, for example `program: [cmd]`. The operator ruled on that the same day, and the three rulings are built and tested (D-052, D-053, D-054, D-048 amended). `make verify` is green (see below). The PR stays a draft; the operator merges.
 
 ## Done in this increment
-Every test names the spec section it proves.
-- **Capability definitions as versioned files (§2.5)** — `packages/registry/definitions/shell.run.json`. `shell.run(program: enum, argv: list<string>, cwd: path)` with every role declared explicitly: `program` instruction, `argv` and `cwd` data. The program enum is interpreter-free and has one member, `/usr/bin/cat` (D-029). Each program has a declared flag surface. The format is in D-032. The definition's values are in D-035, and **the operator should review this file**: §2.5 requires definitions to be operator-authored, and the merge of this pull request is that act.
-- **Registration review (§2.3 rules 1 and 3, acceptance test 4a)** — `review.ts`, `registry.ts`. Every enum program must pass the interpreter test. Adding `/bin/sh` is refused, even with a surface that claims `sh` runs no code. So are `bash`, `env`, `git`, `python3`, `find`, `xargs` and `node` under any directory. A property test shows any enum containing any listed interpreter is refused, and each one is named. An unlisted program with no surface, a surface for another program, or a code-bearing flag is refused. A clean one is accepted.
-- **Adapter (§2.4, build plan Inc 3)** — `workload-adapter.ts`, `adapter.ts`. Each call runs in a fresh workload container through `docker compose run`, with `cwd` as one argv element and each `argv` element passed after the service name (D-034). Adapters only plan. One executor runs exactly the planned `execFile(program, argv[])` with stdin closed (D-033).
-- **Registration conformance suite (§2.4, acceptance test 5)** — `conformance.ts`. It feeds a fresh canary (shell metacharacters, both quotes, backslash, space, tab, newline) into every text-carrying `data` field. Each canary must arrive as exactly one whole argv element, in no other string and not in the program, with list order intact. Results:
-  - **Canary survives intact.** The conforming adapter passes. A container test sends canaries through the registered `shell.run` into the real workload: `cat /proc/self/cmdline` shows each one as a discrete, byte-identical argv element, and the program runs in a directory named by a canary.
-  - **Non-conforming adapter blocked.** An adapter that builds `sh -c "cat " + argv` is refused at registration. The capability is then not registered and `invoke` refuses it before anything runs.
-  - Also blocked: shell-quoting then joining, joining without a shell, `--workdir=` + cwd, a program path built from data, dropped, duplicated, reversed or split argv, and an adapter that throws on metacharacters.
-- **Registration refuses incomplete bindings** — a missing, unlisted or duplicate adapter, no provider at all, or a second registration of the same id (D-032).
-- **Calls are parsed before anything runs** — unknown or missing fields, a program outside the enum, argv as one string, a relative cwd, and NUL in a string are refused (D-032). On the host, a call's cwd and argv reach a real program as the same array.
-- **D-025 Inc 3 directive: workload limits, each hit by a container test** (`test/containers/limits.test.ts`, D-030). 1 CPU, 512 MiB memory with no swap, 128 tasks.
-  - Memory: 256 MiB succeeds; 1024 MiB is OOM-killed (exit 137).
-  - Processes: 40 children start; 400 stop with `EAGAIN` before 128.
-  - CPU: three busy threads use about 2.9 CPUs unlimited and at most 1.15 CPUs in the workload.
-  - Docker starts the workload with exactly these values. The tests hold on cgroup v1 (this host) and v2 (CI).
-- **`work-vol` ownership** (`test/containers/work-vol.test.ts`, D-031). A new volume is owned by the workload user (65532, mode 0755) whichever container mounts it first. The workload can write it; the runner can read but not write it.
-- **Mutation-checked:** 27 deliberate breakages, each caught by a test. Suite side: parsed-string, discreteness, list-order, program-file and refused-canary checks turned off; canary without metacharacters; fixed canary. Registry side: review skipped; refused entry stored; missing adapter, no provider, or duplicate id allowed; call parsing skipped; NUL allowed; relative program, data-role program field, or duplicate surface allowed. Executor side: stdin left open; non-zero exit rejected. Adapter side: argv joined, `--workdir=`, no entrypoint override. Containers: no pids, memory or CPU limit; swap unbounded; runner image without `/work`.
-- **Per-call promotion of code-bearing argv positions (§2.3 rule 2, O-2 ruling D-036; D-037, D-038).** `argvRoles` (`packages/contracts/src/promotion.ts`) reads each call's argv against the program's declared flag surface. The element where a declared code-bearing flag, subcommand or operand sits, and every element after it, become separate `instruction` values at the `operator` floor. Anything the surface does not declare (an unknown flag, a flag cluster like `-ec`, an attached value like `-cCODE`, an undeclared operand, no surface, or a listed interpreter whose surface claims no code) promotes every element. `checkInstructionFloors` (`packages/registry/src/instruction.ts`) judges each instruction value alone against its own floor and returns `park` / `integrity_floor` naming each value that falls short. `argv` stays a `data` list in the definition, so §2.2 rule 2 holds. The definition names its argv field (`argv_field`).
-- **Acceptance test 4b, mechanism part** (`packages/registry/test/promotion.test.ts`). `sh` is forced into the shipped `shell.run` (the same entry registration review refuses in 4a), and calls use model-written argv:
-  - `sh -c CODE` parks `integrity_floor`, naming `argv[0]` and `argv[1]` at the `operator` floor.
-  - **Code flag moved later:** `sh -e -c CODE`, `sh -e -u -x -c CODE`, and a nine-element argv with `-c` at index 5 each park, with promotion starting exactly at `-c`; the flags before it stay `data`. A property test puts any number of non-code flags before `-c` and any operands after CODE: it always parks, and always from `-c` on.
-  - `-ec CODE`, `-cCODE`, `-o errexit -c CODE`, and an undeclared flag after the code all promote every element and park.
-  - `sh` forced in with no surface, or with a surface claiming no code, parks.
-  - The floor is `operator`, not the capability's `attested`: CODE at `attested` parks, at `operator` proceeds. The `program` field keeps `attested`.
-  - No whole-list `min()`: model-written flags before `-c` with operator-authored code proceed; one low promoted element is the only one named. A promoted element with no recorded provenance parks.
-  - The shipped `cat` is unchanged: calls with declared flags and plain operands proceed with untrusted argv (property test), `--` lets a file name start with `-`, and an undeclared `cat` flag promotes every element.
-  - The end-to-end form (a task run by the runner reaches for `sh -c` and the task parks) needs Increments 4, 5 and 7. Increment 4 calls `checkInstructionFloors` as §2.7 step 3; Increment 7 runs 4b against the real containers.
-- **Mutation-checked (O-2 work):** 14 more deliberate breakages, each caught: uncovered flags or operands ignored; only the element after the flag promoted; a fixed index 0 (the static reading); scanning stopped at the first code flag; the listed-interpreter check off; `--` not ending options; no surface treated as no promotion; promoted floor set to the capability floor; missing provenance passing; a whole-list `min()` over argv; promoted values or scalar instruction fields skipped; the `argv_field` type check off.
-- Decisions D-028 to D-039 recorded.
+Every test names the spec section it proves. All of this is in `packages/enforcement/` (new), plus small additions to `packages/registry/src/registry.ts`, `packages/registry/src/entry.ts` and `packages/contracts/src/promotion.ts`.
+- **The enforcement boundary (§2.7)** — `boundary.ts`. For each call a task proposes, it runs, in order:
+  1. resolve bound references (step 1);
+  2. compute each argument's provenance (step 2), and look up the candidate grants;
+  3. `checkInstructionFloors` (step 3, D-038), then each candidate grant's raised floors;
+  4. the grant check (`awaiting_grant`), decided only after step 3 passes;
+  5. scope (step 4);
+  6. sensitivity (step 5): the capability's ceiling, then each grant's lower one;
+  7. adapter quarantine (step 6).
+  Each step keeps the candidate grants the call meets, and the first step that leaves none decides the park. A call proceeds only when every check passes, under the first remaining grant in the task's order. That grant is charged and named in the journal. These are the build plan's "five checks": the grant check plus steps 3 to 6 (D-045, D-046).
+  - Parks produced: `integrity_floor`, `awaiting_grant`, `scope_violation`, `sensitivity_ceiling`, `adapter_quarantined`.
+  - Rejections (nothing runs, nothing is charged, the task keeps running): a reference that does not resolve, a constant slot never fixed, an unregistered capability, a call that does not parse (D-045).
+  - A synthesized command string in the `program` field parks `integrity_floor` even when it is not a valid enum value (D-045). This matters for acceptance test 2.
+- **Grant bounds (§3.2 `data_class_bounds`, D-046)** — a grant's `min_integrity` raises the floor of every instruction value (never a data field), and a breach parks `integrity_floor`. Its `max_sensitivity` lowers the step-5 ceiling, and a breach parks `sensitivity_ceiling`. A grant can never lower a floor.
+- **Per-argument provenance (§2.6)** — `proposal.ts`. Each argument arrives labelled `constant`, `bound` or `synthesized`, and the label is never inferred from the value (invariant 7). Each argv element carries its own label (`argv[<index>]`). The integrity and sensitivity rules are in D-041.
+- **Bound references (§2.6, §2.7 step 1)** — `binding.ts`. A reference resolves only against the calling task's own verified trajectory. Every resolution, resolved or rejected, is recorded, along with the candidate set when the same path matches other entries (D-043).
+- **Grants (§3.2)** — `grants.ts`. Storage and lookup by principal, capability, issue time, expiry, revocation and invocation count. Only calls that proceed are charged (D-042).
+- **Scope (§2.7 step 4, D-047)** — `scope.ts`.
+  - `path` data fields (`cwd`) and every argv operand must lie inside a path selector of the grant.
+  - Operands are read by the same D-037 reading that promotion uses (`argvTokenKinds`, one shared reader in `promotion.ts`), normalised against `cwd`, with `..` resolved as written. Flags are not resources.
+  - Absolute paths and `..` escapes outside the scope park `scope_violation`.
+  - Definitions now name their working-directory field (`cwd_field`). `shell.run.json` names `cwd`, a one-line reviewable change.
+- **Runtime adapter observation and quarantine (§2.5, §2.7 step 6)** — `delivery.ts`, registry `plan` / `quarantine` (D-044).
+- **The record (§3.4.2)** — every proposal leaves exactly one `capability_call` entry with per-argument provenance, values, origins, the verdict and the authorizing grant.
+- **Performing the effect (§3.2)** — `perform` runs exactly the inspected invocation, once.
+- **Build plan Increment 4 tests** (`packages/enforcement/test/enforcement.test.ts`, 70 tests). Each test the build plan lists exists:
+  - a synthesized instruction value parks `integrity_floor` (§2.7 step 3);
+  - a bound reference into a data field passes with the referenced entry's integrity (§2.6);
+  - a literal matching a prior value is still `synthesized` (invariant 7);
+  - a cross-task reference is rejected (§2.6, O9);
+  - expired, revoked and over-count grants fail (§3.2).
+  Added for the rulings:
+  - grant floors raised, never lowered, never applied to data; the injected instruction never shown as a missing grant; grant ceilings; the choice among several grants; a property test over every combination of program integrity, turn sensitivity and grant bounds;
+  - absolute, relative and `..` operands; flags exempt; text after `--` checked; a bound file name in scope; a property test that judges every operand by its normalised path.
+  The contracts and registry tests cover the shared argv reader and `cwd_field`.
+- **Mutation-checked:** 29 deliberate breakages from the first session plus 16 for the rulings, each caught by a test. The rulings' breakages: grant floor ignored, raised-floor park skipped, candidates not filtered by floors, the grant check moved before step 3, capability or grant ceiling skipped, scope filter skipped, argv operands unchecked, relative operands not read against `cwd`, `..` unresolved, path fields unchecked, prefix without a segment boundary, `cwd_field` unvalidated, `--` never ending options, subcommands read as operands, no-surface reading wrong. One further breakage (a grant floor allowed to lower a value's own floor) is equivalent and cannot be caught: step 3 already holds each value to its own floor first.
+- **After the independent review (2026-10-29)** — 10 more tests in `enforcement.test.ts` (80 in all), each naming what it proves:
+  - **Integrity before resolution failures (D-048, operator ruling; §1.5, §8.3).** Step 3 now runs before any rejection except an unknown capability. A synthesized command string plus one broken data reference parks `integrity_floor`, with and without a grant. A broken reference in the `program` field is judged `untrusted` and parks `integrity_floor`. A broken data reference with every instruction value passing is still rejected `unresolved_argument`. Also shown: with the `cwd` reference broken, the argv is still read and an untrusted promoted element parks; with no program, every argv element is promoted; a grant's raised floor is judged before the rejection.
+  - **No argument values is not below every ceiling (D-049).** Such a call's input is the producing turn's class.
+  - **A path inside a map-typed field fails closed (D-050).** It is a `scope_violation` even when it lies in scope.
+  - **Undeclared flags and scope (D-051).** `--x=/etc/passwd` skips the scope check only because it promotes the whole argv to instruction; from the model it parks `integrity_floor`.
+  - **The Authorization is frozen**, with frozen copies of the call and invocation, so what `perform` runs cannot be changed after inspection.
+  - 13 further deliberate breakages, each caught by a test.
+- **After the second review (2026-10-29)** — 15 more tests in `enforcement.test.ts` (95 in all), each naming what it proves:
+  - **Shape never outranks provenance (D-052, operator ruling).** Before the proposal's shape is checked, every value under an instruction field is judged at that field's floor (raised by any candidate grant), in any shape and at any depth. Proven by a property test: 300 random proposals, each with a synthesized or unresolved value somewhere under `program`, in random lists, maps and nesting. Each one gets random argv, cwd and extra fields, with or without broken references and with or without a grant. Every one parks `integrity_floor`; none is rejected or proceeds. Explicit tests cover `program: [cmd]`, `program: [<broken reference>]`, a map and nested lists, and a grant's raised floor on a wrapped value.
+  - **A missing program means no declared surface (D-048 amended, operator ruling).** A synthesized `-c` with a broken `cwd` and no program field parks `integrity_floor`, with and without a grant. Every argv element is promoted.
+  - **The planned command is copied exactly once (D-053, operator ruling).** A test adapter returns its command through getters: one command on the first read, a different one on every later read. The boundary reads each getter once. The first command is the one inspected, journalled, carried in the Authorization and run. When the first read is the interpolated command, that is what is judged, and the adapter is quarantined.
+  - **The build decisions under these rulings (D-054).**
+    - A value that states no provenance (a bare string, `null`) fails every floor. It never proceeds, even as data.
+    - An argv that is not a list is promoted whole.
+    - A program outside the enum has no declared surface, so its argv is promoted.
+    - Keys that are not identifiers are named so they cannot collide.
+    - Nesting deeper than 16 levels is one unprovenanced value.
+  - **Two existing tests changed, neither weakened** (details in D-054):
+    - "rejects a program outside the enum when its provenance meets the floor" now gives an operator-constant argv, so its claim still holds. Its old input (`/bin/sh` with a synthesized `-c`) is a new test that parks.
+    - "parks a synthesized command string alongside a broken data reference" now also expects the promoted `argv[0]`.
+  - 12 further deliberate breakages, each caught by a test. They were: only top-level instruction values judged (the reviewed bug: the property test and five explicit tests fail); maps not walked; depth limit wrong; unresolved instruction value not judged; unprovenanced value given integrity; missing program skipping the argv; a program outside the enum read with `cat`'s surface; an argv that is not a list left unjudged; the invocation re-read instead of copied; keys not bracketed; an unprovenanced data value let through. One more (the explicit non-`ProposedCall` rejection removed) is equivalent on its own, because step 3 already reports such a proposal as unparsed; with both removed, a test fails.
+- Decisions D-040 to D-054 recorded. D-042 and D-045 are marked as amended by D-046; D-045's exception is extended by D-048 and D-052/D-054; D-048 is amended by the second-review ruling.
 
 ## Remaining in this increment
-- Nothing. CI `verify` passed on the D-039 commit (run 40737951667, commit 3bbe69b). Waiting for the operator's review of `packages/registry/definitions/shell.run.json` (D-035) and merge.
+- The operator's merge of PR #6. Nothing else.
 
 ## make verify
-GREEN as of 2026-10-28 in the cloud session and in CI on PR #5, with D-036 built: 409 unit tests (13 files), 38 container tests (5 files), lint self-test rejected the `exec()` probe. Summary line: `make verify: GREEN`.
+GREEN as of 2026-10-29 in the cloud session, with D-052 to D-054 and the D-048 amendment built: 512 unit tests (14 files), 38 container tests (5 files), lint self-test rejected the `exec()` probe. Summary line: `make verify: GREEN`. CI `verify` passed on PR #6 before the review changes (run 40794657374, commit b8a48f0) and on the first review commit (run 40799040134, commit 4763e0c).
 
 ## Open objections to the spec
-- None. (O-1 was resolved as D-024; O-2 was resolved by the operator on 2026-10-28 as the per-call, flag-aware reading; see D-036.)
+- None. O-3 was resolved as D-046 and O-4 as D-047 (operator, 2026-10-29).
 
 ## Notes for the next session
-- **Next step:** once PR #5 is merged, Increment 4 (enforcement boundary) is current. Do not start it before the merge. Increment 4 must call `checkInstructionFloors` as §2.7 step 3, with integrity computed per argument by provenance class (§2.6), and record per-element `argv[<index>]` provenance on every `capability_call` (D-022, D-038).
-- The spec text of §2.3 rule 2 should state the D-036 ruling at v0.6 (operator's note). `spec/` is not edited by the build.
-- Read D-025 at the start of Increments 5, 6 and 7. The Inc 2 and Inc 3 directives are done.
-- `packages/registry/definitions/` is not copied into the runner image yet; nothing in the runner loads the registry. Increment 5 must copy it when the runner registers capabilities at start.
-- The adapter calls the `docker` CLI (D-034). Today only the host-side tests call it. Increment 5 must decide how the runner, inside its container, reaches Docker, and record the decision.
-- §2.5's runtime detection (an adapter "observed constructing a parsed string" forfeits registration and quarantines its capability) and the `adapter_quarantined` park are enforcement, Increment 4. Not built here.
-- The spec defines no scale for `isolation_tier`. `shell.run` declares `1`, meaning the one workload container (D-035). Nothing in Slice 1 reads it. If a later increment needs tiers to mean something, raise it then.
-- Items later increments must pick up (none is an objection yet):
-  - **Increments 4 and 5:** §3.3 canonicalization resolves symlinks. A resolved path outside `/work` must be refused, so a symlink inside the work volume cannot point a call at anything else. `shell.run`'s `cwd` and any path in `argv` are where this bites.
-  - **Increment 5:** §5.3 requires `max_invocations` for `write`, `external` and `irreversible` grants, and a whole-filesystem scope needs an Override (out of Slice 1). Increment 5 must decide whether `/work` counts as "whole-filesystem". If the spec text does not settle it, raise an objection then.
-  - **Increments 5 and 6:** §18 and the build plan list `ttl_expired` among the "park on" reasons, but §6.4 and the Increment 6 test say TTL expiry moves the task to `failed`. Raise this as an objection when that increment starts, if the text is still unclear then.
-  - **Increments 5 and 6:** a crash between writing a journal entry and replacing the head leaves that task's chain failing verification (fails closed, D-027). No recovery is built.
-  - **Increment 7:** acceptance test 3 needs a discovery program (for example `ls`) in the enum and the workload image (D-029). Add it as one reviewable diff that registration review accepts. Under D-037, a discovered file name that starts with `-` is read as an undeclared flag and promotes every argv element, so test 3 should pass bound file names after `--`. The discovery program's surface must declare every flag test 3 uses.
-- Docker: if `docker info` fails at session start, check `/tmp/dockerd.log`. The hook removes pid files whose PID is not a docker daemon. This cloud host runs cgroup v1 with no swap; CI (`ubuntu-latest`) runs cgroup v2. The container tests depend on neither. The CPU-limit test needs at least two host CPUs (D-030).
-- `docker compose run` attaches stdin; anything that runs a program through it must close stdin, or a program reading stdin hangs (D-033).
-- Increment 0 notes still apply: no `npm install` in Dockerfiles (D-001); the runner has `network_mode: none` until Increment 5 (D-013). The workload image now has a build stage that only copies files and runs exec-form `mkdir`; it downloads nothing but its pinned base images.
+- **Next step:** once PR #6 is reviewed and merged, Increment 5 (runner) is current. Do not start it before the merge.
+- **Increment 5 and the proposal shape (D-054):** the runner should always build `ProposedCall`-shaped proposals (one source per scalar field, one per list element). Anything else the boundary judges and then rejects `malformed_call`, or parks if it touches an instruction field. A runner bug that sends bare values therefore never runs, but it can park a task.
+- **Accepted residual, with a gate (D-047):** scope is judged on the path as written. A symlink already present in the work content can reach outside the scope. Resolving symlinks (§3.3's canonical form) must be built **before JUNO operates on any content it did not create (Slice 1.5)**, not only when a link-creating program is admitted.
+- **Increment 5 must reach the registry only through the boundary.** The runner may cause an effect only by `authorize` and then `perform` on the authorization it returns. It must never call `CapabilityRegistry.invoke` (or `plan` plus its own execution). Increment 5 must prove this with a test: for example, a registry whose `invoke` throws, with the runner's whole call path still working; or a check that no runner module calls `invoke`.
+- **What Increment 5 must supply to the boundary** (D-041): the task (running), a constants table fixed at admission (each slot with its data class; integrity = the admitting source's), and the producing turn's sensitivity (plus the volatile region's integrities under `owned` context). It must turn the model's tool call into a proposal: a reference text becomes `bound`, a runtime-filled slot becomes `constant`, anything else becomes `synthesized`. It then calls `authorize`; on `proceed`, `perform`, then journals the `capability_result` using `authorization.input_class` for the §2.1 output class. On `park`, the runner writes the `park` entry and changes the task state. On `reject`, it tells the model.
+- **Acceptance test 3 consequence:** `program` is an instruction field at the `attested` floor. A model-typed program is `synthesized` and therefore `untrusted` under native context, so it parks. Test 3 (Increment 7) must give `program` as a constant or as a bound reference to an `attested`-or-better entry.
+- **Acceptance test 4b consequence:** the boundary works on registered capabilities, and registration refuses `sh`. Increment 7's end-to-end 4b must decide how the forced entry is registered (for example a test-only path that skips review), and record it.
+- Grant invocation counts and quarantines live in memory (D-042, D-044). Increments 5 and 6 must keep grants and counts across a runner restart; the `capability_call` entries name the grant charged, so counts can be rebuilt from the journal.
+- Items carried from Increment 3 that later increments must pick up:
+  - **Increment 5:** `packages/registry/definitions/` is not copied into the runner image; the runner must copy it when it registers capabilities at start. The adapter calls the `docker` CLI (D-034); Increment 5 must decide how the runner, inside its container, reaches Docker.
+  - **Increment 5:** §5.3 requires `max_invocations` for `write`, `external` and `irreversible` grants; a whole-filesystem scope needs an Override (out of Slice 1). Decide whether `/work` counts as "whole-filesystem"; raise an objection if the spec does not settle it.
+  - **Increments 5 and 6:** §18 lists `ttl_expired` among the "park on" reasons, but §6.4 and the Increment 6 test say TTL expiry moves the task to `failed`. Raise this as an objection when that increment starts, if the text is still unclear.
+  - **Increments 5 and 6:** a crash between writing a journal entry and replacing the head leaves the chain failing verification (fails closed, D-027). No recovery is built.
+  - **Increment 7:** acceptance test 3 needs a discovery program (for example `ls`) in the enum and the workload image (D-029), with bound file names after `--` (D-037).
+- Read D-025 at the start of Increments 5, 6 and 7.
+- Docker: if `docker info` fails at session start, check `/tmp/dockerd.log`. This cloud host runs cgroup v1; CI runs v2. The CPU-limit test needs at least two host CPUs (D-030, D-039).
+- `docker compose run` attaches stdin; anything that runs a program through it must close stdin (D-033).
+- Increment 0 notes still apply: no `npm install` in Dockerfiles (D-001); the runner has `network_mode: none` until Increment 5 (D-013).
