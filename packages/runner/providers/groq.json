@@ -1,0 +1,22 @@
+{
+  "id": "groq",
+  "model": "openai/gpt-oss-120b",
+  "model_version": "per-turn-system_fingerprint",
+  "posture": "cloud",
+  "mid_stream_cancellation": false,
+  "prompt_cache": { "supported": true, "granularity": "exact-prefix", "ttl_ms": 7200000 },
+  "conversation_state": "stateless",
+  "turn_control": "client",
+  "server_interrupt": false,
+  "replay_fidelity": "full",
+  "native_tool_calling": { "supported": true, "parallel": false },
+  "native_context_management": true,
+  "context_window": 131072,
+  "cost": { "per_token_in": 0.00000015, "per_token_out": 0.0000006, "per_token_cached": 0.000000075 },
+  "jurisdiction": "not stated in the Groq documentation read on 2026-10-30; each answer names its serving region (x-groq-region)",
+  "wire": {
+    "endpoint": "https://api.groq.com/openai/v1/chat/completions",
+    "adapter_version": "juno.groq-chat-completions/3",
+    "sampling": { "temperature": 0, "reasoning_effort": "medium", "max_completion_tokens": 1024, "seed": 1729 }
+  }
+}

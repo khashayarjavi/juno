@@ -12,6 +12,7 @@
     "tools/**/*.js",
     "eslint.config.js",
     "vitest.config.ts",
-    "vitest.containers.config.ts"
+    "vitest.containers.config.ts",
+    "vitest.smoke.config.ts"
   ]
 }

@@ -1,0 +1,8 @@
+{"at":"2026-10-30T19:10:06.000Z","tokens":173,"note":"D-072 live check (curl, one list_files tool call)"}
+{"at":"2026-10-30T19:22:55.237Z","tokens":734,"note":"turn of openai/gpt-oss-120b"}
+{"at":"2026-10-30T19:23:51.684Z","tokens":718,"note":"turn of openai/gpt-oss-120b"}
+{"at":"2026-10-30T19:24:45.675Z","tokens":737,"note":"turn of openai/gpt-oss-120b"}
+{"at":"2026-10-30T19:27:00.000Z","tokens":2333,"note":"three direct tuning calls on the live-check run-3 request (reasoning medium; criterion hidden; both), outside the runner"}
+{"at":"2026-10-30T19:25:47.357Z","tokens":902,"note":"turn of openai/gpt-oss-120b"}
+{"at":"2026-10-30T19:25:48.810Z","tokens":1131,"note":"turn of openai/gpt-oss-120b"}
+{"at":"2026-10-30T19:25:50.162Z","tokens":1141,"note":"turn of openai/gpt-oss-120b"}

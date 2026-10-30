@@ -12,6 +12,11 @@ import { Count, Currency, DurationMs, Ref, parseAtBoundary } from "../../contrac
  * permits), the `model` identifier and `model_version` string recorded on
  * every turn (§3.4.3), and the inference `posture` it serves, matched exactly
  * against a task's `model_policy.posture`.
+ *
+ * A real provider's profile also carries `wire`: the endpoint, the adapter
+ * version and the sampling settings the adapter sends. The profile is journaled
+ * at admission, so every setting of every turn is captured, which
+ * `replay_fidelity: full` requires (§3.4.3; DECISIONS.md D-073).
  */
 
 export const CONVERSATION_STATES = ["stateless", "server_held"] as const;
@@ -39,11 +44,26 @@ export const ProviderProfile = z.strictObject({
   /** Currency per token. The runner computes each turn's currency from the tokens the provider reports. */
   cost: z.strictObject({ per_token_in: Currency, per_token_out: Currency, per_token_cached: Currency }),
   jurisdiction: z.string().min(1),
+  wire: z
+    .strictObject({
+      endpoint: z.url({ protocol: /^https$/ }),
+      adapter_version: Ref,
+      sampling: z.strictObject({
+        temperature: z.number().min(0).max(2),
+        reasoning_effort: z.enum(["low", "medium", "high"]),
+        max_completion_tokens: Count,
+        seed: z.number().int().min(0),
+      }),
+    })
+    .optional(),
 });
 export type ProviderProfile = z.infer<typeof ProviderProfile>;
 
-/** The profile file of the one Slice 1 provider. */
+/** The profile file of the scripted provider (D-002, D-059): `make verify` and CI. */
 export const SCRIPTED_PROFILE_FILE = new URL("../providers/scripted.json", import.meta.url);
+
+/** The profile file of the one real provider, Groq (D-072, D-073): `make smoke` only. */
+export const GROQ_PROFILE_FILE = new URL("../providers/groq.json", import.meta.url);
 
 export function loadProviderProfile(file: URL | string): ProviderProfile {
   return parseAtBoundary(`provider profile ${String(file)}`, ProviderProfile, JSON.parse(readFileSync(file, "utf8")));
