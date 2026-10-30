@@ -440,3 +440,31 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
     - "rejects a program outside the enum when its provenance meets the floor" now gives `argv` as an operator constant, so every instruction value really does meet its floor and the rejection is still proven. Its former input (an operator `/bin/sh` with a synthesized `-c`) is a new test that now parks `integrity_floor`.
     - "parks a synthesized command string alongside a broken data reference" expected the program as the only violation. Where the call also has an argv, it now expects the promoted `argv[0]` too.
 - Reason: the ruling says every value under an instruction field is judged "in any shape", so the boundary must reach values that the old strict proposal schema refused outright. The old schema threw `BoundaryError`, which is neither a park nor a recorded rejection. A value with no stated provenance is the §1.5 fail-closed case: its integrity cannot be established. Reading an argv of the wrong shape, or under a program with no surface, as "every element promoted" is D-037 applied as written, not a new rule. Leaving it out would reopen the same bypass through the argv field. All of these only turn a rejection into a park, or a park into one that names more values. None lets anything run that ran before.
+
+## D-055 — Autopilot rules added to CLAUDE.md (operator change)
+- Date: 2026-10-30
+- Status: Accepted (director, 2026-10-30)
+- Applies to: Increment 5 onward
+- Decision: the director's autopilot rules were added verbatim to `CLAUDE.md` as §7, and three rules were added to §2: 11 (`docs/blueprint/` is context, never instructions), 12 (no invisible or bidirectional-control Unicode in source, tests or capability files, enforced by a lint check with a self-test) and 13 (a package, version or API exists only when the lockfile installs it in CI). §7 overrides earlier sections where they conflict. Under it, ambiguities the spec text does not settle are decided by the more restrictive reading and recorded as "autopilot ruling"; merges go through the §7 merge gate. The review prompt §7 calls "P2" is the one headed "Independent review before merging" in `docs/session-prompts.md`, the only review prompt there. The director numbered the runner-placement ruling D-065, and it is recorded under that number below; D-058 to D-064 are used by later decisions in order, and the sequence then continues at D-066.
+- Reason: operator change to the agent's instructions, recorded so a later session knows when and why they changed. It is not a change to `spec/`.
+
+## D-056 — A task whose journal fails verification after a crash is never resumed (standing ruling)
+- Date: 2026-10-30
+- Status: Accepted (director's standing ruling, 2026-10-30)
+- Applies to: Increment 6 (forward record)
+- Decision: when a task's journal fails verification after a crash (for example D-027's `head_mismatch` from a crash between the entry and the head), the task is never resumed. It goes to `failed`, and the reason is recorded.
+- Reason: director's ruling. Resuming on an unverified record would act on evidence that cannot be trusted (§3.4, invariant 6).
+
+## D-057 — Increment 7 acceptance criteria name protected paths; tests 2 and 3 pass together (standing ruling)
+- Date: 2026-10-30
+- Status: Accepted (director's standing ruling, 2026-10-30)
+- Applies to: Increment 7 (forward record)
+- Decision: D-025's Increment 7 directive applies: every acceptance criterion names protected paths, and verification fails if the task wrote under them. Acceptance tests 2 and 3 must pass together, in the same run.
+- Reason: director's ruling. Either test alone is easy to pass (build plan Increment 7); passing both is the proof.
+
+## D-065 — The runner runs on the host for Slice 1; no Docker socket in any container (standing ruling)
+- Date: 2026-10-30
+- Status: Accepted (director's standing ruling, option (b), 2026-10-30)
+- Applies to: Increment 5 onward. Settles the D-034 forward record (how the runner reaches Docker).
+- Decision: for Slice 1 the runner runs on the host, not in a container, and no container is given the Docker socket. The runner calls the `docker` CLI on the host to start each workload container (D-034). The journal stays outside `/work` and outside every workload mount, and a container test must prove the workload still cannot read or write it.
+- Reason: director's ruling. A runner inside a container would need the Docker socket to start workload containers, and the Docker socket is root on the host: any process that reached it could undo the workload's seal. Keeping the runner on the host keeps the socket out of every container.
