@@ -97,6 +97,11 @@ export class CapabilityRegistry {
     return { registered: true, id };
   }
 
+  /** Every registered capability definition, in registration order. Reading a definition runs nothing. */
+  capabilities(): readonly Capability[] {
+    return [...this.#registered.values()].map((registered) => registered.entry.capability);
+  }
+
   isRegistered(id: string): boolean {
     return this.#registered.has(id);
   }
