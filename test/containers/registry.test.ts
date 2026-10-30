@@ -77,4 +77,16 @@ describe("shell.run through the conforming adapter, in the workload container (ย
     const pids = await registry.invoke("shell.run", { program: CAT, argv: ["/sys/fs/cgroup/pids.max", "/sys/fs/cgroup/pids/pids.max"], cwd: "/work" });
     expect(pids.stdout.toString("utf8").trim()).toBe("128");
   });
+
+  // proves D-067 / build plan ยง1: the discovery program runs in the workload, and neither it nor its libraries belong to the workload user
+  it("runs ls in the workload, with ls and its libraries owned by root", async () => {
+    const listing = await registry.invoke("shell.run", { program: "/usr/bin/ls", argv: ["-l", "-n", "--", "/usr/bin/ls", "/usr/bin/cat"], cwd: "/work" });
+    expect(listing.exitCode).toBe(0);
+    const owners = listing.stdout.toString("utf8").trim().split("\n").map((line) => line.split(/\s+/).slice(2, 4).join(":"));
+    expect(owners).toEqual(["0:0", "0:0"]);
+    const libraries = await registry.invoke("shell.run", { program: "/usr/bin/ls", argv: ["-l", "-n", "-R", "--", "/lib"], cwd: "/work" });
+    const libLines = libraries.stdout.toString("utf8").split("\n").filter((line) => /lib(selinux|pcre2-8)\.so/.test(line));
+    expect(libLines).toHaveLength(2);
+    for (const line of libLines) expect(line.split(/\s+/).slice(2, 4)).toEqual(["0", "0"]);
+  });
 });

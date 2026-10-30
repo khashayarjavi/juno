@@ -5,7 +5,7 @@
 
 Branch: `claude/tender-allen-hvjegb`, fast-forwarded to `main` after PR #9 merged. Increments 5 and 6 are in `main`.
 
-**Status: in progress.** Plan (each step committed as it lands):
+**Status: built; `make verify` pending.** Plan, all five steps done (D-067):
 1. Carry-over from the PR #9 review: TTL is judged before the non-overridable check on resume, so an expired task parked `integrity_floor` goes to `failed` (§6.4).
 2. Discovery program for test 3: `/usr/bin/ls` in the workload image (its two libraries copied in, arch-neutral) and in the `shell.run` enum with a declared, code-free flag surface (D-029's forward record).
 3. D-057 / D-025 Inc 7: every criterion names protected paths; the verifier records a listing of them at start and fails verification if it changed.
