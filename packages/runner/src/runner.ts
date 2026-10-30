@@ -617,7 +617,7 @@ export class Runner {
     }
     if (verdict.outcome === "reject") return { ok: false, outcome: this.#fail(run, "protected_listing_rejected") };
     const performed = await this.#perform(run, verdict.authorization);
-    const listing = { exit_code: performed.payload["exit_code"] ?? null, stdout: performed.payload["stdout"] ?? null, stderr: performed.payload["stderr"] ?? null, error: performed.payload["error"] ?? null };
+    const listing = listingOf(performed.payload);
     this.#append(run.task.id, "note", this.#runnerClass(run), { type: "protected_listing", phase, call_seq: verdict.call_seq, result_seq: performed.seq });
     return { ok: true, listing };
   }
@@ -631,7 +631,7 @@ export class Runner {
     const result = entries.find((entry) => entry.seq === result_seq);
     if (result === undefined) throw new RunnerError(`task ${run.task.id} has no entry ${String(result_seq)}`);
     const payload = this.#payloadOf(result.payload_ref) as Record<string, unknown>;
-    return { exit_code: payload["exit_code"] ?? null, stdout: payload["stdout"] ?? null, stderr: payload["stderr"] ?? null, error: payload["error"] ?? null };
+    return listingOf(payload);
   }
 
   /** The closure (§3.4.4), written by the runner and checked against its executing actors at write time. */
@@ -931,6 +931,15 @@ export class Runner {
       this.#recordedQuarantines.add(JSON.stringify([capability, adapter]));
     }
   }
+}
+
+/**
+ * What the protected-path comparison looks at: the listing itself (exit code and stdout, or the error when
+ * the program could not start). Not stderr, which carries the container runtime's own messages and differs
+ * on every run (D-067).
+ */
+function listingOf(payload: Record<string, unknown>): Record<string, unknown> {
+  return { exit_code: payload["exit_code"] ?? null, stdout: payload["stdout"] ?? null, stdout_base64: payload["stdout_base64"] ?? null, error: payload["error"] ?? null };
 }
 
 function rejection(toolCall: string, callSeq: number, detail: RejectDetail): Record<string, unknown> {
