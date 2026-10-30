@@ -325,7 +325,7 @@ export class Runner {
       },
       run.admissionClass,
     );
-    return this.#continue(run, true);
+    return this.#continue(run);
   }
 
   /**
@@ -411,14 +411,17 @@ export class Runner {
     return this.#continue(run);
   }
 
-  async #continue(run: TaskRun, starting = false): Promise<RunOutcome> {
+  async #continue(run: TaskRun): Promise<RunOutcome> {
     if (this.#active !== null && this.#active !== run.task.id) throw new RunnerError(`task ${this.#active} is running; this runner runs one task at a time`);
     this.#active = run.task.id;
     try {
       // D-057: before the first turn of a task the verifier will check, record how its protected paths look.
-      if (starting && run.task.closure_mode === "verified" && run.admission.criterion !== null) {
+      // A task whose first listing parked has none yet, so it is taken when the task runs again (D-067).
+      if (run.task.closure_mode === "verified" && run.admission.criterion !== null && this.#protectedBaselineSeq(run) === null) {
         const baseline = await this.#listProtected(run, "baseline");
         if (!baseline.ok) return baseline.outcome;
+        // A baseline that did not list the paths can protect nothing: the task fails before any turn (D-067).
+        if (!listed(baseline.listing)) return this.#fail(run, "protected_listing_failed");
       }
       return await this.#loop(run);
     } finally {
@@ -569,8 +572,14 @@ export class Runner {
       // D-057: verification fails if the task wrote under a protected path.
       const check = await this.#listProtected(run, "check");
       if (!check.ok) return check.outcome;
-      protectedPaths = canonicalJson(check.listing) === canonicalJson(this.#protectedBaseline(run)) ? "unchanged" : "changed";
-      if (protectedPaths === "changed") result = "fail";
+      if (!listed(check.listing)) {
+        // A check that did not list the paths cannot show they are unchanged (D-067).
+        protectedPaths = null;
+        result = "inconclusive";
+      } else {
+        protectedPaths = canonicalJson(check.listing) === canonicalJson(this.#protectedBaseline(run)) ? "unchanged" : "changed";
+        if (protectedPaths === "changed") result = "fail";
+      }
     }
     this.#append(run.task.id, "note", this.#runnerClass(run), {
       type: "verification",
@@ -622,12 +631,21 @@ export class Runner {
     return { ok: true, listing };
   }
 
+  /** The `seq` of the baseline listing's result, or null when none was taken yet. */
+  #protectedBaselineSeq(run: TaskRun): number | null {
+    for (const entry of readTrajectory(this.#journal.root, run.task.id)) {
+      if (entry.kind !== "note") continue;
+      const note = ProtectedNote.safeParse(this.#payloadOf(entry.payload_ref));
+      if (note.success && note.data.phase === "baseline") return note.data.result_seq;
+    }
+    return null;
+  }
+
   /** The baseline listing, read back from the journal so a rebuilt task is checked against the same record. */
   #protectedBaseline(run: TaskRun): Record<string, unknown> {
+    const result_seq = this.#protectedBaselineSeq(run);
+    if (result_seq === null) throw new RunnerError(`task ${run.task.id} has no protected-path baseline`);
     const entries = readTrajectory(this.#journal.root, run.task.id);
-    const note = entries.find((entry) => entry.kind === "note" && ProtectedNote.safeParse(this.#payloadOf(entry.payload_ref)).data?.phase === "baseline");
-    if (note === undefined) throw new RunnerError(`task ${run.task.id} has no protected-path baseline`);
-    const { result_seq } = ProtectedNote.parse(this.#payloadOf(note.payload_ref));
     const result = entries.find((entry) => entry.seq === result_seq);
     if (result === undefined) throw new RunnerError(`task ${run.task.id} has no entry ${String(result_seq)}`);
     const payload = this.#payloadOf(result.payload_ref) as Record<string, unknown>;
@@ -940,6 +958,11 @@ export class Runner {
  */
 function listingOf(payload: Record<string, unknown>): Record<string, unknown> {
   return { exit_code: payload["exit_code"] ?? null, stdout: payload["stdout"] ?? null, stdout_base64: payload["stdout_base64"] ?? null, error: payload["error"] ?? null };
+}
+
+/** Whether a listing actually listed the paths: the program ran, exited 0, and printed text. */
+function listed(listing: Record<string, unknown>): boolean {
+  return listing["error"] === null && listing["exit_code"] === 0 && typeof listing["stdout"] === "string";
 }
 
 function rejection(toolCall: string, callSeq: number, detail: RejectDetail): Record<string, unknown> {

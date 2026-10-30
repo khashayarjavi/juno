@@ -225,6 +225,34 @@ describe("verification and closure (§3.4.4, §6.1)", () => {
     expect(notes(h.entries(), "closure", h.payload)).toEqual([]);
   });
 
+  // proves D-067: a listing that did not list the protected paths never counts as unchanged
+  it.each([
+    ["the baseline", "before", "protected_listing_failed", 0],
+    ["the check", "after", "verification_inconclusive", 1],
+  ] as const)("fails the task when %s listing does not run cleanly", async (_which, failing, reason, turns) => {
+    let generation = "before";
+    const breaking: Adapter = {
+      id: WORKLOAD_EXECFILE,
+      // The stand-in exits 3 on the operand "fail": the listing at that generation fails.
+      plan: (call) => {
+        const base = standInAdapter.plan(call);
+        return call["program"] === "/usr/bin/ls" && generation === failing ? { file: base.file, args: [...base.args, "fail"] } : base;
+      },
+    };
+    h.cleanup();
+    h = harness(breaking);
+    const { runner, provider } = h.runner([
+      () => {
+        generation = "after";
+        return turn([]);
+      },
+    ]);
+    admitted(runner, { criterion: OPERATOR_CRITERION, verification: "command_exit" });
+    expect(await runner.run("task-1")).toEqual({ task_id: "task-1", state: "failed", reason });
+    expect(provider.requests).toHaveLength(turns);
+    expect(notes(h.entries(), "closure", h.payload)).toEqual([]);
+  });
+
   // proves §6 state machine: only the principal can accept, and only a complete_unverified task
   it("lets only the principal accept a complete_unverified task", async () => {
     const { runner } = h.runner([turn([])]);

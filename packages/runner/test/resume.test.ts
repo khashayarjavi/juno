@@ -281,6 +281,19 @@ describe("what resume will not do (§6.3, §8.3)", () => {
     expect(ofKind("capability_result")).toHaveLength(1);
   });
 
+  // proves D-067: when the first protected-path listing parked, it is taken on resume, and the task can still close verified
+  it("takes the protected-path baseline on resume when the first listing parked", async () => {
+    const { runner, provider } = h.runner([turn([]), turn([])]);
+    admitted(runner, { criterion: OPERATOR_CRITERION, verification: "command_exit" });
+    h.grants.revoke("grant-1", h.now.value);
+    expect(await runner.run("task-1")).toMatchObject({ state: "parked", reason: "awaiting_grant" });
+    expect(ofKind("park")[0]).toMatchObject({ phase: "protected_baseline" });
+    expect(provider.requests).toEqual([]);
+    h.grants.add(grant({ id: "grant-2" }));
+    expect(await runner.resume("task-1", { grants: ["grant-2"], remove_grants: ["grant-1"] })).toEqual({ task_id: "task-1", state: "verified", reason: "verification_pass" });
+    expect(ofKind("note").filter((note) => note["type"] === "protected_listing").map((note) => note["phase"])).toEqual(["baseline", "check"]);
+  });
+
   // proves §6.3: only a parked task resumes
   it("refuses to resume a task that is not parked", async () => {
     const { runner } = h.runner([turn([])]);
