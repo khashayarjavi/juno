@@ -1,0 +1,1 @@
+{"adapter":"workload.execfile","call_seq":28,"capability":"shell.run","exit_code":0,"signal":null,"stderr":" Container juno-smoke-workload-run-60a1e1463a48 Creating \n Container juno-smoke-workload-run-60a1e1463a48 Created \n","stderr_base64":null,"stdout":"ok\n","stdout_base64":null,"stdout_lines":["ok"]}

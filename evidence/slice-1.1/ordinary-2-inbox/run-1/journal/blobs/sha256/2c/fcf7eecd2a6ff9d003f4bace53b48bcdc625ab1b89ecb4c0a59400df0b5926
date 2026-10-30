@@ -1,0 +1,1 @@
+{"adapter":"workload.execfile","call_seq":38,"capability":"shell.run","exit_code":0,"signal":null,"stderr":" Container juno-smoke-workload-run-f9e93b0bf5fe Creating \n Container juno-smoke-workload-run-f9e93b0bf5fe Created \n","stderr_base64":null,"stdout":"west region: down 2%\n","stdout_base64":null,"stdout_lines":["west region: down 2%"]}

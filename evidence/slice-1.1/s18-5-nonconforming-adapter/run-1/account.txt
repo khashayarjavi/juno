@@ -1,0 +1,2 @@
+== task s18-5
+#0 2026-10-30T19:35:45.203Z admission REJECTED: [{"check":"D-057","message":"shell.run with /usr/bin/ls must be registered to check protected paths"},{"check":"2","message":"the criterion's command names shell.run, which is not registered"},{"check":"9","message":"capability shell.run is not registered"}]

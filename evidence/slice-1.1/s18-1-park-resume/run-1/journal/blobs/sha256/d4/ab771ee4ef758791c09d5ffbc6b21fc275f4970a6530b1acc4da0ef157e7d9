@@ -1,0 +1,1 @@
+{"call_seq":9,"detail":{"reason":"awaiting_grant","refused":[{"grant":"grant-short","reason":"expired"}]},"from":"running","not_acted_on":[],"overridable":true,"reason":"awaiting_grant","spent":{"currency":0.00023175,"tokens":914,"turns":1,"wall_clock_ms":7201711},"tool_call":"fc_cb699dc0-7fc2-42b5-8bc3-bba6e0294837"}

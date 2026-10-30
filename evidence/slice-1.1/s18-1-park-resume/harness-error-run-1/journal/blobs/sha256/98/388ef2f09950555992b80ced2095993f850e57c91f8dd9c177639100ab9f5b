@@ -1,0 +1,1 @@
+{"axes":["wall_clock_ms"],"budget":{"currency":1,"tokens":40000,"turns":8,"wall_clock_ms":3600000},"from":"running","not_acted_on":["fc_8386a60b-d40e-411c-9dcf-b9ea3a6c0b66"],"overridable":true,"reason":"budget_exceeded","spent":{"currency":0.0002673,"tokens":959,"turns":1,"wall_clock_ms":7201488},"turn_seq":7}

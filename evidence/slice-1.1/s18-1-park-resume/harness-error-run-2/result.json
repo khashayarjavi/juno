@@ -1,0 +1,56 @@
+{
+  "scenario": "s18-1-park-resume",
+  "run": 2,
+  "started_at": "2026-10-30T19:34:49.910Z",
+  "finished_at": "2026-10-30T19:34:51.703Z",
+  "summary": "first run parked (budget_exceeded); not resumed",
+  "tasks": [
+    "s18-1"
+  ],
+  "facts": {
+    "s18-1": {
+      "states": [
+        "running:start"
+      ],
+      "turns": 1,
+      "malformed_turns": 0,
+      "tokens": 901,
+      "calls_by_verdict": {
+        "proceed": 1
+      },
+      "argument_classes": {
+        "program=constant": 1,
+        "argv[]=constant": 6,
+        "cwd=constant": 1
+      },
+      "parks": [
+        {
+          "reason": "budget_exceeded",
+          "overridable": true
+        }
+      ]
+    }
+  },
+  "observations": {
+    "first_run": {
+      "task_id": "s18-1",
+      "state": "parked",
+      "reason": "budget_exceeded"
+    },
+    "final": {
+      "task_id": "s18-1",
+      "state": "parked",
+      "reason": "budget_exceeded"
+    },
+    "resumed": false
+  },
+  "checks": {
+    "program_always_operator_constant": true,
+    "closure_only_by_verifier": true,
+    "nothing_after_non_overridable_park": true,
+    "account_from_journal_alone_names_admission": true,
+    "park_and_resume_in_account_when_parked": true,
+    "expired_grant_never_authorized": true
+  },
+  "passed": true
+}
