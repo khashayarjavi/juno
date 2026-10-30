@@ -29,11 +29,18 @@ Everything is in `packages/runner/` unless named. Every test names the section i
   - The STATE requirement from Increment 4: a whole task runs with a registry whose `invoke` throws, and no runner module calls `invoke`, `plan` or `executeOutbound`.
 - **Mutation-checked:** 10 deliberate breakages; 8 caught. The 2 survivors (the clock not stopped on park or on a state change) are equivalent: `run()` always stops the clock when it returns.
 
+- **First independent review (2026-10-30, head 4e00d36): MERGE**, with small findings, all fixed before merging (new head below):
+  - a source-shaped object the model wrote, nested exactly 16 list levels deep, reached the boundary unwrapped (off by one in `translate.ts`); fixed, and a test nests a forged constant 1 to 20 deep (it fails on the old code at 16) (D-060);
+  - a refused closure left the task `running`; it now ends `failed` / `closure_refused` in the trajectory (D-062);
+  - a test comment said the opposite of its assertion; fixed, and the positive case added;
+  - the provider-response limits were unrecorded (D-059); a runner now runs one task at a time (D-063).
+  - The reviewer also asked the operator to confirm that the CLAUDE.md §7 autopilot change (D-055) is theirs. It came from the director's instruction that started this session.
+
 ## Remaining in this increment
 - Independent review (CLAUDE.md §7 step 5), then the §7 merge gate.
 
 ## make verify
-GREEN as of 2026-10-30 in the cloud session: 591 unit tests (17 files), 44 container tests (6 files), lint self-test rejected the `exec()` probe, unicode self-test rejected all 12 planted characters. Summary line: `make verify: GREEN`.
+GREEN as of 2026-10-30 in the cloud session, after the first-review fixes: 612 unit tests (17 files), 44 container tests (6 files), lint self-test rejected the `exec()` probe, unicode self-test rejected all 12 planted characters. Summary line: `make verify: GREEN`.
 
 ## Open objections to the spec
 - None.
