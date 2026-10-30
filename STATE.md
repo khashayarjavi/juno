@@ -50,7 +50,7 @@ Everything is in `packages/runner/` unless named. Every test names the section i
 - `make verify`, review and the §7 merge gate.
 
 ## make verify
-GREEN as of 2026-10-30 (Increment 6): 626 unit tests (18 files), 44 container tests (6 files), both lint self-tests fired. Summary line: `make verify: GREEN`.
+GREEN as of 2026-10-30 (Increment 6, after the first-review fixes): 628 unit tests (18 files), 44 container tests (6 files), both lint self-tests fired. Summary line: `make verify: GREEN`.
 
 ## For the operator
 - **PR #7 (superseded, still open):** https://github.com/khashayarjavi/juno/pull/7 is an earlier Increment 5 from another session (branch `claude/great-keller-clbbvy`). This session missed it at the start (§7 step 1 says to continue an open PR) and built Increment 5 afresh as PR #8, which is merged. Checked against `main`: PR #7's two operator rulings (TTL expiry fails the task, never a park; no default budget ceiling) are both honoured by the merged code (D-063; the admission schema requires all four axes). Its D-065 proposal is the one the director ruled on (D-065 here). Its other choices were agent decisions, and some differ from the merged ones (for example, it took over a stale runner lock where D-064 refuses to). PR #7 was not closed by this session; closing it is the operator's call.
