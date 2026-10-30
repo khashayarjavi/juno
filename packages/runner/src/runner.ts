@@ -155,6 +155,7 @@ export class Runner {
   readonly #lock: RunnerLock;
   readonly #runs = new Map<string, TaskRun>();
   readonly #recordedQuarantines = new Set<string>();
+  #active: string | null = null;
 
   /** Takes the journal's runner lock (one runner per journal) and reapplies the recorded quarantines. */
   constructor(options: RunnerOptions) {
@@ -253,6 +254,9 @@ export class Runner {
     const run = this.#runs.get(id);
     if (run === undefined) throw new RunnerError(`task ${id} was not admitted by this runner`);
     if (run.task.state !== "admitted") throw new RunnerError(`task ${id} is ${run.task.state}; only an admitted task starts (resume is Increment 6)`);
+    // Slice 1 runs one task at a time (§18; concurrent tasks are out of scope).
+    if (this.#active !== null) throw new RunnerError(`task ${this.#active} is running; this runner runs one task at a time`);
+    this.#active = id;
     this.#setState(run, "running", "start");
     run.context.push(
       { item: { role: "system", content: PREAMBLE }, data_class: { sensitivity: run.task.sensitivity_floor, integrity: "operator" } },
@@ -273,6 +277,7 @@ export class Runner {
       return await this.#loop(run);
     } finally {
       this.#stopClock(run);
+      this.#active = null;
     }
   }
 
@@ -422,7 +427,13 @@ export class Runner {
       rejected: verdict.outcome === "reject" ? verdict.detail.reason : null,
     });
     if (result !== "pass") return this.#fail(run, `verification_${result}`);
-    this.#writeClosure(run, "verified", "pass", this.#verifier);
+    try {
+      this.#writeClosure(run, "verified", "pass", this.#verifier);
+    } catch (error: unknown) {
+      // The closure was refused (§3.4.4): the task never becomes verified, and its trajectory ends in a terminal state.
+      this.#setState(run, "failed", "closure_refused", { error: error instanceof Error ? error.message : String(error) });
+      throw error;
+    }
     this.#setState(run, "verified", "verification_pass");
     return this.#outcome(run, "verification_pass");
   }

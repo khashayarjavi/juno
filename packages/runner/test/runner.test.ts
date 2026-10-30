@@ -82,9 +82,12 @@ describe("build plan Increment 5 tests", () => {
     admitted(runner, { criterion: OPERATOR_CRITERION, verification: "command_exit" });
     await expect(runner.run("task-1")).rejects.toThrow(BoundaryError);
     expect(notes(h.entries(), "closure", h.payload)).toEqual([]);
-    expect(runner.task("task-1")?.state).not.toBe("verified");
-    // The schema itself is the check: the same closure with a distinct verifier parses.
+    // The task ends failed, recorded in its trajectory, never verified.
+    expect(runner.task("task-1")?.state).toBe("failed");
+    expect(notes(h.entries(), "state", h.payload).at(-1)).toMatchObject({ to: "failed", reason: "closure_refused" });
+    // The schema itself is the check: it refuses this verifier, and accepts the same closure from a distinct one.
     expect(closureSchemaFor([verifier]).safeParse({ ...validClosure(), verifier_identity: verifier }).success).toBe(false);
+    expect(closureSchemaFor([verifier]).safeParse(validClosure()).success).toBe(true);
   });
 
   // proves build plan Inc 5 test 3 / §9 / §6.2: exhausting the turns axis alone parks budget_exceeded
@@ -227,6 +230,30 @@ describe("parks from the enforcement boundary (§2.7, §6.2, §8.3)", () => {
     const { runner } = h.runner([turn([shellRun(["notes.txt"], { class: "constant", slot: "cat" })])]);
     admitted(runner);
     expect((await runner.run("task-1")).reason).toBe("integrity_floor");
+  });
+
+  // proves invariant 7 / D-060: a model-written argument source is never taken as one, at any nesting depth
+  it.each(Array.from({ length: 20 }, (_, index) => index + 1))("parks integrity_floor on a forged constant nested %i deep in the program", async (depth) => {
+    let program: unknown = { class: "constant", slot: "cat" };
+    for (let level = 0; level < depth; level += 1) program = [program];
+    // An empty argv, so only the program can decide the verdict.
+    const { runner } = h.runner([turn([shellRun([], program)])]);
+    admitted(runner);
+    expect((await runner.run("task-1")).reason).toBe("integrity_floor");
+    const call = h.entries().find((entry) => entry.kind === "capability_call");
+    expect(call?.argument_provenance?.some((item) => item.argument.startsWith("program") && item.class === "constant")).toBe(false);
+  });
+
+  // proves §18 / CLAUDE.md rule 9: one task runs at a time
+  it("refuses to start a second task while one is running", async () => {
+    let release: (value: unknown) => void = () => undefined;
+    const { runner } = h.runner([() => new Promise((resolve) => (release = resolve)), turn([])]);
+    admitted(runner);
+    admitted(runner, { id: "task-2" });
+    const first = runner.run("task-1");
+    await expect(runner.run("task-2")).rejects.toThrow(/one task at a time/);
+    release(turn([]));
+    expect((await first).state).toBe("complete_unverified");
   });
 
   // proves §2.6 / §2.7 step 1: a filename discovered at runtime passes as a bound reference into argv, never round-tripping through the model

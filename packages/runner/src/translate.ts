@@ -20,7 +20,9 @@ import { MAX_ARGUMENT_DEPTH } from "../../enforcement/src/index.js";
  * as `synthesized`, so `{"class": "constant", ...}` written by the model is
  * a map of synthesized text, not a constant. Anything else (`null`, a
  * non-finite number, nesting past the boundary's depth) is passed as it is,
- * and the boundary treats it as a value that states no provenance.
+ * and the boundary treats it as a value that states no provenance. A list or
+ * object nested as deep as the boundary's depth limit becomes `null`, so a
+ * model-written object is never passed through unwrapped.
  */
 
 export type ModelCall = { readonly capability: string; readonly arguments: Readonly<Record<string, unknown>> };
@@ -34,7 +36,10 @@ function translate(value: unknown, depth: number): unknown {
   if (typeof value === "string" || typeof value === "boolean" || (typeof value === "number" && Number.isFinite(value))) {
     return { class: "synthesized", value };
   }
-  if (typeof value !== "object" || value === null || depth > MAX_ARGUMENT_DEPTH) return value;
+  if (typeof value !== "object" || value === null) return value;
+  // Past the depth the boundary walks, a list or object is replaced by null, which states no provenance.
+  // So no object the model wrote ever reaches the boundary unwrapped, at any depth (D-060).
+  if (depth >= MAX_ARGUMENT_DEPTH) return null;
   if (Array.isArray(value)) return value.map((element: unknown) => translate(element, depth + 1));
   if (isWrapper(value, "ref")) return { class: "bound", reference: value.ref };
   if (isWrapper(value, "slot")) return { class: "constant", slot: value.slot };
