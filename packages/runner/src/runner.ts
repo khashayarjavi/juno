@@ -348,11 +348,12 @@ export class Runner {
       run = loaded.run;
     } else run = held;
     if (run.task.state !== "parked") throw new RunnerError(`task ${id} is ${run.task.state}; only a parked task resumes`);
+    // TTL first (§6.4): an expired task fails whatever it is parked on, a non-overridable park included.
+    if (this.#ttlExpired(run)) return this.#fail(run, "ttl_expired");
     const park = this.#lastPark(run);
     if (park !== null && NON_OVERRIDABLE.has(park.reason)) {
       throw new RunnerError(`task ${id} is parked ${park.reason}, which is not overridable (§8.3); it is never resumed. Remedy the cause and start a new task`);
     }
-    if (this.#ttlExpired(run)) return this.#fail(run, "ttl_expired");
 
     const added = options.grants ?? [];
     if (added.length > 0) {
