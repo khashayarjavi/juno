@@ -4,10 +4,10 @@
 **Slice 1.1 — real-model evidence** (authorised by the operator, 2026-10-30; not a roadmap item). Slice 1 is complete (Increment 7 merged). Each part is its own PR through the CLAUDE.md §7 gate; nothing beyond these four parts is in scope:
 1. **Part 1 — CI on main.** The verify workflow also runs on every push to `main`. Only the trigger is added.
 2. **Part 2 — Stale runner lock (amends D-064).** A new runner may clear `runner.lock` only when the recorded owner is provably dead: same host identity, and the recorded PID is not running or the host has rebooted since. Every other case refuses to start. Tests: live owner refuses; dead owner on same host clears; other host refuses; unreadable lock refuses.
-3. **Part 3 — One real provider adapter: OpenCode Zen** (key only in `OPENCODE_API_KEY`, read only by the runner; runner network to opencode.ai only; a §13.1 profile; a free model; only through `make smoke`, never in CI or `make verify`; spend ceiling USD 5 and a token cap).
+3. **Part 3 — One real provider adapter: Groq, `openai/gpt-oss-120b` (D-072; was OpenCode Zen, then GitHub Models)** (key only in `GROQ_API_KEY`, read only by the runner; runner network to `api.groq.com` only; a §13.1 profile; free tier, zero paid usage; only through `make smoke` from the cloud session, never in CI or `make verify`; a token cap below Groq's documented daily free limit).
 4. **Part 4 — Evidence run with `make smoke`** (the five §18 scenarios, three ordinary tasks, one adversarial task, each at least twice; journals under `evidence/slice-1.1/`; report in `docs/evidence/slice-1.1.md`).
 
-Status: Parts 1 and 2 merged (PR #12, PR #13). Two STOPs at Part 3 on OpenCode Zen (free models refuse this client; then HTTP 402, no funds). The operator then ruled D-071 (supersedes D-070): drop OpenCode Zen, use **GitHub Models, free tier**, run only by a dispatched `smoke.yml`. **STOPPED a third time at Part 3: GitHub Models no longer exists.** GitHub retired it on 2026-07-30, inference API included, for every customer (details under "For the operator"). D-071 forbids falling back to another provider, so nothing of Part 3 was built and Part 4 was not started.
+Status: Parts 1 and 2 merged (PR #12, PR #13). Three STOPs at Part 3 (OpenCode Zen free models refuse this client; OpenCode Zen HTTP 402; GitHub Models retired). **The operator ruled D-072 (supersedes D-071): Groq free tier, model `openai/gpt-oss-120b` only, key in `GROQ_API_KEY`, `make smoke` from the cloud session only, zero paid usage.** Groq's docs were read and one live call with a tool succeeded (HTTP 200, a correct tool call, free-plan rate-limit headers; recorded in D-072). **Part 3 in progress** on branch `claude/dreamy-albattani-mnygx0` (this session's permitted branch; it carries PR #15's commits, so its PR supersedes PR #15).
 
 ## Merges recorded (CLAUDE.md §7 step 6)
 - **Slice 1.1 Part 2, PR #13** (https://github.com/khashayarjavi/juno/pull/13): head c50367aec339dbd0c26268f77f008b976428fd64; PR CI `verify` run 41101381460 (success); merged as merge commit c464ec8dd247dd7288da97c31888cbc03591d761, pinned to the head SHA; CI `verify` on `main` for the merge commit, run 41103200588 (event `push`, success). Reviewer verdict: round 1 MERGE on c50367a.
@@ -46,7 +46,7 @@ Everything is in `packages/runner/` unless named. Every test names the section i
 - **First independent review of PR #9 (2026-10-30): DO NOT MERGE.** Fixed: (1) the four Increment 6 commits had not reached GitHub (the branch's upstream had become `origin/main`; pushed, upstream fixed); (2) a resume that re-parked left the runner claimed, so it refused all further work (fixed, tested); (3) a task listing an unusable grant could never resume (operator can now drop grants on resume, recorded in D-066 with the consequence; tested, including across a restart); (4) the runner-record classes recorded in D-066.
 
 ## Remaining
-- Slice 1.1 Parts 3 and 4, blocked on the operator's decision below (third Part 3 STOP: the D-071 provider is retired).
+- Slice 1.1 Part 3 (Groq adapter, D-072), then Part 4 (evidence run and `docs/evidence/slice-1.1.md`).
 
 ## make verify
 GREEN as of 2026-10-30 (Slice 1.1 Part 2, head c50367a): 647 unit tests (19 files), 51 container and acceptance tests (7 files), both lint self-tests fired. Summary line: `make verify: GREEN`.
