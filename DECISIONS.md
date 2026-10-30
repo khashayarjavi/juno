@@ -604,7 +604,19 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
 
 ## D-070 — Slice 1.1 Part 3 model: `claude-haiku-5-5`, paid, through chat completions (operator ruling)
 - Date: 2026-10-30
-- Status: Accepted (operator ruling on the Part 3 STOP recorded in `STATE.md`)
+- Status: Superseded by D-071 (was: Accepted, operator ruling on the Part 3 STOP recorded in `STATE.md`)
 - Applies to: Slice 1.1 Parts 3 and 4
 - Decision: Part 3 uses the paid OpenCode Zen model `claude-haiku-5-5`, and no other model, through the same chat-completions endpoint (`https://opencode.ai/inference/openai/v1/chat/completions`). The smoke spend ceiling stays at the equivalent of USD 5 with a token cap, enforced by JUNO itself, using the provider's published prices recorded in the Provider Capability Profile with their source and date. If the provider refuses for payment or balance reasons, the work stops and the exact error is reported.
 - Reason: every free model refused this client (HTTP 429 `FreeUsageLimitError`; the provider's docs say free chat models require the OpenCode client). The operator chose a named paid model under the existing ceiling.
+
+## D-071 — Slice 1.1 Part 3 provider: GitHub Models, free tier, run only by a dispatched workflow (operator ruling; supersedes D-070)
+- Date: 2026-10-30
+- Status: Accepted (operator ruling on the second Part 3 STOP)
+- Applies to: Slice 1.1 Parts 3 and 4
+- Decision: OpenCode Zen is dropped and no adapter for it is built. The one real provider is **GitHub Models, free tier**, through its OpenAI-compatible chat-completions endpoint (endpoint, authentication and rate limits taken from GitHub's current documentation, never from memory). Part 3 is otherwise unchanged: one adapter, one API format, one §13.1 profile with `replay_fidelity` stated honestly, runner network outbound to the provider host only, the workload still without network, never run by `make verify` or the verify workflow (D-002).
+  - `make smoke` runs only inside a new workflow, `.github/workflows/smoke.yml`, triggered by `workflow_dispatch` only (never `push` or `pull_request`). It authenticates with the built-in `GITHUB_TOKEN` with `permissions: { contents: read, models: read }` and nothing more: no personal token, no repository secret. The token must not appear in the journal, logs, artifacts or commits, and a test proves it.
+  - The workflow uploads the journals and the run summary as an artifact; they are committed under `evidence/slice-1.1/` through the normal §7 gate.
+  - Model: the most capable model the free-tier catalog offers, with the choice and its reason recorded. A token cap stays, and the spend ceiling is zero paid usage: any response indicating billing or a paid tier is a STOP.
+  - Rate limits: when hit, wait and resume, spreading runs across sessions if needed. Never fall back to another provider or model.
+  - If the agent cannot dispatch the workflow, or GitHub Models refuses this account, it STOPs with the exact error or response.
+- Reason: the OpenCode Zen account had no funds (HTTP 402, recorded in `STATE.md`), and the operator chose a provider that needs no payment and no stored secret. This amends D-002 only as the operator states: `make smoke` may run in CI, but only in its own dispatched workflow, never in the verify workflow.
