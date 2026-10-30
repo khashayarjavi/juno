@@ -1,12 +1,13 @@
-import { appendFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { TrajectoryEntry } from "../../contracts/src/index.js";
 import { GrantStore } from "../../enforcement/src/index.js";
+import { verifyTrajectory } from "../../journal/src/index.js";
 import { entriesFile, headFile } from "../../journal/src/layout.js";
 import { CapabilityRegistry, WORKLOAD_EXECFILE, loadRegistryEntry } from "../../registry/src/index.js";
 import type { ProviderRequest } from "../src/provider.js";
 import { RUNNER_RECORD, type Runner, RunnerError } from "../src/runner.js";
-import { DAY_MS, type Harness, OPERATOR_CRITERION, SHELL_RUN_FILE, grant, harness, request, shellRun, standInAdapter, turn } from "./helpers.js";
+import { DAY_MS, type Harness, OPERATOR_CRITERION, PROFILE, SHELL_RUN_FILE, grant, harness, request, shellRun, standInAdapter, turn } from "./helpers.js";
 
 // Increment 6: resume (§6.3) and TTL (§6.4).
 
@@ -128,6 +129,23 @@ describe("resume across a restart (§6.3, §3.4.5, D-066)", () => {
     expect(second.runner.spent("task-1")?.tokens).toBe(30);
   });
 
+  // proves §6.3 steps 2 and 3: on resume the model policy is re-evaluated against the providers available now
+  it("re-parks routing_unavailable on resume when the task's provider is no longer served", async () => {
+    const { runner } = h.runner([unavailable]);
+    admitted(runner);
+    await runner.run("task-1");
+    runner.close();
+    const registry = new CapabilityRegistry();
+    registry.register(loadRegistryEntry(SHELL_RUN_FILE), [standInAdapter]);
+    const store = new GrantStore();
+    store.add(grant());
+    const { runner: next, provider } = h.runner([turn([])], { registry, grants: store, profile: { ...PROFILE, id: "juno.other" } });
+    expect((await next.resume("task-1")).reason).toBe("routing_unavailable");
+    expect(provider.requests).toEqual([]);
+    expect(ofKind("park").at(-1)).toMatchObject({ reason: "routing_unavailable", phase: "resume" });
+    expect(ofKind("resume").at(-1)).toMatchObject({ provider_available: false, routable: false });
+  });
+
   // proves D-056: a task whose journal fails verification after a crash is never resumed; it fails, with the reason recorded
   it("fails, and never resumes, a task whose journal does not verify", async () => {
     const { runner } = h.runner([unavailable]);
@@ -135,13 +153,17 @@ describe("resume across a restart (§6.3, §3.4.5, D-066)", () => {
     await runner.run("task-1");
     runner.close();
     // A crash between writing an entry and replacing the head (D-027).
-    appendFileSync(entriesFile(h.journal.root, "task-1"), '{"forged":true}\n');
+    const entriesPath = entriesFile(h.journal.root, "task-1");
+    const intact = readFileSync(entriesPath);
+    appendFileSync(entriesPath, '{"forged":true}\n');
     const { runner: next, requests } = restart([turn([])]);
     expect(await next.resume("task-1")).toEqual({ task_id: "task-1", state: "failed", reason: "journal_unverifiable" });
     expect(requests).toEqual([]);
     expect(h.entries(RUNNER_RECORD).map(h.payload)).toContainEqual(expect.objectContaining({ type: "task_failed", task: "task-1", reason: "journal_unverifiable" }));
     next.close();
-    // Even if the file is repaired by hand later, the recorded failure stands.
+    // Even once the file is repaired by hand, so that it verifies again, the recorded failure stands.
+    writeFileSync(entriesPath, intact);
+    expect(verifyTrajectory(h.journal.root, "task-1").ok).toBe(true);
     const { runner: third, requests: thirdRequests } = restart([turn([])]);
     expect((await third.resume("task-1")).reason).toBe("journal_unverifiable");
     expect(thirdRequests).toEqual([]);

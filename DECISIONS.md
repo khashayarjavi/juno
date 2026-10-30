@@ -539,3 +539,26 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
 - Applies to: Increment 5 onward
 - Decision: the runner creates `runner.lock` in the journal root exclusively when it starts and removes it when it closes. A second runner on the same journal finds the lock and refuses to start. A lock left by a crashed runner is not taken over; the operator removes it. Every quarantine the registry records is appended, once, to the runner's own chain under the reserved id `juno.registry`. At start the runner reads that chain (verified) and quarantines each adapter again, so a quarantine is permanent across restarts, and admission check 9 then refuses the capability. A record that does not verify or does not parse stops the runner from starting.
 - Reason: D-025 requires one runner per journal volume. Taking over a stale lock could let two runners write one journal, so the restrictive reading leaves it to the operator (§0.2 D8). §2.5 makes a forfeited registration a quarantine; forgetting it on restart would let a non-conforming adapter serve again.
+
+## D-066 — Resume, rebuilding a task from its journal, and grant counts across restarts
+- Date: 2026-10-30
+- Status: Accepted (autopilot rulings, each the more restrictive reading; applies the standing ruling D-056)
+- Applies to: Increment 6 onward
+- Decision: `Runner.resume(id, { grants? })` (`packages/runner/src/runner.ts`) resumes a parked task in this order:
+  1. **Never resumed:** a task whose journal does not verify (D-056); a task parked `integrity_floor` or `adapter_quarantined`. Resuming continues the turn loop, and §8.3 makes those parks unclearable, so they end only by a new task (autopilot ruling). Only a `parked` task resumes.
+  2. **TTL** (§6.4): wall time since admission, parked time included. Expired: `failed`, `ttl_expired`.
+  3. **Added grants.** The operator may add grants issued while the task was parked. Each must exist and pass admission's grant rules (principal, §5.3, check 4); otherwise the resume is refused and nothing is recorded.
+  4. **Grants re-evaluated** (§6.3 step 1). Any grant the task lists that is unknown, another principal's, not yet issued, revoked, expired or exhausted re-parks `awaiting_grant`, with `phase: resume`. That is a superset of §6.3's "expired or revoked" (autopilot ruling).
+  5. **Model policy and floor re-evaluated** (§6.3 steps 2 and 3). A provider this runner does not serve, or one the policy no longer allows at the task's floor (§10.3), re-parks `routing_unavailable`.
+  6. **The `resume` entry** records the park resumed, the grants added, every grant's status, invocations and expiry, the provider and whether it can serve, the floor, the TTL left and the spend. Then the task runs again. The model is told that the call it was parked on did not run.
+  - There are no locks in Slice 1, so §6.3 step 4 has nothing to do. Budgets cannot be raised on resume in Slice 1, so a `budget_exceeded` task resumes into an immediate re-park.
+  - **Rebuilt from the journal alone** (§3.4.5). A task this runner does not hold is rebuilt from its trajectory, which now records enough to do so:
+    - the admission note carries `admitted_at` (the runner's clock), the criterion and the provider's profile;
+    - every context item is a `note` of type `context` with its class;
+    - every park and state note carries the spend at that moment;
+    - floor changes and added grants are in their own notes and `resume` entries.
+    A trajectory that shows the task still `running` was cut off by a crash. It is failed `runner_interrupted`, because an effect may have happened that the trajectory does not show (autopilot ruling).
+  - **Park entries** now carry the boundary's verdict detail, so the reason for a park is readable from the park entry itself.
+  - **Grant counts across restarts.** Before every `perform`, the runner appends a `grant_charge` note to its own record, `juno.runner`. So the effect is never counted after it happens, and a crash can only over-count. At start the runner rebuilds every count from that record, and refuses a grant store that already holds charges. A charge naming a grant no longer stored is ignored: that grant can cover nothing.
+  - **D-056 applied.** A task whose journal fails verification gets a `task_failed` note in `juno.runner` (reason `journal_unverifiable`, with the chain failure), since nothing can be appended to a broken chain. That record stands even if the files are later repaired: such a task is never resumed. A `juno.runner` record that does not verify or does not parse stops the runner from starting.
+- Reason: §6.3 ("agent resumed ≠ agent still authorized") and §6.4, failing closed wherever the text leaves room. Acceptance test 1 (park, stop, resume next day) needs a task rebuilt by a new runner, with its grants' counts intact (D-042's forward record). Charging durably before the effect closes the gap that in-memory counts leave.

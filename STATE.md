@@ -5,7 +5,14 @@
 
 Branch: `claude/tender-allen-hvjegb`, moved forward to `main` after PR #8 merged (a fast-forward: it held only merged history). Increment 5 is in `main`.
 
-**Status: in progress.** Read §6.3, §6.4, D-056 and the Increment 5 notes below first.
+**Status: built; `make verify` pending.** See D-066.
+
+## Done in Increment 6
+- `Runner.resume` (§6.3): never for an unverifiable journal (D-056) or a non-overridable park (§8.3); TTL first (§6.4, parked time counts); grants added while parked must pass admission's grant rules; every grant re-evaluated (any unusable grant re-parks `awaiting_grant`); model policy and floor re-evaluated against the providers served now (`routing_unavailable`); a `resume` entry records what was found.
+- Rebuild from the journal alone after a restart: admission record, context notes, spend snapshots, floor notes, added grants. A task found still `running` fails `runner_interrupted`.
+- Grant charges recorded in `juno.runner` before every effect and rebuilt at start; failed-unverifiable tasks recorded there too.
+- `GrantStore.ids()` and `GrantStore.validity()` added (packages/enforcement/src/grants.ts); nothing else in the enforcement package changed.
+- Tests: `packages/runner/test/resume.test.ts` (14), including both build plan tests (a grant that expires while parked re-parks on resume; TTL expiry while parked fails the task and releases it), with a control that the same task proceeds when its grants are valid. 13 deliberate breakages; 12 caught, 1 equivalent (the in-memory memo of an unverifiable task: the journal still fails, with the same outcome).
 
 ## Merges recorded (CLAUDE.md §7 step 6)
 - **Increment 5, PR #8** (https://github.com/khashayarjavi/juno/pull/8): head fd68a2509d0be8556754cc3a0e78d71dfcad28e6; PR CI `verify` run 41063185508 (success); merged as merge commit da4e4cf32f6e8a5acd8e84dbc71c8afd2ca04c71, pinned to the head SHA; CI `verify` on `main` for the merge commit, run 41064280256 (workflow_dispatch, success). Reviewer verdicts: round 1 MERGE on 4e00d36 (findings fixed), round 2 MERGE on fd68a25.
@@ -38,7 +45,7 @@ Everything is in `packages/runner/` unless named. Every test names the section i
   - The reviewer also asked the operator to confirm that the CLAUDE.md §7 autopilot change (D-055) is theirs. It came from the director's instruction that started this session.
 
 ## Remaining in Increment 6
-- Everything: resume (§6.3), TTL across parked time (§6.4), D-056, and the two build plan tests.
+- `make verify`, review and the §7 merge gate.
 
 ## make verify
 GREEN as of 2026-10-30 in the cloud session, after the first-review fixes: 612 unit tests (17 files), 44 container tests (6 files), lint self-test rejected the `exec()` probe, unicode self-test rejected all 12 planted characters. Summary line: `make verify: GREEN`.
