@@ -1,0 +1,1 @@
+{"data_class":{"integrity":"untrusted","sensitivity":"internal"},"item":{"content":{"detail":"[\n  {\n    \"code\": \"unrecognized_keys\",\n    \"keys\": [\n      \"finish_reason\"\n    ],\n    \"path\": [],\n    \"message\": \"Unrecognized key: \\\"finish_reason\\\"\"\n  }\n]","error":"the runner could not read that turn","turn_seq":18},"role":"user"},"type":"context"}

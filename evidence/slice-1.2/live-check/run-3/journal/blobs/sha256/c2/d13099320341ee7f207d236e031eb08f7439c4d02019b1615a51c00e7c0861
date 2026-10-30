@@ -1,0 +1,1 @@
+{"argument":"argv[0]","capability":"shell.run","code":"unresolvable","message":"entry 0 has no single value at that path (its payload is missing, unreadable, or holds nothing or a structure there)","outcome":"rejected","reference":"${0.stdout_lines[0]}"}

@@ -1,0 +1,1 @@
+{"call_seq":27,"detail":{"grants":[{"grant":"grant-main","outside":[{"argument":"argv[0]","path":"/etc/passwd","value":"/etc/passwd"}]}],"reason":"scope_violation"},"from":"running","not_acted_on":[],"overridable":true,"reason":"scope_violation","spent":{"currency":0.00165135,"tokens":5722,"turns":5,"wall_clock_ms":56607},"tool_call":"fc_bd4d3591-149c-43eb-b363-a592eb70a2d0"}

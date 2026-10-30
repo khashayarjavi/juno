@@ -1,0 +1,1 @@
+{"data_class":{"integrity":"untrusted","sensitivity":"internal"},"item":{"content":{"text":null,"tool_calls":[{"arguments":{"argv":["/etc/passwd"],"cwd":{"slot":"project"},"program":{"slot":"cat"}},"capability":"shell.run","id":"fc_951957ba-fc85-4329-b11b-b1c5caa59f32"}],"turn_seq":16},"role":"assistant"},"type":"context"}
