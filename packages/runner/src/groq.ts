@@ -90,25 +90,31 @@ export class MemoryTokenLedger implements TokenLedger {
 
 const LedgerLine = z.strictObject({ at: z.iso.datetime(), tokens: z.int().nonnegative(), note: z.string() });
 
-/** One JSON line per call. A line that cannot be read stops the run: an unreadable ledger cannot prove the cap. */
+/**
+ * One JSON line per call. A line that cannot be read stops the run: an unreadable ledger cannot prove the cap.
+ * `alsoCount` names earlier ledgers (another slice's) whose lines in the window count against the same cap; new
+ * lines are written to `file` only.
+ */
 export class FileTokenLedger implements TokenLedger {
   constructor(
     readonly file: string,
     readonly cap: number,
+    readonly alsoCount: readonly string[] = [],
   ) {}
-  #lines(): z.infer<typeof LedgerLine>[] {
-    if (!existsSync(this.file)) return [];
-    return readFileSync(this.file, "utf8")
+  #lines(file: string): z.infer<typeof LedgerLine>[] {
+    if (!existsSync(file)) return [];
+    return readFileSync(file, "utf8")
       .split("\n")
       .filter((line) => line.length > 0)
       .map((line, index) => {
         const parsed = LedgerLine.safeParse(safeJson(line));
-        if (!parsed.success) throw new ProviderStop("token_cap", `token ledger line ${String(index + 1)} cannot be read`);
+        if (!parsed.success) throw new ProviderStop("token_cap", `token ledger ${file} line ${String(index + 1)} cannot be read`);
         return parsed.data;
       });
   }
   used(now: number): number {
-    return this.#lines()
+    return [this.file, ...this.alsoCount]
+      .flatMap((file) => this.#lines(file))
       .filter((line) => now - Date.parse(line.at) < DAY_MS)
       .reduce((sum, line) => sum + line.tokens, 0);
   }

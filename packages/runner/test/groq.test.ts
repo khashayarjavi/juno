@@ -304,6 +304,15 @@ describe("rate limits and the token cap (D-072)", () => {
       ledger.record(100, Date.parse("2026-10-30T10:00:00Z"), "a");
       ledger.record(50, Date.parse("2026-10-30T12:00:00Z"), "b");
       expect(new FileTokenLedger(file, 150_000).used(Date.parse("2026-10-31T11:00:00Z"))).toBe(50);
+      // Slice 1.2: an earlier slice's ledger counts against the same cap; new lines go to this ledger only.
+      const earlier = join(dir, "earlier.jsonl");
+      new FileTokenLedger(earlier, 150_000).record(70, Date.parse("2026-10-31T10:30:00Z"), "earlier slice");
+      const both = new FileTokenLedger(file, 150_000, [earlier]);
+      expect(both.used(Date.parse("2026-10-31T11:00:00Z"))).toBe(120);
+      both.record(5, Date.parse("2026-10-31T11:00:00Z"), "this slice");
+      expect(new FileTokenLedger(earlier, 150_000).used(Date.parse("2026-10-31T11:00:00Z"))).toBe(70);
+      writeFileSync(earlier, "{broken\n", { flag: "a" });
+      expect(() => both.used(Date.now())).toThrow(ProviderStop);
       writeFileSync(file, "{broken\n", { flag: "a" });
       expect(() => ledger.used(Date.now())).toThrow(ProviderStop);
     } finally {

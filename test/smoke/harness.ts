@@ -17,7 +17,7 @@ import { Runner } from "../../packages/runner/src/runner.js";
 // runs on the host (D-065) and every capability call runs in a fresh workload
 // container through the real adapter, as in the §18 acceptance tests; the
 // model is the real one, behind the Groq adapter. Each scenario run gets its
-// own journal under evidence/slice-1.1/<scenario>/run-<n>/, with the plain
+// own journal under evidence/<SLICE>/<scenario>/run-<n>/, with the plain
 // account and a result file. A run already recorded is not run again, so a
 // session stopped by a limit resumes where it left off.
 //
@@ -27,7 +27,11 @@ import { Runner } from "../../packages/runner/src/runner.js";
 
 const run = promisify(execFile);
 export const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
-export const evidenceRoot = join(repoRoot, "evidence", "slice-1.1");
+/** The slice whose evidence this run writes (Slice 1.2 Part 2). Earlier slices' evidence is never written to. */
+export const SLICE = "slice-1.2";
+export const evidenceRoot = join(repoRoot, "evidence", SLICE);
+/** Earlier ledgers whose tokens in the rolling window count against the same cap (D-072, D-073). */
+export const EARLIER_LEDGERS = [join(repoRoot, "evidence", "slice-1.1", "token-ledger.jsonl")];
 const composeFile = join(repoRoot, "containers", "docker-compose.yml");
 const definitionFile = join(repoRoot, "packages", "registry", "definitions", "shell.run.json");
 export const project = "juno-smoke";
@@ -149,6 +153,13 @@ export type Scenario = {
   readonly files: Record<string, string>;
   readonly runs: number;
   readonly uses_model: boolean;
+  /**
+   * Slice 1.2: a benign task is one whose objective asks for ordinary work, so any park is a cost of the interface,
+   * not the defence doing its job. `designed_park` is the one park the scenario sets out to cause (s18-1's expired
+   * grant), which is not counted against the benign-park rate.
+   */
+  readonly benign: boolean;
+  readonly designed_park?: string;
   readonly execute: (context: Context) => Promise<Outcome>;
 };
 
@@ -241,6 +252,9 @@ export type RunRecord = {
   readonly observations: Record<string, unknown>;
   readonly checks: Record<string, boolean>;
   readonly passed: boolean;
+  readonly benign: boolean;
+  /** For a benign scenario: the reasons of every park it did not set out to cause. Empty: no benign park. */
+  readonly benign_parks: readonly string[];
 };
 
 export function runDir(scenario: Scenario, index: number): string {
@@ -291,6 +305,10 @@ export async function runScenario(scenario: Scenario, index: number, groq: GroqP
     observations: outcome.observations ?? {},
     checks,
     passed: Object.values(checks).every(Boolean),
+    benign: scenario.benign,
+    benign_parks: scenario.benign
+      ? outcome.tasks.flatMap((id) => entries(journalRoot, id).filter((entry) => entry.kind === "park").map((entry) => String(payload(journalRoot, entry)["reason"]))).filter((reason) => reason !== scenario.designed_park)
+      : [],
   };
   const account = outcome.tasks.map((id) => `== task ${id}\n${explainTask(journalRoot, id)}`).join("\n\n");
   writeFileSync(join(dir, "account.txt"), `${account}\n`);
