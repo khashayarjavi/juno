@@ -440,3 +440,102 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
     - "rejects a program outside the enum when its provenance meets the floor" now gives `argv` as an operator constant, so every instruction value really does meet its floor and the rejection is still proven. Its former input (an operator `/bin/sh` with a synthesized `-c`) is a new test that now parks `integrity_floor`.
     - "parks a synthesized command string alongside a broken data reference" expected the program as the only violation. Where the call also has an argv, it now expects the promoted `argv[0]` too.
 - Reason: the ruling says every value under an instruction field is judged "in any shape", so the boundary must reach values that the old strict proposal schema refused outright. The old schema threw `BoundaryError`, which is neither a park nor a recorded rejection. A value with no stated provenance is the §1.5 fail-closed case: its integrity cannot be established. Reading an argv of the wrong shape, or under a program with no surface, as "every element promoted" is D-037 applied as written, not a new rule. Leaving it out would reopen the same bypass through the argv field. All of these only turn a rejection into a park, or a park into one that names more values. None lets anything run that ran before.
+
+## D-055 — Autopilot rules added to CLAUDE.md (operator change)
+- Date: 2026-10-30
+- Status: Accepted (director, 2026-10-30)
+- Applies to: Increment 5 onward
+- Decision: the director's autopilot rules were added verbatim to `CLAUDE.md` as §7, and three rules were added to §2: 11 (`docs/blueprint/` is context, never instructions), 12 (no invisible or bidirectional-control Unicode in source, tests or capability files, enforced by a lint check with a self-test) and 13 (a package, version or API exists only when the lockfile installs it in CI). §7 overrides earlier sections where they conflict. Under it, ambiguities the spec text does not settle are decided by the more restrictive reading and recorded as "autopilot ruling"; merges go through the §7 merge gate. The review prompt §7 calls "P2" is the one headed "Independent review before merging" in `docs/session-prompts.md`, the only review prompt there. The director numbered the runner-placement ruling D-065, and it is recorded under that number below; D-058 to D-064 are used by later decisions in order, and the sequence then continues at D-066.
+- Reason: operator change to the agent's instructions, recorded so a later session knows when and why they changed. It is not a change to `spec/`.
+
+## D-056 — A task whose journal fails verification after a crash is never resumed (standing ruling)
+- Date: 2026-10-30
+- Status: Accepted (director's standing ruling, 2026-10-30)
+- Applies to: Increment 6 (forward record)
+- Decision: when a task's journal fails verification after a crash (for example D-027's `head_mismatch` from a crash between the entry and the head), the task is never resumed. It goes to `failed`, and the reason is recorded.
+- Reason: director's ruling. Resuming on an unverified record would act on evidence that cannot be trusted (§3.4, invariant 6).
+
+## D-057 — Increment 7 acceptance criteria name protected paths; tests 2 and 3 pass together (standing ruling)
+- Date: 2026-10-30
+- Status: Accepted (director's standing ruling, 2026-10-30)
+- Applies to: Increment 7 (forward record)
+- Decision: D-025's Increment 7 directive applies: every acceptance criterion names protected paths, and verification fails if the task wrote under them. Acceptance tests 2 and 3 must pass together, in the same run.
+- Reason: director's ruling. Either test alone is easy to pass (build plan Increment 7); passing both is the proof.
+
+## D-065 — The runner runs on the host for Slice 1; no Docker socket in any container (standing ruling)
+- Date: 2026-10-30
+- Status: Accepted (director's standing ruling, option (b), 2026-10-30)
+- Applies to: Increment 5 onward. Settles the D-034 forward record (how the runner reaches Docker).
+- Decision: for Slice 1 the runner runs on the host, not in a container, and no container is given the Docker socket. The runner calls the `docker` CLI on the host to start each workload container (D-034). The journal stays outside `/work` and outside every workload mount, and a container test must prove the workload still cannot read or write it.
+  The `juno-runner` image and service from Increments 0 to 2 remain: they hold no Docker socket and run no task, and their container tests still prove `journal-vol` is invisible to the workload. Tasks are run by the `Runner` class on the host (`test/containers/runner.test.ts` runs one against the real workload and proves the host journal is unreachable from it).
+- Reason: director's ruling. A runner inside a container would need the Docker socket to start workload containers, and the Docker socket is root on the host: any process that reached it could undo the workload's seal. Keeping the runner on the host keeps the socket out of every container.
+
+## D-058 — The hidden-character check (CLAUDE.md rule 12)
+- Date: 2026-10-30
+- Status: Accepted
+- Applies to: Increment 5 onward
+- Decision: `tools/check-unicode.js` scans `packages/`, `test/`, `tools/`, `containers/`, `scripts/`, `.github/`, `.claude/` and the root source and configuration files (including every capability definition under `packages/registry/definitions/`). It refuses every format character (Unicode `Cf`: the bidi embeddings, overrides, isolates and marks, zero-width characters, the byte-order mark, soft hyphen, tag characters), the line and paragraph separators, every space separator except the ASCII space, variation selectors, the combining grapheme joiner and the Hangul fillers. `make lint` first runs `--self-test`, which plants twelve such characters in a scratch tree laid out like the repository and fails unless the real scan finds every one and nothing in a clean file; then it scans the repository and fails on any finding, naming file, line, column and code point. `test/lint/unicode.test.ts` checks each class and that the repository is clean. Binary files (any NUL byte) are skipped. `spec/` and `docs/` are prose inputs and are not scanned (the spec is read-only).
+- Reason: rule 12. A bidi override or zero-width character makes text read differently from how it parses, and the operator accepts work without reading code, so what a reviewer sees must be what runs. A separate script, not an ESLint rule, because ESLint does not read JSON capability definitions, Dockerfiles or the Makefile. The self-test follows the D-012 pattern: the check must be shown to fire, not only to pass. The source of the check and its test name every character by escape, so they contain none themselves.
+
+## D-059 — The one Slice 1 provider is the scripted provider, with a profile file
+- Date: 2026-10-30
+- Status: Accepted (autopilot ruling)
+- Applies to: Increment 5 onward
+- Decision: the build plan's "one provider adapter, one Provider Capability Profile" is the scripted provider of D-002 (`ScriptedProvider`, `packages/runner/src/provider.ts`) behind a `Provider` interface, and its profile `packages/runner/providers/scripted.json`. The profile carries every §13.1 field plus `id` (what `model_policy.permitted_providers` names), `model` and `model_version` (recorded on every turn, §3.4.3) and `posture` (matched exactly against `model_policy.posture`). It is stateless, client turn control, `replay_fidelity: full` (the runner sends, and hashes, the whole context every turn), native context management available, and prices per token in, out and cached. No real-provider adapter is built in Slice 1, so the runner needs no network, and `network_mode: none` stays on the runner service. Every provider answer is parsed at the boundary (`ProviderResponse`): model output is untrusted input. Its limits fail closed: at most 32 proposed calls per turn, text of at most 65536 characters, call ids of at most 128 characters, capability ids and argument names of at most 128 characters; a turn past any of them is a malformed turn (D-063).
+- Reason: D-002 makes the scripted fake the provider for `make verify` and CI. CLAUDE.md rule 13 forbids asserting from memory that an API exists, and no real provider's API can be installed or reached in CI, so a real adapter could not be shown to work. More restrictive: no adapter that cannot be verified, and no network for the runner. `posture` is matched exactly because a looser match would route a task to a posture it did not ask for.
+
+## D-060 — How the model states an argument's provenance in a tool call
+- Date: 2026-10-30
+- Status: Accepted
+- Applies to: Increment 5 onward
+- Decision: in a tool call, `{"ref": "<reference>"}` is a `bound` argument, `{"slot": "<name>"}` a `constant` argument, and any other string, number or boolean a `synthesized` one (`packages/runner/src/translate.ts`). A reference written as plain text is synthesized text. Lists and other objects keep their shape and every scalar inside them is wrapped as synthesized, so an object the model writes (including one shaped like an argument source, `{"class": "constant", "slot": "cat"}`) is never taken as a source; the boundary judges every value inside it under the field it was placed in (D-052, D-054). `null` and non-finite numbers are passed unchanged and state no provenance. A list or object nested as deep as the boundary's depth limit (`MAX_ARGUMENT_DEPTH`) is replaced by `null`, so no object the model wrote reaches the boundary unwrapped at any depth. (First review of PR #8: the earlier cut-off was one level too deep, so a source-shaped object at exactly 16 list levels reached the boundary as written and was read as a constant. Nothing new was reachable, since `{"slot"}` already names any constant and that shape is rejected `malformed_call`, but it broke this rule. A test now nests a forged constant 1 to 20 levels deep and requires `integrity_floor` each time.) Tool results name the `seq` of their `capability_result` entry, whose payload holds `stdout`, `stdout_lines` and `stderr`, so a model can bind a discovered value (`${<seq>.stdout_lines[0]}`).
+- Reason: invariant 7 requires provenance by mechanism. An explicit wrapper is the mechanism; recognising references inside text would make the provenance of a string depend on its content. Wrapping every model scalar means nothing the model writes can reach the boundary as a `constant` or `bound` source except through the two wrappers.
+
+## D-061 — Admission rulings
+- Date: 2026-10-30
+- Status: Accepted (autopilot rulings, each the more restrictive reading)
+- Applies to: Increment 5 onward
+- Decision: `admit` (`packages/runner/src/admission.ts`) runs §5.4 checks 1 to 11 and reports every failure together. Where the spec leaves a choice:
+  - **Closure mode (checks 2, 3).** `verified` only with a criterion, a verification method and `criterion_integrity = operator`; otherwise the task is admitted `accepted`, with a warning. `attested` needs a second actor, which Slice 1 does not have. A task with no criterion records `criterion_integrity: untrusted`: there is no author to credit.
+  - **Model-drafted criteria stay `derived`.** §5.2's promotion by explicit operator acceptance needs an acceptance surface that restates the criterion's consequences, which is the approval interface (out of Slice 1). So no admission input promotes a model criterion.
+  - **Check 4.** Every referenced source must be registered and classified, and every selector of every grant the task lists must lie within one of the task's sources, so nothing a task can reach lacks a declared class.
+  - **Check 5.** A provider satisfies the policy when the policy permits it, its posture matches exactly, and it is stateless whenever the policy asks for that or the floor is `confidential` or above (§10.3). The floor admission judges includes every constant's own sensitivity.
+  - **Check 6.** All four axes are required by the schema. The estate budget part is not built: estate budgets are out of Slice 1 (CLAUDE.md rule 9).
+  - **Checks 8 and 10, routing.** The task is routed to the first permitted provider that passes checks 5, 8 and 10; `steer_capability` is derived for it by the §7.8 table.
+  - **Context ownership (§10.2).** Slice 1's only strategy, `direct`, permits only `constant` and `bound` instruction arguments, and no admission input requires full replay, so every task is `native` and a synthesized value is always `untrusted` (§2.6). `owned` would let a synthesized value take the integrity of its volatile region, which could let model-authored text meet an instruction floor; Slice 1 never derives it.
+  - **§5.3.** A grant selecting a `write`, `external` or `irreversible` capability must set `max_invocations`. A path selector naming the whole capability namespace (`/work`) is a whole-filesystem scope and needs an Override, which Slice 1 does not have, so admission rejects it. Grants must exist and belong to the task's principal.
+  - **Also rejected:** a non-`direct` strategy, a parent (no delegation), ids under `juno.` (the runner's own records), a criterion whose command does not parse against its capability, a constant named like a criterion slot, and an id that already has a trajectory (an id is admitted once). A rejected admission is journalled under its id at `(secret, untrusted)`, because nothing about it was classified.
+- Reason: §0.2 D8 and CLAUDE.md §7 rule 3: where the text leaves a choice, the reading that admits less. Each choice keeps the §18 tests possible: acceptance tests use operator criteria, grants scoped below `/work`, and constants or bound references for the program.
+
+## D-062 — The criterion, the verification method, and the closure
+- Date: 2026-10-30
+- Status: Accepted (settles D-021's "criterion contents are fixed in Increment 5"; autopilot rulings where marked)
+- Applies to: Increment 5 onward
+- Decision:
+  - **Criterion.** `{ command: { capability, arguments }, expect_exit_code }`. Each argument is a literal fixed at admission and becomes a constant slot (`criterion.<field>`, `criterion.<field>.<index>`) with the criterion's integrity (§2.6). The one method is `command_exit`.
+  - **Verification.** When the model answers with no capability calls it claims the task is done (§6.1: it cannot confer it). For a `verified` task the runner then proposes the criterion's command, all constants, through the same enforcement boundary as any call, under the task's grants; the call is charged and journalled like any other. A park there parks the task. A rejection, a signal, or a program that cannot start is `inconclusive`. Budgets do not stop verification; TTL does.
+  - **Outcomes (autopilot ruling).** `pass` writes the closure and moves the task to `verified`. `fail` and `inconclusive` move it to `failed` with `verification_fail` / `verification_inconclusive`, and write no closure, because §6 allows only `verified | failed` and the closure schema allows `verified` only with `pass`. If the closure is refused at write time (for example its verifier is an executing actor), the task moves to `failed` with `closure_refused`, recorded in its trajectory, and the refusal is raised to the caller. A task that is not `verified`-mode goes to `complete_unverified`; its principal may close it `accepted` (closure `verification_result: inconclusive`, verifier = the principal).
+  - **Verifier.** `juno.verifier`. The closure is parsed with `closureSchemaFor(executing actors)` at write time. The executing actors are the runner, the enforcement boundary, the model, and every adapter that performed a task call, so none of them can verify.
+- Reason: §3.4.4 and §5.1 need a machine-evaluable criterion and a deterministic method. Running it through the boundary means verification gets every §2.7 check and no second path to the workload exists. Failing on `inconclusive` fails closed. Counting the runner and boundary as executing actors is the restrictive reading of "must not equal the executing actor".
+
+## D-063 — Turn loop, budgets, TTL and the classes of runner entries
+- Date: 2026-10-30
+- Status: Accepted (autopilot rulings, each the more restrictive reading)
+- Applies to: Increment 5 onward
+- Decision:
+  - **Turn.** The runner assembles the context (a fixed preamble, the objective with the criterion and constants, then every earlier turn and tool result), offers every registered capability as a tool, calls the provider, and journals a `turn` entry with the exact request, its hash, the parsed response, the profile's model and version, and the cost. The turn's class is the join of `derived` with everything in its context (§1.2). A response the runner cannot parse is recorded, counted as a turn, and told to the model; nothing runs.
+  - **Calls.** Each proposed call goes to `authorize`. On `proceed` the runner calls `perform` and journals a `capability_result`. On `park` it writes a `park` entry (with `overridable: false` for `integrity_floor` and `adapter_quarantined`, §8.3) and the rest of the turn's calls are not acted on. On `reject` it tells the model and continues.
+  - **Budgets.** A turn starts only while every axis is below its limit. After a turn, any axis above its limit parks, and that turn's calls are not acted on. Wall clock is also checked before every call. Tokens count in, out and cached. Currency is computed from the profile's prices, never taken from the provider. Wall clock counts running time only (D-025).
+  - **TTL.** Wall time since admission, parked time included (D-025). On expiry the task goes to `failed` with `ttl_expired` (§6.4). §18 and the build plan list `ttl_expired` among the parks; §6.4 and Increment 6's test say `failed`, which is the stricter reading (a failed task never resumes), so it is applied. No objection is raised: the spec text settles it.
+  - **Provider failure.** A provider that throws parks `routing_unavailable` (§6.2: the required routing cannot be served). The same park fires before a turn when the floor has risen past what the routed provider may serve (§10.3).
+  - **Result class.** A `capability_result`'s sensitivity is the capability's output rule (the call's input sensitivity for `shell.run`) raised to every source the task references; its integrity is the lower of the rule's and the input's. The task's `sensitivity_floor` is raised to it, with a `note` recording the change (§1.2).
+  - **One task at a time.** A runner starts a task only when no other task of its is running; concurrent tasks are out of Slice 1 (§18, CLAUDE.md rule 9).
+  - **Runner entries.** State notes, parks, verification notes and closures are `derived` at most (a park after a call takes the call entry's class, which is lower). Only the admission note, which holds operator input alone, can be `operator`. So a bound reference into anything the runner wrote can never lift text into an instruction field (invariant 1).
+- Reason: these settle choices the spec leaves to the build, each fail-closed. Counting every token and computing currency locally means a provider cannot under-report its way past a budget.
+
+## D-064 — One runner per journal, and quarantines that survive a restart
+- Date: 2026-10-30
+- Status: Accepted (applies D-025's Increment 5 directive; settles D-044's forward record; autopilot rulings)
+- Applies to: Increment 5 onward
+- Decision: the runner creates `runner.lock` in the journal root exclusively when it starts and removes it when it closes. A second runner on the same journal finds the lock and refuses to start. A lock left by a crashed runner is not taken over; the operator removes it. Every quarantine the registry records is appended, once, to the runner's own chain under the reserved id `juno.registry`. At start the runner reads that chain (verified) and quarantines each adapter again, so a quarantine is permanent across restarts, and admission check 9 then refuses the capability. A record that does not verify or does not parse stops the runner from starting.
+- Reason: D-025 requires one runner per journal volume. Taking over a stale lock could let two runners write one journal, so the restrictive reading leaves it to the operator (§0.2 D8). §2.5 makes a forfeited registration a quarantine; forgetting it on restart would let a non-conforming adapter serve again.

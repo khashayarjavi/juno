@@ -17,6 +17,8 @@ typecheck:
 
 # The second step proves the no-shell rule is live through the real ESLint CLI:
 # a deliberately non-conforming file must be rejected (DECISIONS.md D-012).
+# Then rule 12: the hidden-character scan proves it rejects planted characters,
+# and then scans the repository (DECISIONS.md D-058).
 lint:
 	npx eslint --max-warnings 0 .
 	@if npx eslint --stdin --stdin-filename packages/runner/src/lint-probe.ts < test/lint/fixtures/exec-probe.ts.txt > /dev/null; then \
@@ -24,6 +26,8 @@ lint:
 	else \
 		echo "lint self-test: exec() probe rejected, as required"; \
 	fi
+	node tools/check-unicode.js --self-test
+	node tools/check-unicode.js
 
 test:
 	npx vitest run
