@@ -7,7 +7,7 @@
 3. **Part 3 — One real provider adapter: OpenCode Zen** (key only in `OPENCODE_API_KEY`, read only by the runner; runner network to opencode.ai only; a §13.1 profile; a free model; only through `make smoke`, never in CI or `make verify`; spend ceiling USD 5 and a token cap).
 4. **Part 4 — Evidence run with `make smoke`** (the five §18 scenarios, three ordinary tasks, one adversarial task, each at least twice; journals under `evidence/slice-1.1/`; report in `docs/evidence/slice-1.1.md`).
 
-Status: Parts 1 and 2 merged (PR #12, PR #13). The first STOP (free models refuse this client) was ruled on by the operator: D-070, use the paid `claude-haiku-5-5`. **STOPPED again at Part 3: the provider refuses `claude-haiku-5-5` for lack of funds** (HTTP 402, the payment STOP named in D-070; details under "For the operator"). Nothing of Part 3 was built; Part 4 was not started.
+Status: Parts 1 and 2 merged (PR #12, PR #13). Two STOPs at Part 3 on OpenCode Zen (free models refuse this client; then HTTP 402, no funds). The operator then ruled D-071 (supersedes D-070): drop OpenCode Zen, use **GitHub Models, free tier**, run only by a dispatched `smoke.yml`. **STOPPED a third time at Part 3: GitHub Models no longer exists.** GitHub retired it on 2026-07-30, inference API included, for every customer (details under "For the operator"). D-071 forbids falling back to another provider, so nothing of Part 3 was built and Part 4 was not started.
 
 ## Merges recorded (CLAUDE.md §7 step 6)
 - **Slice 1.1 Part 2, PR #13** (https://github.com/khashayarjavi/juno/pull/13): head c50367aec339dbd0c26268f77f008b976428fd64; PR CI `verify` run 41101381460 (success); merged as merge commit c464ec8dd247dd7288da97c31888cbc03591d761, pinned to the head SHA; CI `verify` on `main` for the merge commit, run 41103200588 (event `push`, success). Reviewer verdict: round 1 MERGE on c50367a.
@@ -46,12 +46,24 @@ Everything is in `packages/runner/` unless named. Every test names the section i
 - **First independent review of PR #9 (2026-10-30): DO NOT MERGE.** Fixed: (1) the four Increment 6 commits had not reached GitHub (the branch's upstream had become `origin/main`; pushed, upstream fixed); (2) a resume that re-parked left the runner claimed, so it refused all further work (fixed, tested); (3) a task listing an unusable grant could never resume (operator can now drop grants on resume, recorded in D-066 with the consequence; tested, including across a restart); (4) the runner-record classes recorded in D-066.
 
 ## Remaining
-- Slice 1.1 Parts 3 and 4, blocked on the operator's decision below.
+- Slice 1.1 Parts 3 and 4, blocked on the operator's decision below (third Part 3 STOP: the D-071 provider is retired).
 
 ## make verify
 GREEN as of 2026-10-30 (Slice 1.1 Part 2, head c50367a): 647 unit tests (19 files), 51 container and acceptance tests (7 files), both lint self-tests fired. Summary line: `make verify: GREEN`.
 
 ## For the operator
+- **Slice 1.1 third STOP at Part 3: GitHub Models, the provider D-071 names, was retired by GitHub on 2026-07-30.** Checked on 2026-10-30 at about 18:35 UTC. No token was used or needed; nothing was sent to any model; **spend: USD 0**.
+  - GitHub's current docs (the REST "Models inference" page https://docs.github.com/en/rest/models/inference, the prototyping page with the rate limits, and https://docs.github.com/en/github-models all serve the same notice) say, verbatim: "As of July 30, 2026, GitHub Models has been fully retired. The playground, model catalog, inference API, and bring your own key (BYOK) are no longer available to any customer." The endpoint, authentication and rate-limit pages no longer exist, so there is nothing current to build the adapter from (CLAUDE.md rule 13 forbids building it from memory).
+  - GitHub's changelog says the same: https://github.blog/changelog/2026-07-30-github-models-is-now-retired/ ("As of July 30, 2026, GitHub Models is now retired ... This completes the retirement we announced on July 1"), and https://github.blog/changelog/2026-07-01-github-models-is-being-fully-retired-on-july-30-2026/ ("This includes existing customers with active usage").
+  - The host itself: `https://models.github.ai/`, `/catalog/models` and `POST /inference/chat/completions` all answer `HTTP/2 200`, `content-type: text/plain`, body `OK`, with no other headers. That is a placeholder, not a model API: no catalog, no JSON, no rate-limit headers.
+  - Not done, deliberately: no `smoke.yml` was added to `main` to probe the endpoint with `GITHUB_TOKEN`. It would put a workflow with `models: read` on `main` for a service GitHub says no longer exists, and the docs, the changelog and the live host already agree.
+  - GitHub's notice points to two replacements: **Microsoft Foundry** (an Azure model catalog) and **GitHub Copilot**. Either is a different provider, which D-071 forbids me to choose.
+  - **Your options** (pick one; Parts 3 and 4 then resume from here):
+    - (a) **Recommended: return to OpenCode Zen with credit (D-070).** The adapter design and endpoint were already checked live, and `claude-haiku-5-5` costs USD 0.10 in / 0.50 out per 1M tokens, so the whole Part 4 run should cost cents, under JUNO's own USD 5 ceiling. It needs a small credit purchase (the provider adds 4.6% + USD 0.31) and the key in `OPENCODE_API_KEY` for the runner. This drops D-071's zero-spend rule, so it needs your word.
+    - (b) GitHub Copilot as the provider, run by the dispatched `smoke.yml`. Whether it has a free tier, an API the runner can call, and a token Actions can use must be read from GitHub's current docs before you rule; I have not checked them and will not assume them.
+    - (c) Microsoft Foundry. It needs an Azure subscription, and almost certainly paid usage.
+    - (d) Name another provider.
+- **PR #14 is superseded.** Its two commits (STATE and D-070) are on this session's branch `claude/juno-autopilot-slice-1-1-i0hmd1`, which is the only branch this session may push to, so the record continues in a new draft PR from that branch. Closing PR #14 is your call.
 - **Slice 1.1 second STOP at Part 3: `claude-haiku-5-5` is refused for insufficient funds (D-070's payment STOP).** Checked on 2026-10-30 at about 18:14 UTC, from the runner's host with `OPENCODE_API_KEY`. The key was never printed or stored.
   - `GET https://opencode.ai/inference/v1/models` answered 200 and lists `claude-haiku-5-5`. Its published price there is USD 0.10 in, 0.50 out, 0.01 cache read and 0.125 cache write per 1M tokens. Above 100K tokens of context it is 0.50 in, 2.50 out, 0.05 cache read and 0.625 cache write.
   - Two minimal requests were sent to `POST https://opencode.ai/inference/openai/v1/chat/completions`, header `Authorization: Bearer <key>`: one with a tool and at most 60 output tokens, and one with no tool and at most 5 output tokens. Both answered **HTTP 402 Payment Required** with this exact body:
