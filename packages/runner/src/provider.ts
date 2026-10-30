@@ -20,10 +20,15 @@ export type ContextItem = {
   readonly content: unknown;
 };
 
-/** A capability offered to the model: its id and interface, so the model can name fields (§2.1). */
+/**
+ * A capability offered to the model: its id and interface, so the model can name fields (§2.1), and for each field
+ * the constant slots it may name there, by name only (Slice 1.2, D-075). Never a constant's value, and never a slot
+ * fixed for the verifier.
+ */
 export type ToolDefinition = {
   readonly capability: string;
   readonly interface: unknown;
+  readonly slots: Readonly<Record<string, readonly string[]>>;
 };
 
 /** Everything one provider call receives. Its canonical hash is the turn's prompt hash (§3.4.3). */

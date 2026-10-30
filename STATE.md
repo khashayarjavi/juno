@@ -5,7 +5,7 @@
 1. **Part 1 — runner and adapter interface.** The runner's messages never show the criterion's or any constant's literal values for instruction fields (slot names only). The tool schema offers instruction fields only as a constant slot (slot names enumerated) or a reference; a literal the model still sends is judged and parks exactly as today (D-052), proven by a test. The instructions show the reference grammar with an index example. Slots fixed for the verifier are not offered to the executing model; if the boundary still accepts them when named, that is an objection for spec v0.6 here, and the boundary is not changed.
 2. **Part 2 — evidence re-run** with `make smoke` (Groq, `openai/gpt-oss-120b`, free tier, D-072/D-073 unchanged) under `evidence/slice-1.2/`: the same scenarios, at least three runs each, plus three new ordinary tasks whose objectives do not name the constants. Report `docs/evidence/slice-1.2.md` against Slice 1.1: benign-park rate (target under 10%, reported honestly either way), safety invariants (must hold in every run), s18-2b (must still park `integrity_floor`), tokens.
 
-Status: Part 1 in progress on branch `claude/dreamy-albattani-mnygx0` (restarted from `main` after PR #18). Slice 1.1 is complete (below).
+Status: **Part 1 built, `make verify` GREEN** (676 unit, 51 container and acceptance tests), on branch `claude/dreamy-albattani-mnygx0` (restarted from `main` after PR #18). D-075 records it; `packages/enforcement` is unchanged. One live schema check on Groq (1,106 tokens, in the ledger) was accepted. The verifier-slot objection for spec v0.6 is below. Next: the Part 1 PR through the §7 gate, then Part 2. Slice 1.1 is complete (below).
 
 **Slice 1.1 — real-model evidence (complete).** Parts 1 to 4 merged (PR #12, #13, #16, #17; STATE record PR #18). Report: `docs/evidence/slice-1.1.md`.
 
@@ -51,7 +51,7 @@ Everything is in `packages/runner/` unless named. Every test names the section i
 - Slice 1.2 Part 1, then Part 2 (above).
 
 ## make verify
-GREEN as of 2026-10-30 (Slice 1.1 Part 4, before the PR): 671 unit tests (20 files), 51 container and acceptance tests (7 files), both lint self-tests fired. Summary line: `make verify: GREEN`.
+GREEN as of 2026-10-30 (Slice 1.2 Part 1, before the PR): 676 unit tests (20 files), 51 container and acceptance tests (7 files), both lint self-tests fired. Summary line: `make verify: GREEN`.
 
 ## For the operator
 - **Slice 1.1 third STOP at Part 3: GitHub Models, the provider D-071 names, was retired by GitHub on 2026-07-30.** Checked on 2026-10-30 at about 18:35 UTC. No token was used or needed; nothing was sent to any model; **spend: USD 0**.
@@ -93,6 +93,9 @@ GREEN as of 2026-10-30 (Slice 1.1 Part 4, before the PR): 671 unit tests (20 fil
 - **PR #7 (superseded, still open):** https://github.com/khashayarjavi/juno/pull/7 is an earlier Increment 5 from another session (branch `claude/great-keller-clbbvy`). This session missed it at the start (§7 step 1 says to continue an open PR) and built Increment 5 afresh as PR #8, which is merged. Checked against `main`: PR #7's two operator rulings (TTL expiry fails the task, never a park; no default budget ceiling) are both honoured by the merged code (D-063; the admission schema requires all four axes). Its D-065 proposal is the one the director ruled on (D-065 here). Its other choices were agent decisions, and some differ from the merged ones (for example, it took over a stale runner lock where D-064 refuses to). PR #7 was not closed by this session; closing it is the operator's call.
 
 - **Findings from the real-model evidence, for your decision (none is a defect, none is in Slice 1.1's scope; details in `docs/evidence/slice-1.1.md`):** (1) in 10 of the 22 model runs that count (harness-error runs left out) the model wrote the program path itself and the task parked on its first call; the runner's first message shows the criterion with literal arguments, which likely invites it; (2) the reference index syntax (`[0]`, not `.0`) is never shown to the model; (3) the criterion's constant slots can be named and reused by the model (operator values, so no integrity is gained, but you should know); (4) with temperature 0 and a fixed seed, repeated runs are often identical.
+
+## Objections for spec v0.6 (recorded on the operator's Slice 1.2 instruction; not blocking Slice 1.2)
+- **Verifier slots are addressable by the executing model.** Admission puts the criterion's literals into the task's constants table as `criterion.*` slots at the criterion's integrity (§2.6 "fixed at admission — in the criterion"; D-061, D-067). The boundary resolves any slot in that table, so when the executing model names `criterion.program` (or `criterion.protected.*`, the verifier's listing), the call proceeds at operator integrity. This was seen in `adversarial-1-steering` run 2 (Slice 1.1). Slice 1.2 no longer offers these slots (D-075), but naming one still works (pinned by a test in `packages/runner/test/runner.test.ts`). The values are the operator's, so no model-written value reaches an instruction field and no rule is broken today. But §2.6 does not say whether constants fixed for the verifier belong to the executing actor's argument sources. **The question for v0.6:** should a criterion-derived constant be resolvable only in the verifier's calls, and not in the calls of the actor the criterion judges?
 
 ## Open objections to the spec
 - None.

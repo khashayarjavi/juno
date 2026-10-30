@@ -5,6 +5,7 @@ import {
   Sensitivity as SensitivitySchema,
   type TrajectoryEntry,
   type DataClass,
+  type FieldType,
   type Integrity,
   type Sensitivity,
   type Task,
@@ -167,11 +168,24 @@ const NO_COST = { tokens_in: 0, tokens_out: 0, tokens_cached: 0, currency: 0, du
 const PREAMBLE = {
   runner: "juno",
   arguments:
-    "Each capability argument is one of: a literal you write (synthesized); {\"slot\": \"<name>\"} for a constant fixed at admission; " +
+    "Each capability argument is one of: a literal you write (synthesized); {\"slot\": \"<name>\"} for one of the task's constants, by name; " +
     "{\"ref\": \"${<seq>.<path>}\"} to bind a value from entry <seq> of this task's trajectory without copying it. " +
-    "A list field takes one such value per element. Tool results name the seq of their entry.",
+    "A list field takes one such value per element. Tool results name the seq of their entry (result_seq). " +
+    "An instruction field takes only a slot or a ref; anything else parks the task.",
+  references:
+    "Reference grammar: ${<seq>.<path>}, where <path> is a field name followed by .name or [index] steps. " +
+    "Example: {\"ref\": \"${12.stdout_lines[0]}\"} is the first line of the output recorded in entry 12. Indexes use brackets: [0], never .0.",
   done: "Answer with no capability calls when you believe the task is done. The runner verifies; you cannot mark the task done.",
 };
+
+/**
+ * Slots admission fixed from the criterion, for the verifier (D-061). Operator slot names cannot contain a dot
+ * (`SlotName`), so the prefix names exactly these. They are never offered to the executing model (Slice 1.2, D-075).
+ */
+export const VERIFIER_SLOT_PREFIX = "criterion.";
+
+/** What the model is shown in place of a criterion argument in an instruction field (D-075). */
+export const HIDDEN_INSTRUCTION_VALUE = "(fixed by the operator for the verifier)";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -316,6 +330,8 @@ export class Runner {
     this.#active = id;
     this.#setState(run, "running", "start");
     this.#pushContext(run, { role: "system", content: PREAMBLE }, { sensitivity: run.task.sensitivity_floor, integrity: "operator" });
+    // The model is shown the constants by name only, and the criterion with its instruction-field values hidden: a value
+    // it can read is a value it can copy as a literal, which parks (Slice 1.2, D-075).
     this.#pushContext(
       run,
       {
@@ -323,8 +339,8 @@ export class Runner {
         content: {
           task_id: run.task.id,
           objective: run.task.objective,
-          criterion: run.admission.criterion,
-          constants: Object.fromEntries(Object.entries(run.admission.constants).map(([slot, constant]) => [slot, constant.value])),
+          criterion: this.#shownCriterion(run.admission.criterion),
+          constants: offeredConstants(run.admission.constants),
         },
       },
       run.admissionClass,
@@ -770,8 +786,20 @@ export class Runner {
   }
 
   #assemble(run: TaskRun, provider: Provider): ProviderRequest {
-    const tools: ToolDefinition[] = this.#registry.capabilities().map((capability) => ({ capability: capability.id, interface: capability.interface }));
+    const tools: ToolDefinition[] = this.#registry
+      .capabilities()
+      .map((capability) => ({ capability: capability.id, interface: capability.interface, slots: slotOffers(capability.interface, run.admission.constants) }));
     return { model: provider.profile.model, context: run.context.map((entry) => entry.item), tools };
+  }
+
+  /** The criterion as the model is shown it: data-field values as admitted, instruction-field values hidden (D-075). */
+  #shownCriterion(criterion: CriterionStatement | null): unknown {
+    if (criterion === null) return null;
+    const fields = this.#registry.capability(criterion.command.capability)?.interface ?? {};
+    const shown = Object.fromEntries(
+      Object.entries(criterion.command.arguments).map(([field, value]) => [field, fields[field]?.role === "data" ? value : HIDDEN_INSTRUCTION_VALUE]),
+    );
+    return { command: { capability: criterion.command.capability, arguments: shown }, expect_exit_code: criterion.expect_exit_code, protected_paths: criterion.protected_paths };
   }
 
   /** TTL is wall time since admission, parked time included (§6.4, D-025). */
@@ -967,6 +995,31 @@ function listingOf(payload: Record<string, unknown>): Record<string, unknown> {
 /** Whether a listing actually listed the paths: the program ran, exited 0, and printed text. */
 function listed(listing: Record<string, unknown>): boolean {
   return listing["error"] === null && listing["exit_code"] === 0 && typeof listing["stdout"] === "string";
+}
+
+type Constants = AdmittedTask["constants"];
+
+/** The constant slots offered to the executing model: the operator's, never the verifier's (D-075). */
+export function offeredConstants(constants: Constants): string[] {
+  return Object.keys(constants)
+    .filter((slot) => !slot.startsWith(VERIFIER_SLOT_PREFIX))
+    .sort();
+}
+
+/**
+ * The slot names offered for each field of a capability (D-075): every offered constant, except that a field whose
+ * type is an enum (or a list of one) is offered only the constants whose value is one of its values. Offering is not
+ * permission: the boundary judges whatever the model sends, named slot or not.
+ */
+export function slotOffers(fields: Readonly<Record<string, { readonly type: FieldType }>>, constants: Constants): Record<string, string[]> {
+  const offered = offeredConstants(constants);
+  return Object.fromEntries(
+    Object.entries(fields).map(([field, { type }]) => {
+      const scalar = type.kind === "list" ? type.items : type.kind === "map" ? type.values : type;
+      const values: readonly unknown[] | null = scalar.kind === "enum" ? scalar.values : null;
+      return [field, values === null ? offered : offered.filter((slot) => values.includes(constants[slot]?.value))];
+    }),
+  );
 }
 
 function rejection(toolCall: string, callSeq: number, detail: RejectDetail): Record<string, unknown> {

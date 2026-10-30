@@ -88,7 +88,7 @@ const REQUEST: ProviderRequest = {
     { role: "system", content: { runner: "juno" } },
     { role: "user", content: { objective: "read the notes" } },
   ],
-  tools: [{ capability: "shell.run", interface: SHELL_RUN_INTERFACE }],
+  tools: [{ capability: "shell.run", interface: SHELL_RUN_INTERFACE, slots: { program: ["cat", "ls"], argv: ["cat", "ls", "project"], cwd: ["cat", "ls", "project"] } }],
 };
 
 const authorization = (sent: Sent): string => new Headers(sent.init.headers).get("authorization") ?? "";
@@ -165,20 +165,26 @@ describe("the request (D-072 docs read)", () => {
     for (const message of first?.body["messages"] as Record<string, unknown>[]) expect(message).not.toHaveProperty("name");
     const tools = first?.body["tools"] as ReturnType<typeof toolSchema>[];
     expect(tools.map((tool) => tool.function.name)).toEqual(["shell__run"]);
-    // The instruction field names its allowed values, but never offers one as a literal that would pass (§2.2).
-    expect(JSON.stringify(tools[0]?.function.parameters)).toContain('one of [\\"/usr/bin/cat\\",\\"/usr/bin/ls\\"]');
-    expect(JSON.stringify(tools[0]?.function.parameters)).not.toContain('"enum"');
+    // Slice 1.2 (D-075): the schema names slots only, never a constant's value; the program enum's values appear nowhere.
+    expect(JSON.stringify(tools[0]?.function.parameters)).not.toContain("/usr/bin/");
   });
 
-  // proves D-060 / D-073: every field may carry a constant slot or a bound reference, and the function name maps back to the capability
-  it("offers slots and references for every field, and maps the function name back", async () => {
-    const schema = toolSchema({ capability: "shell.run", interface: SHELL_RUN_INTERFACE }).function.parameters as { properties: Record<string, unknown> };
-    expect(JSON.stringify(schema.properties["program"])).toContain('"required":["slot"]');
-    expect(JSON.stringify(schema.properties["argv"])).toContain('"required":["ref"]');
-    // §2.2: the instruction field's description says a literal there parks; a data field's says a literal is allowed.
-    expect(schema.properties["program"]).toMatchObject({ description: expect.stringMatching(/^instruction field: .*literal you write here is untrusted, and the task parks/) });
-    expect((schema.properties["program"] as { anyOf: unknown[] }).anyOf).toEqual([expect.objectContaining({ required: ["slot"] }), expect.objectContaining({ required: ["ref"] }), { type: "string" }]);
-    expect(schema.properties["argv"]).toMatchObject({ description: expect.stringMatching(/^data field: a literal you write/) });
+  // proves Slice 1.2 / D-075 / §2.2: an instruction field is offered only as an offered slot (enumerated by name) or a reference;
+  // a data field also as a literal; and the function name maps back to the capability
+  it("offers an instruction field only as a slot or a reference, and maps the function name back", async () => {
+    const tool = REQUEST.tools[0];
+    if (tool === undefined) throw new Error("no tool");
+    const schema = toolSchema(tool).function.parameters as { properties: Record<string, { anyOf?: unknown[]; items?: { anyOf: unknown[] }; description: string }> };
+    const slotOf = (names: string[]): unknown => ({ type: "object", properties: { slot: { type: "string", enum: names } }, required: ["slot"], additionalProperties: false });
+    const ref = expect.objectContaining({ required: ["ref"] });
+    expect(schema.properties["program"]?.anyOf).toEqual([slotOf(["cat", "ls"]), ref]);
+    expect(schema.properties["program"]?.description).toMatch(/^instruction field: Name one of the constants \["cat","ls"\].*\$\{12\.stdout_lines\[0\]\}.*anything else parks the task/);
+    expect(schema.properties["argv"]?.items?.anyOf).toEqual([{ type: "string" }, slotOf(["cat", "ls", "project"]), ref]);
+    expect(schema.properties["cwd"]?.anyOf).toEqual([{ type: "string" }, slotOf(["cat", "ls", "project"]), ref]);
+    expect(schema.properties["argv"]?.description).toMatch(/^data field: a literal you write/);
+    // No slot offered: the instruction field is offered as a reference alone.
+    const bare = toolSchema({ ...tool, slots: {} }).function.parameters as { properties: Record<string, { anyOf: unknown[] }> };
+    expect(bare.properties["program"]?.anyOf).toEqual([ref]);
     expect(wireName("shell.run")).toBe("shell__run");
     expect(() => wireName("a".repeat(65))).toThrow();
     const { groq } = provider([chat({ content: null, tool_calls: [{ id: "fc_1", type: "function", function: { name: "shell__run", arguments: '{"program":{"slot":"cat"},"argv":["notes.txt"],"cwd":{"slot":"project"}}' } }] }, "tool_calls")]);
@@ -354,6 +360,49 @@ describe("the key never leaves the runner (D-072)", () => {
       expect(files.length).toBeGreaterThan(3);
       expect(files.filter((file) => leaks(readFileSync(file, "latin1")))).toEqual([]);
     });
+  });
+});
+
+describe("Slice 1.2: what the model is shown, and what a literal still does (D-075, D-052)", () => {
+  let h: Harness;
+  beforeEach(() => {
+    h = harness();
+  });
+  afterEach(() => {
+    h.cleanup();
+  });
+  const groqTask = (): Record<string, unknown> =>
+    request({ criterion: OPERATOR_CRITERION, verification: "command_exit", model_policy: { permitted_providers: ["groq"], posture: "cloud", conversation_state: "any" } });
+
+  // proves D-075: the request the model receives shows no instruction-field value (no program path from the constants or
+  // the criterion) and offers no slot fixed for the verifier; the operator's constants appear by name
+  it("sends no instruction-field value and no verifier slot to the model", async () => {
+    const { groq, sent } = provider([chat({ content: "done" })]);
+    const { runner } = h.runner([], { providers: [groq] });
+    expect(runner.admit(groqTask()).admitted).toBe(true);
+    await runner.run("task-1");
+    const wire = JSON.stringify(sent[0]?.body);
+    expect(wire).not.toContain("/usr/bin/");
+    expect(wire).not.toContain("criterion.");
+    const first = (sent[0]?.body["messages"] as { role: string; content: string }[])[1];
+    expect(JSON.parse(first?.content ?? "{}")).toMatchObject({
+      constants: ["cat", "project"],
+      criterion: { command: { arguments: { program: "(fixed by the operator for the verifier)", argv: ["done.txt"], cwd: "/work/project" } } },
+    });
+  });
+
+  // proves D-052 / §2.2 / §8.3 (Slice 1.2 requirement): a literal the model sends in an instruction field, though the schema
+  // no longer offers one, is still passed to the boundary, judged synthesized/untrusted, and parks integrity_floor, not overridable
+  it("still parks a literal program exactly as before", async () => {
+    const literal = chat({ content: null, tool_calls: [{ id: "fc_lit", function: { name: "shell__run", arguments: JSON.stringify({ program: "/usr/bin/cat", argv: ["notes.txt"], cwd: { slot: "project" } }) } }] }, "tool_calls");
+    const { groq } = provider([literal]);
+    const { runner } = h.runner([], { providers: [groq] });
+    expect(runner.admit(groqTask()).admitted).toBe(true);
+    expect(await runner.run("task-1")).toEqual({ task_id: "task-1", state: "parked", reason: "integrity_floor" });
+    const call = h.entries().filter((entry) => entry.kind === "capability_call").at(-1);
+    expect(call?.argument_provenance).toContainEqual({ argument: "program", class: "synthesized", integrity: "untrusted" });
+    expect(h.entries().filter((entry) => entry.kind === "park").map(h.payload)).toEqual([expect.objectContaining({ reason: "integrity_floor", overridable: false })]);
+    expect(h.entries().filter((entry) => entry.kind === "capability_result").map(h.payload).filter((result) => result["call_seq"] === call?.seq)).toEqual([]);
   });
 });
 
