@@ -5,12 +5,14 @@
 
 Branch: `claude/tender-allen-hvjegb`, fast-forwarded to `main` after PR #9 merged. Increments 5 and 6 are in `main`.
 
-**Status: built; `make verify` pending.** Plan, all five steps done (D-067):
+**Status: done (all five §18 tests pass end to end; `make verify` green); pending review and the §7 merge gate.** Plan, all five steps done (D-067):
 1. Carry-over from the PR #9 review: TTL is judged before the non-overridable check on resume, so an expired task parked `integrity_floor` goes to `failed` (§6.4).
 2. Discovery program for test 3: `/usr/bin/ls` in the workload image (its two libraries copied in, arch-neutral) and in the `shell.run` enum with a declared, code-free flag surface (D-029's forward record).
 3. D-057 / D-025 Inc 7: every criterion names protected paths; the verifier records a listing of them at start and fails verification if it changed.
 4. A plain-text account of a task built from its journal alone (test 1).
 5. The five §18 tests end to end in `test/acceptance/`, against the real containers; tests 2 and 3 in one run.
+
+Done: `test/acceptance/acceptance.test.ts` (6 tests: tests 2+3 together, 1, 4a, 4b, 5, and the protected-path write). `test/containers/runner.test.ts` now also expects the two protected listings of a verified task (it asserts more than before, nothing less). `test/containers/registry.test.ts` gains the ls ownership test.
 
 ## Merges recorded (CLAUDE.md §7 step 6)
 - **Increment 6, PR #9** (https://github.com/khashayarjavi/juno/pull/9): head 61d2aa34247ef06ef10ba859733da8fc941d021a; PR CI `verify` run 41067106637 (success); merged as merge commit e38850156b70ad7e80537589ff77a74b35259b9a, pinned to the head SHA; CI `verify` on `main` for the merge commit, run 41067673749 (workflow_dispatch, success). Reviewer verdicts: round 1 DO NOT MERGE on add00fe (four findings, all fixed), round 2 MERGE on 61d2aa3 (one minor carry-over, plan step 1).
@@ -49,7 +51,7 @@ Everything is in `packages/runner/` unless named. Every test names the section i
 - `make verify`, review and the §7 merge gate.
 
 ## make verify
-GREEN as of 2026-10-30 (Increment 6, after the first-review fixes): 628 unit tests (18 files), 44 container tests (6 files), both lint self-tests fired. Summary line: `make verify: GREEN`.
+GREEN as of 2026-10-30 (Increment 7): 631 unit tests (18 files), 51 container and acceptance tests (7 files), both lint self-tests fired. Summary line: `make verify: GREEN`.
 
 ## For the operator
 - **PR #7 (superseded, still open):** https://github.com/khashayarjavi/juno/pull/7 is an earlier Increment 5 from another session (branch `claude/great-keller-clbbvy`). This session missed it at the start (§7 step 1 says to continue an open PR) and built Increment 5 afresh as PR #8, which is merged. Checked against `main`: PR #7's two operator rulings (TTL expiry fails the task, never a park; no default budget ceiling) are both honoured by the merged code (D-063; the admission schema requires all four axes). Its D-065 proposal is the one the director ruled on (D-065 here). Its other choices were agent decisions, and some differ from the merged ones (for example, it took over a stale runner lock where D-064 refuses to). PR #7 was not closed by this session; closing it is the operator's call.

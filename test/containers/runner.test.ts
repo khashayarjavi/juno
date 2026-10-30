@@ -203,10 +203,17 @@ describe("a task run by the host runner against the real workload (build plan In
       const blob = readPayload(journalRoot, entry.payload_ref);
       return blob.status === "present" ? (JSON.parse(new TextDecoder().decode(blob.bytes)) as Record<string, unknown>) : null;
     });
-    expect(results.map((result) => [result?.["exit_code"], result?.["stdout"]])).toEqual([
+    // In order: the protected-path baseline (D-057), the task's call, the criterion's command, the protected-path check.
+    const listing = "/work/project/protected:";
+    expect(results.map((result) => [result?.["exit_code"], String(result?.["stdout"]).startsWith(listing) ? listing : result?.["stdout"]])).toEqual([
+      [0, listing],
       [0, "hello\n"],
       [0, "ok\n"],
+      [0, listing],
     ]);
+    // The protected listing was taken twice and did not change; it names the file under the protected path.
+    expect(results[3]?.["stdout"]).toBe(results[0]?.["stdout"]);
+    expect(String(results[0]?.["stdout"])).toContain("keep.txt");
   });
 });
 
