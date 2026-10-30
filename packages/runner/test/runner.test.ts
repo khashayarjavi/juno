@@ -252,6 +252,22 @@ describe("parks from the enforcement boundary (§2.7, §6.2, §8.3)", () => {
     expect(listingSeq).toBeGreaterThan(0);
   });
 
+  // proves invariant 1 / D-063: a bound reference into what the runner wrote never lifts text into an instruction field
+  it("parks integrity_floor on a program bound to a runner-written entry", async () => {
+    const { runner } = h.runner([
+      (request: ProviderRequest) => {
+        void request;
+        // Entry 1 is the runner's state note; its "to" is the text "running".
+        return turn([shellRun(["notes.txt"], { ref: "${1.to}" })]);
+      },
+    ]);
+    admitted(runner);
+    expect(await runner.run("task-1")).toMatchObject({ reason: "integrity_floor" });
+    const runnerEntries = h.entries().filter((entry) => entry.actor === RUNNER_ACTOR && !(entry.kind === "note" && h.payload(entry)["type"] === "admission"));
+    expect(runnerEntries.length).toBeGreaterThan(0);
+    expect(runnerEntries.every((entry) => entry.data_class.integrity === "derived" || entry.data_class.integrity === "untrusted")).toBe(true);
+  });
+
   // proves D-045: a call the boundary rejects is told to the model, nothing runs, and the task keeps running
   it("tells the model about a rejected call and keeps running", async () => {
     const { runner, provider } = h.runner([turn([{ id: "x", capability: "fs.nothing", arguments: {} }]), turn([])]);
