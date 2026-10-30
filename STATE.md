@@ -1,16 +1,24 @@
 # STATE
 
 ## Current increment
-5 — Runner
+6 — Resume
 
-Branch: `claude/tender-allen-hvjegb` (the session harness assigned it and allows pushes only to it; D-028, D-040). Increment 4 is in `main` (PR #6 merged, merge commit c3c6d6f). The director's autopilot rules are in `CLAUDE.md` §7 (D-055).
+Branch: `claude/tender-allen-hvjegb`, moved forward to `main` after PR #8 merged (a fast-forward: it held only merged history). Increment 5 is in `main`.
 
-**Status: done (build plan done-when met, `make verify` green); pending independent review and the §7 merge gate.**
+**Status: done (build plan done-when met, `make verify` green); pending review and the §7 merge gate.** See D-066.
+
+## Done in Increment 6
+- `Runner.resume` (§6.3): never for an unverifiable journal (D-056) or a non-overridable park (§8.3); TTL first (§6.4, parked time counts); grants added while parked must pass admission's grant rules; every grant re-evaluated (any unusable grant re-parks `awaiting_grant`); model policy and floor re-evaluated against the providers served now (`routing_unavailable`); a `resume` entry records what was found.
+- Rebuild from the journal alone after a restart: admission record, context notes, spend snapshots, floor notes, added grants. A task found still `running` fails `runner_interrupted`.
+- Grant charges recorded in `juno.runner` before every effect and rebuilt at start; failed-unverifiable tasks recorded there too.
+- `GrantStore.ids()` and `GrantStore.validity()` added (packages/enforcement/src/grants.ts); nothing else in the enforcement package changed.
+- Tests: `packages/runner/test/resume.test.ts` (14), including both build plan tests (a grant that expires while parked re-parks on resume; TTL expiry while parked fails the task and releases it), with a control that the same task proceeds when its grants are valid. 13 deliberate breakages; 12 caught, 1 equivalent (the in-memory memo of an unverifiable task: the journal still fails, with the same outcome).
 
 ## Merges recorded (CLAUDE.md §7 step 6)
-- None yet this session. (PR #6, Increment 4, was merged by the operator before autopilot began.)
+- **Increment 5, PR #8** (https://github.com/khashayarjavi/juno/pull/8): head fd68a2509d0be8556754cc3a0e78d71dfcad28e6; PR CI `verify` run 41063185508 (success); merged as merge commit da4e4cf32f6e8a5acd8e84dbc71c8afd2ca04c71, pinned to the head SHA; CI `verify` on `main` for the merge commit, run 41064280256 (workflow_dispatch, success). Reviewer verdicts: round 1 MERGE on 4e00d36 (findings fixed), round 2 MERGE on fd68a25.
+  - The CI workflow runs on pull requests and `workflow_dispatch` only, so step 6d dispatches it on `main` (the workflow file is unchanged).
 
-## Done in this increment
+## Increment 5 (merged) — summary
 Everything is in `packages/runner/` unless named. Every test names the section it proves.
 - **Operator change first (D-055):** `CLAUDE.md` §7 Autopilot, and rules 11 to 13 in §2. Standing rulings recorded: D-056 (Increment 6: a journal that fails verification after a crash is never resumed), D-057 (Increment 7: protected paths; tests 2 and 3 pass together), D-065 (the runner runs on the host; no Docker socket in any container).
 - **Rule 12 check (D-058):** `tools/check-unicode.js` refuses invisible and bidirectional-control characters in source, tests, capability files and configuration. `make lint` runs its self-test (twelve planted characters must all be found) and then scans the repository. `test/lint/unicode.test.ts` checks each class.
@@ -36,11 +44,16 @@ Everything is in `packages/runner/` unless named. Every test names the section i
   - the provider-response limits were unrecorded (D-059); a runner now runs one task at a time (D-063).
   - The reviewer also asked the operator to confirm that the CLAUDE.md §7 autopilot change (D-055) is theirs. It came from the director's instruction that started this session.
 
-## Remaining in this increment
-- Independent review (CLAUDE.md §7 step 5), then the §7 merge gate.
+- **First independent review of PR #9 (2026-10-30): DO NOT MERGE.** Fixed: (1) the four Increment 6 commits had not reached GitHub (the branch's upstream had become `origin/main`; pushed, upstream fixed); (2) a resume that re-parked left the runner claimed, so it refused all further work (fixed, tested); (3) a task listing an unusable grant could never resume (operator can now drop grants on resume, recorded in D-066 with the consequence; tested, including across a restart); (4) the runner-record classes recorded in D-066.
+
+## Remaining in Increment 6
+- `make verify`, review and the §7 merge gate.
 
 ## make verify
-GREEN as of 2026-10-30 in the cloud session, after the first-review fixes: 612 unit tests (17 files), 44 container tests (6 files), lint self-test rejected the `exec()` probe, unicode self-test rejected all 12 planted characters. Summary line: `make verify: GREEN`.
+GREEN as of 2026-10-30 (Increment 6, after the first-review fixes): 628 unit tests (18 files), 44 container tests (6 files), both lint self-tests fired. Summary line: `make verify: GREEN`.
+
+## For the operator
+- **PR #7 (superseded, still open):** https://github.com/khashayarjavi/juno/pull/7 is an earlier Increment 5 from another session (branch `claude/great-keller-clbbvy`). This session missed it at the start (§7 step 1 says to continue an open PR) and built Increment 5 afresh as PR #8, which is merged. Checked against `main`: PR #7's two operator rulings (TTL expiry fails the task, never a park; no default budget ceiling) are both honoured by the merged code (D-063; the admission schema requires all four axes). Its D-065 proposal is the one the director ruled on (D-065 here). Its other choices were agent decisions, and some differ from the merged ones (for example, it took over a stale runner lock where D-064 refuses to). PR #7 was not closed by this session; closing it is the operator's call.
 
 ## Open objections to the spec
 - None.

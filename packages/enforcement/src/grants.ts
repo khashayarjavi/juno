@@ -76,6 +76,25 @@ export class GrantStore {
     this.#used.set(id, this.invocations(id) + 1);
   }
 
+  /** The ids of every stored grant. */
+  ids(): readonly string[] {
+    return [...this.#grants.keys()];
+  }
+
+  /**
+   * Why each of the task's grants could not cover any call at `now`, whatever
+   * the capability (§6.3 step 1: re-evaluated on resume). A grant absent here
+   * is still valid; it may still not select a given capability.
+   */
+  validity(task: { readonly principal: string; readonly grants: readonly string[] }, now: Date): GrantRefusal[] {
+    return task.grants.flatMap((id): GrantRefusal[] => {
+      const grant = this.#grants.get(id);
+      if (grant === undefined) return [{ grant: id, reason: "unknown_grant" }];
+      const reason = this.#refusal(grant, task.principal, grant.capability_selector.capabilities[0] ?? "", now);
+      return reason === null ? [] : [{ grant: id, reason }];
+    });
+  }
+
   /** Which of the task's grants cover a call to `capability` at `now`. */
   coverage(task: { readonly principal: string; readonly grants: readonly string[] }, capability: string, now: Date): Coverage {
     const covering: Grant[] = [];
