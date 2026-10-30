@@ -52,9 +52,12 @@ containers: build stage
 
 # The evidence run against the real provider (DECISIONS.md D-072, D-073).
 # Run from the cloud session only, never by `verify` or CI (D-002).
-# Needs the provider key in the runner's environment; see docs/evidence/.
-smoke: build stage
-	$(COMPOSE) build
+# Needs the provider key in the runner's environment (docs/evidence/slice-1.1.md).
+# The build steps run with the key removed; the smoke run takes it out of its
+# own environment before it starts any container.
+smoke:
+	env -u GROQ_API_KEY $(MAKE) build stage
+	env -u GROQ_API_KEY $(COMPOSE) build
 	npx vitest run --config vitest.smoke.config.ts
 
 clean:

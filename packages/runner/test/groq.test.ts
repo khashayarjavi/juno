@@ -369,12 +369,16 @@ describe("make smoke stays out of make verify and CI (D-002, D-072)", () => {
     for (const file of readdirSync(workflows)) expect(readFileSync(join(workflows, file), "utf8")).not.toMatch(/smoke|GROQ/i);
   });
 
-  // proves D-072: only the Groq adapter and this test name the key's variable in code; nothing else can read it
+  // proves D-072: only the Groq adapter reads the key's variable; the Makefile names it only to remove it, and nothing else names it
   it("names GROQ_API_KEY in no other code file", async () => {
     const { stdout } = await promisify(execFile)("git", ["ls-files", "-co", "--exclude-standard"], { cwd: repoRoot, maxBuffer: 16 * 1024 * 1024 });
     const code = stdout.split("\n").filter((file) => /\.(ts|js|mjs|cjs|json|ya?ml|sh)$/.test(file) || file === "Makefile");
     const naming = code.filter((file) => readFileSync(join(repoRoot, file), "utf8").includes("GROQ_API_KEY"));
-    expect(naming.sort()).toEqual(["packages/runner/src/groq.ts", "packages/runner/test/groq.test.ts"]);
+    expect(naming.sort()).toEqual(["Makefile", "packages/runner/src/groq.ts", "packages/runner/test/groq.test.ts"]);
+    // The Makefile names it only to remove it from the build steps' environment.
+    const makeLines = readFileSync(join(repoRoot, "Makefile"), "utf8").split("\n").filter((line) => line.includes("GROQ_API_KEY"));
+    expect(makeLines.length).toBeGreaterThan(0);
+    expect(makeLines.every((line) => /^\tenv -u GROQ_API_KEY /.test(line))).toBe(true);
   });
 
   // proves D-072 "neither the key nor its prefix may appear in any diff": no file in the repository contains the prefix
