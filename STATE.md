@@ -1,20 +1,19 @@
 # STATE
 
 ## Current increment
-6 — Resume
+7 — Acceptance
 
-Branch: `claude/tender-allen-hvjegb`, moved forward to `main` after PR #8 merged (a fast-forward: it held only merged history). Increment 5 is in `main`.
+Branch: `claude/tender-allen-hvjegb`, fast-forwarded to `main` after PR #9 merged. Increments 5 and 6 are in `main`.
 
-**Status: done (build plan done-when met, `make verify` green); pending review and the §7 merge gate.** See D-066.
-
-## Done in Increment 6
-- `Runner.resume` (§6.3): never for an unverifiable journal (D-056) or a non-overridable park (§8.3); TTL first (§6.4, parked time counts); grants added while parked must pass admission's grant rules; every grant re-evaluated (any unusable grant re-parks `awaiting_grant`); model policy and floor re-evaluated against the providers served now (`routing_unavailable`); a `resume` entry records what was found.
-- Rebuild from the journal alone after a restart: admission record, context notes, spend snapshots, floor notes, added grants. A task found still `running` fails `runner_interrupted`.
-- Grant charges recorded in `juno.runner` before every effect and rebuilt at start; failed-unverifiable tasks recorded there too.
-- `GrantStore.ids()` and `GrantStore.validity()` added (packages/enforcement/src/grants.ts); nothing else in the enforcement package changed.
-- Tests: `packages/runner/test/resume.test.ts` (14), including both build plan tests (a grant that expires while parked re-parks on resume; TTL expiry while parked fails the task and releases it), with a control that the same task proceeds when its grants are valid. 13 deliberate breakages; 12 caught, 1 equivalent (the in-memory memo of an unverifiable task: the journal still fails, with the same outcome).
+**Status: in progress.** Plan (each step committed as it lands):
+1. Carry-over from the PR #9 review: TTL is judged before the non-overridable check on resume, so an expired task parked `integrity_floor` goes to `failed` (§6.4).
+2. Discovery program for test 3: `/usr/bin/ls` in the workload image (its two libraries copied in, arch-neutral) and in the `shell.run` enum with a declared, code-free flag surface (D-029's forward record).
+3. D-057 / D-025 Inc 7: every criterion names protected paths; the verifier records a listing of them at start and fails verification if it changed.
+4. A plain-text account of a task built from its journal alone (test 1).
+5. The five §18 tests end to end in `test/acceptance/`, against the real containers; tests 2 and 3 in one run.
 
 ## Merges recorded (CLAUDE.md §7 step 6)
+- **Increment 6, PR #9** (https://github.com/khashayarjavi/juno/pull/9): head 61d2aa34247ef06ef10ba859733da8fc941d021a; PR CI `verify` run 41067106637 (success); merged as merge commit e38850156b70ad7e80537589ff77a74b35259b9a, pinned to the head SHA; CI `verify` on `main` for the merge commit, run 41067673749 (workflow_dispatch, success). Reviewer verdicts: round 1 DO NOT MERGE on add00fe (four findings, all fixed), round 2 MERGE on 61d2aa3 (one minor carry-over, plan step 1).
 - **Increment 5, PR #8** (https://github.com/khashayarjavi/juno/pull/8): head fd68a2509d0be8556754cc3a0e78d71dfcad28e6; PR CI `verify` run 41063185508 (success); merged as merge commit da4e4cf32f6e8a5acd8e84dbc71c8afd2ca04c71, pinned to the head SHA; CI `verify` on `main` for the merge commit, run 41064280256 (workflow_dispatch, success). Reviewer verdicts: round 1 MERGE on 4e00d36 (findings fixed), round 2 MERGE on fd68a25.
   - The CI workflow runs on pull requests and `workflow_dispatch` only, so step 6d dispatches it on `main` (the workflow file is unchanged).
 
