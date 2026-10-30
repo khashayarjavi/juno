@@ -538,7 +538,10 @@ export class Runner {
           });
         }
         if (verdict.outcome === "reject") {
-          this.#pushContext(run, { role: "tool", content: rejection(call.id, verdict.call_seq, verdict.detail) }, this.#entryClass(run.task.id, verdict.call_seq));
+          // The rejection's text can name an instruction field's allowed values (for example a registry message listing
+          // the program enum); the model is shown it with those values hidden (D-075). The journal keeps the full detail.
+          const shown = hideValues(rejection(call.id, verdict.call_seq, verdict.detail), this.#instructionValues(run));
+          this.#pushContext(run, { role: "tool", content: shown }, this.#entryClass(run.task.id, verdict.call_seq));
           continue;
         }
         const { seq, dataClass, payload } = await this.#perform(run, verdict.authorization);
@@ -792,6 +795,25 @@ export class Runner {
     return { model: provider.profile.model, context: run.context.map((entry) => entry.item), tools };
   }
 
+  /**
+   * The instruction-field values the model must not be shown in the runner's own messages (D-075): every allowed value
+   * of every registered instruction field that is an enum. If an instruction field takes free text, any constant could
+   * fill it, so every constant's value is hidden too. Longest first, so no value is left half-hidden.
+   */
+  #instructionValues(run: TaskRun): string[] {
+    const values = new Set<string>();
+    let freeText = false;
+    for (const capability of this.#registry.capabilities()) {
+      for (const field of Object.values(capability.interface)) {
+        if (field.role !== "instruction") continue;
+        if (field.type.kind === "enum") for (const value of field.type.values) values.add(value);
+        else freeText = true;
+      }
+    }
+    if (freeText) for (const constant of Object.values(run.admission.constants)) if (typeof constant.value === "string" && constant.value.length > 0) values.add(constant.value);
+    return [...values].sort((a, b) => b.length - a.length);
+  }
+
   /** The criterion as the model is shown it: data-field values as admitted, instruction-field values hidden (D-075). */
   #shownCriterion(criterion: CriterionStatement | null): unknown {
     if (criterion === null) return null;
@@ -1020,6 +1042,21 @@ export function slotOffers(fields: Readonly<Record<string, { readonly type: Fiel
       return [field, values === null ? offered : offered.filter((slot) => values.includes(constants[slot]?.value))];
     }),
   );
+}
+
+/** What a hidden value is replaced with in the runner's messages (D-075). */
+export const HIDDEN_VALUE = "(a value hidden by the runner; name a constant by slot)";
+
+/** Replaces every occurrence of the given values in every string of a message (keys included). */
+export function hideValues<T>(message: T, values: readonly string[]): T {
+  const hide = (text: string): string => values.reduce((out, value) => out.split(value).join(HIDDEN_VALUE), text);
+  const walk = (value: unknown): unknown => {
+    if (typeof value === "string") return hide(value);
+    if (Array.isArray(value)) return value.map(walk);
+    if (typeof value === "object" && value !== null) return Object.fromEntries(Object.entries(value).map(([key, member]) => [hide(key), walk(member)]));
+    return value;
+  };
+  return walk(message) as T;
 }
 
 function rejection(toolCall: string, callSeq: number, detail: RejectDetail): Record<string, unknown> {

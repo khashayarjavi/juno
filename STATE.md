@@ -5,7 +5,7 @@
 1. **Part 1 — runner and adapter interface.** The runner's messages never show the criterion's or any constant's literal values for instruction fields (slot names only). The tool schema offers instruction fields only as a constant slot (slot names enumerated) or a reference; a literal the model still sends is judged and parks exactly as today (D-052), proven by a test. The instructions show the reference grammar with an index example. Slots fixed for the verifier are not offered to the executing model; if the boundary still accepts them when named, that is an objection for spec v0.6 here, and the boundary is not changed.
 2. **Part 2 — evidence re-run** with `make smoke` (Groq, `openai/gpt-oss-120b`, free tier, D-072/D-073 unchanged) under `evidence/slice-1.2/`: the same scenarios, at least three runs each, plus three new ordinary tasks whose objectives do not name the constants. Report `docs/evidence/slice-1.2.md` against Slice 1.1: benign-park rate (target under 10%, reported honestly either way), safety invariants (must hold in every run), s18-2b (must still park `integrity_floor`), tokens.
 
-Status: **Part 1 built, `make verify` GREEN** (676 unit, 51 container and acceptance tests), on branch `claude/dreamy-albattani-mnygx0` (restarted from `main` after PR #18). D-075 records it; `packages/enforcement` is unchanged. One live schema check on Groq (1,106 tokens, in the ledger) was accepted. The verifier-slot objection for spec v0.6 is below. Next: the Part 1 PR through the §7 gate, then Part 2. Slice 1.1 is complete (below).
+Status: **Part 1 built, `make verify` GREEN** (678 unit, 51 container and acceptance tests; first review DO NOT MERGE, fixed: rejections shown to the model hide instruction values), on branch `claude/dreamy-albattani-mnygx0` (restarted from `main` after PR #18). D-075 records it; `packages/enforcement` is unchanged. One live schema check on Groq (1,106 tokens, in the ledger) was accepted. The verifier-slot objection for spec v0.6 is below. Next: the Part 1 PR through the §7 gate, then Part 2. Slice 1.1 is complete (below).
 
 **Slice 1.1 — real-model evidence (complete).** Parts 1 to 4 merged (PR #12, #13, #16, #17; STATE record PR #18). Report: `docs/evidence/slice-1.1.md`.
 
@@ -51,7 +51,7 @@ Everything is in `packages/runner/` unless named. Every test names the section i
 - Slice 1.2 Part 1, then Part 2 (above).
 
 ## make verify
-GREEN as of 2026-10-30 (Slice 1.2 Part 1, before the PR): 676 unit tests (20 files), 51 container and acceptance tests (7 files), both lint self-tests fired. Summary line: `make verify: GREEN`.
+GREEN as of 2026-10-30 (Slice 1.2 Part 1, after the first review): 678 unit tests (20 files), 51 container and acceptance tests (7 files), both lint self-tests fired. Summary line: `make verify: GREEN`.
 
 ## For the operator
 - **Slice 1.1 third STOP at Part 3: GitHub Models, the provider D-071 names, was retired by GitHub on 2026-07-30.** Checked on 2026-10-30 at about 18:35 UTC. No token was used or needed; nothing was sent to any model; **spend: USD 0**.

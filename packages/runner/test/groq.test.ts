@@ -391,6 +391,20 @@ describe("Slice 1.2: what the model is shown, and what a literal still does (D-0
     });
   });
 
+  // proves D-075 on a later turn (first review of PR #19): after a rejected call, the next request the model receives
+  // still carries no allowed program path, though the registry's rejection message lists them
+  it("sends no instruction-field value on a later turn after a rejection", async () => {
+    const wrong = chat({ content: null, tool_calls: [{ id: "fc_w", function: { name: "shell__run", arguments: JSON.stringify({ program: { slot: "project" }, argv: [], cwd: { slot: "project" } }) } }] }, "tool_calls");
+    const { groq, sent } = provider([wrong, chat({ content: "done" })]);
+    const { runner } = h.runner([], { providers: [groq] });
+    expect(runner.admit(groqTask()).admitted).toBe(true);
+    await runner.run("task-1");
+    expect(sent).toHaveLength(2);
+    const wire = JSON.stringify(sent[1]?.body);
+    expect(wire).toContain("malformed_call");
+    expect(wire).not.toContain("/usr/bin/");
+  });
+
   // proves D-052 / §2.2 / §8.3 (Slice 1.2 requirement): a literal the model sends in an instruction field, though the schema
   // no longer offers one, is still passed to the boundary, judged synthesized/untrusted, and parks integrity_floor, not overridable
   it("still parks a literal program exactly as before", async () => {

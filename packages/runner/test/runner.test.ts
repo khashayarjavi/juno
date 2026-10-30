@@ -530,3 +530,23 @@ describe("Slice 1.2: what the executing model is offered (D-075)", () => {
     expect((call?.body["verdict"] as { outcome: string }).outcome).toBe("proceed");
   });
 });
+
+describe("Slice 1.2: later turns (D-075, first review of PR #19)", () => {
+  // proves D-075: when a call is rejected, the rejection the model reads on its next turn does not name an instruction
+  // field's allowed values (the registry's message lists the program enum); the journal keeps the full detail, and the
+  // rejection still says why
+  it("hides the program enum from a rejection shown to the model", async () => {
+    // A constant that is not an allowed program, with no argv (so nothing is promoted): the call is malformed and rejected.
+    const { runner, provider } = h.runner([turn([shellRun([], { slot: "project" })]), turn()]);
+    admitted(runner, { constants: { cat: { value: CAT }, project: { value: "/work/project" } } });
+    await runner.run("task-1");
+    const later = provider.requests[1]?.context.at(-1);
+    expect(later?.role).toBe("tool");
+    expect(later?.content).toMatchObject({ outcome: "rejected", reason: "malformed_call" });
+    // The messages carry no allowed program path (the tool interface goes to the adapter, which never renders enum
+    // values for the model; groq.test.ts checks the wire body).
+    expect(JSON.stringify(provider.requests[1]?.context)).not.toContain("/usr/bin/");
+    const call = h.entries().filter((entry) => entry.kind === "capability_call").map(h.payload).find((body) => (body["verdict"] as { outcome: string }).outcome === "reject");
+    expect(JSON.stringify(call?.["verdict"])).toContain("/usr/bin/cat");
+  });
+});
