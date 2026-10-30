@@ -582,3 +582,10 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   - **Forcing the enum change (acceptance test 4b, autopilot ruling).** The refused entry is served by a test-only subclass of `CapabilityRegistry`, declared inside the acceptance test, which returns it from `entry` and `capability` as if review had accepted it. No production code path skips review. The forced entry adds `/bin/sh` with a surface declaring `-c` as code-bearing; the test proves the mechanism (§2.3 rule 2) parks the call `integrity_floor`, with `argv[0]` and `argv[1]` promoted to the `operator` floor, even though the program itself is an operator constant.
   - **Where the tests run.** `test/acceptance/` is part of the container stage of `make verify` (`vitest.containers.config.ts`). Tests 2 and 3 run in one test, on one runner, one journal, one capability and one grant (D-057).
 - Reason: the build plan's Increment 7 and §18. A digest of the protected content would need a hashing program in the image and enum. The listing needs only `ls`, which test 3 needs anyway, and it detects the same changes for content the task can reach.
+
+## D-068 — The verify workflow also runs on every push to `main` (Slice 1.1, Part 1)
+- Date: 2026-10-30
+- Status: Accepted (operator's Slice 1.1 instruction)
+- Applies to: Slice 1.1 onward
+- Decision: `.github/workflows/verify.yml` gains one trigger, `push` to `main`. Nothing else in the workflow changes: the job, its steps and its permissions are as before, and `pull_request` and `workflow_dispatch` still run it.
+- Reason: the merge gate (CLAUDE.md §7 step 6d) reads the CI result on `main` for each merge commit. Until now that run had to be dispatched by hand (see the Increment 5 merge note in `STATE.md`); a push trigger makes it automatic for every commit that reaches `main`.
