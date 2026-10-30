@@ -38,8 +38,10 @@ import {
   RESERVED_ID_PREFIX,
   type SourceRegistration,
   admit,
+  PROTECTED_LISTING,
   criterionSlots,
   grantChecks,
+  protectedSlots,
   routable,
 } from "./admission.js";
 import { type BudgetAxis, NO_SPEND, type Spend, exhaustedAxes, overrunAxes } from "./budget.js";
@@ -155,6 +157,8 @@ const RunnerRecordEntry = z.discriminatedUnion("type", [
   z.object({ type: z.literal("grant_charge"), grant: z.string(), task: z.string(), call_seq: z.number() }),
   z.object({ type: z.literal("task_failed"), task: z.string(), reason: z.string() }),
 ]);
+
+const ProtectedNote = z.object({ type: z.literal("protected_listing"), phase: z.enum(["baseline", "check"]), result_seq: z.number() });
 
 const NO_COST = { tokens_in: 0, tokens_out: 0, tokens_cached: 0, currency: 0, duration_ms: 0 };
 
@@ -321,7 +325,7 @@ export class Runner {
       },
       run.admissionClass,
     );
-    return this.#continue(run);
+    return this.#continue(run, true);
   }
 
   /**
@@ -407,10 +411,15 @@ export class Runner {
     return this.#continue(run);
   }
 
-  async #continue(run: TaskRun): Promise<RunOutcome> {
+  async #continue(run: TaskRun, starting = false): Promise<RunOutcome> {
     if (this.#active !== null && this.#active !== run.task.id) throw new RunnerError(`task ${this.#active} is running; this runner runs one task at a time`);
     this.#active = run.task.id;
     try {
+      // D-057: before the first turn of a task the verifier will check, record how its protected paths look.
+      if (starting && run.task.closure_mode === "verified" && run.admission.criterion !== null) {
+        const baseline = await this.#listProtected(run, "baseline");
+        if (!baseline.ok) return baseline.outcome;
+      }
       return await this.#loop(run);
     } finally {
       this.#stopClock(run);
@@ -549,11 +558,19 @@ export class Runner {
     let result: "pass" | "fail" | "inconclusive" = "inconclusive";
     let resultSeq: number | null = null;
     let exitCode: number | null = null;
+    let protectedPaths: "unchanged" | "changed" | null = null;
     if (verdict.outcome === "proceed") {
       const performed = await this.#perform(run, verdict.authorization);
       resultSeq = performed.seq;
       exitCode = performed.exitCode;
       if (performed.exitCode !== null) result = performed.exitCode === criterion.expect_exit_code ? "pass" : "fail";
+    }
+    if (result === "pass") {
+      // D-057: verification fails if the task wrote under a protected path.
+      const check = await this.#listProtected(run, "check");
+      if (!check.ok) return check.outcome;
+      protectedPaths = canonicalJson(check.listing) === canonicalJson(this.#protectedBaseline(run)) ? "unchanged" : "changed";
+      if (protectedPaths === "changed") result = "fail";
     }
     this.#append(run.task.id, "note", this.#runnerClass(run), {
       type: "verification",
@@ -563,6 +580,7 @@ export class Runner {
       result_seq: resultSeq,
       exit_code: exitCode,
       expected_exit_code: criterion.expect_exit_code,
+      protected_paths: protectedPaths,
       rejected: verdict.outcome === "reject" ? verdict.detail.reason : null,
     });
     if (result !== "pass") return this.#fail(run, `verification_${result}`);
@@ -575,6 +593,45 @@ export class Runner {
     }
     this.#setState(run, "verified", "verification_pass");
     return this.#outcome(run, "verification_pass");
+  }
+
+  /**
+   * Lists the criterion's protected paths through the boundary, every argument a constant the criterion fixed
+   * (D-057, D-067). A park parks the task; a rejection fails it, since the verifier then cannot check them.
+   */
+  async #listProtected(
+    run: TaskRun,
+    phase: "baseline" | "check",
+  ): Promise<{ ok: true; listing: Record<string, unknown> } | { ok: false; outcome: RunOutcome }> {
+    const criterion = run.admission.criterion;
+    if (criterion === null) throw new RunnerError(`task ${run.task.id} has no criterion`);
+    const args: Record<string, unknown> = {};
+    for (const { slot, field, index } of protectedSlots(criterion)) {
+      const source = { class: "constant", slot };
+      if (index === null) args[field] = source;
+      else ((args[field] ??= []) as unknown[])[index] = source;
+    }
+    const verdict = this.#authorize(run, { capability: PROTECTED_LISTING.capability, arguments: args }, run.task.sensitivity_floor);
+    if (verdict.outcome === "park") {
+      return { ok: false, outcome: this.#park(run, verdict.detail.reason, this.#entryClass(run.task.id, verdict.call_seq), { call_seq: verdict.call_seq, phase: `protected_${phase}`, detail: verdict.detail }) };
+    }
+    if (verdict.outcome === "reject") return { ok: false, outcome: this.#fail(run, "protected_listing_rejected") };
+    const performed = await this.#perform(run, verdict.authorization);
+    const listing = { exit_code: performed.payload["exit_code"] ?? null, stdout: performed.payload["stdout"] ?? null, stderr: performed.payload["stderr"] ?? null, error: performed.payload["error"] ?? null };
+    this.#append(run.task.id, "note", this.#runnerClass(run), { type: "protected_listing", phase, call_seq: verdict.call_seq, result_seq: performed.seq });
+    return { ok: true, listing };
+  }
+
+  /** The baseline listing, read back from the journal so a rebuilt task is checked against the same record. */
+  #protectedBaseline(run: TaskRun): Record<string, unknown> {
+    const entries = readTrajectory(this.#journal.root, run.task.id);
+    const note = entries.find((entry) => entry.kind === "note" && ProtectedNote.safeParse(this.#payloadOf(entry.payload_ref)).data?.phase === "baseline");
+    if (note === undefined) throw new RunnerError(`task ${run.task.id} has no protected-path baseline`);
+    const { result_seq } = ProtectedNote.parse(this.#payloadOf(note.payload_ref));
+    const result = entries.find((entry) => entry.seq === result_seq);
+    if (result === undefined) throw new RunnerError(`task ${run.task.id} has no entry ${String(result_seq)}`);
+    const payload = this.#payloadOf(result.payload_ref) as Record<string, unknown>;
+    return { exit_code: payload["exit_code"] ?? null, stdout: payload["stdout"] ?? null, stderr: payload["stderr"] ?? null, error: payload["error"] ?? null };
   }
 
   /** The closure (§3.4.4), written by the runner and checked against its executing actors at write time. */

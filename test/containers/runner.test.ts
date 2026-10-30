@@ -121,7 +121,7 @@ let runner: Runner;
 beforeAll(async () => {
   await docker([...compose, "down", "--volumes", "--remove-orphans"]);
   // The operator's work content, written as the workload user, outside the capability under test.
-  const setup = 'const fs = require("node:fs"); fs.mkdirSync("/work/project"); fs.writeFileSync("/work/project/notes.txt", "hello\\n"); fs.writeFileSync("/work/project/done.txt", "ok\\n");';
+  const setup = 'const fs = require("node:fs"); fs.mkdirSync("/work/project"); fs.writeFileSync("/work/project/notes.txt", "hello\\n"); fs.writeFileSync("/work/project/done.txt", "ok\\n"); fs.mkdirSync("/work/project/protected"); fs.writeFileSync("/work/project/protected/keep.txt", "keep\\n");';
   await docker([...compose, "run", "--rm", "--no-deps", "-T", "workload", "-e", setup]);
 
   const config = parseRunnerConfig({ JUNO_JOURNAL_DIR: journalRoot, JUNO_WORK_DIR: "/work" });
@@ -162,7 +162,7 @@ beforeAll(async () => {
     id: "task-host",
     principal: PRINCIPAL,
     objective: `read the notes (${canary})`,
-    criterion: { author: "operator", statement: { command: { capability: "shell.run", arguments: { program: CAT, argv: ["done.txt"], cwd: "/work/project" } }, expect_exit_code: 0 } },
+    criterion: { author: "operator", statement: { command: { capability: "shell.run", arguments: { program: CAT, argv: ["done.txt"], cwd: "/work/project" } }, expect_exit_code: 0, protected_paths: ["/work/project/protected"] } },
     verification: "command_exit",
     attendance: "autonomous",
     strategy: "direct",

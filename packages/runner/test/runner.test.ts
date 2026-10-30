@@ -174,8 +174,13 @@ describe("verification and closure (§3.4.4, §6.1)", () => {
     });
     // The closure entry is the runner's, never a model turn.
     expect(entries.filter((entry) => entry.kind === "note" && h.payload(entry)["type"] === "closure").map((entry) => entry.actor)).toEqual([RUNNER_ACTOR]);
-    // The verification command ran as constants fixed by the criterion, at operator integrity.
-    const verificationCall = entries.filter((entry) => entry.kind === "capability_call").at(-1);
+    // The verification command, then the protected-path listing (D-057), ran as constants fixed by the criterion, at operator integrity.
+    const start = entries.find((entry) => entry.kind === "note" && h.payload(entry)["type"] === "verification")?.seq ?? Infinity;
+    const verificationCalls = entries.filter((entry) => entry.kind === "capability_call" && entry.seq > start);
+    expect(verificationCalls).toHaveLength(2);
+    for (const call of verificationCalls) expect(call.argument_provenance?.every((item) => item.class === "constant" && item.integrity === "operator")).toBe(true);
+    expect(notes(entries, "verification", h.payload).at(-1)).toMatchObject({ result: "pass", protected_paths: "unchanged" });
+    const verificationCall = verificationCalls[0];
     expect(verificationCall?.argument_provenance).toEqual([
       { argument: "program", class: "constant", integrity: "operator" },
       { argument: "argv[0]", class: "constant", integrity: "operator" },
@@ -191,6 +196,33 @@ describe("verification and closure (§3.4.4, §6.1)", () => {
     expect(await runner.run("task-1")).toEqual({ task_id: "task-1", state: "failed", reason: "verification_fail" });
     expect(notes(h.entries(), "closure", h.payload)).toEqual([]);
     expect(notes(h.entries(), "verification", h.payload).at(-1)).toMatchObject({ result: "fail", exit_code: 3, expected_exit_code: 0 });
+  });
+
+  // proves D-057 / D-025 Inc 7: verification fails when anything under a protected path changed during the task
+  it("fails verification when the protected paths' listing changed", async () => {
+    let generation = "before";
+    const marking: Adapter = {
+      id: WORKLOAD_EXECFILE,
+      // The listing a stand-in "ls" prints carries the current generation, so a write in between shows as a changed listing.
+      plan: (call) => {
+        const base = standInAdapter.plan(call);
+        return call["program"] === "/usr/bin/ls" ? { file: base.file, args: [...base.args, generation] } : base;
+      },
+    };
+    h.cleanup();
+    h = harness(marking);
+    const { runner } = h.runner([
+      () => {
+        generation = "after";
+        return turn([shellRun(["notes.txt"])]);
+      },
+      turn([]),
+    ]);
+    admitted(runner, { criterion: OPERATOR_CRITERION, verification: "command_exit" });
+    expect(await runner.run("task-1")).toEqual({ task_id: "task-1", state: "failed", reason: "verification_fail" });
+    expect(notes(h.entries(), "verification", h.payload).at(-1)).toMatchObject({ result: "fail", exit_code: 0, protected_paths: "changed" });
+    expect(notes(h.entries(), "protected_listing", h.payload).map((note) => note["phase"])).toEqual(["baseline", "check"]);
+    expect(notes(h.entries(), "closure", h.payload)).toEqual([]);
   });
 
   // proves §6 state machine: only the principal can accept, and only a complete_unverified task
