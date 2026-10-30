@@ -1,7 +1,13 @@
 # STATE
 
 ## Current increment
-None. **Slice 1 is complete:** Increment 7 (acceptance) is in `main`, and all five §18 acceptance tests pass end to end against the real containers in `make verify` and CI. The autopilot loop (CLAUDE.md §7) ends here. Slice 1.5 and roadmap items are not started (§7 NEVER list).
+**Slice 1.1 — real-model evidence** (authorised by the operator, 2026-10-30; not a roadmap item). Slice 1 is complete (Increment 7 merged). Each part is its own PR through the CLAUDE.md §7 gate; nothing beyond these four parts is in scope:
+1. **Part 1 — CI on main.** The verify workflow also runs on every push to `main`. Only the trigger is added.
+2. **Part 2 — Stale runner lock (amends D-064).** A new runner may clear `runner.lock` only when the recorded owner is provably dead: same host identity, and the recorded PID is not running or the host has rebooted since. Every other case refuses to start. Tests: live owner refuses; dead owner on same host clears; other host refuses; unreadable lock refuses.
+3. **Part 3 — One real provider adapter: OpenCode Zen** (key only in `OPENCODE_API_KEY`, read only by the runner; runner network to opencode.ai only; a §13.1 profile; a free model; only through `make smoke`, never in CI or `make verify`; spend ceiling USD 5 and a token cap).
+4. **Part 4 — Evidence run with `make smoke`** (the five §18 scenarios, three ordinary tasks, one adversarial task, each at least twice; journals under `evidence/slice-1.1/`; report in `docs/evidence/slice-1.1.md`).
+
+Status: Part 1 in progress.
 
 ## Merges recorded (CLAUDE.md §7 step 6)
 - **Increment 7, PR #10** (https://github.com/khashayarjavi/juno/pull/10): head 00472832069890b11a729e97db7f25616f79786a; PR CI `verify` run 41071225012 (success); merged as merge commit f89e915a2cb7ee16c1ccad053da545107fd86051, pinned to the head SHA (two earlier merge calls returned a GitHub 500 and did nothing; `main` was checked unchanged before retrying); CI `verify` on `main` for the merge commit, run 41071862741 (workflow_dispatch, success). Reviewer verdicts: round 1 DO NOT MERGE on ecc0b3f (two findings, both fixed), round 2 MERGE on 0047283.
