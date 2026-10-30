@@ -5,7 +5,7 @@
 
 Branch: `claude/tender-allen-hvjegb`, moved forward to `main` after PR #8 merged (a fast-forward: it held only merged history). Increment 5 is in `main`.
 
-**Status: built; `make verify` pending.** See D-066.
+**Status: done (build plan done-when met, `make verify` green); pending review and the §7 merge gate.** See D-066.
 
 ## Done in Increment 6
 - `Runner.resume` (§6.3): never for an unverifiable journal (D-056) or a non-overridable park (§8.3); TTL first (§6.4, parked time counts); grants added while parked must pass admission's grant rules; every grant re-evaluated (any unusable grant re-parks `awaiting_grant`); model policy and floor re-evaluated against the providers served now (`routing_unavailable`); a `resume` entry records what was found.
@@ -48,7 +48,7 @@ Everything is in `packages/runner/` unless named. Every test names the section i
 - `make verify`, review and the §7 merge gate.
 
 ## make verify
-GREEN as of 2026-10-30 in the cloud session, after the first-review fixes: 612 unit tests (17 files), 44 container tests (6 files), lint self-test rejected the `exec()` probe, unicode self-test rejected all 12 planted characters. Summary line: `make verify: GREEN`.
+GREEN as of 2026-10-30 (Increment 6): 626 unit tests (18 files), 44 container tests (6 files), both lint self-tests fired. Summary line: `make verify: GREEN`.
 
 ## Open objections to the spec
 - None.
