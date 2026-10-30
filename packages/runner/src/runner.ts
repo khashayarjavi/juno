@@ -156,6 +156,7 @@ const AdmissionRecord = z.object({
 const RunnerRecordEntry = z.discriminatedUnion("type", [
   z.object({ type: z.literal("grant_charge"), grant: z.string(), task: z.string(), call_seq: z.number() }),
   z.object({ type: z.literal("task_failed"), task: z.string(), reason: z.string() }),
+  z.object({ type: z.literal("stale_lock_cleared"), reason: z.string(), holder: z.record(z.string(), z.unknown()) }),
 ]);
 
 const ProtectedNote = z.object({ type: z.literal("protected_listing"), phase: z.enum(["baseline", "check"]), result_seq: z.number() });
@@ -219,6 +220,9 @@ export class Runner {
     try {
       this.#reapplyQuarantines();
       this.#rebuildRunnerRecord();
+      // A lock cleared because its owner was provably dead is on the record (D-069).
+      const cleared = this.#lock.cleared;
+      if (cleared !== null) this.#append(RUNNER_RECORD, "note", { sensitivity: "internal", integrity: "derived" }, { type: "stale_lock_cleared", reason: cleared.reason, holder: { ...cleared.holder } });
     } catch (error: unknown) {
       this.#lock.release();
       throw error;
@@ -920,7 +924,7 @@ export class Runner {
       if (!record.success) throw new RunnerError(`the runner record at ${RUNNER_RECORD} entry ${String(entry.seq)} is not readable`);
       if (record.data.type === "grant_charge") {
         if (this.#grants.get(record.data.grant) !== undefined) this.#grants.charge(record.data.grant);
-      } else this.#unverifiable.set(record.data.task, record.data.reason);
+      } else if (record.data.type === "task_failed") this.#unverifiable.set(record.data.task, record.data.reason);
     }
   }
 

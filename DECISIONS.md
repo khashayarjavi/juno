@@ -535,7 +535,7 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
 
 ## D-064 — One runner per journal, and quarantines that survive a restart
 - Date: 2026-10-30
-- Status: Accepted (applies D-025's Increment 5 directive; settles D-044's forward record; autopilot rulings)
+- Status: Accepted (applies D-025's Increment 5 directive; settles D-044's forward record; autopilot rulings). The stale-lock rule is amended by D-069.
 - Applies to: Increment 5 onward
 - Decision: the runner creates `runner.lock` in the journal root exclusively when it starts and removes it when it closes. A second runner on the same journal finds the lock and refuses to start. A lock left by a crashed runner is not taken over; the operator removes it. Every quarantine the registry records is appended, once, to the runner's own chain under the reserved id `juno.registry`. At start the runner reads that chain (verified) and quarantines each adapter again, so a quarantine is permanent across restarts, and admission check 9 then refuses the capability. A record that does not verify or does not parse stops the runner from starting.
 - Reason: D-025 requires one runner per journal volume. Taking over a stale lock could let two runners write one journal, so the restrictive reading leaves it to the operator (§0.2 D8). §2.5 makes a forfeited registration a quarantine; forgetting it on restart would let a non-conforming adapter serve again.
@@ -589,3 +589,15 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
 - Applies to: Slice 1.1 onward
 - Decision: `.github/workflows/verify.yml` gains one trigger, `push` to `main`. Nothing else in the workflow changes: the job, its steps and its permissions are as before, and `pull_request` and `workflow_dispatch` still run it.
 - Reason: the merge gate (CLAUDE.md §7 step 6d) reads the CI result on `main` for each merge commit. Until now that run had to be dispatched by hand (see the Increment 5 merge note in `STATE.md`); a push trigger makes it automatic for every commit that reaches `main`.
+
+## D-069 — A stale runner lock is cleared only when its owner is provably dead (amends D-064; Slice 1.1, Part 2)
+- Date: 2026-10-30
+- Status: Accepted (operator's Slice 1.1 instruction; the details are autopilot rulings, each the more restrictive reading)
+- Applies to: Slice 1.1 onward
+- Decision: `runner.lock` now records the owner's `pid`, its host identity (`/etc/machine-id` and the host name, both required), the host's boot id (`/proc/sys/kernel/random/boot_id`) and its PID namespace (`/proc/self/ns/pid`). A new runner that finds a lock clears it only when the owner is provably dead (`packages/runner/src/lock.ts`, `judgeLock`):
+  - the recorded host identity and this host's are both readable and equal; and
+  - either both boot ids are readable and differ (`host_rebooted`), or they are equal, both PID namespaces are readable and equal, and `kill(pid, 0)` answers "no such process" (`owner_not_running`).
+  - In every other case it refuses to start, as before: a live owner (`owner_running`, which includes a PID reused by another process and a process of another user), liveness that cannot be read (`liveness_unknown`), another host (`other_host`), a host identity, boot id or PID namespace that cannot be read on either side (`host_unknown`, `boot_unknown`, `pid_namespace_differs`), and a lock that cannot be read or parsed, including a lock in the old format and a `pid` of 0 or below, which would name a process group (`lock_unreadable`).
+  - **Clearing is exclusive.** The runner first creates `runner.lock.takeover` exclusively, reads the lock again and requires it to be byte-for-byte the one it judged (`lock_changed` otherwise), removes it, and creates its own lock exclusively (`lock_taken` if another runner got there first). A takeover file that already exists refuses every runner; one left by a crash is removed by the operator.
+  - **On the record.** A runner that cleared a lock appends a `stale_lock_cleared` note, `(internal, derived)`, to its own record `juno.runner`, with the reason and the whole cleared lock.
+- Reason: the operator's instruction for Slice 1.1. D-064 left every stale lock to the operator, which is safe but stops the runner after any crash. A host identity must include the machine id because a host name alone can repeat across machines; the PID namespace must match because a process in another namespace is invisible to `kill`, so "not running" would be false there. Accepted residual: two machines cloned with the same machine id and host name, sharing one journal, would read as one host (the runner runs on one host, D-065).
