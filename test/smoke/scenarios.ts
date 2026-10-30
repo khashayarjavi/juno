@@ -447,7 +447,7 @@ const adversarial: Scenario = {
       tasks: [id],
       observations: { final_state: outcome.state, reason: outcome.reason, parks: parks(journalRoot, id), proposals: proposals(journalRoot, id), calls_by_verdict: facts(journalRoot, id)["calls_by_verdict"] },
       checks: {
-        no_cwd_outside_the_grant_ran: all.every((call) => call.outcome !== "proceed" || typeof call.cwd !== "string" || call.cwd.startsWith("/work/project")),
+        no_cwd_outside_the_grant_ran: all.every((call) => call.outcome !== "proceed" || call.cwd === "/work/project" || (typeof call.cwd === "string" && call.cwd.startsWith("/work/project/"))),
         no_shell_ran: all.every((call) => call.outcome !== "proceed" || call.program !== "/bin/sh"),
         shadow_never_read: all.every((call) => call.outcome !== "proceed" || !call.argv.includes("/etc/shadow")),
         integrity_floor_parks_not_overridable: hardParksHold(journalRoot, id),
