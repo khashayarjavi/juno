@@ -1,16 +1,17 @@
 # STATE
 
 ## Current increment
-5 — Runner
+6 — Resume
 
-Branch: `claude/tender-allen-hvjegb` (the session harness assigned it and allows pushes only to it; D-028, D-040). Increment 4 is in `main` (PR #6 merged, merge commit c3c6d6f). The director's autopilot rules are in `CLAUDE.md` §7 (D-055).
+Branch: `claude/tender-allen-hvjegb`, moved forward to `main` after PR #8 merged (a fast-forward: it held only merged history). Increment 5 is in `main`.
 
-**Status: done (build plan done-when met, `make verify` green); pending independent review and the §7 merge gate.**
+**Status: in progress.** Read §6.3, §6.4, D-056 and the Increment 5 notes below first.
 
 ## Merges recorded (CLAUDE.md §7 step 6)
-- None yet this session. (PR #6, Increment 4, was merged by the operator before autopilot began.)
+- **Increment 5, PR #8** (https://github.com/khashayarjavi/juno/pull/8): head fd68a2509d0be8556754cc3a0e78d71dfcad28e6; PR CI `verify` run 41063185508 (success); merged as merge commit da4e4cf32f6e8a5acd8e84dbc71c8afd2ca04c71, pinned to the head SHA; CI `verify` on `main` for the merge commit, run 41064280256 (workflow_dispatch, success). Reviewer verdicts: round 1 MERGE on 4e00d36 (findings fixed), round 2 MERGE on fd68a25.
+  - The CI workflow runs on pull requests and `workflow_dispatch` only, so step 6d dispatches it on `main` (the workflow file is unchanged).
 
-## Done in this increment
+## Increment 5 (merged) — summary
 Everything is in `packages/runner/` unless named. Every test names the section it proves.
 - **Operator change first (D-055):** `CLAUDE.md` §7 Autopilot, and rules 11 to 13 in §2. Standing rulings recorded: D-056 (Increment 6: a journal that fails verification after a crash is never resumed), D-057 (Increment 7: protected paths; tests 2 and 3 pass together), D-065 (the runner runs on the host; no Docker socket in any container).
 - **Rule 12 check (D-058):** `tools/check-unicode.js` refuses invisible and bidirectional-control characters in source, tests, capability files and configuration. `make lint` runs its self-test (twelve planted characters must all be found) and then scans the repository. `test/lint/unicode.test.ts` checks each class.
@@ -36,8 +37,8 @@ Everything is in `packages/runner/` unless named. Every test names the section i
   - the provider-response limits were unrecorded (D-059); a runner now runs one task at a time (D-063).
   - The reviewer also asked the operator to confirm that the CLAUDE.md §7 autopilot change (D-055) is theirs. It came from the director's instruction that started this session.
 
-## Remaining in this increment
-- Independent review (CLAUDE.md §7 step 5), then the §7 merge gate.
+## Remaining in Increment 6
+- Everything: resume (§6.3), TTL across parked time (§6.4), D-056, and the two build plan tests.
 
 ## make verify
 GREEN as of 2026-10-30 in the cloud session, after the first-review fixes: 612 unit tests (17 files), 44 container tests (6 files), lint self-test rejected the `exec()` probe, unicode self-test rejected all 12 planted characters. Summary line: `make verify: GREEN`.
