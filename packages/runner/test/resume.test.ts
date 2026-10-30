@@ -258,6 +258,16 @@ describe("what resume will not do (§6.3, §8.3)", () => {
     expect(ofKind("resume")).toEqual([]);
   });
 
+  // proves §6.4 over §8.3: a task on a non-overridable park still fails once its ttl has run out
+  it("fails a task parked integrity_floor once its ttl has run out", async () => {
+    const { runner } = h.runner([turn([shellRun(["notes.txt"], "/usr/bin/cat")])]);
+    admitted(runner, { ttl: HOUR });
+    expect((await runner.run("task-1")).reason).toBe("integrity_floor");
+    later(2 * HOUR);
+    expect(await runner.resume("task-1")).toEqual({ task_id: "task-1", state: "failed", reason: "ttl_expired" });
+    expect(ofKind("resume")).toEqual([]);
+  });
+
   // proves §6.3 / §5.3: a grant the operator issues while the task is parked can be added on resume, under admission's grant rules
   it("adds a grant issued while parked, and refuses one admission would refuse", async () => {
     const { runner } = h.runner([turn([shellRun(["notes.txt"])]), turn([shellRun(["notes.txt"])]), turn([])]);
@@ -269,6 +279,19 @@ describe("what resume will not do (§6.3, §8.3)", () => {
     expect(ofKind("resume")).toEqual([expect.objectContaining({ added_grants: ["grant-1"], parked_reason: "awaiting_grant" })]);
     // The model is told the parked call was not run.
     expect(ofKind("capability_result")).toHaveLength(1);
+  });
+
+  // proves D-067: when the first protected-path listing parked, it is taken on resume, and the task can still close verified
+  it("takes the protected-path baseline on resume when the first listing parked", async () => {
+    const { runner, provider } = h.runner([turn([]), turn([])]);
+    admitted(runner, { criterion: OPERATOR_CRITERION, verification: "command_exit" });
+    h.grants.revoke("grant-1", h.now.value);
+    expect(await runner.run("task-1")).toMatchObject({ state: "parked", reason: "awaiting_grant" });
+    expect(ofKind("park")[0]).toMatchObject({ phase: "protected_baseline" });
+    expect(provider.requests).toEqual([]);
+    h.grants.add(grant({ id: "grant-2" }));
+    expect(await runner.resume("task-1", { grants: ["grant-2"], remove_grants: ["grant-1"] })).toEqual({ task_id: "task-1", state: "verified", reason: "verification_pass" });
+    expect(ofKind("note").filter((note) => note["type"] === "protected_listing").map((note) => note["phase"])).toEqual(["baseline", "check"]);
   });
 
   // proves §6.3: only a parked task resumes

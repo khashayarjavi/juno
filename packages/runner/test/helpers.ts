@@ -62,7 +62,11 @@ export function grant(overrides: Record<string, unknown> = {}): Record<string, u
 
 export const OPERATOR_CRITERION = {
   author: "operator",
-  statement: { command: { capability: "shell.run", arguments: { program: CAT, argv: ["done.txt"], cwd: "/work/project" } }, expect_exit_code: 0 },
+  statement: {
+    command: { capability: "shell.run", arguments: { program: CAT, argv: ["done.txt"], cwd: "/work/project" } },
+    expect_exit_code: 0,
+    protected_paths: ["/work/project/protected"],
+  },
 } as const;
 
 export function request(overrides: Record<string, unknown> = {}): Record<string, unknown> {

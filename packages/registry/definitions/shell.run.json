@@ -2,7 +2,7 @@
   "capability": {
     "id": "shell.run",
     "interface": {
-      "program": { "type": { "kind": "enum", "values": ["/usr/bin/cat"] }, "role": "instruction" },
+      "program": { "type": { "kind": "enum", "values": ["/usr/bin/cat", "/usr/bin/ls"] }, "role": "instruction" },
       "argv": { "type": { "kind": "list", "items": { "kind": "string" } }, "role": "data" },
       "cwd": { "type": { "kind": "path" }, "role": "data" }
     },
@@ -38,6 +38,36 @@
         { "position": { "kind": "flag", "flag": "-u" }, "executes_code": false },
         { "position": { "kind": "flag", "flag": "-v" }, "executes_code": false },
         { "position": { "kind": "flag", "flag": "--show-nonprinting" }, "executes_code": false },
+        { "position": { "kind": "flag", "flag": "--help" }, "executes_code": false },
+        { "position": { "kind": "flag", "flag": "--version" }, "executes_code": false },
+        { "position": { "kind": "flag", "flag": "--" }, "executes_code": false },
+        { "position": { "kind": "operand" }, "executes_code": false }
+      ]
+    },
+    {
+      "program": "/usr/bin/ls",
+      "positions": [
+        { "position": { "kind": "flag", "flag": "-1" }, "executes_code": false },
+        { "position": { "kind": "flag", "flag": "-a" }, "executes_code": false },
+        { "position": { "kind": "flag", "flag": "--all" }, "executes_code": false },
+        { "position": { "kind": "flag", "flag": "-A" }, "executes_code": false },
+        { "position": { "kind": "flag", "flag": "--almost-all" }, "executes_code": false },
+        { "position": { "kind": "flag", "flag": "-d" }, "executes_code": false },
+        { "position": { "kind": "flag", "flag": "--directory" }, "executes_code": false },
+        { "position": { "kind": "flag", "flag": "-F" }, "executes_code": false },
+        { "position": { "kind": "flag", "flag": "--classify" }, "executes_code": false },
+        { "position": { "kind": "flag", "flag": "-l" }, "executes_code": false },
+        { "position": { "kind": "flag", "flag": "-n" }, "executes_code": false },
+        { "position": { "kind": "flag", "flag": "--numeric-uid-gid" }, "executes_code": false },
+        { "position": { "kind": "flag", "flag": "-R" }, "executes_code": false },
+        { "position": { "kind": "flag", "flag": "--recursive" }, "executes_code": false },
+        { "position": { "kind": "flag", "flag": "-r" }, "executes_code": false },
+        { "position": { "kind": "flag", "flag": "--reverse" }, "executes_code": false },
+        { "position": { "kind": "flag", "flag": "-S" }, "executes_code": false },
+        { "position": { "kind": "flag", "flag": "-t" }, "executes_code": false },
+        { "position": { "kind": "flag", "flag": "--time-style=full-iso" }, "executes_code": false },
+        { "position": { "kind": "flag", "flag": "--full-time" }, "executes_code": false },
+        { "position": { "kind": "flag", "flag": "-p" }, "executes_code": false },
         { "position": { "kind": "flag", "flag": "--help" }, "executes_code": false },
         { "position": { "kind": "flag", "flag": "--version" }, "executes_code": false },
         { "position": { "kind": "flag", "flag": "--" }, "executes_code": false },

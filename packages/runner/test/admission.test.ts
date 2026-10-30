@@ -63,6 +63,19 @@ describe("§5.4 admission checks", () => {
     expect(failedChecks(request({ criterion: bad, verification: "command_exit" }))).toContain("2");
   });
 
+  // proves D-057 / D-025 Inc 7: every criterion names protected paths the task's sources classify and its grants can list
+  it("rejects a criterion without protected paths, or with ones it cannot check", () => {
+    const withPaths = (paths: unknown) => ({ ...OPERATOR_CRITERION, statement: { ...OPERATOR_CRITERION.statement, protected_paths: paths } });
+    expect(failedChecks(request({ criterion: withPaths([]), verification: "command_exit" }))).toEqual(["schema"]);
+    const { protected_paths: _omitted, ...withoutPaths } = OPERATOR_CRITERION.statement;
+    void _omitted;
+    expect(failedChecks(request({ criterion: { ...OPERATOR_CRITERION, statement: withoutPaths }, verification: "command_exit" }))).toEqual(["schema"]);
+    expect(failedChecks(request({ criterion: withPaths(["/work/elsewhere"]), verification: "command_exit" }))).toContain("D-057");
+    h.grants.add(grant({ id: "grant-narrow", resource_scope: [{ kind: "path", prefix: "/work/project/src" }] }));
+    expect(failedChecks(request({ criterion: OPERATOR_CRITERION, verification: "command_exit", grants: ["grant-narrow"] }))).toContain("D-057");
+    expect(failedChecks(request({ criterion: OPERATOR_CRITERION, verification: "command_exit" }))).toEqual([]);
+  });
+
   // proves §5.4 check 4 / §1.5: unregistered and unclassified sources are rejected, never defaulted
   it("rejects an unregistered or unclassified source (check 4)", () => {
     expect(failedChecks(request({ sources: ["nowhere"] }))).toContain("4");

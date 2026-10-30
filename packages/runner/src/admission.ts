@@ -16,6 +16,7 @@ import {
   type SteerCapability,
   Task,
   WORK_NAMESPACE,
+  WorkPath,
   compareSensitivity,
   maxSensitivity,
   selectorWithin,
@@ -58,6 +59,8 @@ export const CriterionStatement = z.strictObject({
     arguments: z.record(z.string(), z.union([Scalar, z.array(Scalar)])),
   }),
   expect_exit_code: z.int().min(0).max(255),
+  /** Paths the task must not write under (D-025 Inc 7, D-057). Verification fails if their listing changed. */
+  protected_paths: z.array(WorkPath).min(1).max(32),
 });
 export type CriterionStatement = z.infer<typeof CriterionStatement>;
 
@@ -145,6 +148,23 @@ export function routable(policy: ModelPolicy, floor: Sensitivity, profile: Provi
 }
 
 /** The constant slots a criterion fixes, by name. */
+/**
+ * How the verifier lists the protected paths (D-067): `ls` through `shell.run`, long format with
+ * full timestamps, recursive, every entry. A write, a new file or a removed one changes the listing.
+ */
+export const PROTECTED_LISTING = { capability: "shell.run", program: "/usr/bin/ls", flags: ["-l", "-a", "-R", "--time-style=full-iso", "--"] } as const;
+
+/** The constant slots of the protected-path listing, each fixed by the criterion. */
+export function protectedSlots(statement: CriterionStatement): CriterionSlot[] {
+  const cwd = statement.command.arguments["cwd"];
+  const argv = [...PROTECTED_LISTING.flags, ...statement.protected_paths];
+  return [
+    { slot: "criterion.protected.program", field: "program", index: null, value: PROTECTED_LISTING.program },
+    ...argv.map((value, index): CriterionSlot => ({ slot: `criterion.protected.argv.${String(index)}`, field: "argv", index, value })),
+    { slot: "criterion.protected.cwd", field: "cwd", index: null, value: typeof cwd === "string" ? cwd : (statement.protected_paths[0] ?? WORK_NAMESPACE) },
+  ];
+}
+
 export type CriterionSlot = { readonly slot: string; readonly field: string; readonly index: number | null; readonly value: string | number | boolean };
 
 export function criterionSlots(statement: CriterionStatement): CriterionSlot[] {
@@ -202,6 +222,26 @@ export function admit(input: unknown, env: AdmissionEnvironment): AdmissionResul
   if (request.verification !== null && request.verification !== COMMAND_EXIT_METHOD) fail("2", `verification method ${request.verification} is not available; Slice 1 has only ${COMMAND_EXIT_METHOD}`);
   if (request.verification !== null && criterion === null) fail("2", "a verification method needs a criterion to establish");
   const licensed = criterion !== null && request.verification !== null && criterionIntegrity === "operator";
+  if (criterion !== null) {
+    // D-057: the protected paths must be content the task's sources classify, and, for a task the verifier will
+    // check, reachable by the listing under one of its grants.
+    for (const path of criterion.protected_paths) {
+      const selector = { kind: "path" as const, prefix: path };
+      if (!request.sources.some((id) => env.sources.some((source) => source.id === id && selectorWithin(selector, source.selector)))) {
+        fail("D-057", `protected path ${path} lies within no source the task references`);
+      }
+      const listable = request.grants.some((id) => {
+        const grant = env.grants.get(id);
+        return grant !== undefined && grant.capability_selector.capabilities.includes(PROTECTED_LISTING.capability) && grant.resource_scope.some((scope) => selectorWithin(selector, scope));
+      });
+      if (licensed && !listable) fail("D-057", `protected path ${path} lies within no grant for ${PROTECTED_LISTING.capability}, so the verifier could not list it`);
+    }
+    const listing = env.registry.entry(PROTECTED_LISTING.capability);
+    const programs = listing?.capability.interface[listing.program_field]?.type;
+    if (licensed && (programs?.kind !== "enum" || !programs.values.includes(PROTECTED_LISTING.program))) {
+      fail("D-057", `${PROTECTED_LISTING.capability} with ${PROTECTED_LISTING.program} must be registered to check protected paths`);
+    }
+  }
   const closureMode: ClosureMode = request.closure_mode === "verified" && licensed ? "verified" : "accepted";
   if (request.closure_mode === "verified" && !licensed) {
     warnings.push(
@@ -309,7 +349,7 @@ export function admit(input: unknown, env: AdmissionEnvironment): AdmissionResul
     constants[slot] = { value: constant.value, data_class: { sensitivity: constant.sensitivity ?? floor, integrity: "operator" } };
   }
   if (criterion !== null) {
-    for (const { slot, value } of criterionSlots(criterion)) constants[slot] = { value, data_class: { sensitivity: floor, integrity: criterionIntegrity } };
+    for (const { slot, value } of [...criterionSlots(criterion), ...protectedSlots(criterion)]) constants[slot] = { value, data_class: { sensitivity: floor, integrity: criterionIntegrity } };
   }
   return { admitted: true, admission: { task, constants, criterion, provider, sources, warnings } };
 }
