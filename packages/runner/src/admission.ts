@@ -155,7 +155,7 @@ export function criterionSlots(statement: CriterionStatement): CriterionSlot[] {
   );
 }
 
-function grantChecks(grant: Grant, principal: string, env: AdmissionEnvironment, sources: readonly SourceRegistration[]): AdmissionFailure[] {
+export function grantChecks(grant: Grant, principal: string, env: AdmissionEnvironment, sources: readonly SourceRegistration[]): AdmissionFailure[] {
   const failures: AdmissionFailure[] = [];
   if (grant.principal !== principal) failures.push({ check: "3.2", message: `grant ${grant.id} belongs to ${grant.principal}, not the task's principal` });
   for (const id of grant.capability_selector.capabilities) {
