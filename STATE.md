@@ -7,7 +7,7 @@
 3. **Part 3 — One real provider adapter: OpenCode Zen** (key only in `OPENCODE_API_KEY`, read only by the runner; runner network to opencode.ai only; a §13.1 profile; a free model; only through `make smoke`, never in CI or `make verify`; spend ceiling USD 5 and a token cap).
 4. **Part 4 — Evidence run with `make smoke`** (the five §18 scenarios, three ordinary tasks, one adversarial task, each at least twice; journals under `evidence/slice-1.1/`; report in `docs/evidence/slice-1.1.md`).
 
-Status: Parts 1 and 2 merged (PR #12, PR #13). **STOPPED at Part 3: every free model refuses this client** (the operator's Part 3 STOP condition; details under "For the operator"). Nothing of Part 3 was built; Part 4 was not started.
+Status: Parts 1 and 2 merged (PR #12, PR #13). The first STOP (free models refuse this client) was ruled on by the operator: D-070, use the paid `claude-haiku-5-5`. **STOPPED again at Part 3: the provider refuses `claude-haiku-5-5` for lack of funds** (HTTP 402, the payment STOP named in D-070; details under "For the operator"). Nothing of Part 3 was built; Part 4 was not started.
 
 ## Merges recorded (CLAUDE.md §7 step 6)
 - **Slice 1.1 Part 2, PR #13** (https://github.com/khashayarjavi/juno/pull/13): head c50367aec339dbd0c26268f77f008b976428fd64; PR CI `verify` run 41101381460 (success); merged as merge commit c464ec8dd247dd7288da97c31888cbc03591d761, pinned to the head SHA; CI `verify` on `main` for the merge commit, run 41103200588 (event `push`, success). Reviewer verdict: round 1 MERGE on c50367a.
@@ -52,6 +52,13 @@ Everything is in `packages/runner/` unless named. Every test names the section i
 GREEN as of 2026-10-30 (Slice 1.1 Part 2, head c50367a): 647 unit tests (19 files), 51 container and acceptance tests (7 files), both lint self-tests fired. Summary line: `make verify: GREEN`.
 
 ## For the operator
+- **Slice 1.1 second STOP at Part 3: `claude-haiku-5-5` is refused for insufficient funds (D-070's payment STOP).** Checked on 2026-10-30 at about 18:14 UTC, from the runner's host with `OPENCODE_API_KEY`. The key was never printed or stored.
+  - `GET https://opencode.ai/inference/v1/models` answered 200 and lists `claude-haiku-5-5`. Its published price there is USD 0.10 in, 0.50 out, 0.01 cache read and 0.125 cache write per 1M tokens. Above 100K tokens of context it is 0.50 in, 2.50 out, 0.05 cache read and 0.625 cache write.
+  - Two minimal requests were sent to `POST https://opencode.ai/inference/openai/v1/chat/completions`, header `Authorization: Bearer <key>`: one with a tool and at most 60 output tokens, and one with no tool and at most 5 output tokens. Both answered **HTTP 402 Payment Required** with this exact body:
+    `{"error":{"type":"server_error","message":"Upstream request failed: Insufficient account funds"}}`
+    The provider's log ids were `01a18e05-33a3-75b5-951f-32d68d369fbf` and `01a18e05-60e2-7a7b-9963-02524c0c6847`.
+  - **Spend: USD 0.** Every call this session was refused, and no model produced a token.
+  - **To continue:** add credit to the OpenCode Console workspace that owns this key. The provider adds a processing fee of 4.6% + USD 0.31 per credit purchase. Then start a new session with the same instruction; Part 3 resumes from here. JUNO's own USD 5 ceiling stays in force whatever balance the account holds.
 - **Slice 1.1 STOP at Part 3: the OpenCode Zen free models refuse this client.** Checked on 2026-10-30, at about 17:00 and again at about 17:50 UTC, from the runner's host with `OPENCODE_API_KEY`. The key was never printed or stored.
   - `GET https://opencode.ai/inference/v1/models` answered 200 and listed 37 models, 9 of them free (price 0): `big-pickle`, `glm-5.3-flash-free`, `deepseek-v4.1-flash-free`, `beam-free`, `flint-40b-free`, `mimo-v2.6-flash-free`, `nemotron-3-ultra-free`, `nemotron-3.5-lightning-free`, `nemotron-3.5-super-vl-free`.
   - Each was sent one minimal request: `POST https://opencode.ai/inference/openai/v1/chat/completions`, header `Authorization: Bearer <key>`, at most 20 output tokens. That is the endpoint and format the provider's model list and docs give for these models.
