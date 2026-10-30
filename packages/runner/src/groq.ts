@@ -154,7 +154,10 @@ export function wireName(capability: string): string {
 }
 
 type JsonSchema = Record<string, unknown>;
-const SLOT: JsonSchema = { type: "object", properties: { slot: { type: "string" } }, required: ["slot"], additionalProperties: false };
+/** The constant form of a value: one of the slot names offered for the field (D-075), or none when none is offered. */
+function slotSchema(names: readonly string[]): JsonSchema | null {
+  return names.length === 0 ? null : { type: "object", properties: { slot: { type: "string", enum: [...names] } }, required: ["slot"], additionalProperties: false };
+}
 const REF: JsonSchema = { type: "object", properties: { ref: { type: "string" } }, required: ["ref"], additionalProperties: false };
 
 const FieldType = z.looseObject({
@@ -180,51 +183,49 @@ function scalarSchema(type: z.infer<typeof FieldType>): JsonSchema {
 }
 
 /** Every value may also be a constant slot or a bound reference (D-060); the schema says so, and nothing more. */
-function valueSchema(type: z.infer<typeof FieldType>): JsonSchema {
-  if (type.kind === "list") {
-    const items = FieldType.parse(type.items);
-    return { type: "array", items: { anyOf: [scalarSchema(items), SLOT, REF] } };
-  }
-  if (type.kind === "map") {
-    const values = FieldType.parse(type.values);
-    return { type: "object", additionalProperties: { anyOf: [scalarSchema(values), SLOT, REF] } };
-  }
-  return { anyOf: [scalarSchema(type), SLOT, REF] };
+/** A data value: a literal, an offered constant, or a reference (D-060). */
+function dataValue(type: z.infer<typeof FieldType>, names: readonly string[]): JsonSchema {
+  return { anyOf: [scalarSchema(type), slotSchema(names), REF].filter((form): form is JsonSchema => form !== null) };
+}
+
+function dataSchema(type: z.infer<typeof FieldType>, names: readonly string[]): JsonSchema {
+  if (type.kind === "list") return { type: "array", items: dataValue(FieldType.parse(type.items), names), description: DATA_FIELD };
+  if (type.kind === "map") return { type: "object", additionalProperties: dataValue(FieldType.parse(type.values), names), description: DATA_FIELD };
+  return { ...dataValue(type, names), description: DATA_FIELD };
 }
 
 /**
- * What each role means for the value, stated to the model from §2.2 and D-060;
- * the boundary enforces it either way. An instruction field offers the slot and
- * the reference first, and a literal only as plain text: a literal there is
- * untrusted and parks (§2.2), so the schema does not present an enum value as a
- * literal that would pass. The model can still write one; the boundary, not the
- * schema, stops it.
+ * An instruction field is offered in its constant and reference forms only, the
+ * constant form as an enumerated choice of the slots offered for it (Slice 1.2,
+ * D-075). No literal form, and no value of any constant, is shown. A literal the
+ * model sends anyway is still passed on, judged by the boundary, and parks
+ * exactly as before (D-052): the schema guides; it does not enforce.
  */
-const SLOT_NOTE = 'one of the task\'s "constants", by name: {"slot": "<name>"}';
-const REF_NOTE = 'a value bound from the trajectory: {"ref": "${<seq>.<path>}"}';
+const REF_NOTE = 'bind a value from the trajectory with {"ref": "${<seq>.<path>}"}, for example {"ref": "${12.stdout_lines[0]}"}';
 
-function instructionSchema(type: z.infer<typeof FieldType>): JsonSchema {
-  const literal = scalarSchema(type);
-  const allowed = literal["enum"] === undefined ? "" : ` It must resolve to one of ${JSON.stringify(literal["enum"])}.`;
+function instructionSchema(names: readonly string[]): JsonSchema {
+  const slot = slotSchema(names);
+  const choice = slot === null ? "No constant is offered for it" : `Name one of the constants ${JSON.stringify(names)} with {"slot": "<name>"}`;
   return {
-    anyOf: [SLOT, REF, { type: literal["type"] }],
-    description: `instruction field: give ${SLOT_NOTE}, or ${REF_NOTE} to operator data. A literal you write here is untrusted, and the task parks.${allowed}`,
+    anyOf: [slot, REF].filter((form): form is JsonSchema => form !== null),
+    description: `instruction field: ${choice}, or ${REF_NOTE}. Nothing else is accepted; anything else parks the task.`,
   };
 }
 
-const DATA_FIELD = `data field: a literal you write, ${SLOT_NOTE}, or ${REF_NOTE}.`;
+const DATA_FIELD = `data field: a literal you write, one of the offered constants with {"slot": "<name>"}, or ${REF_NOTE}.`;
 
 export function toolSchema(tool: ToolDefinition): { type: "function"; function: { name: string; description: string; parameters: JsonSchema } } {
   const fields = z.record(z.string(), Field).parse(tool.interface);
   const properties: Record<string, JsonSchema> = {};
   for (const [name, field] of Object.entries(fields)) {
-    properties[name] = field.role === "instruction" && field.type.kind !== "list" && field.type.kind !== "map" ? instructionSchema(field.type) : { ...valueSchema(field.type), description: DATA_FIELD };
+    const names = tool.slots[name] ?? [];
+    properties[name] = field.role === "instruction" ? instructionSchema(names) : dataSchema(field.type, names);
   }
   return {
     type: "function",
     function: {
       name: wireName(tool.capability),
-      description: `JUNO capability ${tool.capability}. Each value is a literal, {"slot": "<name>"} or {"ref": "<reference>"}.`,
+      description: `JUNO capability ${tool.capability}. An instruction field takes a {"slot": ...} or a {"ref": ...} only; a data field also takes a literal.`,
       parameters: { type: "object", properties, required: Object.keys(fields), additionalProperties: false },
     },
   };
