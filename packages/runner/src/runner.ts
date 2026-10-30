@@ -133,6 +133,7 @@ const Replayed = z.object({
   item: z.object({ role: z.enum(["system", "user", "assistant", "tool"]), content: z.unknown() }).optional(),
   data_class: DataClassSchema.optional(),
   added_grants: z.array(z.string()).optional(),
+  removed_grants: z.array(z.string()).optional(),
 });
 
 const ParkRecord = z.object({ reason: z.string(), tool_call: z.string().optional() }).transform((park) => ({ ...park, reason: park.reason as ParkReason }));
@@ -332,10 +333,10 @@ export class Runner {
    * `routing_unavailable`), and its TTL, which counts parked time (expired:
    * `failed`). A `resume` entry records what was found. The operator may add
    * grants issued while the task was parked; each must pass admission's grant
-   * rules. A task parked on a park that is not overridable (§8.3) is never
+   * rules, and may drop grants (which only narrows authority). A task parked on a park that is not overridable (§8.3) is never
    * resumed, and nor is one whose journal does not verify (D-056).
    */
-  async resume(id: string, options: { readonly grants?: readonly string[] } = {}): Promise<RunOutcome> {
+  async resume(id: string, options: { readonly grants?: readonly string[]; readonly remove_grants?: readonly string[] } = {}): Promise<RunOutcome> {
     if (this.#active !== null) throw new RunnerError(`task ${this.#active} is running; this runner runs one task at a time`);
     const failure = this.#unverifiable.get(id);
     if (failure !== undefined) return { task_id: id, state: "failed", reason: "journal_unverifiable" };
@@ -362,7 +363,11 @@ export class Runner {
       });
       if (problems.length > 0) throw new RunnerError(`the grants added on resume do not pass admission's grant rules: ${JSON.stringify(problems)}`);
     }
-    const grants = [...run.task.grants, ...added.filter((grantId) => !run.task.grants.includes(grantId))];
+    // Dropping a grant only narrows the task's authority, so it is always allowed (§7.4 rule 2's direction).
+    const removed = options.remove_grants ?? [];
+    const strays = removed.filter((grantId) => !run.task.grants.includes(grantId) || added.includes(grantId));
+    if (strays.length > 0) throw new RunnerError(`grants to remove must be on the task and not also added: ${strays.join(", ")}`);
+    const grants = [...run.task.grants, ...added.filter((grantId) => !run.task.grants.includes(grantId))].filter((grantId) => !removed.includes(grantId));
     run.task = TaskSchema.parse({ ...run.task, grants });
 
     const now = this.#clock();
@@ -375,41 +380,35 @@ export class Runner {
       invocations: this.#grants.invocations(grantId),
       expires_at: this.#grants.get(grantId)?.expires_at ?? null,
     }));
-    this.#active = id;
-    try {
-      this.#append(run.task.id, "resume", this.#runnerClass(run), {
-        resumed_park_seq: park?.seq ?? null,
-        parked_reason: park?.reason ?? null,
-        added_grants: added,
-        grants: status,
-        provider: provider?.profile.id ?? run.admission.provider.id,
-        provider_available: provider !== null,
-        routable: routing,
-        sensitivity_floor: run.task.sensitivity_floor,
-        ttl_remaining_ms: run.task.ttl - (now.getTime() - run.admittedAt),
-        spent: this.#spentNow(run),
-      });
-      if (refused.length > 0) return this.#park(run, "awaiting_grant", this.#runnerClass(run), { phase: "resume", refused });
-      if (!routing) {
-        return this.#park(run, "routing_unavailable", this.#runnerClass(run), { phase: "resume", provider: run.admission.provider.id, sensitivity_floor: run.task.sensitivity_floor });
-      }
-      run.task = TaskSchema.parse({ ...run.task, state: "running", runtime_substate: "active" });
-      run.runningSince = this.#clock().getTime();
-      if (park !== null && park.tool_call !== null) {
-        this.#pushContext(run, { role: "tool", content: { tool_call: park.tool_call, outcome: "parked", reason: park.reason, park_seq: park.seq, resumed: true } }, this.#runnerClass(run));
-      }
-    } catch (error: unknown) {
-      this.#active = null;
-      throw error;
+    // Everything up to the loop is synchronous; the task claims the runner only when it runs again (so a re-park leaves it free).
+    this.#append(run.task.id, "resume", this.#runnerClass(run), {
+      resumed_park_seq: park?.seq ?? null,
+      parked_reason: park?.reason ?? null,
+      added_grants: added,
+      removed_grants: removed,
+      grants: status,
+      provider: provider?.profile.id ?? run.admission.provider.id,
+      provider_available: provider !== null,
+      routable: routing,
+      sensitivity_floor: run.task.sensitivity_floor,
+      ttl_remaining_ms: run.task.ttl - (now.getTime() - run.admittedAt),
+      spent: this.#spentNow(run),
+    });
+    if (refused.length > 0) return this.#park(run, "awaiting_grant", this.#runnerClass(run), { phase: "resume", refused });
+    if (!routing) {
+      return this.#park(run, "routing_unavailable", this.#runnerClass(run), { phase: "resume", provider: run.admission.provider.id, sensitivity_floor: run.task.sensitivity_floor });
     }
-    return this.#continue(run, false);
+    run.task = TaskSchema.parse({ ...run.task, state: "running", runtime_substate: "active" });
+    run.runningSince = this.#clock().getTime();
+    if (park !== null && park.tool_call !== null) {
+      this.#pushContext(run, { role: "tool", content: { tool_call: park.tool_call, outcome: "parked", reason: park.reason, park_seq: park.seq, resumed: true } }, this.#runnerClass(run));
+    }
+    return this.#continue(run);
   }
 
-  async #continue(run: TaskRun, claim = true): Promise<RunOutcome> {
-    if (claim) {
-      if (this.#active !== null && this.#active !== run.task.id) throw new RunnerError(`task ${this.#active} is running; this runner runs one task at a time`);
-      this.#active = run.task.id;
-    }
+  async #continue(run: TaskRun): Promise<RunOutcome> {
+    if (this.#active !== null && this.#active !== run.task.id) throw new RunnerError(`task ${this.#active} is running; this runner runs one task at a time`);
+    this.#active = run.task.id;
     try {
       return await this.#loop(run);
     } finally {
@@ -818,6 +817,7 @@ export class Runner {
       else if (entry.kind === "resume") {
         state = "running";
         for (const grant of body.added_grants ?? []) if (!grants.includes(grant)) grants.push(grant);
+        for (const grant of body.removed_grants ?? []) if (grants.includes(grant)) grants.splice(grants.indexOf(grant), 1);
       } else if (body.type === "state" && body.to !== undefined) state = TaskStateSchema.parse(body.to);
       else if (body.type === "sensitivity_floor" && body.to !== undefined) floor = SensitivitySchema.parse(body.to);
       else if (body.type === "context" && body.item !== undefined && body.data_class !== undefined) run.context.push({ item: body.item, data_class: body.data_class });

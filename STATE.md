@@ -44,6 +44,8 @@ Everything is in `packages/runner/` unless named. Every test names the section i
   - the provider-response limits were unrecorded (D-059); a runner now runs one task at a time (D-063).
   - The reviewer also asked the operator to confirm that the CLAUDE.md §7 autopilot change (D-055) is theirs. It came from the director's instruction that started this session.
 
+- **First independent review of PR #9 (2026-10-30): DO NOT MERGE.** Fixed: (1) the four Increment 6 commits had not reached GitHub (the branch's upstream had become `origin/main`; pushed, upstream fixed); (2) a resume that re-parked left the runner claimed, so it refused all further work (fixed, tested); (3) a task listing an unusable grant could never resume (operator can now drop grants on resume, recorded in D-066 with the consequence; tested, including across a restart); (4) the runner-record classes recorded in D-066.
+
 ## Remaining in Increment 6
 - `make verify`, review and the §7 merge gate.
 

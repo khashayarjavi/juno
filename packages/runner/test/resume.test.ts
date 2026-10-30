@@ -66,6 +66,24 @@ describe("build plan Increment 6 tests", () => {
     await runner.run("task-1");
     h.grants.revoke("grant-1", h.now.value);
     expect((await runner.resume("task-1")).reason).toBe("awaiting_grant");
+    // A resume that re-parks leaves the runner free: the same task can be resumed again, and another task can run.
+    expect((await runner.resume("task-1")).reason).toBe("awaiting_grant");
+    admitted(runner, { id: "task-2", grants: [] });
+    expect((await runner.run("task-2")).state).toBe("complete_unverified");
+  });
+
+  // proves §6.3 / D-066: an unusable grant can be dropped on resume (only narrowing authority) and a fresh one added
+  it("resumes once a used-up grant is dropped and a fresh one added", async () => {
+    h.grants.add(grant({ id: "grant-once", max_invocations: 1 }));
+    const { runner } = h.runner([turn([shellRun(["a"])]), turn([shellRun(["b"])]), turn([shellRun(["b"])]), turn([])]);
+    admitted(runner, { grants: ["grant-once"] });
+    expect((await runner.run("task-1")).reason).toBe("awaiting_grant");
+    // Adding a grant alone is not enough while the used-up one stays on the task.
+    expect((await runner.resume("task-1", { grants: ["grant-1"] })).reason).toBe("awaiting_grant");
+    await expect(runner.resume("task-1", { remove_grants: ["grant-none"] })).rejects.toThrow(/must be on the task/);
+    expect((await runner.resume("task-1", { remove_grants: ["grant-once"] })).state).toBe("complete_unverified");
+    expect(runner.task("task-1")?.grants).toEqual(["grant-1"]);
+    expect(ofKind("resume").at(-1)).toMatchObject({ removed_grants: ["grant-once"], grants: [expect.objectContaining({ grant: "grant-1", refused: null })] });
   });
 
   // proves §6.3: with its grants still valid, the same task resumes and runs to the end (the control for the two tests above)
@@ -144,6 +162,20 @@ describe("resume across a restart (§6.3, §3.4.5, D-066)", () => {
     expect(provider.requests).toEqual([]);
     expect(ofKind("park").at(-1)).toMatchObject({ reason: "routing_unavailable", phase: "resume" });
     expect(ofKind("resume").at(-1)).toMatchObject({ provider_available: false, routable: false });
+  });
+
+  // proves §3.4.5 / D-066: a grant dropped on resume stays dropped when the task is rebuilt after a restart
+  it("keeps a dropped grant dropped across a restart", async () => {
+    h.grants.add(grant({ id: "grant-once", max_invocations: 1 }));
+    const { runner } = h.runner([turn([shellRun(["a"])]), turn([shellRun(["b"])]), turn([shellRun(["b"])])]);
+    admitted(runner, { grants: ["grant-once"] });
+    await runner.run("task-1");
+    // Dropped, with nothing added: the task runs again and parks at its next call, holding no grant.
+    expect((await runner.resume("task-1", { remove_grants: ["grant-once"] })).reason).toBe("awaiting_grant");
+    runner.close();
+    const { runner: next } = restart([turn([shellRun(["c"])]), turn([])], [grant(), grant({ id: "grant-once", max_invocations: 1 })]);
+    expect((await next.resume("task-1", { grants: ["grant-1"] })).state).toBe("complete_unverified");
+    expect(next.task("task-1")?.grants).toEqual(["grant-1"]);
   });
 
   // proves D-056: a task whose journal fails verification after a crash is never resumed; it fails, with the reason recorded
