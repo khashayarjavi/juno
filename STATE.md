@@ -7,10 +7,11 @@
 3. **Part 3 — One real provider adapter: OpenCode Zen** (key only in `OPENCODE_API_KEY`, read only by the runner; runner network to opencode.ai only; a §13.1 profile; a free model; only through `make smoke`, never in CI or `make verify`; spend ceiling USD 5 and a token cap).
 4. **Part 4 — Evidence run with `make smoke`** (the five §18 scenarios, three ordinary tasks, one adversarial task, each at least twice; journals under `evidence/slice-1.1/`; report in `docs/evidence/slice-1.1.md`).
 
-Status: Part 1 merged (PR #12). Part 2 in progress (D-069).
+Status: Parts 1 and 2 merged (PR #12, PR #13). **STOPPED at Part 3: every free model refuses this client** (the operator's Part 3 STOP condition; details under "For the operator"). Nothing of Part 3 was built; Part 4 was not started.
 
 ## Merges recorded (CLAUDE.md §7 step 6)
-- **Slice 1.1 Part 1, PR #12** (https://github.com/khashayarjavi/juno/pull/12): head 4661f4bdf1218312ef4a01dce914e0b6d67777f0; PR CI `verify` run 41095688964 (success); merged as merge commit 9c437cf12f537f82ce5aa408036fa501b743b736, pinned to the head SHA; CI `verify` on `main` for the merge commit, run 41100958199 (event `push`, the new trigger; queued when this was written, result recorded below once read). Reviewer verdict: round 1 MERGE on 4661f4b.
+- **Slice 1.1 Part 2, PR #13** (https://github.com/khashayarjavi/juno/pull/13): head c50367aec339dbd0c26268f77f008b976428fd64; PR CI `verify` run 41101381460 (success); merged as merge commit c464ec8dd247dd7288da97c31888cbc03591d761, pinned to the head SHA; CI `verify` on `main` for the merge commit, run 41103200588 (event `push`, success). Reviewer verdict: round 1 MERGE on c50367a.
+- **Slice 1.1 Part 1, PR #12** (https://github.com/khashayarjavi/juno/pull/12): head 4661f4bdf1218312ef4a01dce914e0b6d67777f0; PR CI `verify` run 41095688964 (success); merged as merge commit 9c437cf12f537f82ce5aa408036fa501b743b736, pinned to the head SHA; CI `verify` on `main` for the merge commit, run 41100958199 (event `push`, the new trigger; success). Reviewer verdict: round 1 MERGE on 4661f4b.
 - **Increment 7, PR #10** (https://github.com/khashayarjavi/juno/pull/10): head 00472832069890b11a729e97db7f25616f79786a; PR CI `verify` run 41071225012 (success); merged as merge commit f89e915a2cb7ee16c1ccad053da545107fd86051, pinned to the head SHA (two earlier merge calls returned a GitHub 500 and did nothing; `main` was checked unchanged before retrying); CI `verify` on `main` for the merge commit, run 41071862741 (workflow_dispatch, success). Reviewer verdicts: round 1 DO NOT MERGE on ecc0b3f (two findings, both fixed), round 2 MERGE on 0047283.
 - **Increment 6, PR #9** (https://github.com/khashayarjavi/juno/pull/9): head 61d2aa34247ef06ef10ba859733da8fc941d021a; PR CI `verify` run 41067106637 (success); merged as merge commit e38850156b70ad7e80537589ff77a74b35259b9a, pinned to the head SHA; CI `verify` on `main` for the merge commit, run 41067673749 (workflow_dispatch, success). Reviewer verdicts: round 1 DO NOT MERGE on add00fe (four findings, all fixed), round 2 MERGE on 61d2aa3 (one minor carry-over, plan step 1).
 - **Increment 5, PR #8** (https://github.com/khashayarjavi/juno/pull/8): head fd68a2509d0be8556754cc3a0e78d71dfcad28e6; PR CI `verify` run 41063185508 (success); merged as merge commit da4e4cf32f6e8a5acd8e84dbc71c8afd2ca04c71, pinned to the head SHA; CI `verify` on `main` for the merge commit, run 41064280256 (workflow_dispatch, success). Reviewer verdicts: round 1 MERGE on 4e00d36 (findings fixed), round 2 MERGE on fd68a25.
@@ -45,12 +46,29 @@ Everything is in `packages/runner/` unless named. Every test names the section i
 - **First independent review of PR #9 (2026-10-30): DO NOT MERGE.** Fixed: (1) the four Increment 6 commits had not reached GitHub (the branch's upstream had become `origin/main`; pushed, upstream fixed); (2) a resume that re-parked left the runner claimed, so it refused all further work (fixed, tested); (3) a task listing an unusable grant could never resume (operator can now drop grants on resume, recorded in D-066 with the consequence; tested, including across a restart); (4) the runner-record classes recorded in D-066.
 
 ## Remaining
-- Nothing in Slice 1. The operator's items are below.
+- Slice 1.1 Parts 3 and 4, blocked on the operator's decision below.
 
 ## make verify
-GREEN as of 2026-10-30 (Increment 7, after the first-review fixes): 634 unit tests (18 files), 51 container and acceptance tests (7 files), both lint self-tests fired. Summary line: `make verify: GREEN`.
+GREEN as of 2026-10-30 (Slice 1.1 Part 2, head c50367a): 647 unit tests (19 files), 51 container and acceptance tests (7 files), both lint self-tests fired. Summary line: `make verify: GREEN`.
 
 ## For the operator
+- **Slice 1.1 STOP at Part 3: the OpenCode Zen free models refuse this client.** Checked on 2026-10-30, at about 17:00 and again at about 17:50 UTC, from the runner's host with `OPENCODE_API_KEY`. The key was never printed or stored.
+  - `GET https://opencode.ai/inference/v1/models` answered 200 and listed 37 models, 9 of them free (price 0): `big-pickle`, `glm-5.3-flash-free`, `deepseek-v4.1-flash-free`, `beam-free`, `flint-40b-free`, `mimo-v2.6-flash-free`, `nemotron-3-ultra-free`, `nemotron-3.5-lightning-free`, `nemotron-3.5-super-vl-free`.
+  - Each was sent one minimal request: `POST https://opencode.ai/inference/openai/v1/chat/completions`, header `Authorization: Bearer <key>`, at most 20 output tokens. That is the endpoint and format the provider's model list and docs give for these models.
+  - Eight of the nine answered **HTTP 429**, with `Retry-After: 22420` (about 6.2 hours, which lands near midnight UTC), and this exact body:
+    `{"type":"error","error":{"type":"FreeUsageLimitError","message":"Free usage limit reached. Free models work in OpenCode (https://opencode.ai); subscribe to OpenCode Go to keep going: https://opencode.ai/go"}}`
+  - `nemotron-3-ultra-free` answered **HTTP 400** `{"error":{"type":"server_error","message":"Upstream request failed: Model is unavailable."}}`.
+  - The provider's docs (https://opencode.ai/docs/zen/, which redirects to `/v2/docs/console/models/`) state: "Free-tier chat models require OpenCode; use paid models or Go from other clients."
+  - No paid model was called, and none will be without you. Not one request succeeded, so nothing was spent.
+  - **Your options:**
+    - (a) authorise one paid model, named, under the USD 5 smoke ceiling. Cheap ones on the provider's price list: `gpt-5-nano` at $0.05 in / $0.40 out per 1M tokens; `claude-haiku-5-5` and `gpt-6-luna` at $0.10 in / $0.50 out;
+    - (b) subscribe to OpenCode Go, which the error names, and say so;
+    - (c) retry the free models after the `Retry-After` window. This is not recommended: the docs say free models are for the OpenCode client, so this may well fail again, and if it works it may stop working at any time;
+    - (d) name another provider.
+  - Parts 3 and 4 resume from here, on your word.
+- **Minor notes from the review of PR #13 (Part 2; not defects):**
+  - in `packages/runner/src/lock.ts` `clearStale`, the `finally` that removes the takeover file would throw if someone else had already removed it, and that error would hide the original outcome;
+  - the real-host lock tests need a readable `/etc/machine-id`. It exists here and on GitHub's Ubuntu runners.
 - **PR #7 (superseded, still open):** https://github.com/khashayarjavi/juno/pull/7 is an earlier Increment 5 from another session (branch `claude/great-keller-clbbvy`). This session missed it at the start (§7 step 1 says to continue an open PR) and built Increment 5 afresh as PR #8, which is merged. Checked against `main`: PR #7's two operator rulings (TTL expiry fails the task, never a park; no default budget ceiling) are both honoured by the merged code (D-063; the admission schema requires all four axes). Its D-065 proposal is the one the director ruled on (D-065 here). Its other choices were agent decisions, and some differ from the merged ones (for example, it took over a stale runner lock where D-064 refuses to). PR #7 was not closed by this session; closing it is the operator's call.
 
 ## Open objections to the spec
