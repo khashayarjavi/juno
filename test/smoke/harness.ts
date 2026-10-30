@@ -10,6 +10,7 @@ import { CapabilityRegistry, RegistryEntry, WorkloadExecFileAdapter } from "../.
 import type { SourceRegistration } from "../../packages/runner/src/admission.js";
 import { explainTask } from "../../packages/runner/src/explain.js";
 import { type GroqProvider } from "../../packages/runner/src/groq.js";
+import type { Provider } from "../../packages/runner/src/provider.js";
 import { Runner } from "../../packages/runner/src/runner.js";
 
 // The `make smoke` harness (Slice 1.1; DECISIONS.md D-072, D-073). The runner
@@ -124,7 +125,8 @@ export function task(groq: GroqProvider, id: string, objective: string, override
 export type Context = {
   readonly groq: GroqProvider;
   readonly journalRoot: string;
-  readonly runner: (options?: { registry?: CapabilityRegistry; grants?: readonly Record<string, unknown>[]; clock?: () => Date }) => Runner;
+  /** A runner on this run's journal. `provider` wraps the Groq provider (to move a scenario's clock, or count calls); its profile must be Groq's. */
+  readonly runner: (options?: { registry?: CapabilityRegistry; grants?: readonly Record<string, unknown>[]; clock?: () => Date; provider?: Provider }) => Runner;
 };
 
 export type Outcome = {
@@ -263,7 +265,9 @@ export async function runScenario(scenario: Scenario, index: number, groq: GroqP
     runner: (options = {}) => {
       const grants = new GrantStore();
       for (const item of options.grants ?? [grant("grant-main", Date.now())]) grants.add(item);
-      const runner = new Runner({ journal, registry: options.registry ?? standardRegistry(), grants, providers: [groq], sources: SOURCES, clock: options.clock ?? (() => new Date()) });
+      const provider = options.provider ?? groq;
+      if (provider.profile !== groq.profile) throw new Error("a scenario's provider must serve the Groq profile");
+      const runner = new Runner({ journal, registry: options.registry ?? standardRegistry(), grants, providers: [provider], sources: SOURCES, clock: options.clock ?? (() => new Date()) });
       runners.push(runner);
       return runner;
     },

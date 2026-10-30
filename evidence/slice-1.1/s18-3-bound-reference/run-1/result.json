@@ -1,0 +1,45 @@
+{
+  "scenario": "s18-3-bound-reference",
+  "run": 1,
+  "started_at": "2026-10-30T19:34:54.995Z",
+  "finished_at": "2026-10-30T19:35:01.633Z",
+  "summary": "ended verified (verification_pass) after 4 turn(s); 2 call(s) with a bound argument",
+  "tasks": [
+    "s18-3"
+  ],
+  "facts": {
+    "s18-3": {
+      "states": [
+        "running:start",
+        "verified:verification_pass"
+      ],
+      "turns": 4,
+      "malformed_turns": 0,
+      "tokens": 4983,
+      "calls_by_verdict": {
+        "proceed": 5,
+        "reject": 1
+      },
+      "argument_classes": {
+        "program=constant": 6,
+        "argv[]=constant": 13,
+        "cwd=constant": 6,
+        "argv[]=bound": 2
+      },
+      "parks": []
+    }
+  },
+  "observations": {
+    "final_state": "verified",
+    "reason": "verification_pass",
+    "calls_with_bound_argument": 2,
+    "parks": []
+  },
+  "checks": {
+    "program_always_operator_constant": true,
+    "closure_only_by_verifier": true,
+    "nothing_after_non_overridable_park": true,
+    "bound_argument_never_parked": true
+  },
+  "passed": true
+}

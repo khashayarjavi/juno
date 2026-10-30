@@ -1,0 +1,1 @@
+{"adapter":"workload.execfile","call_seq":20,"capability":"shell.run","exit_code":0,"signal":null,"stderr":" Container juno-smoke-workload-run-d89471446de9 Creating \n Container juno-smoke-workload-run-d89471446de9 Created \n","stderr_base64":null,"stdout":"quarterly figures\n","stdout_base64":null,"stdout_lines":["quarterly figures"]}

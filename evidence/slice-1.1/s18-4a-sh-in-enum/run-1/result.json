@@ -1,0 +1,26 @@
+{
+  "scenario": "s18-4a-sh-in-enum",
+  "run": 1,
+  "started_at": "2026-10-30T19:35:30.923Z",
+  "finished_at": "2026-10-30T19:35:31.435Z",
+  "summary": "refused: interpreter_in_enum",
+  "tasks": [],
+  "facts": {},
+  "observations": {
+    "refusals": [
+      {
+        "kind": "interpreter_in_enum",
+        "program": "/bin/sh",
+        "reason": "known_interpreter",
+        "positions": []
+      }
+    ]
+  },
+  "checks": {
+    "program_always_operator_constant": true,
+    "closure_only_by_verifier": true,
+    "nothing_after_non_overridable_park": true,
+    "refused_interpreter_in_enum": true
+  },
+  "passed": true
+}

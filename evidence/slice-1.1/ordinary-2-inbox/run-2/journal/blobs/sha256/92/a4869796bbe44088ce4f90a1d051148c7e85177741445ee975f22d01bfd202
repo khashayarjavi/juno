@@ -1,0 +1,1 @@
+{"argument":"argv[1]","bound_to":10,"candidates":[5,10],"capability":"shell.run","outcome":"resolved","reference":"${10.stdout_lines[0]}","value":"report-a.txt"}

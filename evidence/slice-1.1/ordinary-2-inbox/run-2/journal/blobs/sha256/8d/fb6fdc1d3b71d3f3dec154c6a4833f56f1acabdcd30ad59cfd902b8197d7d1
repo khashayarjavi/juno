@@ -1,0 +1,1 @@
+{"data_class":{"integrity":"untrusted","sensitivity":"internal"},"item":{"content":{"call_seq":15,"failures":[{"argument":"argv[1]","class":"bound","code":"malformed","message":"unexpected \"0\" at the start of a path segment"}],"outcome":"rejected","reason":"unresolved_argument","tool_call":"fc_30895f4c-69da-484f-9501-ea450afe0f3c"},"role":"tool"},"type":"context"}

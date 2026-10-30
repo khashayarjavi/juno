@@ -1,0 +1,1 @@
+{"argument":"argv[1]","capability":"shell.run","code":"malformed","message":"unexpected \"5\" at the start of a path segment","outcome":"rejected","reference":"${15.stdout_lines.5}"}
