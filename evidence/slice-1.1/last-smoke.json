@@ -1,0 +1,10 @@
+{
+  "started_at": "2026-10-30T19:25:45.318Z",
+  "finished_at": "2026-10-30T19:25:51.053Z",
+  "runs": [
+    "live-check/run-4"
+  ],
+  "tokens_last_24h": 7869,
+  "token_cap": 180000,
+  "stopped": null
+}

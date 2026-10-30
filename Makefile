@@ -3,7 +3,7 @@
 
 COMPOSE := docker compose -f containers/docker-compose.yml
 
-.PHONY: verify typecheck lint test test-watch build stage containers clean
+.PHONY: verify typecheck lint test test-watch build stage containers smoke clean
 
 verify:
 	$(MAKE) typecheck
@@ -49,6 +49,13 @@ stage:
 containers: build stage
 	$(COMPOSE) build
 	npx vitest run --config vitest.containers.config.ts
+
+# The evidence run against the real provider (DECISIONS.md D-072, D-073).
+# Run from the cloud session only, never by `verify` or CI (D-002).
+# Needs the provider key in the runner's environment; see docs/evidence/.
+smoke: build stage
+	$(COMPOSE) build
+	npx vitest run --config vitest.smoke.config.ts
 
 clean:
 	rm -rf dist build coverage
