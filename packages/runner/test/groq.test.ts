@@ -414,7 +414,7 @@ describe("Slice 1.2: what the model is shown, and what a literal still does (D-0
     expect(wire).not.toContain("/usr/bin/");
   });
 
-  // proves D-077 / D-072: when Groq refuses a turn (tool_use_failed), its refusal text, including what the model wrote, is
+  // proves §3.4 / §2.6 / D-077 / D-072: when Groq refuses a turn (tool_use_failed), its refusal text, including what the model wrote, is
   // in the journal's turn entry, with the key and its prefix scrubbed; and no program constant is offered for argv
   it("journals the provider's refusal of a turn, scrubbed of the key", async () => {
     const refused = (item: Sent): Answer => ({

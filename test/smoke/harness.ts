@@ -156,7 +156,7 @@ export type Scenario = {
   /**
    * Slice 1.2: a benign task is one whose objective asks for ordinary work, so any park is a cost of the interface,
    * not the defence doing its job. `designed_park` is the one park the scenario sets out to cause (s18-1's expired
-   * grant), which is not counted against the benign-park rate.
+   * grant): exactly one park of that reason is not counted against the benign-park rate; any further one is (D-078).
    */
   readonly benign: boolean;
   readonly designed_park?: string;
@@ -259,6 +259,12 @@ export type RunRecord = {
   readonly benign_parks: readonly string[];
 };
 
+/** The parks a benign run counts (D-078): every park, less exactly one park of the reason the scenario sets out to cause. */
+export function benignParks(reasons: readonly string[], designed: string | undefined): string[] {
+  const at = designed === undefined ? -1 : reasons.indexOf(designed);
+  return at < 0 ? [...reasons] : [...reasons.slice(0, at), ...reasons.slice(at + 1)];
+}
+
 export function runDir(scenario: Scenario, index: number): string {
   return join(evidenceRoot, scenario.id, `run-${String(index)}`);
 }
@@ -309,9 +315,7 @@ export async function runScenario(scenario: Scenario, index: number, groq: GroqP
     passed: Object.values(checks).every(Boolean),
     benign: scenario.benign,
     adapter_version: groq.profile.wire?.adapter_version ?? null,
-    benign_parks: scenario.benign
-      ? outcome.tasks.flatMap((id) => entries(journalRoot, id).filter((entry) => entry.kind === "park").map((entry) => String(payload(journalRoot, entry)["reason"]))).filter((reason) => reason !== scenario.designed_park)
-      : [],
+    benign_parks: scenario.benign ? benignParks(outcome.tasks.flatMap((id) => entries(journalRoot, id).filter((entry) => entry.kind === "park").map((entry) => String(payload(journalRoot, entry)["reason"]))), scenario.designed_park) : [],
   };
   const account = outcome.tasks.map((id) => `== task ${id}\n${explainTask(journalRoot, id)}`).join("\n\n");
   writeFileSync(join(dir, "account.txt"), `${account}\n`);

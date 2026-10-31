@@ -504,7 +504,7 @@ describe("Slice 1.2: what the executing model is offered (D-075)", () => {
     expect(JSON.stringify(user?.content)).not.toContain(CAT);
   });
 
-  // proves D-075 / D-077: an instruction field is offered only instruction-role constants that fit it, a data field only
+  // proves §2.2 / §2.6 / D-075 / D-077: an instruction field is offered only instruction-role constants that fit it, a data field only
   // data-role constants whose value fits its type (so the program constant is never offered for argv, and a non-path
   // string is not offered for cwd), and never a slot fixed for the verifier (criterion.*)
   it("offers per-field slots by role and type, never the verifier's", async () => {
@@ -554,7 +554,7 @@ describe("Slice 1.2: later turns (D-075, first review of PR #19)", () => {
 });
 
 describe("Slice 1.2: an unreadable answer is journaled (D-077)", () => {
-  // proves D-077 / §3.4: when the runner cannot read a provider's answer (a refusal, a cut-off turn), what the provider
+  // proves §3.4 / §3.4.3 / D-077: when the runner cannot read a provider's answer (a refusal, a cut-off turn), what the provider
   // returned is written to the turn entry, bounded, so the journal shows what was refused; the account shows it too
   it("journals the unread answer on the turn entry", async () => {
     const { runner } = h.runner([{ provider_error: "tool_use_failed", failed_generation: '{"name":"shell__run","arguments":"oops"}' }, turn()]);
@@ -568,7 +568,7 @@ describe("Slice 1.2: an unreadable answer is journaled (D-077)", () => {
     expect(explainTask(h.journal.root, "task-1")).toMatch(/could not read the answer .*; the provider returned ".*tool_use_failed/);
   });
 
-  // proves D-077: the journaled text is bounded
+  // proves §3.4 / D-077: the journaled text is bounded
   it("bounds the unread text", () => {
     const text = unreadText({ big: "x".repeat(MAX_UNREAD_CHARS * 2) });
     expect(text.length).toBeLessThan(MAX_UNREAD_CHARS + 64);
