@@ -90,25 +90,31 @@ export class MemoryTokenLedger implements TokenLedger {
 
 const LedgerLine = z.strictObject({ at: z.iso.datetime(), tokens: z.int().nonnegative(), note: z.string() });
 
-/** One JSON line per call. A line that cannot be read stops the run: an unreadable ledger cannot prove the cap. */
+/**
+ * One JSON line per call. A line that cannot be read stops the run: an unreadable ledger cannot prove the cap.
+ * `alsoCount` names earlier ledgers (another slice's) whose lines in the window count against the same cap; new
+ * lines are written to `file` only.
+ */
 export class FileTokenLedger implements TokenLedger {
   constructor(
     readonly file: string,
     readonly cap: number,
+    readonly alsoCount: readonly string[] = [],
   ) {}
-  #lines(): z.infer<typeof LedgerLine>[] {
-    if (!existsSync(this.file)) return [];
-    return readFileSync(this.file, "utf8")
+  #lines(file: string): z.infer<typeof LedgerLine>[] {
+    if (!existsSync(file)) return [];
+    return readFileSync(file, "utf8")
       .split("\n")
       .filter((line) => line.length > 0)
       .map((line, index) => {
         const parsed = LedgerLine.safeParse(safeJson(line));
-        if (!parsed.success) throw new ProviderStop("token_cap", `token ledger line ${String(index + 1)} cannot be read`);
+        if (!parsed.success) throw new ProviderStop("token_cap", `token ledger ${file} line ${String(index + 1)} cannot be read`);
         return parsed.data;
       });
   }
   used(now: number): number {
-    return this.#lines()
+    return [this.file, ...this.alsoCount]
+      .flatMap((file) => this.#lines(file))
       .filter((line) => now - Date.parse(line.at) < DAY_MS)
       .reduce((sum, line) => sum + line.tokens, 0);
   }
@@ -316,7 +322,7 @@ const WireResponse = z.object({
   }),
 });
 
-const WireError = z.object({ error: z.object({ message: z.string().optional(), type: z.string().optional(), code: z.string().nullish() }) });
+const WireError = z.object({ error: z.object({ message: z.string().optional(), type: z.string().optional(), code: z.string().nullish(), failed_generation: z.string().optional() }) });
 
 export class GroqProvider implements Provider {
   readonly profile: ProviderProfile;
@@ -444,7 +450,8 @@ export class GroqProvider implements Provider {
       if (response.status === 400 && error.success && error.data.error.code === "tool_use_failed") {
         // The model wrote a call the provider could not parse. That is a turn the runner cannot read: it is
         // recorded as malformed, and the model is told so (D-073). The extra fields make it fail the runner's parse.
-        return { provider_error: "tool_use_failed", detail: error.data.error.message ?? null };
+        // What the model wrote that the provider refused goes with it, so the journal can show it (D-077); scrubbed of the key.
+        return this.#redactDeep({ provider_error: "tool_use_failed", detail: error.data.error.message ?? null, failed_generation: error.data.error.failed_generation ?? null });
       }
       if (response.status >= 500 || response.status === 498) {
         if (attempt >= this.#maxAttempts) throw new Error(`HTTP ${String(response.status)} ${String(attempt)} times in a row: ${text}`);

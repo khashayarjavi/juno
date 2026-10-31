@@ -6,7 +6,8 @@ import { BoundaryError, Closure, type TrajectoryEntry, closureSchemaFor } from "
 import { CapabilityRegistry, WORKLOAD_EXECFILE, type Adapter, loadRegistryEntry } from "../../registry/src/index.js";
 import { RunnerLockError } from "../src/lock.js";
 import type { ProviderRequest } from "../src/provider.js";
-import { REGISTRY_RECORD, RUNNER_ACTOR, Runner, VERIFIER_ACTOR } from "../src/runner.js";
+import { explainTask } from "../src/explain.js";
+import { MAX_UNREAD_CHARS, REGISTRY_RECORD, RUNNER_ACTOR, Runner, VERIFIER_ACTOR, unreadText } from "../src/runner.js";
 import { CAT, DAY_MS, type Harness, OPERATOR_CRITERION, PRINCIPAL, PROFILE, SHELL_RUN_FILE, harness, request, shellRun, standInAdapter, turn } from "./helpers.js";
 
 let h: Harness;
@@ -503,14 +504,15 @@ describe("Slice 1.2: what the executing model is offered (D-075)", () => {
     expect(JSON.stringify(user?.content)).not.toContain(CAT);
   });
 
-  // proves D-075: each field is offered the operator's slots, an enum field only those whose value it accepts, and never a
-  // slot fixed for the verifier (criterion.*), though admission put those in the task's constants
-  it("offers per-field slots, never the verifier's", async () => {
+  // proves §2.2 / §2.6 / D-075 / D-077: an instruction field is offered only instruction-role constants that fit it, a data field only
+  // data-role constants whose value fits its type (so the program constant is never offered for argv, and a non-path
+  // string is not offered for cwd), and never a slot fixed for the verifier (criterion.*)
+  it("offers per-field slots by role and type, never the verifier's", async () => {
     const { runner, provider } = h.runner([turn()]);
     admitted(runner, withCriterion);
     await runner.run("task-1");
     const tool = provider.requests[0]?.tools.find((item) => item.capability === "shell.run");
-    expect(tool?.slots).toEqual({ program: ["cat"], argv: ["cat", "label", "project"], cwd: ["cat", "label", "project"] });
+    expect(tool?.slots).toEqual({ program: ["cat"], argv: ["label", "project"], cwd: ["project"] });
     expect(JSON.stringify(provider.requests[0]?.tools)).not.toContain("criterion.");
   });
 
@@ -548,5 +550,28 @@ describe("Slice 1.2: later turns (D-075, first review of PR #19)", () => {
     expect(JSON.stringify(provider.requests[1]?.context)).not.toContain("/usr/bin/");
     const call = h.entries().filter((entry) => entry.kind === "capability_call").map(h.payload).find((body) => (body["verdict"] as { outcome: string }).outcome === "reject");
     expect(JSON.stringify(call?.["verdict"])).toContain("/usr/bin/cat");
+  });
+});
+
+describe("Slice 1.2: an unreadable answer is journaled (D-077)", () => {
+  // proves §3.4 / §3.4.3 / D-077: when the runner cannot read a provider's answer (a refusal, a cut-off turn), what the provider
+  // returned is written to the turn entry, bounded, so the journal shows what was refused; the account shows it too
+  it("journals the unread answer on the turn entry", async () => {
+    const { runner } = h.runner([{ provider_error: "tool_use_failed", failed_generation: '{"name":"shell__run","arguments":"oops"}' }, turn()]);
+    admitted(runner);
+    await runner.run("task-1");
+    const first = h.entries().filter((entry) => entry.kind === "turn").map(h.payload)[0];
+    expect(first).toMatchObject({ response: null, unread: expect.stringContaining('"provider_error":"tool_use_failed"') });
+    expect(String(first?.["unread"])).toContain("oops");
+    const second = h.entries().filter((entry) => entry.kind === "turn").map(h.payload)[1];
+    expect(second?.["unread"]).toBeNull();
+    expect(explainTask(h.journal.root, "task-1")).toMatch(/could not read the answer .*; the provider returned ".*tool_use_failed/);
+  });
+
+  // proves §3.4 / D-077: the journaled text is bounded
+  it("bounds the unread text", () => {
+    const text = unreadText({ big: "x".repeat(MAX_UNREAD_CHARS * 2) });
+    expect(text.length).toBeLessThan(MAX_UNREAD_CHARS + 64);
+    expect(text).toMatch(/\(truncated, \d+ characters\)$/);
   });
 });

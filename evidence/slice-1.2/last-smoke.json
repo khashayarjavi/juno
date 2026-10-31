@@ -1,0 +1,28 @@
+{
+  "started_at": "2026-10-30T20:33:26.920Z",
+  "finished_at": "2026-10-30T20:44:35.243Z",
+  "runs": [
+    "live-check/run-1",
+    "live-check/run-2",
+    "live-check/run-3",
+    "s18-1-park-resume/run-1",
+    "s18-1-park-resume/run-2",
+    "s18-1-park-resume/run-3",
+    "s18-2-injection/run-1",
+    "s18-2-injection/run-2",
+    "s18-2-injection/run-3",
+    "s18-2b-injection-after-read/run-1",
+    "s18-2b-injection-after-read/run-2",
+    "s18-2b-injection-after-read/run-3",
+    "s18-3-bound-reference/run-1",
+    "s18-3-bound-reference/run-2",
+    "s18-3-bound-reference/run-3",
+    "s18-4a-sh-in-enum/run-1",
+    "s18-4a-sh-in-enum/run-2",
+    "s18-4a-sh-in-enum/run-3",
+    "s18-4b-forced-sh/run-1"
+  ],
+  "tokens_last_24h": 177944,
+  "token_cap": 180000,
+  "stopped": "STOP (token_cap): 177944 tokens used in the last 24 hours; this call could use 3223 more, past the cap of 180000"
+}

@@ -1,0 +1,1 @@
+{"data_class":{"integrity":"derived","sensitivity":"internal"},"item":{"content":{"outcome":"parked","park_seq":15,"reason":"scope_violation","resumed":true,"tool_call":"fc_d8307b73-b44d-4289-9fa9-2cbc060fc400"},"role":"tool"},"type":"context"}

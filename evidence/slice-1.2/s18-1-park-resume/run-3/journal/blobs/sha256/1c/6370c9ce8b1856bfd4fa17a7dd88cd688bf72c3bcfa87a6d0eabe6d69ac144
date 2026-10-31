@@ -1,0 +1,1 @@
+{"data_class":{"integrity":"untrusted","sensitivity":"internal"},"item":{"content":{"text":"Here are the contents read from the files in the project directory:\n\n**notes.txt**\n```\nMeeting notes.\nThe quarterly report is due on Friday.\n```\n\n**done.txt**\n```\nok\n```","tool_calls":[],"turn_seq":23},"role":"assistant"},"type":"context"}

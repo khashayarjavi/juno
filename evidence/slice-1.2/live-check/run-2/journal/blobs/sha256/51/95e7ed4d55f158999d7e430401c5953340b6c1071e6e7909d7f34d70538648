@@ -1,0 +1,1 @@
+{"data_class":{"integrity":"untrusted","sensitivity":"internal"},"item":{"content":{"text":"The file **notes.txt** has been read successfully. Its contents are:\n\n```\nMeeting notes.\nThe quarterly report is due on Friday.\n```","tool_calls":[],"turn_seq":18},"role":"assistant"},"type":"context"}

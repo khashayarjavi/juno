@@ -88,7 +88,7 @@ const REQUEST: ProviderRequest = {
     { role: "system", content: { runner: "juno" } },
     { role: "user", content: { objective: "read the notes" } },
   ],
-  tools: [{ capability: "shell.run", interface: SHELL_RUN_INTERFACE, slots: { program: ["cat", "ls"], argv: ["cat", "ls", "project"], cwd: ["cat", "ls", "project"] } }],
+  tools: [{ capability: "shell.run", interface: SHELL_RUN_INTERFACE, slots: { program: ["cat", "ls"], argv: ["project"], cwd: ["project"] } }],
 };
 
 const authorization = (sent: Sent): string => new Headers(sent.init.headers).get("authorization") ?? "";
@@ -179,8 +179,8 @@ describe("the request (D-072 docs read)", () => {
     const ref = expect.objectContaining({ required: ["ref"] });
     expect(schema.properties["program"]?.anyOf).toEqual([slotOf(["cat", "ls"]), ref]);
     expect(schema.properties["program"]?.description).toMatch(/^instruction field: Name one of the constants \["cat","ls"\].*\$\{12\.stdout_lines\[0\]\}.*anything else parks the task/);
-    expect(schema.properties["argv"]?.items?.anyOf).toEqual([{ type: "string" }, slotOf(["cat", "ls", "project"]), ref]);
-    expect(schema.properties["cwd"]?.anyOf).toEqual([{ type: "string" }, slotOf(["cat", "ls", "project"]), ref]);
+    expect(schema.properties["argv"]?.items?.anyOf).toEqual([{ type: "string" }, slotOf(["project"]), ref]);
+    expect(schema.properties["cwd"]?.anyOf).toEqual([{ type: "string" }, slotOf(["project"]), ref]);
     expect(schema.properties["argv"]?.description).toMatch(/^data field: a literal you write/);
     // No slot offered: the instruction field is offered as a reference alone.
     const bare = toolSchema({ ...tool, slots: {} }).function.parameters as { properties: Record<string, { anyOf: unknown[] }> };
@@ -304,6 +304,15 @@ describe("rate limits and the token cap (D-072)", () => {
       ledger.record(100, Date.parse("2026-10-30T10:00:00Z"), "a");
       ledger.record(50, Date.parse("2026-10-30T12:00:00Z"), "b");
       expect(new FileTokenLedger(file, 150_000).used(Date.parse("2026-10-31T11:00:00Z"))).toBe(50);
+      // Slice 1.2: an earlier slice's ledger counts against the same cap; new lines go to this ledger only.
+      const earlier = join(dir, "earlier.jsonl");
+      new FileTokenLedger(earlier, 150_000).record(70, Date.parse("2026-10-31T10:30:00Z"), "earlier slice");
+      const both = new FileTokenLedger(file, 150_000, [earlier]);
+      expect(both.used(Date.parse("2026-10-31T11:00:00Z"))).toBe(120);
+      both.record(5, Date.parse("2026-10-31T11:00:00Z"), "this slice");
+      expect(new FileTokenLedger(earlier, 150_000).used(Date.parse("2026-10-31T11:00:00Z"))).toBe(70);
+      writeFileSync(earlier, "{broken\n", { flag: "a" });
+      expect(() => both.used(Date.now())).toThrow(ProviderStop);
       writeFileSync(file, "{broken\n", { flag: "a" });
       expect(() => ledger.used(Date.now())).toThrow(ProviderStop);
     } finally {
@@ -403,6 +412,26 @@ describe("Slice 1.2: what the model is shown, and what a literal still does (D-0
     const wire = JSON.stringify(sent[1]?.body);
     expect(wire).toContain("malformed_call");
     expect(wire).not.toContain("/usr/bin/");
+  });
+
+  // proves §3.4 / §2.6 / D-077 / D-072: when Groq refuses a turn (tool_use_failed), its refusal text, including what the model wrote, is
+  // in the journal's turn entry, with the key and its prefix scrubbed; and no program constant is offered for argv
+  it("journals the provider's refusal of a turn, scrubbed of the key", async () => {
+    const refused = (item: Sent): Answer => ({
+      status: 400,
+      body: { error: { message: "Failed to call a function. Please adjust your prompt.", type: "invalid_request_error", code: "tool_use_failed", failed_generation: `{"name":"shell__run","arguments":{"program":"/bin/sh","note":"${authorization(item)}"}}` } },
+    });
+    const { groq, sent } = provider([refused, chat({ content: "done" })]);
+    const { runner } = h.runner([], { providers: [groq] });
+    expect(runner.admit(groqTask()).admitted).toBe(true);
+    await runner.run("task-1");
+    const tools = sent[0]?.body["tools"] as ReturnType<typeof toolSchema>[];
+    expect(JSON.stringify((tools[0]?.function.parameters as { properties: Record<string, unknown> }).properties["argv"])).not.toContain('"cat"');
+    const first = h.entries().filter((entry) => entry.kind === "turn").map(h.payload)[0];
+    expect(first).toMatchObject({ response: null, unread: expect.stringContaining("tool_use_failed") });
+    expect(String(first?.["unread"])).toContain("/bin/sh");
+    const files = readdirSync(h.dir, { recursive: true }).map((file) => join(h.dir, String(file))).filter((file) => statSync(file).isFile());
+    expect(files.filter((file) => leaks(readFileSync(file, "latin1")))).toEqual([]);
   });
 
   // proves D-052 / §2.2 / §8.3 (Slice 1.2 requirement): a literal the model sends in an instruction field, though the schema
