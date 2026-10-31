@@ -506,6 +506,9 @@ export class Runner {
           request_hash: contentAddress(canonicalJson(request)),
           response: parsed.success ? parsed.data : null,
           malformed: parsed.success ? null : parsed.error.message,
+          // What the provider returned when it could not be read, for example its refusal of the turn (D-077). The
+          // provider adapter scrubs its key from everything it returns (D-073); the text is bounded.
+          unread: parsed.success ? null : unreadText(raw),
         },
         { tokens_in: usage.tokens_in, tokens_out: usage.tokens_out, tokens_cached: usage.tokens_cached, currency, duration_ms: duration },
         provider.profile.model,
@@ -791,7 +794,7 @@ export class Runner {
   #assemble(run: TaskRun, provider: Provider): ProviderRequest {
     const tools: ToolDefinition[] = this.#registry
       .capabilities()
-      .map((capability) => ({ capability: capability.id, interface: capability.interface, slots: slotOffers(capability.interface, run.admission.constants) }));
+      .map((capability) => ({ capability: capability.id, interface: capability.interface, slots: slotOffers(capability.interface, run.admission.constants, this.#declaredInstructionValues()) }));
     return { model: provider.profile.model, context: run.context.map((entry) => entry.item), tools };
   }
 
@@ -801,17 +804,24 @@ export class Runner {
    * fill it, so every constant's value is hidden too. Longest first, so no value is left half-hidden.
    */
   #instructionValues(run: TaskRun): string[] {
-    const values = new Set<string>();
+    const values = new Set<string>(this.#declaredInstructionValues());
     let freeText = false;
     for (const capability of this.#registry.capabilities()) {
-      for (const field of Object.values(capability.interface)) {
-        if (field.role !== "instruction") continue;
-        if (field.type.kind === "enum") for (const value of field.type.values) values.add(value);
-        else freeText = true;
-      }
+      for (const field of Object.values(capability.interface)) if (field.role === "instruction" && field.type.kind !== "enum") freeText = true;
     }
     if (freeText) for (const constant of Object.values(run.admission.constants)) if (typeof constant.value === "string" && constant.value.length > 0) values.add(constant.value);
     return [...values].sort((a, b) => b.length - a.length);
+  }
+
+  /** Every allowed value of every registered instruction field that is an enum: what the registry declares as instruction values. */
+  #declaredInstructionValues(): Set<string> {
+    const values = new Set<string>();
+    for (const capability of this.#registry.capabilities()) {
+      for (const field of Object.values(capability.interface)) {
+        if (field.role === "instruction" && field.type.kind === "enum") for (const value of field.type.values) values.add(value);
+      }
+    }
+    return values;
   }
 
   /** The criterion as the model is shown it: data-field values as admitted, instruction-field values hidden (D-075). */
@@ -1028,20 +1038,59 @@ export function offeredConstants(constants: Constants): string[] {
     .sort();
 }
 
+/** Whether a constant's value fits a field's scalar type: the same kinds the call schema checks, a path being absolute. */
+function fits(type: Exclude<FieldType, { kind: "list" | "map" }>, value: unknown): boolean {
+  switch (type.kind) {
+    case "enum":
+      return typeof value === "string" && type.values.includes(value);
+    case "path":
+      return typeof value === "string" && value.startsWith("/");
+    case "string":
+      return typeof value === "string";
+    case "integer":
+      return typeof value === "number" && Number.isInteger(value);
+    case "number":
+      return typeof value === "number";
+    case "boolean":
+      return typeof value === "boolean";
+  }
+}
+
 /**
- * The slot names offered for each field of a capability (D-075): every offered constant, except that a field whose
- * type is an enum (or a list of one) is offered only the constants whose value is one of its values. Offering is not
- * permission: the boundary judges whatever the model sends, named slot or not.
+ * The slot names offered for each field of a capability (D-075, D-077). A constant's role comes from the registry's
+ * declarations: a constant whose value is an allowed value of a declared instruction field (a program) has the
+ * instruction role; every other constant has the data role. An instruction field is offered the instruction-role
+ * constants whose value fits it; a data field (or the items of a list, the values of a map) only the data-role
+ * constants whose value fits it, so a program constant is never offered for argv. Offering is not permission: the
+ * boundary judges whatever the model sends, named slot or not.
  */
-export function slotOffers(fields: Readonly<Record<string, { readonly type: FieldType }>>, constants: Constants): Record<string, string[]> {
+export function slotOffers(
+  fields: Readonly<Record<string, { readonly type: FieldType; readonly role: string }>>,
+  constants: Constants,
+  instructionValues: ReadonlySet<unknown>,
+): Record<string, string[]> {
   const offered = offeredConstants(constants);
   return Object.fromEntries(
-    Object.entries(fields).map(([field, { type }]) => {
+    Object.entries(fields).map(([field, { type, role }]) => {
       const scalar = type.kind === "list" ? type.items : type.kind === "map" ? type.values : type;
-      const values: readonly unknown[] | null = scalar.kind === "enum" ? scalar.values : null;
-      return [field, values === null ? offered : offered.filter((slot) => values.includes(constants[slot]?.value))];
+      const wanted = role === "instruction";
+      return [field, offered.filter((slot) => instructionValues.has(constants[slot]?.value) === wanted && fits(scalar, constants[slot]?.value))];
     }),
   );
+}
+
+/** The most of an unreadable answer the journal keeps (D-077). */
+export const MAX_UNREAD_CHARS = 16_384;
+
+/** An unreadable provider answer as bounded text for the journal. */
+export function unreadText(raw: unknown): string {
+  let text: string;
+  try {
+    text = JSON.stringify(raw) ?? String(raw);
+  } catch {
+    text = String(raw);
+  }
+  return text.length > MAX_UNREAD_CHARS ? `${text.slice(0, MAX_UNREAD_CHARS)}...(truncated, ${String(text.length)} characters)` : text;
 }
 
 /** What a hidden value is replaced with in the runner's messages (D-075). */

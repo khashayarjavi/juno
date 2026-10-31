@@ -322,7 +322,7 @@ const WireResponse = z.object({
   }),
 });
 
-const WireError = z.object({ error: z.object({ message: z.string().optional(), type: z.string().optional(), code: z.string().nullish() }) });
+const WireError = z.object({ error: z.object({ message: z.string().optional(), type: z.string().optional(), code: z.string().nullish(), failed_generation: z.string().optional() }) });
 
 export class GroqProvider implements Provider {
   readonly profile: ProviderProfile;
@@ -450,7 +450,8 @@ export class GroqProvider implements Provider {
       if (response.status === 400 && error.success && error.data.error.code === "tool_use_failed") {
         // The model wrote a call the provider could not parse. That is a turn the runner cannot read: it is
         // recorded as malformed, and the model is told so (D-073). The extra fields make it fail the runner's parse.
-        return { provider_error: "tool_use_failed", detail: error.data.error.message ?? null };
+        // What the model wrote that the provider refused goes with it, so the journal can show it (D-077); scrubbed of the key.
+        return this.#redactDeep({ provider_error: "tool_use_failed", detail: error.data.error.message ?? null, failed_generation: error.data.error.failed_generation ?? null });
       }
       if (response.status >= 500 || response.status === 498) {
         if (attempt >= this.#maxAttempts) throw new Error(`HTTP ${String(response.status)} ${String(attempt)} times in a row: ${text}`);

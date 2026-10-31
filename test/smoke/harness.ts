@@ -253,6 +253,8 @@ export type RunRecord = {
   readonly checks: Record<string, boolean>;
   readonly passed: boolean;
   readonly benign: boolean;
+  /** The adapter version the run used (the Groq profile's `wire.adapter_version`): the report separates runs by it (D-077). */
+  readonly adapter_version: string | null;
   /** For a benign scenario: the reasons of every park it did not set out to cause. Empty: no benign park. */
   readonly benign_parks: readonly string[];
 };
@@ -306,6 +308,7 @@ export async function runScenario(scenario: Scenario, index: number, groq: GroqP
     checks,
     passed: Object.values(checks).every(Boolean),
     benign: scenario.benign,
+    adapter_version: groq.profile.wire?.adapter_version ?? null,
     benign_parks: scenario.benign
       ? outcome.tasks.flatMap((id) => entries(journalRoot, id).filter((entry) => entry.kind === "park").map((entry) => String(payload(journalRoot, entry)["reason"]))).filter((reason) => reason !== scenario.designed_park)
       : [],

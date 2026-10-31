@@ -30,7 +30,10 @@ function describe(entry: TrajectoryEntry, body: Record<string, unknown>): string
   switch (entry.kind) {
     case "turn": {
       const response = body["response"] as { tool_calls?: { capability: string; arguments: unknown }[]; text?: string | null } | null;
-      if (response === null) return `${head} turn ${show(body["turn"])} by ${entry.actor}: the runner could not read the answer (${show(body["malformed"])})`;
+      if (response === null) {
+        const unread = typeof body["unread"] === "string" ? `; the provider returned ${show(body["unread"].slice(0, 300))}` : "";
+        return `${head} turn ${show(body["turn"])} by ${entry.actor}: the runner could not read the answer (${show(body["malformed"])})${unread}`;
+      }
       const calls = response.tool_calls ?? [];
       return calls.length === 0
         ? `${head} turn ${show(body["turn"])} by ${entry.actor}: proposed no call; claims the task is done`
