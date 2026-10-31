@@ -80,3 +80,13 @@
 {"at":"2026-10-31T20:48:22.468Z","tokens":1159,"note":"HTTP 400"}
 {"at":"2026-10-31T20:48:31.628Z","tokens":1699,"note":"HTTP 400"}
 {"at":"2026-10-31T20:48:47.244Z","tokens":2239,"note":"HTTP 400"}
+{"at":"2026-10-31T20:49:01.621Z","tokens":2779,"note":"HTTP 400"}
+{"at":"2026-10-31T20:49:20.730Z","tokens":3319,"note":"HTTP 400"}
+{"at":"2026-10-31T20:49:44.617Z","tokens":3598,"note":"turn of openai/gpt-oss-120b"}
+{"at":"2026-10-31T20:50:02.946Z","tokens":3973,"note":"HTTP 400"}
+{"at":"2026-10-31T20:50:29.158Z","tokens":4513,"note":"HTTP 400"}
+{"at":"2026-10-31T20:50:36.055Z","tokens":855,"note":"turn of openai/gpt-oss-120b"}
+{"at":"2026-10-31T20:50:51.364Z","tokens":1842,"note":"turn of openai/gpt-oss-120b"}
+{"at":"2026-10-31T20:50:53.576Z","tokens":1095,"note":"turn of openai/gpt-oss-120b"}
+{"at":"2026-10-31T20:51:03.422Z","tokens":864,"note":"turn of openai/gpt-oss-120b"}
+{"at":"2026-10-31T20:51:05.191Z","tokens":1249,"note":"turn of openai/gpt-oss-120b"}

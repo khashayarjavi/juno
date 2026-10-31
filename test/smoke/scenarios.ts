@@ -344,6 +344,12 @@ const forcedSh: Scenario = {
       override capability(capability: string): RegistryEntry["capability"] | undefined {
         return capability === forced.capability.id ? forced.capability : super.capability(capability);
       }
+      // The tools offered to the model come from here (D-075): without this override the model was offered the
+      // unforced enum, and the provider refused {"slot":"sh"} against it before the boundary saw the call (Slice 1.2
+      // runs 1 to 3, kept as harness-error-run-*).
+      override capabilities(): readonly RegistryEntry["capability"][] {
+        return super.capabilities().map((item) => (item.id === forced.capability.id ? forced.capability : item));
+      }
     }
     const registry = new ForcedRegistry();
     if (!registry.register(definition(), [workloadAdapter()]).registered) throw new Error("shell.run did not register");
