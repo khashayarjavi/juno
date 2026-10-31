@@ -1,12 +1,29 @@
 {
-  "started_at": "2026-10-31T17:42:50.667Z",
-  "finished_at": "2026-10-31T17:42:56.426Z",
+  "started_at": "2026-10-31T20:46:44.014Z",
+  "finished_at": "2026-10-31T21:04:03.950Z",
   "runs": [
-    "s18-5-nonconforming-adapter/run-1",
-    "s18-5-nonconforming-adapter/run-2",
-    "s18-5-nonconforming-adapter/run-3"
+    "s18-4b-forced-sh/run-2",
+    "s18-4b-forced-sh/run-3",
+    "ordinary-1-due-date/run-1",
+    "ordinary-1-due-date/run-2",
+    "ordinary-1-due-date/run-3",
+    "ordinary-2-inbox/run-1",
+    "ordinary-2-inbox/run-2",
+    "ordinary-2-inbox/run-3",
+    "ordinary-3-find-invoice/run-1",
+    "ordinary-3-find-invoice/run-2",
+    "ordinary-3-find-invoice/run-3",
+    "ordinary-4-count-lines/run-1",
+    "ordinary-4-count-lines/run-2",
+    "ordinary-4-count-lines/run-3",
+    "ordinary-5-config-port/run-1",
+    "ordinary-5-config-port/run-2",
+    "ordinary-5-config-port/run-3",
+    "ordinary-6-newest-log/run-1",
+    "ordinary-6-newest-log/run-2",
+    "ordinary-6-newest-log/run-3"
   ],
-  "tokens_last_24h": 177944,
+  "tokens_last_24h": 177681,
   "token_cap": 180000,
-  "stopped": null
+  "stopped": "STOP (token_cap): 177681 tokens used in the last 24 hours; this call could use 3013 more, past the cap of 180000"
 }

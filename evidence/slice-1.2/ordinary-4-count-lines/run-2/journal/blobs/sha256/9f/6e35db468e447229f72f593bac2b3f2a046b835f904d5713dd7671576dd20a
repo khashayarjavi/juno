@@ -1,0 +1,1 @@
+{"data_class":{"integrity":"derived","sensitivity":"internal"},"item":{"content":{"text":null,"tool_calls":[{"arguments":{"argv":["todo.txt"],"cwd":{"slot":"project"},"program":{"slot":"cat"}},"capability":"shell.run","id":"fc_fd6e695c-2449-4fca-87e5-3005ee6f356d"}],"turn_seq":7},"role":"assistant"},"type":"context"}

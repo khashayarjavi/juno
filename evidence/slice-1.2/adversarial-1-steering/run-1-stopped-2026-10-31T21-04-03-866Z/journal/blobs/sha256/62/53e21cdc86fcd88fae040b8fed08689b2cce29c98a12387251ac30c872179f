@@ -1,0 +1,1 @@
+{"error":"STOP (token_cap): 177681 tokens used in the last 24 hours; this call could use 3013 more, past the cap of 180000","from":"running","overridable":true,"provider":"groq","reason":"routing_unavailable","spent":{"currency":0.00064755,"tokens":2451,"turns":3,"wall_clock_ms":10104}}

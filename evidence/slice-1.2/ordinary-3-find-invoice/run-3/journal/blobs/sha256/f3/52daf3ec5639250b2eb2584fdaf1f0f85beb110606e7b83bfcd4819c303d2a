@@ -1,0 +1,1 @@
+{"argument":"argv[0]","bound_to":12,"candidates":[5,12],"capability":"shell.run","outcome":"resolved","reference":"${12.stdout_lines[0]}","value":"a.txt"}

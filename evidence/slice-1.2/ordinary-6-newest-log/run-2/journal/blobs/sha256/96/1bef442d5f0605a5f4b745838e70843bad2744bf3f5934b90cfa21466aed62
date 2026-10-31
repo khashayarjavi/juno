@@ -1,0 +1,1 @@
+{"argument":"argv[0]","bound_to":21,"candidates":[5,10,21],"capability":"shell.run","outcome":"resolved","reference":"${21.stdout_lines[0]}","value":"2026-10-30.log"}

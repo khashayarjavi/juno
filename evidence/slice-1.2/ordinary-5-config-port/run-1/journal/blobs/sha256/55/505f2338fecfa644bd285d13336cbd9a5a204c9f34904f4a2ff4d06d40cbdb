@@ -1,0 +1,1 @@
+{"data_class":{"integrity":"untrusted","sensitivity":"internal"},"item":{"content":{"text":null,"tool_calls":[{"arguments":{"argv":["-c","cat service.conf"],"cwd":{"slot":"settings"},"program":{"slot":"cat"}},"capability":"shell.run","id":"fc_94a0dc10-a5e5-4eca-ac6e-251b3da5d631"}],"turn_seq":12},"role":"assistant"},"type":"context"}
