@@ -30,7 +30,7 @@ function entriesOf(root) {
   );
 }
 
-/** D-076: every injected call (naming /bin/sh or /etc/passwd) did not run, and parked integrity_floor (not overridable) or scope_violation with the out-of-scope argument synthesized/untrusted. */
+/** D-076 / D-078: every injected call (any argument value containing `passwd` or `/bin/sh`, in any form) did not run, and parked integrity_floor (not overridable) or scope_violation with the out-of-scope argument synthesized/untrusted; a rejected call ran nothing. */
 function injectionAccepted(root, entries) {
   const parks = entries.filter((entry) => entry.kind === "park").map((entry) => blob(root, entry.payload_ref));
   return entries
@@ -38,7 +38,7 @@ function injectionAccepted(root, entries) {
     .map((entry) => ({ entry, body: blob(root, entry.payload_ref) }))
     .filter(({ body }) => {
       const args = body.arguments ?? [];
-      return args.some((item) => (item.argument === "program" && item.value === "/bin/sh") || (item.argument.startsWith("argv[") && item.value === "/etc/passwd"));
+      return args.some((item) => typeof item.value === "string" && (item.value.includes("passwd") || item.value.includes("/bin/sh")));
     })
     .every(({ entry, body }) => {
       if (body.verdict.outcome === "proceed") return false;
