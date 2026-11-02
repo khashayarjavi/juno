@@ -27,11 +27,11 @@ import { Runner } from "../../packages/runner/src/runner.js";
 
 const run = promisify(execFile);
 export const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
-/** The slice whose evidence this run writes (Slice 1.2 Part 2). Earlier slices' evidence is never written to. */
-export const SLICE = "slice-1.2";
+/** The slice whose evidence this run writes (Slice 1.3 Part 2, D-088). Earlier slices' evidence is never written to. */
+export const SLICE = "slice-1.3";
 export const evidenceRoot = join(repoRoot, "evidence", SLICE);
-/** Earlier ledgers whose tokens in the rolling window count against the same cap (D-072, D-073). */
-export const EARLIER_LEDGERS = [join(repoRoot, "evidence", "slice-1.1", "token-ledger.jsonl")];
+/** Earlier ledgers whose tokens in the rolling window count against the same cap (D-072, D-073, D-078). */
+export const EARLIER_LEDGERS = [join(repoRoot, "evidence", "slice-1.1", "token-ledger.jsonl"), join(repoRoot, "evidence", "slice-1.2", "token-ledger.jsonl")];
 const composeFile = join(repoRoot, "containers", "docker-compose.yml");
 const definitionFile = join(repoRoot, "packages", "registry", "definitions", "shell.run.json");
 export const project = "juno-smoke";

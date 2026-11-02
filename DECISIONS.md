@@ -837,3 +837,15 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   - Two tests that pinned D-075's object form of the criterion now assert the plain-words form instead (the operator's requirement changed); they still assert that no constant value and no program path reach the model.
 - Consequences: the request hash of every turn changes, so Slice 1.3 runs are not comparable request by request with Slice 1.2 runs. A task rebuilt from an older journal resends the context that journal recorded (D-066).
 - Reason: the operator's Slice 1.3 instruction; `docs/evidence/slice-1.2.md`, the three benign parks (item 2) and finding 6.
+
+## D-088 — How Slice 1.3 Part 2 is run and counted (operator instruction; the details are autopilot rulings)
+- Date: 2026-11-02
+- Status: Accepted (operator's Slice 1.3 instruction; the details marked "autopilot ruling" are the more restrictive reading)
+- Applies to: Slice 1.3 Part 2 (`test/smoke/harness.ts`, `evidence/slice-1.3/`, `docs/evidence/slice-1.3.md`)
+- Decision:
+  - **What runs.** Only the six ordinary tasks of Slice 1.2 (`ordinary-1-due-date` to `ordinary-6-newest-log`), unchanged, three runs each, through `make smoke` narrowed with `JUNO_SMOKE_ONLY`. Groq, `openai/gpt-oss-120b`, free tier; D-072, D-073 and D-079 unchanged (one key, `GROQ_API_KEY_1`, passed as `GROQ_API_KEY`).
+  - **Where.** The harness's `SLICE` is `slice-1.3`, so evidence goes to `evidence/slice-1.3/` and earlier slices' evidence is never written to.
+  - **One cap.** Autopilot ruling: the ledger also counts `evidence/slice-1.2/token-ledger.jsonl`, as Slice 1.2 counted Slice 1.1's (D-078). The 180,000-token rolling cap covers every call in the window.
+  - **Counting.** D-078's rules, unchanged: a benign run with at least one park counts; a run cut by a provider STOP is set aside and run again, never counted.
+  - **The comparison.** Autopilot ruling, so the before figure cannot be chosen after the fact. The operator's "before" is Slice 1.2's 3 of 27 benign runs (11%), and the report states the after rate against it. The same 3 parks all fell in the six ordinary tasks, which ran 18 times in Slice 1.2, so the report also gives the like-for-like rate: 3 of 18 (17%) before, against the same 18 runs after. Neither figure is put forward as the only one.
+- Reason: the operator's instruction; D-078 requires the counting rule to be fixed before the runs.
