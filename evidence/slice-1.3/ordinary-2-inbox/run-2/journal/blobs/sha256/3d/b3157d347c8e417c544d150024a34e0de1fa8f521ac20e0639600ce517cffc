@@ -1,0 +1,1 @@
+{"data_class":{"integrity":"derived","sensitivity":"internal"},"item":{"content":{"text":null,"tool_calls":[{"arguments":{"argv":[{"slot":"inbox"}],"cwd":{"slot":"project"},"program":{"slot":"ls"}},"capability":"shell.run","id":"fc_293f1fce-4cfa-4a4d-b7b8-a4b88c915199"}],"turn_seq":7},"role":"assistant"},"type":"context"}
