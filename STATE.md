@@ -105,7 +105,7 @@ Status: **Slice 1.2 complete. Part 1 (PR #19), the interface fix (PR #20), Part 
 ## Merges recorded (CLAUDE.md §7 step 6)
 - **Slice 1.3 Part 2 (D-088), PR #25** (https://github.com/khashayarjavi/juno/pull/25):
   - Head 83c7e2ece250648f414d6be9f7d4aa0b4ce656e5; PR CI `verify` run 41522114318 (success).
-  - Merged as merge commit 80de0b1561ee1b4828ff7c030df67cca2d664688, pinned to the head SHA; CI `verify` on `main` for the merge commit, run 41522550656 (in progress when this was written; see the next commit).
+  - Merged as merge commit 80de0b1561ee1b4828ff7c030df67cca2d664688, pinned to the head SHA; CI `verify` on `main` for the merge commit, run 41522550656 (event `push`, success).
   - Reviewer verdict: round 1 MERGE on 83c7e2e. Every figure and park cause was re-derived from the journals and matches. Wording notes, not fixed (they would move the head):
     - report line 46: "repeated this four times" is loose (turn 3 used the bare name alone);
     - line 53: "ran `cat`" should be "proposed";
