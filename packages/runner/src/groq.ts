@@ -322,6 +322,9 @@ const WireResponse = z.object({
   }),
 });
 
+/** Groq's 400 refusals of what the model wrote, each read as a malformed turn the model may retry (D-073, D-087). */
+export const RETRYABLE_REFUSALS: ReadonlySet<string> = new Set(["tool_use_failed", "output_parse_failed"]);
+
 const WireError = z.object({ error: z.object({ message: z.string().optional(), type: z.string().optional(), code: z.string().nullish(), failed_generation: z.string().optional() }) });
 
 export class GroqProvider implements Provider {
@@ -447,11 +450,14 @@ export class GroqProvider implements Provider {
       // Any other refusal may have read the prompt; count it, so the cap stays conservative.
       if (response.status < 500) this.#ledger.record(Math.ceil(body.length / 3), this.#now(), `HTTP ${String(response.status)}`);
       const error = WireError.safeParse(safeJson(text));
-      if (response.status === 400 && error.success && error.data.error.code === "tool_use_failed") {
-        // The model wrote a call the provider could not parse. That is a turn the runner cannot read: it is
-        // recorded as malformed, and the model is told so (D-073). The extra fields make it fail the runner's parse.
-        // What the model wrote that the provider refused goes with it, so the journal can show it (D-077); scrubbed of the key.
-        return this.#redactDeep({ provider_error: "tool_use_failed", detail: error.data.error.message ?? null, failed_generation: error.data.error.failed_generation ?? null });
+      const code = error.success ? error.data.error.code : null;
+      if (response.status === 400 && error.success && typeof code === "string" && RETRYABLE_REFUSALS.has(code)) {
+        // The provider refused what the model wrote: a call it could not parse (tool_use_failed), or output it could not
+        // parse at all (output_parse_failed). Either is a turn the runner cannot read: it is recorded as malformed, and
+        // the model is told so and gets the next turn, which costs a turn from the budget (D-073, D-087). The extra
+        // fields make it fail the runner's parse. What the model wrote that the provider refused goes with it, so the
+        // journal can show it (D-077); scrubbed of the key.
+        return this.#redactDeep({ provider_error: code, detail: error.data.error.message ?? null, failed_generation: error.data.error.failed_generation ?? null });
       }
       if (response.status >= 500 || response.status === 498) {
         if (attempt >= this.#maxAttempts) throw new Error(`HTTP ${String(response.status)} ${String(attempt)} times in a row: ${text}`);

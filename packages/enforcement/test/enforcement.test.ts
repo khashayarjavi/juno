@@ -1102,7 +1102,8 @@ describe("D-052 (operator ruling): shape never outranks provenance", () => {
       { numRuns: 300 },
     );
     expect(grants.invocations("grant-1")).toBe(0);
-  });
+    // Timeout raised to 30 s by the operator (D-086); runs and assertions unchanged.
+  }, 30_000);
 });
 
 describe("D-048 as amended (operator ruling): a missing program means no declared surface", () => {

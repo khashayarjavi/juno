@@ -16,7 +16,7 @@
   "jurisdiction": "not stated in the Groq documentation read on 2026-10-30; each answer names its serving region (x-groq-region)",
   "wire": {
     "endpoint": "https://api.groq.com/openai/v1/chat/completions",
-    "adapter_version": "juno.groq-chat-completions/5",
+    "adapter_version": "juno.groq-chat-completions/6",
     "sampling": { "temperature": 0, "reasoning_effort": "medium", "max_completion_tokens": 1024, "seed": 1729 }
   }
 }

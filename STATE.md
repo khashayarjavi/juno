@@ -1,6 +1,18 @@
 # STATE
 
 ## Current increment
+**Slice 1.3 — remaining benign parks** (authorised by the operator, 2026-11-02; not a roadmap item; no spec change). `packages/enforcement` changes only in one test's timeout (D-086). Branch `claude/slice-1-3-benign-parks-ezx1q2`. Each part is its own PR through the CLAUDE.md §7 gate:
+1. **Part 1 — runner and adapter.** After Groq's `output_parse_failed`, the model gets a retry turn, as after `tool_use_failed`; each retry costs a turn and is journalled with the refusal text, key scrubbed. The runner describes the criterion in plain words (what will be checked), never as a call or call-shaped text, never with literal instruction values (D-075 holds).
+2. **Part 2 — measure.** Groq, `openai/gpt-oss-120b`, free tier, D-072/D-073 unchanged: the six ordinary tasks of Slice 1.2, three runs each, under `evidence/slice-1.3/`, counted by D-078 unchanged. Report `docs/evidence/slice-1.3.md`: benign-park rate before (Slice 1.2: 3 of 27) and after, each remaining park's cause, safety checks in every run. Reported honestly even if it misses 10%; no boundary rule relaxed.
+
+Status: **Part 1 in progress.**
+- Operator change D-086: the D-052 property test's timeout is 30 s (runs and assertions unchanged).
+- D-087 (Part 1): done on the branch, runner tests green (170 of 170). `output_parse_failed` is a malformed turn the model retries (`RETRYABLE_REFUSALS` in `groq.ts`); the first message carries `how_the_task_is_checked`, plain sentences with no call shape and no instruction value (`describeCriterion` in `runner.ts`); Groq adapter version 6.
+- PR #24 (https://github.com/khashayarjavi/juno/pull/24), draft. Local `make verify` GREEN on 75e011b (696 unit, 51 container); PR CI `verify` run 41500527854 (success).
+- **Review round 1 (fresh subagent, P2 verbatim) on 75e011b: MERGE**, every check PASS, with one minor inconsistency: D-087 said no copyable placeholder appears, but a program path in a criterion data field was shown as the rejections' quoted placeholder (which names "slot"). **Fixed** on the next head: a hidden value is named in unquoted words (`CRITERION_HIDDEN_WORDS`), tested; D-087 corrected. The fix moved the head, so round 2 reviews it.
+- Next: round 2 review, the merge gate; then Part 2.
+
+## Previous increment
 **Slice 1.2 — park-rate reduction** (authorised by the operator, 2026-10-30; not a roadmap item; no spec change). Goal: cut parks on benign tasks caused by the model misusing the tool interface (`docs/evidence/slice-1.1.md`, findings 1 to 3), without changing any boundary rule. `packages/enforcement` changes only in tests. Each part is its own PR through the CLAUDE.md §7 gate:
 1. **Part 1 — runner and adapter interface.** The runner's messages never show the criterion's or any constant's literal values for instruction fields (slot names only). The tool schema offers instruction fields only as a constant slot (slot names enumerated) or a reference; a literal the model still sends is judged and parks exactly as today (D-052), proven by a test. The instructions show the reference grammar with an index example. Slots fixed for the verifier are not offered to the executing model; if the boundary still accepts them when named, that is an objection for spec v0.6 here, and the boundary is not changed.
 2. **Part 2 — evidence re-run** with `make smoke` (Groq, `openai/gpt-oss-120b`, free tier, D-072/D-073 unchanged) under `evidence/slice-1.2/`: the same scenarios, at least three runs each, plus three new ordinary tasks whose objectives do not name the constants. Report `docs/evidence/slice-1.2.md` against Slice 1.1: benign-park rate (target under 10%, reported honestly either way), safety invariants (must hold in every run), s18-2b (must still park `integrity_floor`), tokens.

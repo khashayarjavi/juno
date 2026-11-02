@@ -31,7 +31,7 @@ import {
   type Verdict,
 } from "../../enforcement/src/index.js";
 import { type EntryDraft, JournalIntegrityError, type JournalWriter, canonicalJson, contentAddress, readPayload, readTrajectory } from "../../journal/src/index.js";
-import type { CapabilityRegistry, InvocationResult } from "../../registry/src/index.js";
+import type { CapabilityRegistry, InvocationResult, RegistryEntry } from "../../registry/src/index.js";
 import {
   type AdmissionResult,
   type AdmittedTask,
@@ -184,8 +184,43 @@ const PREAMBLE = {
  */
 export const VERIFIER_SLOT_PREFIX = "criterion.";
 
-/** What the model is shown in place of a criterion argument in an instruction field (D-075). */
-export const HIDDEN_INSTRUCTION_VALUE = "(fixed by the operator for the verifier)";
+/**
+ * The criterion in plain words: what the runner will check when the model says it is done (Slice 1.3, D-087). No
+ * capability id, function name or field name, no JSON object, and no instruction-field value: the command itself is
+ * only said to be fixed by the operator. Data-field values are quoted as admitted. The caller hides instruction values
+ * from the result as well (D-075).
+ */
+export function describeCriterion(criterion: CriterionStatement, entry: RegistryEntry | undefined, hidden: readonly string[] = []): string {
+  const fields = entry?.capability.interface ?? {};
+  // A value carrying a hidden one is not quoted at all: it is named in words, so there is nothing to copy (D-087).
+  const quote = (value: unknown): string => {
+    const text = JSON.stringify(value) ?? String(value);
+    return hidden.some((item) => text.includes(item)) ? CRITERION_HIDDEN_WORDS : text;
+  };
+  const words = [
+    "When you answer with no capability calls, the runner checks the work itself by running a check command that the operator fixed for this task.",
+    "You do not run the check yourself, and you cannot see or change its command.",
+  ];
+  for (const [field, value] of Object.entries(criterion.command.arguments)) {
+    if (fields[field]?.role !== "data") continue;
+    if (field === entry?.argv_field && Array.isArray(value)) {
+      words.push(value.length === 0 ? "The check is given no arguments." : `The check is given ${value.length === 1 ? "the argument" : "the arguments"} ${value.map(quote).join(", ")}.`);
+    } else if (field === entry?.cwd_field) {
+      words.push(`It runs in the folder ${quote(value)}.`);
+    } else {
+      words.push(`It is also given the value ${quote(value)}.`);
+    }
+  }
+  words.push(`It passes when that command exits with code ${String(criterion.expect_exit_code)}.`);
+  if (criterion.protected_paths.length > 0) {
+    words.push(`These paths must be left exactly as they were when the task started, or the check fails: ${criterion.protected_paths.map(quote).join(", ")}.`);
+  }
+  // Fail-closed: anything hidden that is still in the text (a value in a sentence of its own) is replaced in words too.
+  return hidden.reduce((text, item) => text.split(item).join(CRITERION_HIDDEN_WORDS), words.join(" "));
+}
+
+/** How the plain-words criterion names a hidden value: words, never a quoted placeholder that could be copied (D-087). */
+export const CRITERION_HIDDEN_WORDS = "a value the operator fixed, which you are not shown";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -330,8 +365,9 @@ export class Runner {
     this.#active = id;
     this.#setState(run, "running", "start");
     this.#pushContext(run, { role: "system", content: PREAMBLE }, { sensitivity: run.task.sensitivity_floor, integrity: "operator" });
-    // The model is shown the constants by name only, and the criterion with its instruction-field values hidden: a value
-    // it can read is a value it can copy as a literal, which parks (Slice 1.2, D-075).
+    // The model is shown the constants by name only, and the criterion in plain words with its instruction-field values
+    // hidden: a value it can read is a value it can copy as a literal, which parks (Slice 1.2, D-075), and a criterion
+    // shown as a call invites the model to send it as one (Slice 1.3, D-087).
     this.#pushContext(
       run,
       {
@@ -339,7 +375,7 @@ export class Runner {
         content: {
           task_id: run.task.id,
           objective: run.task.objective,
-          criterion: this.#shownCriterion(run.admission.criterion),
+          how_the_task_is_checked: this.#shownCriterion(run),
           constants: offeredConstants(run.admission.constants),
         },
       },
@@ -824,14 +860,22 @@ export class Runner {
     return values;
   }
 
-  /** The criterion as the model is shown it: data-field values as admitted, instruction-field values hidden (D-075). */
-  #shownCriterion(criterion: CriterionStatement | null): unknown {
+  /**
+   * The criterion as the model is shown it: plain words saying what will be checked (D-087), never a call or anything
+   * shaped like one, and never an instruction-field value (D-075). Data-field values appear as admitted.
+   */
+  #shownCriterion(run: TaskRun): string | null {
+    const criterion = run.admission.criterion;
     if (criterion === null) return null;
-    const fields = this.#registry.capability(criterion.command.capability)?.interface ?? {};
-    const shown = Object.fromEntries(
-      Object.entries(criterion.command.arguments).map(([field, value]) => [field, fields[field]?.role === "data" ? value : HIDDEN_INSTRUCTION_VALUE]),
-    );
-    return { command: { capability: criterion.command.capability, arguments: shown }, expect_exit_code: criterion.expect_exit_code, protected_paths: criterion.protected_paths };
+    const entry = this.#registry.entry(criterion.command.capability);
+    const fields = entry?.capability.interface ?? {};
+    // The criterion's own non-data values are hidden too, whatever the registry declares (fail-closed).
+    const own = Object.entries(criterion.command.arguments)
+      .filter(([field]) => fields[field]?.role !== "data")
+      .flatMap(([, value]) => (Array.isArray(value) ? value : [value]))
+      .filter((value): value is string => typeof value === "string" && value.length > 0);
+    const hidden = [...new Set([...this.#instructionValues(run), ...own])].sort((a, b) => b.length - a.length);
+    return describeCriterion(criterion, entry, hidden);
   }
 
   /** TTL is wall time since admission, parked time included (§6.4, D-025). */
