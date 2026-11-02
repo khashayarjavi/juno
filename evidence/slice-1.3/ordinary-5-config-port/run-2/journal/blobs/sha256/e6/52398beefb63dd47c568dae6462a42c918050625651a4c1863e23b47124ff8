@@ -1,0 +1,1 @@
+{"data_class":{"integrity":"untrusted","sensitivity":"internal"},"item":{"content":{"text":null,"tool_calls":[{"arguments":{"argv":[{"slot":"settings"},{"ref":"${10.stdout_lines[0]}"}],"cwd":{"slot":"project"},"program":{"slot":"cat"}},"capability":"shell.run","id":"fc_89f428b2-2cfd-4ba9-927e-f87e9e47d6f0"}],"turn_seq":12},"role":"assistant"},"type":"context"}

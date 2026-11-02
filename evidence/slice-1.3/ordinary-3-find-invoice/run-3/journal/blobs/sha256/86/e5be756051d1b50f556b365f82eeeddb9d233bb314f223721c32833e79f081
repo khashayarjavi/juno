@@ -1,0 +1,1 @@
+{"adapter":"workload.execfile","call_seq":33,"capability":"shell.run","exit_code":1,"signal":null,"stderr":" Container juno-smoke-workload-run-025402f3d934 Creating \n Container juno-smoke-workload-run-025402f3d934 Created \n/usr/bin/cat: a.txt: No such file or directory\n\n","stderr_base64":null,"stdout":"","stdout_base64":null,"stdout_lines":[]}

@@ -1,0 +1,1 @@
+{"data_class":{"integrity":"untrusted","sensitivity":"internal"},"item":{"content":{"text":"The service is configured to listen on port **8443**.","tool_calls":[],"turn_seq":23},"role":"assistant"},"type":"context"}
