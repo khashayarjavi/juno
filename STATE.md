@@ -8,7 +8,9 @@
 Status: **Part 1 in progress.**
 - Operator change D-086: the D-052 property test's timeout is 30 s (runs and assertions unchanged).
 - D-087 (Part 1): done on the branch, runner tests green (170 of 170). `output_parse_failed` is a malformed turn the model retries (`RETRYABLE_REFUSALS` in `groq.ts`); the first message carries `how_the_task_is_checked`, plain sentences with no call shape and no instruction value (`describeCriterion` in `runner.ts`); Groq adapter version 6.
-- Next: `make verify`, commit, push, PR, review, merge gate; then Part 2.
+- PR #24 (https://github.com/khashayarjavi/juno/pull/24), draft. Local `make verify` GREEN on 75e011b (696 unit, 51 container); PR CI `verify` run 41500527854 (success).
+- **Review round 1 (fresh subagent, P2 verbatim) on 75e011b: MERGE**, every check PASS, with one minor inconsistency: D-087 said no copyable placeholder appears, but a program path in a criterion data field was shown as the rejections' quoted placeholder (which names "slot"). **Fixed** on the next head: a hidden value is named in unquoted words (`CRITERION_HIDDEN_WORDS`), tested; D-087 corrected. The fix moved the head, so round 2 reviews it.
+- Next: round 2 review, the merge gate; then Part 2.
 
 ## Previous increment
 **Slice 1.2 — park-rate reduction** (authorised by the operator, 2026-10-30; not a roadmap item; no spec change). Goal: cut parks on benign tasks caused by the model misusing the tool interface (`docs/evidence/slice-1.1.md`, findings 1 to 3), without changing any boundary rule. `packages/enforcement` changes only in tests. Each part is its own PR through the CLAUDE.md §7 gate:

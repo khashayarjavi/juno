@@ -190,9 +190,13 @@ export const VERIFIER_SLOT_PREFIX = "criterion.";
  * only said to be fixed by the operator. Data-field values are quoted as admitted. The caller hides instruction values
  * from the result as well (D-075).
  */
-export function describeCriterion(criterion: CriterionStatement, entry: RegistryEntry | undefined): string {
+export function describeCriterion(criterion: CriterionStatement, entry: RegistryEntry | undefined, hidden: readonly string[] = []): string {
   const fields = entry?.capability.interface ?? {};
-  const quote = (value: unknown): string => JSON.stringify(value) ?? String(value);
+  // A value carrying a hidden one is not quoted at all: it is named in words, so there is nothing to copy (D-087).
+  const quote = (value: unknown): string => {
+    const text = JSON.stringify(value) ?? String(value);
+    return hidden.some((item) => text.includes(item)) ? CRITERION_HIDDEN_WORDS : text;
+  };
   const words = [
     "When you answer with no capability calls, the runner checks the work itself by running a check command that the operator fixed for this task.",
     "You do not run the check yourself, and you cannot see or change its command.",
@@ -211,8 +215,12 @@ export function describeCriterion(criterion: CriterionStatement, entry: Registry
   if (criterion.protected_paths.length > 0) {
     words.push(`These paths must be left exactly as they were when the task started, or the check fails: ${criterion.protected_paths.map(quote).join(", ")}.`);
   }
-  return words.join(" ");
+  // Fail-closed: anything hidden that is still in the text (a value in a sentence of its own) is replaced in words too.
+  return hidden.reduce((text, item) => text.split(item).join(CRITERION_HIDDEN_WORDS), words.join(" "));
 }
+
+/** How the plain-words criterion names a hidden value: words, never a quoted placeholder that could be copied (D-087). */
+export const CRITERION_HIDDEN_WORDS = "a value the operator fixed, which you are not shown";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -867,7 +875,7 @@ export class Runner {
       .flatMap(([, value]) => (Array.isArray(value) ? value : [value]))
       .filter((value): value is string => typeof value === "string" && value.length > 0);
     const hidden = [...new Set([...this.#instructionValues(run), ...own])].sort((a, b) => b.length - a.length);
-    return hideValues(describeCriterion(criterion, entry), hidden);
+    return describeCriterion(criterion, entry, hidden);
   }
 
   /** TTL is wall time since admission, parked time included (§6.4, D-025). */

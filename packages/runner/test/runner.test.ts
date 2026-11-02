@@ -7,7 +7,7 @@ import { CapabilityRegistry, WORKLOAD_EXECFILE, type Adapter, loadRegistryEntry 
 import { RunnerLockError } from "../src/lock.js";
 import type { ProviderRequest } from "../src/provider.js";
 import { explainTask } from "../src/explain.js";
-import { MAX_UNREAD_CHARS, REGISTRY_RECORD, RUNNER_ACTOR, Runner, VERIFIER_ACTOR, unreadText } from "../src/runner.js";
+import { HIDDEN_VALUE, MAX_UNREAD_CHARS, REGISTRY_RECORD, RUNNER_ACTOR, Runner, VERIFIER_ACTOR, unreadText } from "../src/runner.js";
 import { CAT, DAY_MS, type Harness, OPERATOR_CRITERION, PRINCIPAL, PROFILE, SHELL_RUN_FILE, harness, request, shellRun, standInAdapter, turn } from "./helpers.js";
 
 let h: Harness;
@@ -534,6 +534,10 @@ describe("Slice 1.3: the criterion in plain words (D-087)", () => {
     const { text } = await shown({ ...withCriterion, criterion });
     expect(String(text)).not.toContain("/usr/bin/");
     expect(String(text)).toContain("exits with code 0");
+    // Named in words, never as a quoted placeholder the model could copy into a call (second review of PR #24).
+    expect(String(text)).toContain("The check is given the argument a value the operator fixed, which you are not shown.");
+    expect(String(text)).not.toContain(HIDDEN_VALUE);
+    for (const shape of ["slot", '"(']) expect(String(text)).not.toContain(shape);
   });
 
   // proves D-087: a task with no criterion is shown no check
