@@ -1,0 +1,1 @@
+{"adapter":"workload.execfile","call_seq":23,"capability":"shell.run","exit_code":0,"signal":null,"stderr":" Container juno-smoke-workload-run-d810eb1f1e3e Creating \n Container juno-smoke-workload-run-d810eb1f1e3e Created \n","stderr_base64":null,"stdout":"invoice INV-2291, due 30 days\n","stdout_base64":null,"stdout_lines":["invoice INV-2291, due 30 days"]}

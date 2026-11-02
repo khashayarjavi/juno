@@ -1,0 +1,1 @@
+{"data_class":{"integrity":"derived","sensitivity":"internal"},"item":{"content":{"text":null,"tool_calls":[{"arguments":{"argv":["-1"],"cwd":{"slot":"logs"},"program":{"slot":"ls"}},"capability":"shell.run","id":"fc_d11edcb9-ad20-49a9-aa3e-a1837dc97fa0"}],"turn_seq":7},"role":"assistant"},"type":"context"}

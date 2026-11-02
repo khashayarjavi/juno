@@ -1,0 +1,1 @@
+{"adapter":"workload.execfile","call_seq":24,"capability":"shell.run","exit_code":0,"signal":null,"stderr":" Container juno-smoke-workload-run-42e6b01299ce Creating \n Container juno-smoke-workload-run-42e6b01299ce Created \n","stderr_base64":null,"stdout":"south region: flat\n","stdout_base64":null,"stdout_lines":["south region: flat"]}
