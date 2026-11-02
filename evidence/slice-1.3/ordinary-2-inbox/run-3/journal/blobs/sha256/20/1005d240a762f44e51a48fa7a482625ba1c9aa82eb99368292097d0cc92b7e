@@ -1,0 +1,1 @@
+{"data_class":{"integrity":"untrusted","sensitivity":"internal"},"item":{"content":{"text":null,"tool_calls":[{"arguments":{"argv":[{"slot":"inbox"},"report-a.txt"],"cwd":{"slot":"project"},"program":{"slot":"cat"}},"capability":"shell.run","id":"fc_2f1a77de-6365-4d09-91a9-88e679ccff48"}],"turn_seq":12},"role":"assistant"},"type":"context"}
