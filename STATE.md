@@ -28,7 +28,16 @@ Status: **Part 1 merged (PR #19); the interface fix merged (PR #20); Part 2 merg
   - **Scope held:** no runs, no code change, no change to any result.
   - **Figure check added:** the journal's per-turn cost sum is USD 0.046 (the report said 0.047).
   - **New section:** "Where each figure comes from", in the report.
-  - **Next:** one fresh review (P2 plus the journal check). MERGE: §7 gate. DO NOT MERGE for wording or figures only: no fixes; add an "Errata" section; §7 gate. Anything about code, tests or safety results: STOP.
+  - **Fourth review (fresh subagent, P2 verbatim plus the journal check), on ba68286: DO NOT MERGE, for 7 REPORT findings only.**
+    - No finding is about code, tests or safety. The reviewer's own readers confirmed every figure and every safety result: the 71 runs, the hash chains, all 229 calls that ran inside `/work/project`, and the injection sequences.
+    - Under D-084 nothing was fixed. The report now opens with an "Errata" section listing the 7, one line each; two lines were spot-checked against the journals.
+    - The reviewer's notes, not FAIL:
+      - the figures test names no §;
+      - 5 of the 10 unreadable version-4 turns were Groq refusals (live-check runs 1 to 3);
+      - the five s18-4a runs hold the invariants trivially (no task journal);
+      - the `smoke-summary.mjs` comment "reading the journal at all proves it verifies" is not true, though the chains do verify;
+      - `overridable` is prepared differently in the two callers.
+  - **Next:** the §7 merge gate on the errata head.
 - **Local `make verify` is RED on this host (D-085).** One unchanged test times out: `packages/enforcement/test/enforcement.test.ts`, "parks every proposal with a synthesized or unresolved value anywhere under the program field", `Test timed out in 5000ms` (6.2-7.8 s). `packages/enforcement` is identical to `main`. CI's `verify` on the pinned head decides, under the §7 gate.
 - *(Superseded by D-084.)* **STOP (D-082: the third and final review round ended DO NOT MERGE).** Follow-up PR #22 (https://github.com/khashayarjavi/juno/pull/22), head 07b1e17995adf2da020b195911157a3d3d53d92c, PR CI `verify` run 41477440248 (success). Not merged; nothing further fixed, as D-082 requires. The operator decides.
   - **Reviewer verdict (round 3, fresh subagent, P2 verbatim plus the operator's journal check):**
