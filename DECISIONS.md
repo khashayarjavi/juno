@@ -811,3 +811,28 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   - **The ruling.** The merge gate's own check stands for `make verify`: CI's `verify` job runs `make verify` on the pinned head SHA, and it must be green (§7 step 6b).
   - **For the operator.** The test runs close to its 5 s limit, so a slower host fails it. Raising its timeout is your call.
 - Reason: CLAUDE.md rule 4 requires `make verify` green. The only failure here is the host's speed in code this PR does not touch, and CI is the reference run of the same command.
+
+## D-086 — The D-052 property test's timeout is 30 seconds (operator change; Slice 1.3)
+- Date: 2026-11-02
+- Status: Accepted (operator change, in the Slice 1.3 instruction)
+- Applies to: `packages/enforcement/test/enforcement.test.ts`, the test "parks every proposal with a synthesized or unresolved value anywhere under the program field", only
+- Decision: the test's timeout is raised from vitest's default 5 seconds to 30 seconds. Nothing else in the test changes: the same 300 runs, the same generators, the same assertions. This is the only change to `packages/enforcement` in Slice 1.3.
+- Reason: D-085. The test ran in 6.2 to 7.8 seconds on a slower host and failed on time alone, with no assertion failing. The operator decided to raise the limit.
+
+## D-087 — Slice 1.3 Part 1: a retry turn after `output_parse_failed`; the criterion in plain words (operator instruction; the details are autopilot rulings)
+- Date: 2026-11-02
+- Status: Accepted (operator's Slice 1.3 instruction; the details marked "autopilot ruling" are the more restrictive reading)
+- Applies to: Slice 1.3 onward. Runner and Groq adapter only; `packages/enforcement` changes only in D-086's timeout.
+- Decision:
+  - **`output_parse_failed` is a turn the model may retry.** Groq's 400 with code `output_parse_failed` (the model's output could not be parsed) is now read exactly as `tool_use_failed` is (D-073, D-077): the adapter returns `{provider_error, detail, failed_generation}`, scrubbed of the key; the runner cannot parse it, so it records a malformed turn, journals the refusal text in the turn's `unread`, tells the model "the runner could not read that turn", and gives it the next turn. Before, the adapter threw and the runner parked `routing_unavailable` (D-078, ordinary-2 run 2 of Slice 1.2).
+    - The two codes are one set, `RETRYABLE_REFUSALS` in `groq.ts`. Any other 400 is still a provider failure (D-073).
+    - **Each retry costs a turn.** The runner counts a turn before every provider call (`spent.turns`), whatever the answer, so a run of refusals ends at the turn budget and parks `budget_exceeded`. A test proves it.
+    - The refusal is still counted in the token ledger as a refusal that may have read the prompt (D-073).
+  - **The criterion in plain words.** The first message no longer carries the criterion as an object (`{command: {capability, arguments}, ...}`), which the model copied as a call in 10 refused turns of Slice 1.2 (finding 6 of `docs/evidence/slice-1.2.md`). It carries `how_the_task_is_checked`, one paragraph of plain sentences (`describeCriterion` in `runner.ts`): when the model answers with no calls the runner runs a check command the operator fixed; the model does not run it and cannot see or change it; the arguments it is given; the folder it runs in; the exit code that passes; the protected paths that must be left as they were.
+    - Autopilot ruling: no capability id, function name or field name (`program`, `argv`, `cwd`) appears, no JSON object or list brackets, and no placeholder of the kind Slice 1.2 used (`"(fixed by the operator for the verifier)"`), since a placeholder can be copied into a call. Data-field values are quoted as admitted, as D-075 allowed.
+    - **D-075 still holds.** No instruction-field value is shown. The text is passed through the same hiding as rejections (every declared instruction enum value), and also hides the criterion's own non-data values, so an instruction value is hidden even where the criterion carries it in a data field (fail-closed). A data field the registry does not declare as data is left out, as before.
+    - A task with no criterion is shown `null`, as before.
+  - The Groq adapter version is now 6. Each smoke run records it in `result.json`.
+  - Two tests that pinned D-075's object form of the criterion now assert the plain-words form instead (the operator's requirement changed); they still assert that no constant value and no program path reach the model.
+- Consequences: the request hash of every turn changes, so Slice 1.3 runs are not comparable request by request with Slice 1.2 runs. A task rebuilt from an older journal resends the context that journal recorded (D-066).
+- Reason: the operator's Slice 1.3 instruction; `docs/evidence/slice-1.2.md`, the three benign parks (item 2) and finding 6.

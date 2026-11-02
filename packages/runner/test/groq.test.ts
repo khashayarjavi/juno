@@ -211,6 +211,27 @@ describe("the request (D-072 docs read)", () => {
     expect(ProviderResponse.safeParse(await groq.complete(REQUEST)).success).toBe(false);
     expect(groq.stopped).toBeNull();
   });
+
+  // proves §6.1 / D-087: an output_parse_failed refusal is a malformed turn, as tool_use_failed is, carrying the refusal
+  // text, never a thrown provider failure (which parks routing_unavailable); the refusal is counted in the ledger
+  it("makes an output_parse_failed refusal malformed, with its text", async () => {
+    const ledger = new MemoryTokenLedger(150_000);
+    const { groq } = provider(
+      [{ status: 400, body: { error: { message: "Parsing failed. The model generated output that could not be parsed.", type: "invalid_request_error", code: "output_parse_failed", failed_generation: "" } } }],
+      { ledger },
+    );
+    const answer = await groq.complete(REQUEST);
+    expect(ProviderResponse.safeParse(answer).success).toBe(false);
+    expect(answer).toMatchObject({ provider_error: "output_parse_failed", detail: expect.stringContaining("Parsing failed"), failed_generation: "" });
+    expect(ledger.used(Date.parse("2026-10-30T20:00:00Z"))).toBeGreaterThan(0);
+    expect(groq.stopped).toBeNull();
+  });
+
+  // proves D-073 / D-087: any other 400 is still a provider failure, not a retried turn
+  it("still throws on any other 400", async () => {
+    const { groq } = provider([{ status: 400, body: { error: { message: "bad request", type: "invalid_request_error", code: "something_else" } } }]);
+    await expect(groq.complete(REQUEST)).rejects.toThrow(/HTTP 400/);
+  });
 });
 
 describe("the context rendering (D-073)", () => {
@@ -394,10 +415,13 @@ describe("Slice 1.2: what the model is shown, and what a literal still does (D-0
     expect(wire).not.toContain("/usr/bin/");
     expect(wire).not.toContain("criterion.");
     const first = (sent[0]?.body["messages"] as { role: string; content: string }[])[1];
-    expect(JSON.parse(first?.content ?? "{}")).toMatchObject({
-      constants: ["cat", "project"],
-      criterion: { command: { arguments: { program: "(fixed by the operator for the verifier)", argv: ["done.txt"], cwd: "/work/project" } } },
-    });
+    const content = JSON.parse(first?.content ?? "{}") as Record<string, unknown>;
+    expect(content).toMatchObject({ constants: ["cat", "project"] });
+    // D-087: the criterion reaches the wire as plain words, not as a call.
+    expect(content).not.toHaveProperty("criterion");
+    const words = String(content["how_the_task_is_checked"]);
+    expect(words).toContain('"done.txt"');
+    for (const shape of ["shell__run", "shell.run", "program", "argv", "{"]) expect(words).not.toContain(shape);
   });
 
   // proves D-075 on a later turn (first review of PR #19): after a rejected call, the next request the model receives
@@ -430,6 +454,27 @@ describe("Slice 1.2: what the model is shown, and what a literal still does (D-0
     const first = h.entries().filter((entry) => entry.kind === "turn").map(h.payload)[0];
     expect(first).toMatchObject({ response: null, unread: expect.stringContaining("tool_use_failed") });
     expect(String(first?.["unread"])).toContain("/bin/sh");
+    const files = readdirSync(h.dir, { recursive: true }).map((file) => join(h.dir, String(file))).filter((file) => statSync(file).isFile());
+    expect(files.filter((file) => leaks(readFileSync(file, "latin1")))).toEqual([]);
+  });
+
+  // proves §3.4 / §6.1 / D-087 / D-072: after Groq's output_parse_failed the model gets a retry turn, the refusal text is in
+  // the journal's turn entry scrubbed of the key, and the task is not parked routing_unavailable
+  it("retries after output_parse_failed and journals the refusal, scrubbed of the key", async () => {
+    const refused = (item: Sent): Answer => ({
+      status: 400,
+      body: { error: { message: `Parsing failed. ${authorization(item)}`, type: "invalid_request_error", code: "output_parse_failed", failed_generation: `half ${authorization(item)}` } },
+    });
+    const { groq, sent } = provider([refused, chat({ content: "done" })]);
+    const { runner } = h.runner([], { providers: [groq] });
+    expect(runner.admit(groqTask()).admitted).toBe(true);
+    const outcome = await runner.run("task-1");
+    expect(outcome.reason).not.toBe("routing_unavailable");
+    expect(sent).toHaveLength(2);
+    const turns = h.entries().filter((entry) => entry.kind === "turn").map(h.payload);
+    expect(turns[0]).toMatchObject({ response: null, unread: expect.stringContaining("output_parse_failed") });
+    expect(String(turns[0]?.["unread"])).toContain("Parsing failed");
+    expect(h.entries().filter((entry) => entry.kind === "park")).toEqual([]);
     const files = readdirSync(h.dir, { recursive: true }).map((file) => join(h.dir, String(file))).filter((file) => statSync(file).isFile());
     expect(files.filter((file) => leaks(readFileSync(file, "latin1")))).toEqual([]);
   });

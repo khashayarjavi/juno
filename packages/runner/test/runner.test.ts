@@ -489,20 +489,62 @@ describe("one runner per journal, and quarantines that survive a restart (D-025,
 describe("Slice 1.2: what the executing model is offered (D-075)", () => {
   const withCriterion = { criterion: OPERATOR_CRITERION, verification: "command_exit", constants: { cat: { value: CAT }, project: { value: "/work/project" }, label: { value: "notes" } } };
 
-  // proves D-075: the first message names the operator's constants without their values, hides the criterion's
-  // instruction-field values, and the instructions show the reference grammar with an index example
-  it("shows constants by name only, the criterion without its instruction values, and an index example", async () => {
+  // proves D-075 / D-087: the first message names the operator's constants without their values, describes the criterion
+  // in plain words with no instruction-field value, and the instructions show the reference grammar with an index example
+  it("shows constants by name only, the criterion in plain words without its instruction values, and an index example", async () => {
     const { runner, provider } = h.runner([turn()]);
     admitted(runner, withCriterion);
     await runner.run("task-1");
     const [system, user] = provider.requests[0]?.context ?? [];
     expect(JSON.stringify(system?.content)).toContain("${12.stdout_lines[0]}");
-    expect(user?.content).toMatchObject({
-      constants: ["cat", "label", "project"],
-      criterion: { command: { capability: "shell.run", arguments: { program: "(fixed by the operator for the verifier)", argv: ["done.txt"], cwd: "/work/project" } }, expect_exit_code: 0 },
-    });
+    expect(user?.content).toMatchObject({ constants: ["cat", "label", "project"] });
     expect(JSON.stringify(user?.content)).not.toContain(CAT);
   });
+});
+
+describe("Slice 1.3: the criterion in plain words (D-087)", () => {
+  const withCriterion = { criterion: OPERATOR_CRITERION, verification: "command_exit", constants: { cat: { value: CAT }, project: { value: "/work/project" } } };
+  const shown = async (options: Record<string, unknown> = withCriterion): Promise<{ content: Record<string, unknown>; text: unknown }> => {
+    const { runner, provider } = h.runner([turn()]);
+    admitted(runner, options);
+    await runner.run("task-1");
+    const content = provider.requests[0]?.context[1]?.content as Record<string, unknown>;
+    return { content, text: content["how_the_task_is_checked"] };
+  };
+
+  // proves D-087 / D-075 / §2.2: the first message says what will be checked (the data values, the expected exit code, the
+  // protected paths) as plain text, and nothing in it is shaped like a call: no capability or function name, no field name,
+  // no object or JSON, no instruction-field value, no placeholder that could be copied into a call
+  it("says what will be checked as plain text, never as a call", async () => {
+    const { content, text } = await shown();
+    expect(content).not.toHaveProperty("criterion");
+    expect(typeof text).toBe("string");
+    const words = String(text);
+    for (const fact of ['"done.txt"', '"/work/project"', "exits with code 0", '"/work/project/protected"']) expect(words).toContain(fact);
+    for (const shape of ["shell.run", "shell__run", "program", "argv", "cwd", "command:", "arguments:", "{", "}", "[", "]", "slot", "ref", "fixed by the operator for the verifier"]) {
+      expect(words).not.toContain(shape);
+    }
+    expect(words).not.toContain("/usr/bin/");
+    expect(() => JSON.parse(words) as unknown).toThrow();
+  });
+
+  // proves D-087 / D-075: an instruction value is hidden even where the criterion carries it in a data field
+  it("hides an instruction value that appears among the criterion's data values", async () => {
+    const criterion = { ...OPERATOR_CRITERION, statement: { ...OPERATOR_CRITERION.statement, command: { capability: "shell.run", arguments: { program: CAT, argv: ["/usr/bin/ls"], cwd: "/work/project" } } } };
+    const { text } = await shown({ ...withCriterion, criterion });
+    expect(String(text)).not.toContain("/usr/bin/");
+    expect(String(text)).toContain("exits with code 0");
+  });
+
+  // proves D-087: a task with no criterion is shown no check
+  it("shows no check when the task has no criterion", async () => {
+    const { text } = await shown({});
+    expect(text).toBeNull();
+  });
+});
+
+describe("Slice 1.2: what the executing model is offered (D-075), continued", () => {
+  const withCriterion = { criterion: OPERATOR_CRITERION, verification: "command_exit", constants: { cat: { value: CAT }, project: { value: "/work/project" }, label: { value: "notes" } } };
 
   // proves §2.2 / §2.6 / D-075 / D-077: an instruction field is offered only instruction-role constants that fit it, a data field only
   // data-role constants whose value fits its type (so the program constant is never offered for argv, and a non-path
@@ -566,6 +608,27 @@ describe("Slice 1.2: an unreadable answer is journaled (D-077)", () => {
     const second = h.entries().filter((entry) => entry.kind === "turn").map(h.payload)[1];
     expect(second?.["unread"]).toBeNull();
     expect(explainTask(h.journal.root, "task-1")).toMatch(/could not read the answer .*; the provider returned ".*tool_use_failed/);
+  });
+
+  // proves §6.1 / §3.4 / D-087: a provider's output_parse_failed refusal is a malformed turn like tool_use_failed: journaled
+  // with its text, the model told and given the next turn, and that retry costs a turn from the budget
+  it("gives the model a retry turn after output_parse_failed, each retry costing a turn", async () => {
+    const refusal = { provider_error: "output_parse_failed", detail: "Parsing failed.", failed_generation: "" };
+    const { runner, provider } = h.runner([refusal, turn()]);
+    admitted(runner);
+    const outcome = await runner.run("task-1");
+    expect(outcome.state).not.toBe("parked");
+    expect(provider.requests).toHaveLength(2);
+    const turns = h.entries().filter((entry) => entry.kind === "turn").map(h.payload);
+    expect(turns[0]).toMatchObject({ response: null, unread: expect.stringContaining('"provider_error":"output_parse_failed"') });
+    expect(JSON.stringify(provider.requests[1]?.context)).toContain("the runner could not read that turn");
+
+    h.cleanup();
+    h = harness();
+    const { runner: tight } = h.runner([refusal, refusal, refusal]);
+    admitted(tight, { budget: { tokens: 1_000_000, currency: 100, wall_clock_ms: 60 * 60 * 1000, turns: 2 } });
+    expect(await tight.run("task-1")).toMatchObject({ state: "parked", reason: "budget_exceeded" });
+    expect(h.entries().filter((entry) => entry.kind === "turn")).toHaveLength(2);
   });
 
   // proves §3.4 / D-077: the journaled text is bounded
