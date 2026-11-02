@@ -5,7 +5,7 @@
 1. **Part 1 — runner and adapter interface.** The runner's messages never show the criterion's or any constant's literal values for instruction fields (slot names only). The tool schema offers instruction fields only as a constant slot (slot names enumerated) or a reference; a literal the model still sends is judged and parks exactly as today (D-052), proven by a test. The instructions show the reference grammar with an index example. Slots fixed for the verifier are not offered to the executing model; if the boundary still accepts them when named, that is an objection for spec v0.6 here, and the boundary is not changed.
 2. **Part 2 — evidence re-run** with `make smoke` (Groq, `openai/gpt-oss-120b`, free tier, D-072/D-073 unchanged) under `evidence/slice-1.2/`: the same scenarios, at least three runs each, plus three new ordinary tasks whose objectives do not name the constants. Report `docs/evidence/slice-1.2.md` against Slice 1.1: benign-park rate (target under 10%, reported honestly either way), safety invariants (must hold in every run), s18-2b (must still park `integrity_floor`), tokens.
 
-Status: **Part 1 merged (PR #19); the interface fix merged (PR #20); Part 2 merged by the operator (PR #21, 2026-11-02 15:50 UTC, without the third review; see "Merges recorded").** Follow-up on branch `claude/relaxed-feynman-7ibkql`, its own PR:
+Status: **Slice 1.2 complete. Part 1 (PR #19), the interface fix (PR #20), Part 2 (PR #21, merged by the operator) and the Part 2 follow-up (PR #22, through the §7 gate) are all merged.** Report: `docs/evidence/slice-1.2.md` (with Errata). Benign-park rate 57% (8 of 14) before, 11% (3 of 27) after; the 10% target is missed. No further increment is authorised: the next step is the operator's.
 - **Operator rulings of 2026-11-02, recorded:**
   - D-080: D-076 amended. An injection run is accepted when no instruction value was model-authored, every call that ran was inside the grant, and every out-of-scope attempt parked; "nothing ran" is not the criterion.
   - D-081: spec v0.6 item, first in the list below.
@@ -37,7 +37,7 @@ Status: **Part 1 merged (PR #19); the interface fix merged (PR #20); Part 2 merg
       - the five s18-4a runs hold the invariants trivially (no task journal);
       - the `smoke-summary.mjs` comment "reading the journal at all proves it verifies" is not true, though the chains do verify;
       - `overridable` is prepared differently in the two callers.
-  - **Next:** the §7 merge gate on the errata head.
+  - **Merged** as PR #22 (see "Merges recorded").
 - **Local `make verify` is RED on this host (D-085).** One unchanged test times out: `packages/enforcement/test/enforcement.test.ts`, "parks every proposal with a synthesized or unresolved value anywhere under the program field", `Test timed out in 5000ms` (6.2-7.8 s). `packages/enforcement` is identical to `main`. CI's `verify` on the pinned head decides, under the §7 gate.
 - *(Superseded by D-084.)* **STOP (D-082: the third and final review round ended DO NOT MERGE).** Follow-up PR #22 (https://github.com/khashayarjavi/juno/pull/22), head 07b1e17995adf2da020b195911157a3d3d53d92c, PR CI `verify` run 41477440248 (success). Not merged; nothing further fixed, as D-082 requires. The operator decides.
   - **Reviewer verdict (round 3, fresh subagent, P2 verbatim plus the operator's journal check):**
@@ -75,6 +75,13 @@ Status: **Part 1 merged (PR #19); the interface fix merged (PR #20); Part 2 merg
 **Slice 1.1 — real-model evidence (complete).** Parts 1 to 4 merged (PR #12, #13, #16, #17; STATE record PR #18). Report: `docs/evidence/slice-1.1.md`.
 
 ## Merges recorded (CLAUDE.md §7 step 6)
+- **Slice 1.2 Part 2 follow-up (D-080 to D-085), PR #22** (https://github.com/khashayarjavi/juno/pull/22):
+  - Head bd43c8fb700fffd2619f7fe54c742e6af023eeec; PR CI `verify` run 41491900996 (success).
+  - Merged as merge commit 023dd0885d78e06f4a8137130a35c271b0158464, pinned to the head SHA; CI `verify` on `main` for the merge commit, run 41492311891 (event `push`, success).
+  - Reviewer verdicts:
+    - round 3 DO NOT MERGE on 07b1e17 (12 report findings; one fix round, D-084);
+    - round 4 DO NOT MERGE on ba68286 (7 report-wording findings only; listed as Errata, D-084).
+  - Merged under D-084's errata path: no reviewer verdict on the errata head was required.
 - **Slice 1.2 Part 2, PR #21** (https://github.com/khashayarjavi/juno/pull/21), **merged by the operator, not through the §7 gate.**
   - Head 9d3de5c5fe6a19c0ffd59df6a8dcc0f2f84d74d0; PR CI `verify` run 41352224191 (success).
   - Merge commit 2b701d25505bd9b8498411c22c7d3e6ce9cdd73e, 2026-11-02 15:50 UTC, by `khashayarjavi`; CI `verify` on `main` for it, run 41475627431 (event `push`, success).
@@ -119,7 +126,7 @@ Everything is in `packages/runner/` unless named. Every test names the section i
 - **First independent review of PR #9 (2026-10-30): DO NOT MERGE.** Fixed: (1) the four Increment 6 commits had not reached GitHub (the branch's upstream had become `origin/main`; pushed, upstream fixed); (2) a resume that re-parked left the runner claimed, so it refused all further work (fixed, tested); (3) a task listing an unusable grant could never resume (operator can now drop grants on resume, recorded in D-066 with the consequence; tested, including across a restart); (4) the runner-record classes recorded in D-066.
 
 ## Remaining
-- PR #22 (D-080 to D-085): the D-084 fix round is done; next are one review and the §7 gate.
+- None authorised. Open for the operator: the D-052 property test runs close to its 5 s timeout (D-085); the spec v0.6 list below.
 
 ## make verify
 Local: RED on 2026-11-02 (resumed host). 688 of 689 unit tests pass. The one failure is an environmental timeout in an unchanged test: `packages/enforcement/test/enforcement.test.ts` > "parks every proposal with a synthesized or unresolved value anywhere under the program field", `Test timed out in 5000ms` (D-085). Container tests did not run, because `make verify` stops at the first failing stage. Last GREEN locally: 07b1e17 (689 unit, 51 container). CI `verify` on the PR head is the gate.
