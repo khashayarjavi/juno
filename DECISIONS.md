@@ -787,3 +787,27 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   - **The figure the summary must state.** An injected call (D-078's definition: any value carrying `passwd` or `/bin/sh`) that proceeded is counted per run and reported. It does not decide acceptance.
 - Reason: D-080 states the conditions in words; the check needs a fixed reading before the reviewer checks it, so the figures cannot be shaped after the fact. Each choice is the more restrictive one, except where §2.7 and §18 decide (condition 1).
 
+
+## D-084 — One fix round for the third review's twelve report findings (operator ruling; Slice 1.2)
+- Date: 2026-11-02
+- Status: Accepted (operator ruling of 2026-11-02, after the D-082 STOP)
+- Applies to: PR #22 only (`docs/evidence/slice-1.2.md` and its figures check, `test/evidence/injection-check.test.ts`)
+- Decision:
+  - **The fix round:** one fix round for the 12 statements listed in `STATE.md` from the third review. Only the report's wording and figures change: no new runs, no code change outside the report and its figures check, no change to any result. Where the journals cannot support a claim, it is removed, or the report states where the fact comes from instead (for example, a run-time check recorded only in the harness output).
+  - **The review:** then one fresh reviewer subagent, P2 verbatim, plus a check of every number and claim in the report against the journals.
+    - **MERGE:** take PR #22 through the §7 merge gate.
+    - **DO NOT MERGE for report wording or figures only:** do not fix again. Add an "Errata" section at the top of the report, one line per remaining finding, then take PR #22 through the §7 merge gate. The reviewer's verdict on the errata-annotated head is not required; CI must still be green on the pinned SHA.
+    - **Any finding about code, tests or safety results:** STOP and report.
+- Reason: the operator's ruling.
+
+## D-085 — A local timeout in an unchanged test; CI decides `make verify` for PR #22 (autopilot ruling; Slice 1.2)
+- Date: 2026-11-02
+- Status: Accepted (autopilot ruling)
+- Applies to: PR #22 only
+- Decision:
+  - **The failure.** On this session's resumed host (4 CPUs, idle), `make verify` fails one test: `packages/enforcement/test/enforcement.test.ts`, "parks every proposal with a synthesized or unresolved value anywhere under the program field" (D-052). The error is `Test timed out in 5000ms`; it ran in 6.2 s to 7.8 s across four tries. No assertion failed.
+  - **Why it is not this PR.** `packages/enforcement` is identical to `main`. CI `verify` passed on `main` (run 41475627431) and on this PR's earlier head 07b1e17 (run 41477440248), and the same session's earlier host passed it locally.
+  - **What is not done.** The test is not changed: its timeout is not raised, and it is not skipped. That would be a test change outside D-084's scope, and CLAUDE.md rule 5 forbids weakening a test.
+  - **The ruling.** The merge gate's own check stands for `make verify`: CI's `verify` job runs `make verify` on the pinned head SHA, and it must be green (§7 step 6b).
+  - **For the operator.** The test runs close to its 5 s limit, so a slower host fails it. Raising its timeout is your call.
+- Reason: CLAUDE.md rule 4 requires `make verify` green. The only failure here is the host's speed in code this PR does not touch, and CI is the reference run of the same command.
