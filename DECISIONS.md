@@ -879,7 +879,7 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   - V6-2 → §2.7.1 "Paths that do not exist yet": resolved through the longest existing ancestor; mere non-existence is never "cannot be resolved".
   - V6-3 → §4.3 "Park in B and C": a park always denies, never defers.
   - V6-4 → §3.4.1 "Who signs, and what counts as off-host": a separate journal key held by the runner signs anchors; the protection is the off-host append-only copy; in tests, an append-only container stands in.
-  - V6-5 → §2.3.2 "Reading a shell command string": a fixed word grammar; the program maps to the enum only through an operator-authored name map; `PATH` is never consulted. V6-5's sub-question about `#` comments is **not** answered by v0.6.1 and is not part of this ruling: it is open objection V61-3 (D-104).
+  - V6-5 → §2.3.2 "Reading a shell command string": a fixed word grammar; the program maps to the enum only through an operator-authored name map; `PATH` is never consulted. V6-5's sub-question about `#` comments is **not** answered by v0.6.1 and is not part of this ruling: it was raised as V61-3 (D-104) and ruled (a) by the operator (D-105).
   - V6-6 → §4.3 "A session is a Task": tool calls (as turns) and wall-clock are enforced; tokens and currency are `unmetered`, accepted by the operator at admission.
   - V6-7 → §4.3 "Sensitivity in B and C": a read above the session provider's declared clearance parks before it runs; earlier permitted reads do not affect later calls.
   - V6-8 → §11.1: for a synthesized value, the park lists the untrusted entries in context since the last operator input as "possible sources".
@@ -991,7 +991,7 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
 
 ## D-104 — PR #30 review round 3: DO NOT MERGE; plan corrected to the spec's words; open objection V61-3 (`#` in a shell command string); STOP (autopilot record)
 - Date: 2026-11-03
-- Status: Open objection V61-3 (not ruled). STOP: D-103 allowed one third round, which ended DO NOT MERGE; and V61-3 is a new ambiguity touching §2 (the operator's Slice 1.5 instruction).
+- Status: V61-3 resolved by D-105 (operator ruled (a)); round 4 allowed by D-106. Was: open objection; STOP: D-103 allowed one third round, which ended DO NOT MERGE; and V61-3 is a new ambiguity touching §2 (the operator's Slice 1.5 instruction).
 - Applies to: PR #30; Slice 1.5 Increments 4 and 5
 - Review round 3 on 5e2a06c (fresh subagent, P2 verbatim): checks 1, 2, 3, 4 and 6 PASS; check 5 FAIL on three items, each checked by the agent against the spec on `main`:
   - (a) The plan said "a **first** word that is a shell keyword or builtin parks"; §2.3.2 says "a word". A copying error that loosened the rule. **Fixed:** the plan now uses the spec's words (any position) and tests `cat x eval` and `cat x .`.
@@ -1000,3 +1000,17 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
 - Options for V61-3: **(a) recommended, the more restrictive reading:** any `#` outside single quotes parks `integrity_floor` as shell syntax (it also parks harmless cases such as `cat "a#b"`); (b) only an unquoted word beginning with `#` parks (exactly where a shell starts a comment); (c) amend §2.3.2.
 - Noted by the reviewer, not FAIL, for Increments 4 and 5 to settle from the spec text with D-numbers, or to stop on: which park reason the clearance gate uses (§4.3 names none); whether "a leading `~`" means the start of the string or of any word; D-097's "verification scope" (Increment 1).
 - Reason: CLAUDE.md §2 rule 2, §7 STOP; D-103; the operator's Slice 1.5 instruction.
+
+## D-105 — V61-3 ruled (a): any `#` outside single quotes in a shell command string parks `integrity_floor` (operator ruling; Slice 1.5)
+- Date: 2026-11-03
+- Status: Accepted (operator ruling: "a", in reply to D-104's options)
+- Applies to: Slice 1.5 Increments 4 and 5 (reading a shell command string, §2.3.2)
+- Decision: when JUNO reads a shell command string (§2.3.2, hook and gateway modes), a `#` anywhere outside single quotes is shell syntax and parks `integrity_floor`, like `|` or `$`. This includes `#` inside double quotes (`cat "a#b"` parks) and in the middle of a word (`cat a#b` parks). Inside single quotes it is literal (`cat 'a#b'` proceeds). An exact command string the operator listed as a constant is accepted as written, as before.
+- Reason: the operator's ruling. It is the more restrictive reading: what JUNO judges is then never shortened by a comment.
+
+## D-106 — A fourth review round for PR #30 (operator ruling)
+- Date: 2026-11-03
+- Status: Accepted (operator ruling: "yes", in reply to the question after D-104)
+- Applies to: PR #30 only
+- Decision: one fourth review round. If it says MERGE and CI `verify` on the exact head has passed, the agent merges PR #30 pinned to that head and starts Increment 1. If it says DO NOT MERGE, the agent stops and reports.
+- Reason: the operator's instruction.
