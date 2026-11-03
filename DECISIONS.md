@@ -1214,3 +1214,20 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
 
     The cases are laid out as root in a throwaway container from the same image. CI's host user is not root, so the host never changes owners itself.
 - Reason: §3.2 ("The operator's signing key lives outside every container and outside any state the runner can write"); the plan's Increment 2 ("the runner refuses to start if it can write the anchor file or its directory").
+
+## D-117 — C1 (part): `juno grant sign` and `juno grant verify` (Slice 1.5 Increment 2)
+- Date: 2026-11-03
+- Status: Accepted (implementation record of the plan's Increment 2 item 3)
+- Applies to: Slice 1.5 onward
+- Decision:
+  - The `juno` command (`node dist/runner/src/juno.js`) gains:
+    - `grant sign --key <private-key.pem> <grant.json>`, which prints the grant with its signature;
+    - `grant verify --anchor <public-key.pem> <grant.json>`, which prints `valid` (exit 0) or `invalid` (exit 1).
+  - The grant is parsed against the Grant contract before it is signed, so what is signed is exactly what lookup verifies. Any signature it already carries is replaced.
+  - Only Ed25519 keys are accepted. Signing is the operator's side only: the runner never calls it and never reads a private key.
+  - For now the key is a PEM file the operator names. Taking it from the Windows keychain (D-093) is chosen from current Windows documentation (rule 13) and wired in with the operator's set-up steps, as a later D-number.
+- Tests: `packages/runner/test/grant-cli.test.ts`, with keys generated in memory and files served from memory:
+  - sign, then verify against the operator's key (valid) and another key (invalid);
+  - a field changed after signing is invalid;
+  - a malformed grant, a non-Ed25519 key and bad usage are refused.
+- Reason: §3.2 C1; the plan's Increment 2 ("`juno grant sign` (operator-side, uses the key), `juno grant verify`. The runner and every mediated mode only ever verify").
