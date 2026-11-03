@@ -26,7 +26,10 @@ import {
   MAX_ARGUMENT_DEPTH,
   type TaskContext,
   type Verdict,
+  type CanonicalPaths,
   callInputClass,
+  operandPath,
+  scopePaths,
   scopeViolations,
 } from "../src/index.js";
 
@@ -142,6 +145,26 @@ function setUp(adapter: Adapter = workloadAdapter()): void {
   boundary = new EnforcementBoundary({ registry, grants, journal, clock: () => now });
 }
 
+/**
+ * shell.run with cat's surface declaring no operand, so any operand is undeclared and promotes every element
+ * (§2.3.1 rule 5). Since v0.6 an undeclared *flag* on cat is a rejection (rule 6, A5), so tests that need promoted argv
+ * on a non-interpreter use this surface (D-108).
+ */
+function setUpOperandless(adapter: Adapter = workloadAdapter()): void {
+  const entry = loadRegistryEntry(SHELL_RUN_FILE);
+  const operandless = {
+    ...entry,
+    program_surfaces: entry.program_surfaces.map((surface) =>
+      surface.program === CAT ? { ...surface, positions: surface.positions.filter((item) => item.position.kind !== "operand") } : surface,
+    ),
+  };
+  registry = new CapabilityRegistry();
+  const registered = registry.register(operandless, [adapter]);
+  expect(registered.registered).toBe(true);
+  grants = new GrantStore();
+  boundary = new EnforcementBoundary({ registry, grants, journal, clock: () => now });
+}
+
 /** Appends a prior entry to a task's trajectory, as the runner would after a capability result. */
 function seed(payload: unknown, dataClass: DataClass = INTERNAL_UNTRUSTED, taskId = TASK_ID): TrajectoryEntry {
   return journal.append(
@@ -164,6 +187,10 @@ const entryAt = (seq: number): TrajectoryEntry => {
 };
 const provenanceOf = (verdict: Verdict): TrajectoryEntry["argument_provenance"] => entryAt(verdict.call_seq).argument_provenance;
 const parkReason = (verdict: Verdict): string | null => (verdict.outcome === "park" ? verdict.detail.reason : null);
+/** Canonical forms as if the work content held no symlinks: each raw path normalised as written (D-113; real resolution is tested in canonical.test.ts and test/containers). */
+const lexical = (paths: readonly string[]): CanonicalPaths => new Map(paths.map((path) => [path, { ok: true, canonical: operandPath("/", path) }]));
+/** Judges a proposal as the runner does: resolve the paths the boundary names, then authorize with their canonical forms. */
+const judge = (context: TaskContext, input: unknown): Verdict => boundary.authorize({ ...context, canonical: lexical(boundary.pathsToResolve(context, input)) }, input);
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "juno-enforcement-"));
@@ -180,7 +207,7 @@ afterEach(() => {
 describe("§2.7 step 3: instruction values below their floor park integrity_floor", () => {
   // proves build plan Inc 4 test 1 / §2.7 step 3 / §2.6: a synthesized value in an instruction field parks integrity_floor
   it("parks a synthesized program", () => {
-    const verdict = boundary.authorize(context(), proposal(synthesized(CAT), [synthesized("notes.txt")]));
+    const verdict = judge(context(), proposal(synthesized(CAT), [synthesized("notes.txt")]));
     expect(verdict).toMatchObject({
       outcome: "park",
       detail: { reason: "integrity_floor", violations: [{ argument: "program", floor: "attested", integrity: "untrusted", source: { kind: "instruction_field" } }] },
@@ -191,27 +218,30 @@ describe("§2.7 step 3: instruction values below their floor park integrity_floo
   it("under owned context, takes min() over the volatile region", () => {
     const owned = (volatile: [Integrity, ...Integrity[]]): TaskContext =>
       context({ task: task({ context_ownership: "owned" }), synthesis: { sensitivity: "internal", volatile_region: volatile } });
-    expect(boundary.authorize(owned(["operator", "operator"]), proposal(synthesized(CAT), [])).outcome).toBe("proceed");
-    expect(boundary.authorize(owned(["operator", "attested"]), proposal(synthesized(CAT), [])).outcome).toBe("proceed");
-    expect(parkReason(boundary.authorize(owned(["operator", "untrusted"]), proposal(synthesized(CAT), [])))).toBe("integrity_floor");
-    expect(parkReason(boundary.authorize(owned(["derived"]), proposal(synthesized(CAT), [])))).toBe("integrity_floor");
+    expect(judge(owned(["operator", "operator"]), proposal(synthesized(CAT), [])).outcome).toBe("proceed");
+    expect(judge(owned(["operator", "attested"]), proposal(synthesized(CAT), [])).outcome).toBe("proceed");
+    expect(parkReason(judge(owned(["operator", "untrusted"]), proposal(synthesized(CAT), [])))).toBe("integrity_floor");
+    expect(parkReason(judge(owned(["derived"]), proposal(synthesized(CAT), [])))).toBe("integrity_floor");
   });
 
   // proves §2.6: an owned-context task that does not supply its volatile region gets no integrity computed for it (fails closed)
   it("refuses to compute synthesized integrity for an owned task without its volatile region", () => {
-    expect(() => boundary.authorize(context({ task: task({ context_ownership: "owned" }) }), proposal(constant("cat"), []))).toThrow(EnforcementError);
+    expect(() => judge(context({ task: task({ context_ownership: "owned" }) }), proposal(constant("cat"), []))).toThrow(EnforcementError);
   });
 
-  // proves D-038 / §2.3 rule 2: step 3 is checkInstructionFloors, so argv elements promoted under the declared surface park too
-  it("parks argv promoted under the program's surface (an undeclared cat flag promotes every element, D-037)", () => {
-    const verdict = boundary.authorize(context(), proposal(constant("cat"), [synthesized("-Z"), synthesized("notes.txt")]));
+  // proves D-038 / §2.3 rule 2 / §2.3.1 rule 5: step 3 is checkInstructionFloors, so argv elements promoted under the
+  // declared surface park too (an undeclared operand promotes every element, D-037; D-108 for the surface used)
+  it("parks argv promoted under the program's surface (an undeclared operand promotes every element, D-037)", () => {
+    setUpOperandless();
+    grants.add(grant());
+    const verdict = judge(context(), proposal(constant("cat"), [synthesized("-n"), synthesized("notes.txt")]));
     expect(verdict).toMatchObject({
       outcome: "park",
       detail: {
         reason: "integrity_floor",
         violations: [
-          { argument: "argv[0]", floor: "operator", integrity: "untrusted", source: { kind: "promoted_argv", reason: "uncovered_flag", at: 0 } },
-          { argument: "argv[1]", floor: "operator", integrity: "untrusted", source: { kind: "promoted_argv", reason: "uncovered_flag", at: 0 } },
+          { argument: "argv[0]", floor: "operator", integrity: "untrusted", source: { kind: "promoted_argv", reason: "uncovered_operand", at: 1 } },
+          { argument: "argv[1]", floor: "operator", integrity: "untrusted", source: { kind: "promoted_argv", reason: "uncovered_operand", at: 1 } },
         ],
       },
     });
@@ -221,7 +251,7 @@ describe("§2.7 step 3: instruction values below their floor park integrity_floo
   it("lets untrusted argv through when every element is declared data", () => {
     fc.assert(
       fc.property(fc.array(fc.oneof(fc.constantFrom("-n", "-b", "-s", "-E", "--"), fc.stringMatching(/^[a-z][a-z0-9._]{0,12}$/)), { maxLength: 6 }), (argv) => {
-        const verdict = boundary.authorize(context(), proposal(constant("cat"), argv.map(synthesized)));
+        const verdict = judge(context(), proposal(constant("cat"), argv.map(synthesized)));
         expect(verdict.outcome).toBe("proceed");
       }),
       { numRuns: 40 },
@@ -232,24 +262,24 @@ describe("§2.7 step 3: instruction values below their floor park integrity_floo
   it("judges a bound program by the referenced entry's integrity", () => {
     const attested = seed({ program: CAT }, { sensitivity: "internal", integrity: "attested" });
     const untrusted = seed({ program: CAT }, INTERNAL_UNTRUSTED);
-    expect(boundary.authorize(context(), proposal(bound(`\${${String(attested.seq)}.program}`), [])).outcome).toBe("proceed");
-    expect(parkReason(boundary.authorize(context(), proposal(bound(`\${${String(untrusted.seq)}.program}`), [])))).toBe("integrity_floor");
+    expect(judge(context(), proposal(bound(`\${${String(attested.seq)}.program}`), [])).outcome).toBe("proceed");
+    expect(parkReason(judge(context(), proposal(bound(`\${${String(untrusted.seq)}.program}`), [])))).toBe("integrity_floor");
   });
 
   // proves §8.3 / D-045: an instruction synthesized from untrusted content parks integrity_floor even when its value is not a valid program
   it("parks a synthesized command string in the program field rather than rejecting it as malformed", () => {
-    const verdict = boundary.authorize(context(), proposal(synthesized("/bin/sh -c 'cat /work/notes.txt | sh'"), []));
+    const verdict = judge(context(), proposal(synthesized("/bin/sh -c 'cat /work/notes.txt | sh'"), []));
     expect(verdict).toMatchObject({ outcome: "park", detail: { reason: "integrity_floor", violations: [{ argument: "program" }] } });
   });
 
   // records D-045: a call that does not parse, and whose instruction values meet their floors, is rejected, not run and not parked
   it("rejects a program outside the enum when its provenance meets the floor", () => {
-    expect(boundary.authorize(context(), proposal(constant("sh"), [constant("work")]))).toMatchObject({ outcome: "reject", detail: { reason: "malformed_call" } });
+    expect(judge(context(), proposal(constant("sh"), [constant("work")]))).toMatchObject({ outcome: "reject", detail: { reason: "malformed_call" } });
   });
 
   // proves D-054 / D-037: a program outside the enum has no declared surface, so its argv is promoted and judged before the call is rejected as malformed
   it("parks untrusted argv under a program outside the enum rather than rejecting the call as malformed", () => {
-    expect(boundary.authorize(context(), proposal(constant("sh"), [synthesized("-c")]))).toMatchObject({
+    expect(judge(context(), proposal(constant("sh"), [synthesized("-c")]))).toMatchObject({
       outcome: "park",
       detail: {
         reason: "integrity_floor",
@@ -263,7 +293,7 @@ describe("§2.6: provenance is established by mechanism", () => {
   // proves build plan Inc 4 test 2 / §2.6 bound: a bound reference into a data field passes, with the referenced entry's integrity
   it("passes a bound reference into argv with the referenced entry's integrity", () => {
     const listing = seed({ files: ["notes.txt", "todo.txt"] }, INTERNAL_UNTRUSTED);
-    const verdict = boundary.authorize(context(), proposal(constant("cat"), [synthesized("--"), bound(`\${${String(listing.seq)}.files[1]}`)]));
+    const verdict = judge(context(), proposal(constant("cat"), [synthesized("--"), bound(`\${${String(listing.seq)}.files[1]}`)]));
     expect(verdict.outcome).toBe("proceed");
     if (verdict.outcome !== "proceed") return;
     expect(verdict.authorization.call).toEqual({ program: CAT, argv: ["--", "todo.txt"], cwd: "/work" });
@@ -274,18 +304,18 @@ describe("§2.6: provenance is established by mechanism", () => {
       { argument: "cwd", class: "constant", integrity: "operator" },
     ]);
     const attested = seed({ files: ["build.log"] }, { sensitivity: "internal", integrity: "attested" });
-    const second = boundary.authorize(context(), proposal(constant("cat"), [bound(`\${${String(attested.seq)}.files[0]}`)]));
+    const second = judge(context(), proposal(constant("cat"), [bound(`\${${String(attested.seq)}.files[0]}`)]));
     expect(provenanceOf(second)).toContainEqual({ argument: "argv[0]", class: "bound", integrity: "attested" });
   });
 
   // proves build plan Inc 4 test 3 / invariant 7: a literal equal to a prior value is synthesized; no comparison confers bound
   it("gives no credit for a literal that matches a prior value", () => {
     const operatorEntry = seed({ program: CAT, files: ["notes.txt"] }, INTERNAL_OPERATOR);
-    const viaReference = boundary.authorize(context(), proposal(bound(`\${${String(operatorEntry.seq)}.program}`), [bound(`\${${String(operatorEntry.seq)}.files[0]}`)]));
+    const viaReference = judge(context(), proposal(bound(`\${${String(operatorEntry.seq)}.program}`), [bound(`\${${String(operatorEntry.seq)}.files[0]}`)]));
     expect(viaReference.outcome).toBe("proceed");
     expect(provenanceOf(viaReference)).toContainEqual({ argument: "program", class: "bound", integrity: "operator" });
 
-    const copied = boundary.authorize(context(), proposal(synthesized(CAT), [synthesized("notes.txt")]));
+    const copied = judge(context(), proposal(synthesized(CAT), [synthesized("notes.txt")]));
     expect(parkReason(copied)).toBe("integrity_floor");
     expect(provenanceOf(copied)).toEqual([
       { argument: "program", class: "synthesized", integrity: "untrusted" },
@@ -299,7 +329,7 @@ describe("§2.6: provenance is established by mechanism", () => {
     fc.assert(
       fc.property(fc.stringMatching(/^[a-z][a-z0-9._]{0,12}$/), fc.constantFrom<Integrity>("operator", "attested", "derived", "untrusted"), (value, integrity) => {
         seed({ value }, { sensitivity: "internal", integrity });
-        const verdict = boundary.authorize(context(), proposal(constant("cat"), [synthesized(value)]));
+        const verdict = judge(context(), proposal(constant("cat"), [synthesized(value)]));
         expect(provenanceOf(verdict)).toContainEqual({ argument: "argv[0]", class: "synthesized", integrity: "untrusted" });
       }),
       { numRuns: 20 },
@@ -308,7 +338,7 @@ describe("§2.6: provenance is established by mechanism", () => {
 
   // proves §2.6 constant: a runtime-fixed slot carries the integrity admission gave it
   it("takes a constant's integrity from the slot admission fixed", () => {
-    const verdict = boundary.authorize(context(), proposal(constant("cat"), []));
+    const verdict = judge(context(), proposal(constant("cat"), []));
     expect(provenanceOf(verdict)).toEqual([
       { argument: "program", class: "constant", integrity: "operator" },
       { argument: "cwd", class: "constant", integrity: "operator" },
@@ -317,7 +347,7 @@ describe("§2.6: provenance is established by mechanism", () => {
 
   // records D-045: a constant slot that admission never fixed is not a value at all; the call is rejected and nothing runs
   it("rejects a constant slot that was never fixed", () => {
-    const verdict = boundary.authorize(context(), proposal(constant("python"), []));
+    const verdict = judge(context(), proposal(constant("python"), []));
     expect(verdict).toMatchObject({ outcome: "reject", detail: { reason: "unresolved_argument", failures: [{ argument: "program", class: "constant", code: "unknown_slot" }] } });
   });
 });
@@ -327,7 +357,7 @@ describe("§2.6 and §2.7 step 1: bound references resolve only within the task'
   it("rejects a cross-task reference", () => {
     seed({ files: ["secret.txt"] }, INTERNAL_UNTRUSTED, OTHER_TASK_ID);
     for (const reference of ["${task-2:0.files[0]}", "${0@task-2.files[0]}", "${task-2/0.files[0]}", "${task-2.0.files[0]}"]) {
-      const verdict = boundary.authorize(context(), proposal(constant("cat"), [bound(reference)]));
+      const verdict = judge(context(), proposal(constant("cat"), [bound(reference)]));
       expect(verdict).toMatchObject({ outcome: "reject", detail: { reason: "unresolved_argument", failures: [{ argument: "argv[0]", class: "bound", code: "cross_task" }] } });
     }
   });
@@ -336,7 +366,7 @@ describe("§2.6 and §2.7 step 1: bound references resolve only within the task'
   it("cannot reach another task's entry by sequence number", () => {
     seed({ files: ["mine.txt"] });
     for (let index = 0; index < 4; index += 1) seed({ files: ["theirs.txt"] }, INTERNAL_OPERATOR, OTHER_TASK_ID);
-    const verdict = boundary.authorize(context(), proposal(constant("cat"), [bound("${3.files[0]}")]));
+    const verdict = judge(context(), proposal(constant("cat"), [bound("${3.files[0]}")]));
     expect(verdict).toMatchObject({ outcome: "reject", detail: { reason: "unresolved_argument", failures: [{ code: "unresolvable" }] } });
   });
 
@@ -349,7 +379,7 @@ describe("§2.6 and §2.7 step 1: bound references resolve only within the task'
     ["text around the reference", "dir/${0.files[0]}", "malformed"],
   ])("rejects %s", (_name, reference, code) => {
     seed({ files: ["notes.txt"] });
-    const verdict = boundary.authorize(context(), proposal(constant("cat"), [bound(reference)]));
+    const verdict = judge(context(), proposal(constant("cat"), [bound(reference)]));
     expect(verdict).toMatchObject({ outcome: "reject", detail: { reason: "unresolved_argument", failures: [{ code }] } });
   });
 
@@ -359,7 +389,7 @@ describe("§2.6 and §2.7 step 1: bound references resolve only within the task'
     seed({ other: true });
     const hostile = seed({ files: ["--help"] }, INTERNAL_UNTRUSTED);
     const unique = seed({ cwd_hint: "notes.txt" });
-    const verdict = boundary.authorize(
+    const verdict = judge(
       context(),
       proposal(constant("cat"), [bound(`\${${String(hostile.seq)}.files[0]}`), bound(`\${${String(unique.seq)}.cwd_hint}`)]),
     );
@@ -375,7 +405,7 @@ describe("§2.6 and §2.7 step 1: bound references resolve only within the task'
 
   // proves §2.7 step 1: a rejected reference is recorded too, so the attempt is in the record
   it("records a rejected reference", () => {
-    const verdict = boundary.authorize(context(), proposal(constant("cat"), [bound("${7.files[0]}")]));
+    const verdict = judge(context(), proposal(constant("cat"), [bound("${7.files[0]}")]));
     const [binding] = entries().filter((entry) => entry.kind === "binding_resolution");
     expect(payloadOf(binding as TrajectoryEntry)).toMatchObject({ argument: "argv[0]", reference: "${7.files[0]}", outcome: "rejected", code: "unresolvable" });
     expect(payloadOf(entryAt(verdict.call_seq))).toMatchObject({ verdict: { outcome: "reject", reason: "unresolved_argument" } });
@@ -390,16 +420,16 @@ describe("§3.2 and §6.2: a call with no covering grant parks awaiting_grant", 
   it("fails an expired grant", () => {
     const expiry = Date.parse(T0) + DAY_MS;
     now = new Date(expiry - 1);
-    expect(boundary.authorize(context(), call()).outcome).toBe("proceed");
+    expect(judge(context(), call()).outcome).toBe("proceed");
     now = new Date(expiry);
-    expect(refused(boundary.authorize(context(), call()))).toEqual([{ grant: "grant-1", reason: "expired" }]);
+    expect(refused(judge(context(), call()))).toEqual([{ grant: "grant-1", reason: "expired" }]);
   });
 
   // proves build plan Inc 4 test 5 / §3.2 `revoked_at`: a revoked grant fails
   it("fails a revoked grant", () => {
-    expect(boundary.authorize(context(), call()).outcome).toBe("proceed");
+    expect(judge(context(), call()).outcome).toBe("proceed");
     grants.revoke("grant-1", now);
-    expect(refused(boundary.authorize(context(), call()))).toEqual([{ grant: "grant-1", reason: "revoked" }]);
+    expect(refused(judge(context(), call()))).toEqual([{ grant: "grant-1", reason: "revoked" }]);
   });
 
   // proves build plan Inc 4 test 5 / §3.2 `max_invocations`: a grant fails once its invocations are used up
@@ -407,9 +437,9 @@ describe("§3.2 and §6.2: a call with no covering grant parks awaiting_grant", 
     grants = new GrantStore();
     grants.add(grant({ max_invocations: 2 }));
     boundary = new EnforcementBoundary({ registry, grants, journal, clock: () => now });
-    expect(boundary.authorize(context(), call()).outcome).toBe("proceed");
-    expect(boundary.authorize(context(), call()).outcome).toBe("proceed");
-    expect(refused(boundary.authorize(context(), call()))).toEqual([{ grant: "grant-1", reason: "exhausted" }]);
+    expect(judge(context(), call()).outcome).toBe("proceed");
+    expect(judge(context(), call()).outcome).toBe("proceed");
+    expect(refused(judge(context(), call()))).toEqual([{ grant: "grant-1", reason: "exhausted" }]);
     expect(grants.invocations("grant-1")).toBe(2);
   });
 
@@ -418,10 +448,10 @@ describe("§3.2 and §6.2: a call with no covering grant parks awaiting_grant", 
     grants = new GrantStore();
     grants.add(grant({ max_invocations: 1 }));
     boundary = new EnforcementBoundary({ registry, grants, journal, clock: () => now });
-    expect(parkReason(boundary.authorize(context(), proposal(synthesized(CAT), [])))).toBe("integrity_floor");
-    expect(boundary.authorize(context(), proposal(constant("cat"), [bound("${9.x}")])).outcome).toBe("reject");
+    expect(parkReason(judge(context(), proposal(synthesized(CAT), [])))).toBe("integrity_floor");
+    expect(judge(context(), proposal(constant("cat"), [bound("${9.x}")])).outcome).toBe("reject");
     expect(grants.invocations("grant-1")).toBe(0);
-    expect(boundary.authorize(context(), call()).outcome).toBe("proceed");
+    expect(judge(context(), call()).outcome).toBe("proceed");
     expect(grants.invocations("grant-1")).toBe(1);
   });
 
@@ -435,13 +465,13 @@ describe("§3.2 and §6.2: a call with no covering grant parks awaiting_grant", 
     grants = new GrantStore();
     grants.add(grant(overrides));
     boundary = new EnforcementBoundary({ registry, grants, journal, clock: () => now });
-    expect(refused(boundary.authorize(context(), call()))).toEqual([{ grant: "grant-1", reason }]);
+    expect(refused(judge(context(), call()))).toEqual([{ grant: "grant-1", reason }]);
   });
 
   // proves §3.1: a task with no grants is admissible and parks at its first capability call; a grant the store does not hold covers nothing
   it("parks a task that holds no grant, or only an unknown one", () => {
-    expect(refused(boundary.authorize(context({ task: task({ grants: [] }) }), call()))).toEqual([]);
-    expect(refused(boundary.authorize(context({ task: task({ grants: ["grant-404"] }) }), call()))).toEqual([{ grant: "grant-404", reason: "unknown_grant" }]);
+    expect(refused(judge(context({ task: task({ grants: [] }) }), call()))).toEqual([]);
+    expect(refused(judge(context({ task: task({ grants: ["grant-404"] }) }), call()))).toEqual([{ grant: "grant-404", reason: "unknown_grant" }]);
   });
 
   // records D-042: the grant store refuses a malformed grant and a second grant with the same id
@@ -462,13 +492,13 @@ describe("§2.7 step 4: a data field outside the grant's resource_scope parks sc
     grants = new GrantStore();
     withScope("/work/project");
     boundary = new EnforcementBoundary({ registry, grants, journal, clock: () => now });
-    const outside = boundary.authorize(context(), proposal(constant("cat"), [], synthesized("/work/other")));
+    const outside = judge(context(), proposal(constant("cat"), [], synthesized("/work/other")));
     expect(outside).toMatchObject({
       outcome: "park",
       detail: { reason: "scope_violation", grants: [{ grant: "grant-1", outside: [{ argument: "cwd", value: "/work/other" }] }] },
     });
-    expect(parkReason(boundary.authorize(context(), proposal(constant("cat"), [], synthesized("/work/projectile"))))).toBe("scope_violation");
-    expect(boundary.authorize(context(), proposal(constant("cat"), [], synthesized("/work/project/src"))).outcome).toBe("proceed");
+    expect(parkReason(judge(context(), proposal(constant("cat"), [], synthesized("/work/projectile"))))).toBe("scope_violation");
+    expect(judge(context(), proposal(constant("cat"), [], synthesized("/work/project/src"))).outcome).toBe("proceed");
   });
 
   // records D-042: when several grants cover the capability, the call proceeds under the first, in the task's order, whose scope holds it, and is charged to that one
@@ -477,7 +507,7 @@ describe("§2.7 step 4: a data field outside the grant's resource_scope parks sc
     withScope("/work/a", "grant-a");
     withScope("/work/b", "grant-b");
     boundary = new EnforcementBoundary({ registry, grants, journal, clock: () => now });
-    const verdict = boundary.authorize(context({ task: task({ grants: ["grant-a", "grant-b"] }) }), proposal(constant("cat"), [], synthesized("/work/b/x")));
+    const verdict = judge(context({ task: task({ grants: ["grant-a", "grant-b"] }) }), proposal(constant("cat"), [], synthesized("/work/b/x")));
     expect(verdict).toMatchObject({ outcome: "proceed", authorization: { grant: "grant-b" } });
     expect([grants.invocations("grant-a"), grants.invocations("grant-b")]).toEqual([0, 1]);
     expect(payloadOf(entryAt(verdict.call_seq))).toMatchObject({ grant: "grant-b", verdict: { outcome: "proceed" } });
@@ -488,15 +518,15 @@ describe("§2.7 step 5: aggregate input sensitivity above the capability's ceili
   // proves §2.7 step 5: a bound value from a confidential entry exceeds shell.run's internal ceiling
   it("parks a call carrying material above max_input_sensitivity", () => {
     const secretListing = seed({ files: ["payroll.csv"] }, { sensitivity: "confidential", integrity: "untrusted" });
-    const verdict = boundary.authorize(context(), proposal(constant("cat"), [bound(`\${${String(secretListing.seq)}.files[0]}`)]));
+    const verdict = judge(context(), proposal(constant("cat"), [bound(`\${${String(secretListing.seq)}.files[0]}`)]));
     expect(verdict).toMatchObject({ outcome: "park", detail: { reason: "sensitivity_ceiling", aggregate: "confidential", ceiling: "internal" } });
   });
 
   // proves §2.7 step 5 and D-041: a synthesized value carries the producing turn's sensitivity
   it("judges synthesized values by the producing turn's sensitivity", () => {
-    const verdict = boundary.authorize(context({ synthesis: { sensitivity: "secret" } }), proposal(constant("cat"), [synthesized("notes.txt")]));
+    const verdict = judge(context({ synthesis: { sensitivity: "secret" } }), proposal(constant("cat"), [synthesized("notes.txt")]));
     expect(verdict).toMatchObject({ outcome: "park", detail: { reason: "sensitivity_ceiling", aggregate: "secret" } });
-    expect(boundary.authorize(context({ synthesis: { sensitivity: "public" } }), proposal(constant("cat"), [synthesized("notes.txt")])).outcome).toBe("proceed");
+    expect(judge(context({ synthesis: { sensitivity: "public" } }), proposal(constant("cat"), [synthesized("notes.txt")])).outcome).toBe("proceed");
   });
 });
 
@@ -505,15 +535,15 @@ describe("§2.7 step 6 and §2.5: an adapter observed building a string from a d
   it("quarantines an adapter that passes the canary suite but interpolates real values", async () => {
     setUp(evasiveAdapter);
     grants.add(grant());
-    const verdict = boundary.authorize(context(), proposal(constant("cat"), [synthesized("notes.txt")]));
+    const verdict = judge(context(), proposal(constant("cat"), [synthesized("notes.txt")]));
     expect(verdict).toMatchObject({
       outcome: "park",
       detail: { reason: "adapter_quarantined", adapter: WORKLOAD_EXECFILE, failures: [{ field: "argv", kind: "list_not_intact" }] },
     });
     expect(registry.quarantined("shell.run", WORKLOAD_EXECFILE)).toBeDefined();
     // The quarantine holds for every later call, even one the adapter would have delivered correctly.
-    expect(parkReason(boundary.authorize(context(), proposal(constant("cat"), [synthesized("juno-canary-x")])))).toBe("adapter_quarantined");
-    expect(parkReason(boundary.authorize(context(), proposal(constant("cat"), [])))).toBe("adapter_quarantined");
+    expect(parkReason(judge(context(), proposal(constant("cat"), [synthesized("juno-canary-x")])))).toBe("adapter_quarantined");
+    expect(parkReason(judge(context(), proposal(constant("cat"), [])))).toBe("adapter_quarantined");
     await expect(registry.invoke("shell.run", { program: CAT, argv: [], cwd: "/work" })).rejects.toThrow(RegistryError);
     expect(grants.invocations("grant-1")).toBe(0);
   });
@@ -528,7 +558,7 @@ describe("§2.7 step 6 and §2.5: an adapter observed building a string from a d
       }),
     );
     grants.add(grant());
-    const verdict = boundary.authorize(context(), proposal(constant("cat"), [], synthesized("/work/project")));
+    const verdict = judge(context(), proposal(constant("cat"), [], synthesized("/work/project")));
     expect(verdict).toMatchObject({ outcome: "park", detail: { reason: "adapter_quarantined", failures: [{ field: "cwd", kind: "not_discrete" }] } });
   });
 
@@ -542,14 +572,14 @@ describe("§2.7 step 6 and §2.5: an adapter observed building a string from a d
       }),
     );
     grants.add(grant());
-    const verdict = boundary.authorize(context(), proposal(constant("cat"), [synthesized("notes.txt")]));
+    const verdict = judge(context(), proposal(constant("cat"), [synthesized("notes.txt")]));
     expect(verdict).toMatchObject({ outcome: "park", detail: { reason: "adapter_quarantined", observation: expect.stringContaining("unsupported directory") as unknown } });
     expect(registry.quarantined("shell.run", WORKLOAD_EXECFILE)).toBeDefined();
   });
 
   // proves §2.4 / D-044: the conforming adapter delivers each data value as discrete elements, so it is never quarantined
   it("does not quarantine the conforming adapter", () => {
-    const verdict = boundary.authorize(context(), proposal(constant("cat"), [synthesized("a b"), synthesized("$(id)"), synthesized("")], synthesized("/work/x y")));
+    const verdict = judge(context(), proposal(constant("cat"), [synthesized("a b"), synthesized("$(id)"), synthesized("")], synthesized("/work/x y")));
     expect(verdict.outcome).toBe("proceed");
     expect(registry.quarantined("shell.run", WORKLOAD_EXECFILE)).toBeUndefined();
   });
@@ -564,22 +594,22 @@ describe("§2.7: check order, the record, and performing the effect", () => {
     const confidential = seed({ files: ["payroll.csv"] }, { sensitivity: "confidential", integrity: "untrusted" });
     const ref = bound(`\${${String(confidential.seq)}.files[0]}`);
     // integrity before grant: an injected instruction is never presented as a missing grant
-    expect(parkReason(boundary.authorize(context({ task: task({ grants: [] }) }), proposal(synthesized(CAT), [ref], synthesized("/work/other"))))).toBe("integrity_floor");
+    expect(parkReason(judge(context({ task: task({ grants: [] }) }), proposal(synthesized(CAT), [ref], synthesized("/work/other"))))).toBe("integrity_floor");
     // grant before scope
-    expect(parkReason(boundary.authorize(context({ task: task({ grants: [] }) }), proposal(constant("cat"), [ref], synthesized("/work/other"))))).toBe("awaiting_grant");
+    expect(parkReason(judge(context({ task: task({ grants: [] }) }), proposal(constant("cat"), [ref], synthesized("/work/other"))))).toBe("awaiting_grant");
     // scope before sensitivity
-    expect(parkReason(boundary.authorize(context(), proposal(constant("cat"), [ref], synthesized("/work/other"))))).toBe("scope_violation");
+    expect(parkReason(judge(context(), proposal(constant("cat"), [ref], synthesized("/work/other"))))).toBe("scope_violation");
     // sensitivity before the adapter
-    expect(parkReason(boundary.authorize(context(), proposal(constant("cat"), [ref], synthesized("/work/project"))))).toBe("sensitivity_ceiling");
+    expect(parkReason(judge(context(), proposal(constant("cat"), [ref], synthesized("/work/project"))))).toBe("sensitivity_ceiling");
   });
 
   // proves §3.4.2 / D-022 / D-038: every proposal leaves one capability_call entry with per-element argv provenance, and the chain verifies
   it("records one capability_call per proposal, with per-argument provenance and the verdict", () => {
     const verdicts = [
-      boundary.authorize(context(), proposal(constant("cat"), [synthesized("-n"), synthesized("notes.txt")])),
-      boundary.authorize(context(), proposal(synthesized(CAT), [])),
-      boundary.authorize(context(), proposal(constant("cat"), [bound("${0.nothing}")])),
-      boundary.authorize(context({ task: task({ grants: [] }) }), proposal(constant("cat"), [])),
+      judge(context(), proposal(constant("cat"), [synthesized("-n"), synthesized("notes.txt")])),
+      judge(context(), proposal(synthesized(CAT), [])),
+      judge(context(), proposal(constant("cat"), [bound("${0.nothing}")])),
+      judge(context({ task: task({ grants: [] }) }), proposal(constant("cat"), [])),
     ];
     const calls = entries().filter((entry) => entry.kind === "capability_call");
     expect(calls.map((entry) => entry.seq)).toEqual(verdicts.map((verdict) => verdict.call_seq));
@@ -591,7 +621,7 @@ describe("§2.7: check order, the record, and performing the effect", () => {
 
   // records D-043: an entry holding a model-composed proposal is never more trusted than the model's output
   it("classes the capability_call entry no higher than what the model composed", () => {
-    const verdict = boundary.authorize(context(), proposal(constant("cat"), []));
+    const verdict = judge(context(), proposal(constant("cat"), []));
     expect(entryAt(verdict.call_seq).data_class).toEqual(INTERNAL_UNTRUSTED);
   });
 
@@ -599,7 +629,7 @@ describe("§2.7: check order, the record, and performing the effect", () => {
   it("performs an authorized call once, exactly as inspected", async () => {
     setUp(echoAdapter);
     grants.add(grant());
-    const verdict = boundary.authorize(context(), proposal(constant("cat"), [synthesized("a b"), synthesized("$(id)")], synthesized("/work/x")));
+    const verdict = judge(context(), proposal(constant("cat"), [synthesized("a b"), synthesized("$(id)")], synthesized("/work/x")));
     expect(verdict.outcome).toBe("proceed");
     if (verdict.outcome !== "proceed") return;
     const result = await boundary.perform(verdict.authorization);
@@ -610,13 +640,13 @@ describe("§2.7: check order, the record, and performing the effect", () => {
 
   // records D-045: an unregistered capability is rejected, and a task that is not running cannot call at all
   it("rejects an unregistered capability, and refuses a task that is not running", () => {
-    const verdict = boundary.authorize(context(), { capability: "fs.file.read", arguments: { path: constant("work") } });
+    const verdict = judge(context(), { capability: "fs.file.read", arguments: { path: constant("work") } });
     expect(verdict).toMatchObject({ outcome: "reject", detail: { reason: "unknown_capability" } });
-    expect(() => boundary.authorize(context({ task: task({ state: "parked", runtime_substate: null }) }), proposal(constant("cat"), []))).toThrow(EnforcementError);
+    expect(() => judge(context({ task: task({ state: "parked", runtime_substate: null }) }), proposal(constant("cat"), []))).toThrow(EnforcementError);
   });
 });
 
-describe("D-046 (O-3 ruling): a grant's data_class_bounds tighten steps 3 and 5", () => {
+describe("D-046 (O-3 ruling; §2.7.1 v0.6 D4): a grant's data_class_bounds tighten steps 3 and 5", () => {
   const useGrants = (...overrides: Record<string, unknown>[]): string[] => {
     grants = new GrantStore();
     const ids = overrides.map((override, index) => grants.add(grant({ id: `grant-${String(index + 1)}`, ...override })).id);
@@ -629,56 +659,57 @@ describe("D-046 (O-3 ruling): a grant's data_class_bounds tighten steps 3 and 5"
   // proves D-046 / §3.2 data_class_bounds / §2.7 step 3: a grant's min_integrity raises an instruction value's floor, and a breach parks integrity_floor
   it("parks integrity_floor when a value meets the capability's floor but not the grant's", () => {
     useGrants(bounds("operator"));
-    const verdict = boundary.authorize(context(), proposal(attestedProgram(), []));
+    const verdict = judge(context(), proposal(attestedProgram(), []));
     expect(verdict).toMatchObject({
       outcome: "park",
       detail: { reason: "integrity_floor", violations: [], grants: [{ grant: "grant-1", violations: [{ argument: "program", floor: "operator", integrity: "attested" }] }] },
     });
     useGrants(bounds("attested"));
-    expect(boundary.authorize(context(), proposal(attestedProgram(), [])).outcome).toBe("proceed");
+    expect(judge(context(), proposal(attestedProgram(), [])).outcome).toBe("proceed");
   });
 
   // proves D-046 / §2.2.1: a grant's min_integrity never applies to data fields; untrusted argv and cwd still pass under an operator-minimum grant
   it("never raises the floor of a data field", () => {
     useGrants(bounds("operator"));
     const listing = seed({ files: ["notes.txt"] });
-    const verdict = boundary.authorize(context(), proposal(constant("cat"), [synthesized("-n"), bound(`\${${String(listing.seq)}.files[0]}`)], synthesized("/work")));
+    const verdict = judge(context(), proposal(constant("cat"), [synthesized("-n"), bound(`\${${String(listing.seq)}.files[0]}`)], synthesized("/work")));
     expect(verdict.outcome).toBe("proceed");
   });
 
   // proves D-046: a raised floor also applies to argv promoted under §2.3 rule 2 (already at operator, so the grant cannot lower it)
   it("keeps promoted argv at the operator floor whatever the grant allows", () => {
+    setUpOperandless();
     useGrants(bounds("untrusted"));
-    expect(parkReason(boundary.authorize(context(), proposal(constant("cat"), [synthesized("-Z")])))).toBe("integrity_floor");
+    expect(parkReason(judge(context(), proposal(constant("cat"), [synthesized("notes.txt")])))).toBe("integrity_floor");
   });
 
   // proves D-046 / D-045: candidates are looked up before step 3, but awaiting_grant is decided only after it passes
   it("never presents an injected instruction as a missing grant", () => {
     useGrants(bounds("operator"), { capability_selector: { capabilities: ["fs.file.read"] } });
-    expect(parkReason(boundary.authorize(context({ task: task({ grants: [] }) }), proposal(synthesized(CAT), [])))).toBe("integrity_floor");
+    expect(parkReason(judge(context({ task: task({ grants: [] }) }), proposal(synthesized(CAT), [])))).toBe("integrity_floor");
     // With no candidate at all, step 3 uses the values' own floors and then the grant check decides.
-    expect(parkReason(boundary.authorize(context({ task: task({ grants: ["grant-2"] }) }), proposal(attestedProgram(), [])))).toBe("awaiting_grant");
+    expect(parkReason(judge(context({ task: task({ grants: ["grant-2"] }) }), proposal(attestedProgram(), [])))).toBe("awaiting_grant");
     // A candidate whose raised floor is not met parks integrity_floor, not awaiting_grant or scope.
-    expect(parkReason(boundary.authorize(context({ task: task({ grants: ["grant-1"] }) }), proposal(attestedProgram(), [], synthesized("/etc"))))).toBe("integrity_floor");
+    expect(parkReason(judge(context({ task: task({ grants: ["grant-1"] }) }), proposal(attestedProgram(), [], synthesized("/etc"))))).toBe("integrity_floor");
   });
 
   // proves D-046 / §2.7 step 5: a grant's max_sensitivity lowers the ceiling, and a breach parks sensitivity_ceiling
   it("parks sensitivity_ceiling above the grant's max_sensitivity", () => {
     useGrants(bounds("untrusted", "public"));
-    const verdict = boundary.authorize(context(), proposal(constant("cat"), [synthesized("notes.txt")]));
+    const verdict = judge(context(), proposal(constant("cat"), [synthesized("notes.txt")]));
     expect(verdict).toMatchObject({
       outcome: "park",
       detail: { reason: "sensitivity_ceiling", aggregate: "internal", ceiling: "internal", grants: [{ grant: "grant-1", max_sensitivity: "public" }] },
     });
     // Every argument public, so the aggregate is public (the admission constants are internal).
     const publicCall = proposal(bound(`\${${String(seed({ program: CAT }, { sensitivity: "public", integrity: "operator" }).seq)}.program}`), [synthesized("notes.txt")], synthesized("/work"));
-    expect(boundary.authorize(context({ synthesis: { sensitivity: "public" } }), publicCall).outcome).toBe("proceed");
+    expect(judge(context({ synthesis: { sensitivity: "public" } }), publicCall).outcome).toBe("proceed");
   });
 
   // proves D-046: of several covering grants the call proceeds under one whose bounds it meets, is charged to it, and the journal names it
   it("proceeds under a grant whose bounds the call meets, and records which", () => {
     useGrants(bounds("operator"), bounds("untrusted", "public"), bounds("attested", "internal"));
-    const verdict = boundary.authorize(context({ task: task({ grants: ["grant-1", "grant-2", "grant-3"] }) }), proposal(attestedProgram(), [synthesized("notes.txt")]));
+    const verdict = judge(context({ task: task({ grants: ["grant-1", "grant-2", "grant-3"] }) }), proposal(attestedProgram(), [synthesized("notes.txt")]));
     expect(verdict).toMatchObject({ outcome: "proceed", authorization: { grant: "grant-3" } });
     expect([grants.invocations("grant-1"), grants.invocations("grant-2"), grants.invocations("grant-3")]).toEqual([0, 0, 1]);
     expect(payloadOf(entryAt(verdict.call_seq))).toMatchObject({ grant: "grant-3", verdict: { outcome: "proceed" } });
@@ -692,7 +723,7 @@ describe("D-046 (O-3 ruling): a grant's data_class_bounds tighten steps 3 and 5"
       fc.property(fc.constantFrom(...integrities), fc.constantFrom(...sensitivities), fc.constantFrom(...integrities), fc.constantFrom(...sensitivities), (programIntegrity, turn, minimum, maximum) => {
         useGrants(bounds(minimum, maximum));
         const program = seed({ program: CAT }, { sensitivity: "public", integrity: programIntegrity });
-        const verdict = boundary.authorize(
+        const verdict = judge(
           context({ synthesis: { sensitivity: turn } }),
           proposal(bound(`\${${String(program.seq)}.program}`), [synthesized("notes.txt")], synthesized("/work")),
         );
@@ -708,14 +739,14 @@ describe("D-046 (O-3 ruling): a grant's data_class_bounds tighten steps 3 and 5"
   });
 });
 
-describe("D-047 (O-4 ruling): every argv operand is a path that must lie in scope", () => {
+describe("D-047 (O-4 ruling; §2.7.1 v0.6 D4): every argv operand is a path that must lie in scope", () => {
   const scopedTo = (prefix: string): void => {
     grants = new GrantStore();
     grants.add(grant({ resource_scope: [{ kind: "path", prefix }] }));
     boundary = new EnforcementBoundary({ registry, grants, journal, clock: () => now });
   };
   const verdictFor = (argv: readonly string[], cwd = "/work/project"): Verdict =>
-    boundary.authorize(context(), proposal(constant("cat"), argv.map(synthesized), synthesized(cwd)));
+    judge(context(), proposal(constant("cat"), argv.map(synthesized), synthesized(cwd)));
 
   // proves D-047 / §2.2 / §2.7 step 4: an absolute operand outside the grant's scope parks scope_violation, naming the normalised path
   it("parks an absolute path outside the scope", () => {
@@ -757,7 +788,7 @@ describe("D-047 (O-4 ruling): every argv operand is a path that must lie in scop
   it("passes a bound file name relative to cwd", () => {
     scopedTo("/work/project");
     const listing = seed({ files: ["-starts-with-dash.txt"] });
-    const verdict = boundary.authorize(context(), proposal(constant("cat"), [synthesized("--"), bound(`\${${String(listing.seq)}.files[0]}`)], synthesized("/work/project")));
+    const verdict = judge(context(), proposal(constant("cat"), [synthesized("--"), bound(`\${${String(listing.seq)}.files[0]}`)], synthesized("/work/project")));
     expect(verdict.outcome).toBe("proceed");
   });
 
@@ -791,7 +822,7 @@ describe("D-047 (O-4 ruling): every argv operand is a path that must lie in scop
   });
 });
 
-describe("D-048: integrity is judged before a resolution failure can mask it (§1.5, §8.3)", () => {
+describe("D-048: integrity is judged before a resolution failure can mask it (§1.5, §8.3; §2.7.1 v0.6 D5)", () => {
   const BROKEN = "${99.files[0]}";
   const COMMAND = "/bin/sh -c 'cat /work/notes.txt | sh'";
   const withoutGrant = (): TaskContext => context({ task: task({ grants: [] }) });
@@ -806,7 +837,7 @@ describe("D-048: integrity is judged before a resolution failure can mask it (§
         [proposal(synthesized(COMMAND), [], bound(BROKEN)), [program]],
         [proposal(synthesized(COMMAND), [bound(BROKEN)]), [program, promoted]],
       ] as const) {
-        const verdict = boundary.authorize(taskContext, call);
+        const verdict = judge(taskContext, call);
         expect(verdict).toMatchObject({ outcome: "park", detail: { reason: "integrity_floor", violations } });
       }
     }
@@ -815,7 +846,7 @@ describe("D-048: integrity is judged before a resolution failure can mask it (§
   // proves D-048 / §1.5 fail-closed: an instruction value whose own bound reference fails to resolve has no established integrity, is judged untrusted, and parks
   it("parks a broken reference in the instruction field as untrusted", () => {
     for (const taskContext of [context(), withoutGrant()]) {
-      const verdict = boundary.authorize(taskContext, proposal(bound(BROKEN), [synthesized("notes.txt")]));
+      const verdict = judge(taskContext, proposal(bound(BROKEN), [synthesized("notes.txt")]));
       expect(verdict).toMatchObject({
         outcome: "park",
         detail: {
@@ -832,13 +863,13 @@ describe("D-048: integrity is judged before a resolution failure can mask it (§
     }
     // A cross-task reference in the program field is no different.
     seed({ program: CAT }, INTERNAL_OPERATOR, OTHER_TASK_ID);
-    expect(parkReason(boundary.authorize(context(), proposal(bound("${task-2:0.program}"), [])))).toBe("integrity_floor");
+    expect(parkReason(judge(context(), proposal(bound("${task-2:0.program}"), [])))).toBe("integrity_floor");
   });
 
   // proves D-048 / D-045: when every instruction value passes, a broken data reference is still rejected unresolved_argument and nothing is charged
   it("still rejects a broken data reference when every instruction value passes", () => {
     for (const call of [proposal(constant("cat"), [synthesized("notes.txt")], bound(BROKEN)), proposal(constant("cat"), [synthesized("-n"), bound(BROKEN)])]) {
-      const verdict = boundary.authorize(context(), call);
+      const verdict = judge(context(), call);
       expect(verdict).toMatchObject({ outcome: "reject", detail: { reason: "unresolved_argument", failures: [{ class: "bound", code: "unresolvable" }] } });
     }
     expect(grants.invocations("grant-1")).toBe(0);
@@ -846,7 +877,8 @@ describe("D-048: integrity is judged before a resolution failure can mask it (§
 
   // proves D-048: the rest of the call is still read when a data reference is broken, so promoted argv below its floor parks
   it("still reads the argv when the cwd reference is broken", () => {
-    const verdict = boundary.authorize(context(), proposal(constant("cat"), [synthesized("-Z")], bound(BROKEN)));
+    setUpOperandless();
+    const verdict = judge(context(), proposal(constant("cat"), [synthesized("notes.txt")], bound(BROKEN)));
     expect(verdict).toMatchObject({
       outcome: "park",
       detail: { reason: "integrity_floor", violations: [{ argument: "argv[0]", floor: "operator", integrity: "untrusted", source: { kind: "promoted_argv" } }] },
@@ -855,13 +887,13 @@ describe("D-048: integrity is judged before a resolution failure can mask it (§
 
   // proves D-048 / D-037: with the program unresolved, the argv is read against no surface, so every established argv value is held to the operator floor
   it("promotes every argv element when the program itself did not resolve", () => {
-    const verdict = boundary.authorize(context(), proposal(constant("python"), [synthesized("notes.txt")]));
+    const verdict = judge(context(), proposal(constant("python"), [synthesized("notes.txt")]));
     expect(verdict).toMatchObject({
       outcome: "park",
       detail: { reason: "integrity_floor", violations: [{ argument: "argv[0]", floor: "operator", source: { kind: "promoted_argv", reason: "no_declared_surface" } }] },
     });
     // A constant slot never fixed is not judged as untrusted: with nothing else below a floor the call is rejected (D-045).
-    expect(boundary.authorize(context(), proposal(constant("python"), [constant("work")]))).toMatchObject({ outcome: "reject", detail: { reason: "unresolved_argument" } });
+    expect(judge(context(), proposal(constant("python"), [constant("work")]))).toMatchObject({ outcome: "reject", detail: { reason: "unresolved_argument" } });
   });
 
   // proves D-048 / D-046: a grant's raised floor is judged before the rejection too
@@ -870,7 +902,7 @@ describe("D-048: integrity is judged before a resolution failure can mask it (§
     grants.add(grant({ data_class_bounds: { max_sensitivity: "secret", min_integrity: "operator" } }));
     boundary = new EnforcementBoundary({ registry, grants, journal, clock: () => now });
     const attested = seed({ program: CAT }, { sensitivity: "internal", integrity: "attested" });
-    const verdict = boundary.authorize(context(), proposal(bound(`\${${String(attested.seq)}.program}`), [bound(BROKEN)]));
+    const verdict = judge(context(), proposal(bound(`\${${String(attested.seq)}.program}`), [bound(BROKEN)]));
     expect(verdict).toMatchObject({ outcome: "park", detail: { reason: "integrity_floor", grants: [{ grant: "grant-1", violations: [{ argument: "program", floor: "operator" }] }] } });
   });
 });
@@ -901,18 +933,26 @@ describe("D-050 and D-051: scope edge cases", () => {
     });
     const scope = Grant.parse(grant());
     const call = (mounts: Record<string, string>): Parameters<typeof scopeViolations>[1] => ({ program: CAT, argv: [], cwd: "/work", mounts, labels: { a: "/etc" } });
-    expect(scopeViolations(entry, call({ data: "/work/data", etc: "/etc" }), scope)).toEqual([
+    const known = (value: Parameters<typeof scopeViolations>[1]): CanonicalPaths => lexical(scopePaths(entry, value).map((path) => path.raw));
+    expect(scopeViolations(entry, call({ data: "/work/data", etc: "/etc" }), scope, known(call({ data: "/work/data", etc: "/etc" })))).toEqual([
       { argument: 'mounts["data"]', value: "/work/data", path: "/work/data" },
       { argument: 'mounts["etc"]', value: "/etc", path: "/etc" },
     ]);
-    expect(scopeViolations(entry, call({}), scope)).toEqual([]);
+    expect(scopeViolations(entry, call({}), scope, known(call({})))).toEqual([]);
   });
 
-  // records D-051 / D-037: a flag absent from the declared surface skips the scope check only because it promotes the whole argv to instruction
+  // records D-051 / D-037 with §2.3.1 rules 5 and 6: a flag absent from the declared surface is never scope-checked, so it
+  // may never run: on cat (code-free everywhere) the call is rejected (v0.6 A5, D-108); on a surface with an undeclared
+  // operand too, every element is promoted and parks
   it("never lets an undeclared flag carry a path past scope with untrusted provenance", () => {
-    const verdict = boundary.authorize(context(), proposal(constant("cat"), [synthesized("--x=/etc/passwd")]));
-    expect(verdict).toMatchObject({ outcome: "park", detail: { reason: "integrity_floor", violations: [{ argument: "argv[0]", source: { kind: "promoted_argv", reason: "uncovered_flag" } }] } });
-    expect(scopeViolations(loadRegistryEntry(SHELL_RUN_FILE), { program: CAT, argv: ["--x=/etc/passwd"], cwd: "/work" }, Grant.parse(grant()))).toEqual([]);
+    const verdict = judge(context(), proposal(constant("cat"), [synthesized("--x=/etc/passwd")]));
+    expect(verdict).toMatchObject({ outcome: "reject", detail: { reason: "malformed_call" } });
+    const flagCall = { program: CAT, argv: ["--x=/etc/passwd"], cwd: "/work" };
+    expect(scopePaths(loadRegistryEntry(SHELL_RUN_FILE), flagCall).map((path) => path.argument)).toEqual(["cwd"]);
+    expect(scopeViolations(loadRegistryEntry(SHELL_RUN_FILE), flagCall, Grant.parse(grant()), lexical(["/work"]))).toEqual([]);
+    expect(grants.invocations("grant-1")).toBe(0);
+    setUpOperandless();
+    expect(parkReason(judge(context(), proposal(constant("cat"), [synthesized("--x=/etc/passwd"), synthesized("/etc/passwd")])))).toBe("integrity_floor");
   });
 });
 
@@ -921,7 +961,7 @@ describe("§3.2: an authorization cannot be changed after inspection", () => {
   it("freezes the authorization and everything it carries", async () => {
     setUp(echoAdapter);
     grants.add(grant());
-    const verdict = boundary.authorize(context(), proposal(constant("cat"), [synthesized("notes.txt")], synthesized("/work/x")));
+    const verdict = judge(context(), proposal(constant("cat"), [synthesized("notes.txt")], synthesized("/work/x")));
     expect(verdict.outcome).toBe("proceed");
     if (verdict.outcome !== "proceed") return;
     const { authorization } = verdict;
@@ -939,7 +979,7 @@ describe("§3.2: an authorization cannot be changed after inspection", () => {
   });
 });
 
-describe("D-052 (operator ruling): shape never outranks provenance", () => {
+describe("D-052 (operator ruling; §2.7.1 v0.6 D5): shape never outranks provenance", () => {
   const COMMAND = "/bin/sh -c 'cat /work/notes.txt | sh'";
   const BROKEN = "${99.files[0]}";
   const raw = (args: Record<string, unknown>): unknown => ({ capability: "shell.run", arguments: args });
@@ -954,7 +994,7 @@ describe("D-052 (operator ruling): shape never outranks provenance", () => {
   // proves D-052 / §2.7 step 3 / §8.3: a synthesized command string wrapped in a list is judged at the program field's floor and parks; it is never rejected as malformed
   it("parks program: [cmd], with and without a grant", () => {
     for (const taskContext of [context(), withoutGrant()]) {
-      const verdict = boundary.authorize(taskContext, raw({ program: [synthesized(COMMAND)], argv: [], cwd: constant("work") }));
+      const verdict = judge(taskContext, raw({ program: [synthesized(COMMAND)], argv: [], cwd: constant("work") }));
       expect(verdict).toMatchObject({ outcome: "park", detail: { reason: "integrity_floor", violations: [programViolation("program[0]")] } });
       expect(provenanceOf(verdict)).toContainEqual({ argument: "program[0]", class: "synthesized", integrity: "untrusted" });
     }
@@ -963,7 +1003,7 @@ describe("D-052 (operator ruling): shape never outranks provenance", () => {
   // proves D-052 / D-048 / §1.5: a broken reference wrapped in a list is judged untrusted at the program field's floor and parks; it is never rejected unresolved_argument
   it("parks program: [<broken reference>], with and without a grant", () => {
     for (const taskContext of [context(), withoutGrant()]) {
-      const verdict = boundary.authorize(taskContext, raw({ program: [bound(BROKEN)], argv: [], cwd: constant("work") }));
+      const verdict = judge(taskContext, raw({ program: [bound(BROKEN)], argv: [], cwd: constant("work") }));
       expect(verdict).toMatchObject({ outcome: "park", detail: { reason: "integrity_floor", violations: [programViolation("program[0]")] } });
       expect(provenanceOf(verdict)).toContainEqual({ argument: "program[0]", class: "bound", integrity: "untrusted" });
       expect(payloadOf(entryAt(verdict.call_seq))).toMatchObject({ unresolved: [{ argument: "program[0]", class: "bound", code: "unresolvable" }] });
@@ -972,17 +1012,17 @@ describe("D-052 (operator ruling): shape never outranks provenance", () => {
 
   // proves D-052 / D-054: maps and nesting at any depth are walked, so a wrapped instruction value is still judged, and named by where it sits
   it("judges values under the program field inside maps and nested lists", () => {
-    const verdict = boundary.authorize(context(), raw({ program: { run: [[constant("cat"), synthesized(COMMAND)]] }, argv: [], cwd: constant("work") }));
+    const verdict = judge(context(), raw({ program: { run: [[constant("cat"), synthesized(COMMAND)]] }, argv: [], cwd: constant("work") }));
     expect(verdict).toMatchObject({ outcome: "park", detail: { reason: "integrity_floor", violations: [programViolation('program["run"][0][1]')] } });
   });
 
   // proves D-054 / §1.5: a value that states no provenance has none, so under an instruction field it fails the floor even when its text is a valid program
   it("parks a bare program value that states no provenance, whatever its text", () => {
     for (const program of [CAT, COMMAND, null, 7]) {
-      const verdict = boundary.authorize(context(), raw({ program, argv: [], cwd: constant("work") }));
+      const verdict = judge(context(), raw({ program, argv: [], cwd: constant("work") }));
       expect(verdict).toMatchObject({ outcome: "park", detail: { reason: "integrity_floor", violations: [programViolation("program", null)] } });
     }
-    expect(payloadOf(entryAt(boundary.authorize(context(), raw({ program: CAT, argv: [], cwd: constant("work") })).call_seq))).toMatchObject({
+    expect(payloadOf(entryAt(judge(context(), raw({ program: CAT, argv: [], cwd: constant("work") })).call_seq))).toMatchObject({
       unprovenanced: [{ argument: "program", shape: "string" }],
     });
   });
@@ -993,14 +1033,14 @@ describe("D-052 (operator ruling): shape never outranks provenance", () => {
       { program: constant("cat"), argv: [], cwd: "/work" },
       { program: constant("cat"), argv: ["notes.txt"], cwd: constant("work") },
     ]) {
-      expect(boundary.authorize(context(), raw(args))).toMatchObject({ outcome: "reject", detail: { reason: "malformed_call" } });
+      expect(judge(context(), raw(args))).toMatchObject({ outcome: "reject", detail: { reason: "malformed_call" } });
     }
     expect(grants.invocations("grant-1")).toBe(0);
   });
 
   // proves D-052: only after every instruction value passes is a wrongly shaped proposal rejected malformed_call; an operator constant in a list passes the floor
   it("rejects a wrongly shaped proposal only when every instruction value meets its floor", () => {
-    expect(boundary.authorize(context(), raw({ program: [constant("cat")], argv: [], cwd: constant("work") }))).toMatchObject({
+    expect(judge(context(), raw({ program: [constant("cat")], argv: [], cwd: constant("work") }))).toMatchObject({
       outcome: "reject",
       detail: { reason: "malformed_call" },
     });
@@ -1012,7 +1052,7 @@ describe("D-052 (operator ruling): shape never outranks provenance", () => {
     grants.add(grant({ data_class_bounds: { max_sensitivity: "secret", min_integrity: "operator" } }));
     boundary = new EnforcementBoundary({ registry, grants, journal, clock: () => now });
     const attested = seed({ program: CAT }, { sensitivity: "internal", integrity: "attested" });
-    const verdict = boundary.authorize(context(), raw({ program: [bound(`\${${String(attested.seq)}.program}`)], argv: [], cwd: constant("work") }));
+    const verdict = judge(context(), raw({ program: [bound(`\${${String(attested.seq)}.program}`)], argv: [], cwd: constant("work") }));
     expect(verdict).toMatchObject({ outcome: "park", detail: { reason: "integrity_floor", grants: [{ grant: "grant-1", violations: [{ argument: "program[0]", floor: "operator" }] }] } });
   });
 
@@ -1029,14 +1069,14 @@ describe("D-052 (operator ruling): shape never outranks provenance", () => {
       [{ first: synthesized("-c"), second: synthesized("CODE") }, ['argv["first"]', 'argv["second"]']],
       [[[synthesized("-c"), synthesized("CODE")]], ["argv[0][0]", "argv[0][1]"]],
     ] as const) {
-      const verdict = boundary.authorize(context(), raw({ program: constant("cat"), argv, cwd: constant("work") }));
+      const verdict = judge(context(), raw({ program: constant("cat"), argv, cwd: constant("work") }));
       expect(verdict).toMatchObject({ outcome: "park", detail: { reason: "integrity_floor", violations: names.map(promoted) } });
     }
   });
 
   // proves D-054 / D-022: argument names never collide, whatever keys a proposal uses, so the record stays one entry per argument and the chain verifies
   it("names a key that is not an identifier so it cannot collide with a list element", () => {
-    const verdict = boundary.authorize(context(), raw({ program: constant("cat"), argv: [synthesized("notes.txt")], cwd: constant("work"), "argv[0]": synthesized("x") }));
+    const verdict = judge(context(), raw({ program: constant("cat"), argv: [synthesized("notes.txt")], cwd: constant("work"), "argv[0]": synthesized("x") }));
     expect(verdict).toMatchObject({ outcome: "reject", detail: { reason: "malformed_call" } });
     expect(provenanceOf(verdict)?.map((item) => item.argument)).toEqual(["program", "argv[0]", "cwd", '["argv[0]"]']);
     expect(verifyTrajectory(journal.root, TASK_ID).ok).toBe(true);
@@ -1046,9 +1086,9 @@ describe("D-052 (operator ruling): shape never outranks provenance", () => {
   it("fails closed on nesting deeper than the walk goes", () => {
     let deep: unknown = constant("cat");
     for (let level = 0; level <= MAX_ARGUMENT_DEPTH; level += 1) deep = [deep];
-    const verdict = boundary.authorize(context(), raw({ program: deep, argv: [], cwd: constant("work") }));
+    const verdict = judge(context(), raw({ program: deep, argv: [], cwd: constant("work") }));
     expect(verdict).toMatchObject({ outcome: "park", detail: { reason: "integrity_floor", violations: [{ floor: "attested", integrity: null }] } });
-    expect(boundary.authorize(context(), raw({ program: constant("cat"), argv: [], cwd: constant("work"), extra: deep }))).toMatchObject({
+    expect(judge(context(), raw({ program: constant("cat"), argv: [], cwd: constant("work"), extra: deep }))).toMatchObject({
       outcome: "reject",
       detail: { reason: "malformed_call" },
     });
@@ -1094,7 +1134,7 @@ describe("D-052 (operator ruling): shape never outranks provenance", () => {
         if (cwdValue !== undefined) args["cwd"] = cwdValue;
         if (extraValue !== undefined) args[extraValue.name] = extraValue.value;
         const taskContext = context({ task: task({ id, trajectory: id, grants: hasGrant ? ["grant-1"] : [] }) });
-        const verdict = boundary.authorize(taskContext, raw(args));
+        const verdict = judge(taskContext, raw(args));
         expect(verdict.outcome).toBe("park");
         expect(parkReason(verdict)).toBe("integrity_floor");
         expect(verifyTrajectory(journal.root, id).ok).toBe(true);
@@ -1119,7 +1159,7 @@ describe("D-048 as amended (operator ruling): a missing program means no declare
   it("parks a synthesized -c with a broken cwd and no program, with and without a grant", () => {
     for (const taskContext of [context(), context({ task: task({ grants: [] }) })]) {
       for (const cwd of [bound(BROKEN), constant("work")]) {
-        const verdict = boundary.authorize(taskContext, { capability: "shell.run", arguments: { argv: [synthesized("-c"), synthesized("CODE")], cwd } });
+        const verdict = judge(taskContext, { capability: "shell.run", arguments: { argv: [synthesized("-c"), synthesized("CODE")], cwd } });
         expect(verdict).toMatchObject({ outcome: "park", detail: { reason: "integrity_floor", violations: [promoted("argv[0]"), promoted("argv[1]")] } });
       }
     }
@@ -1157,7 +1197,7 @@ describe("D-053 (operator ruling): the adapter's planned command is copied exact
     const reads: Reads = { file: 0, args: 0 };
     setUp(shiftingAdapter(reads, true));
     grants.add(grant());
-    const verdict = boundary.authorize(context(), proposal(constant("cat"), [synthesized("notes.txt")], synthesized("/work/x")));
+    const verdict = judge(context(), proposal(constant("cat"), [synthesized("notes.txt")], synthesized("/work/x")));
     expect(verdict.outcome).toBe("proceed");
     if (verdict.outcome !== "proceed") return;
     const expected = { file: process.execPath, args: ["-e", ECHO, "/work/x", "notes.txt"] };
@@ -1174,12 +1214,116 @@ describe("D-053 (operator ruling): the adapter's planned command is copied exact
     const reads: Reads = { file: 0, args: 0 };
     setUp(shiftingAdapter(reads, false));
     grants.add(grant());
-    const verdict = boundary.authorize(context(), proposal(constant("cat"), [synthesized("notes.txt")], synthesized("/work/x")));
+    const verdict = judge(context(), proposal(constant("cat"), [synthesized("notes.txt")], synthesized("/work/x")));
     expect(verdict).toMatchObject({
       outcome: "park",
       detail: { reason: "adapter_quarantined", invocation: { file: process.execPath, args: ["-e", SWAPPED, "sh", "-c", "cat notes.txt"] } },
     });
     expect(reads).toEqual({ file: 1, args: 1 });
     expect(grants.invocations("grant-1")).toBe(0);
+  });
+});
+
+describe("§2.3.1 rule 6 (v0.6, A5): an undeclared flag on a code-free program is a rejection", () => {
+  /** A test-only registry serving `forced` as if review had accepted it (as §18 test 4b does, D-067). */
+  const serveForced = (forced: RegistryEntry): void => {
+    class ForcedRegistry extends CapabilityRegistry {
+      override entry(id: string): RegistryEntry | undefined {
+        return id === forced.capability.id ? forced : super.entry(id);
+      }
+      override capability(id: string): RegistryEntry["capability"] | undefined {
+        return id === forced.capability.id ? forced.capability : super.capability(id);
+      }
+    }
+    registry = new ForcedRegistry();
+    expect(registry.register(loadRegistryEntry(SHELL_RUN_FILE), [workloadAdapter()]).registered).toBe(true);
+    boundary = new EnforcementBoundary({ registry, grants, journal, clock: () => now });
+  };
+
+  // proves §2.3.1 rule 6 / §2.7.1 A4: `cat -c x` is a malformed_call rejection: nothing runs, no grant is charged, and it is journalled
+  it("rejects cat -c x as malformed_call, running nothing", () => {
+    const verdict = judge(context(), proposal(constant("cat"), [synthesized("-c"), synthesized("x")]));
+    expect(verdict).toMatchObject({ outcome: "reject", detail: { reason: "malformed_call", message: expect.stringContaining("argv[0]") } });
+    expect(entryAt(verdict.call_seq).kind).toBe("capability_call");
+    expect(payloadOf(entryAt(verdict.call_seq))).toMatchObject({ verdict: { outcome: "reject", reason: "malformed_call" } });
+    expect(grants.invocations("grant-1")).toBe(0);
+  });
+
+  // proves §2.3.1 rule 6 with §2.7.1 D5: a rejection never outranks an instruction value below its floor: a synthesized program still parks
+  it("still parks a synthesized program, whatever flag follows it", () => {
+    expect(parkReason(judge(context(), proposal(synthesized(CAT), [synthesized("-c"), synthesized("x")])))).toBe("integrity_floor");
+  });
+
+  // proves §2.3.1 rule 5: on a surface with any code-bearing position, the same undeclared flag promotes every element and parks
+  it("parks cat -c x when cat's surface has a code-bearing position", () => {
+    const entry = loadRegistryEntry(SHELL_RUN_FILE);
+    serveForced(
+      RegistryEntry.parse({
+        ...entry,
+        program_surfaces: entry.program_surfaces.map((surface) =>
+          surface.program === CAT ? { ...surface, positions: [...surface.positions, { position: { kind: "flag", flag: "--hook" }, executes_code: true }] } : surface,
+        ),
+      }),
+    );
+    const verdict = judge(context(), proposal(constant("cat"), [synthesized("-c"), synthesized("x")]));
+    expect(verdict).toMatchObject({ outcome: "park", detail: { reason: "integrity_floor", violations: [{ argument: "argv[0]", source: { reason: "uncovered_flag" } }, { argument: "argv[1]" }] } });
+  });
+
+  // proves §2.3.1 rules 5 and 6: a listed interpreter with an undeclared flag still parks (it is never read as code-free)
+  it("parks a listed interpreter with an undeclared flag", () => {
+    const entry = loadRegistryEntry(SHELL_RUN_FILE);
+    const program = entry.capability.interface["program"];
+    if (program?.type.kind !== "enum") throw new Error("program is not an enum");
+    serveForced(
+      RegistryEntry.parse({
+        ...entry,
+        capability: { ...entry.capability, interface: { ...entry.capability.interface, program: { ...program, type: { kind: "enum", values: [...program.type.values, "/bin/sh"] } } } },
+        program_surfaces: [
+          ...entry.program_surfaces,
+          { program: "/bin/sh", positions: [{ position: { kind: "flag", flag: "-c" }, executes_code: true }, { position: { kind: "operand" }, executes_code: false }] },
+        ],
+      }),
+    );
+    const verdict = judge(context(), proposal(constant("sh"), [synthesized("-Z"), synthesized("x")]));
+    expect(verdict).toMatchObject({ outcome: "park", detail: { reason: "integrity_floor" } });
+  });
+});
+
+describe("§2.7.1 C4 (v0.6): step 4 judges canonical paths", () => {
+  // proves §2.7.1 C4 / D-113: a path the caller did not resolve has no canonical form, so it is outside every scope (fail-closed)
+  it("parks scope_violation when no canonical form was given", () => {
+    const verdict = boundary.authorize(context(), proposal(constant("cat"), [synthesized("notes.txt")]));
+    expect(verdict).toMatchObject({ outcome: "park", detail: { reason: "scope_violation" } });
+    const outside = verdict.outcome === "park" && verdict.detail.reason === "scope_violation" ? verdict.detail.grants[0]?.outside : [];
+    expect(outside).toEqual(expect.arrayContaining([expect.objectContaining({ argument: "argv[0]", unresolved: "not resolved" })]));
+  });
+
+  // proves §2.7.1 C4: a symlink inside the scope that resolves outside it parks, and the park names the canonical path judged
+  it("parks a path whose canonical form leaves the scope", () => {
+    const input = proposal(constant("cat"), [synthesized("link-to-etc/passwd")]);
+    const paths = boundary.pathsToResolve(context(), input);
+    expect(paths).toEqual(expect.arrayContaining(["/work/link-to-etc/passwd"]));
+    const canonical: CanonicalPaths = new Map([...lexical(paths), ["/work/link-to-etc/passwd", { ok: true, canonical: "/etc/passwd" }]]);
+    const verdict = boundary.authorize({ ...context(), canonical }, input);
+    expect(verdict).toMatchObject({ outcome: "park", detail: { reason: "scope_violation", grants: [{ outside: [{ argument: "argv[0]", value: "link-to-etc/passwd", path: "/etc/passwd" }] }] } });
+  });
+
+  // proves §2.7.1 "cannot be resolved": a path the resolver could not resolve parks, with its reason recorded
+  it("parks a path the resolver could not resolve, recording why", () => {
+    const input = proposal(constant("cat"), [synthesized("loop/x")]);
+    const canonical: CanonicalPaths = new Map([...lexical(boundary.pathsToResolve(context(), input)), ["/work/loop/x", { ok: false, reason: "cannot be resolved: ELOOP" }]]);
+    expect(boundary.authorize({ ...context(), canonical }, input)).toMatchObject({
+      outcome: "park",
+      detail: { reason: "scope_violation", grants: [{ outside: [{ argument: "argv[0]", unresolved: "cannot be resolved: ELOOP" }] }] },
+    });
+  });
+
+  // proves D-113: the pre-pass names the same raw paths step 4 judges (cwd joined, `..` not collapsed) and writes nothing
+  it("names the raw paths without writing to the journal", () => {
+    const seq = seed({ stdout_lines: ["sub/../x"] });
+    const before = entries().length;
+    const paths = boundary.pathsToResolve(context(), proposal(constant("cat"), [bound(`\${${String(seq.seq)}.stdout_lines[0]}`), synthesized("/work/abs")]));
+    expect(paths.sort()).toEqual(["/work", "/work/abs", "/work/sub/../x"]);
+    expect(entries()).toHaveLength(before);
   });
 });

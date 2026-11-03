@@ -1014,3 +1014,166 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
 - Applies to: PR #30 only
 - Decision: one fourth review round. If it says MERGE and CI `verify` on the exact head has passed, the agent merges PR #30 pinned to that head and starts Increment 1. If it says DO NOT MERGE, the agent stops and reports.
 - Reason: the operator's instruction.
+
+## D-107 — How the rejection limit is recorded and counted (Slice 1.5 Increment 1, A4)
+- Date: 2026-11-03
+- Status: Accepted (implementation record; each point follows from §2.7.1 v0.6.1 and D-102, or is the more restrictive reading)
+- Applies to: Slice 1.5 Increment 1 onward
+- Decision:
+  - **Where the limit lives.** The admission request takes `rejection_limit` (an integer 1 to 10, default 3; anything else fails admission's schema check). The journalled admission note records it, so a rebuilt task uses the same limit. A journal written before v0.6 has no such field and gets the default, 3. The `Task` object (§3.1) is unchanged.
+  - **What counts.** Each rejected call the executing model proposed, one by one, including several in one turn; and each turn the runner cannot read, as one (D-102). A call the verifier makes during verification is not the model's and never counts.
+  - **What resets.** A call that proceeds; any park (the task stops, and §2.7.1 says a park resets); resume. An unreadable turn never resets.
+  - **The park.** `rejection_limit`, overridable (§6.2). The park entry names the limit and each counted rejection in order (`{kind: "call" | "unreadable_turn", seq}`); for a rejected call it also names the call and lists the turn's calls not acted on, as other parks do.
+- Reason: §2.7.1, §6.2, D-102. Proven by `packages/runner/test/rejection-limit.test.ts`.
+
+## D-108 — A5: an undeclared flag on a code-free program is a rejection; the tests that pinned v0.5.1's promotion changed (Slice 1.5 Increment 1)
+- Date: 2026-11-03
+- Status: Accepted (implementation record of §2.3.1 rule 6, v0.6 A5; the test changes follow a specification change, not a weakening)
+- Applies to: Slice 1.5 Increment 1 onward
+- Decision:
+  - `argvRoles` (`packages/contracts/src/promotion.ts`) reads the whole argv. When every undeclared element is a flag, the program's surface marks every position code-free, and the program is not on the §2.3 list, every element stays `data` and the first undeclared flag is named (`undeclaredFlag`). Otherwise anything undeclared promotes every element, as before (rule 5). An undeclared operand anywhere still promotes, so a park is never turned into a retryable rejection (§2.7.1 D5).
+  - The enforcement boundary rejects such a call as `malformed_call`, after step 3 has passed and with the other rejections, before the grant check. Nothing runs and no grant is charged. The rejection counts toward the rejection limit (§2.7.1, D-107).
+  - An undeclared `--` is an undeclared flag like any other.
+- **Tests changed because the specification changed** (v0.5.1/D-036: an undeclared cat flag promoted every element; v0.6 §2.3.1 rule 6: it is a rejection). Each keeps or strengthens what it proved:
+  - `packages/registry/test/promotion.test.ts`, "parks cat %j with every element promoted" → "names cat %j's undeclared flag for rejection and promotes nothing": now asserts no promotion, the floors pass, and the flag is named for rejection (plus `-c cat`). Rule 5 on a listed interpreter is kept by a new case, sh with an undeclared flag still promotes every element.
+  - `packages/contracts/test/promotion.test.ts`, "reads tokens after a declared --": the undeclared `--` case now asserts both readings, promotion on a surface with a code-bearing position and rejection on a code-free one. Three exact-shape assertions gain `undeclaredFlag: null`.
+  - `packages/enforcement/test/enforcement.test.ts`: three tests used an undeclared cat flag only to obtain promoted argv (D-038 step 3, D-046 raised floor, D-048 broken cwd reference). They now obtain it from a variant cat surface with no operand position, so an operand promotes every element (rule 5), and assert the same parks. The D-051 test ("never lets an undeclared flag carry a path past scope") now asserts the call is rejected, nothing is charged, and with an undeclared operand present it still parks.
+  - New tests: `packages/contracts/test/promotion.test.ts` (rule 6 block), `packages/enforcement/test/enforcement.test.ts` ("§2.3.1 rule 6": `cat -c x` rejected and journalled; a synthesized program still parks; a code-bearing surface still parks; a listed interpreter still parks), `packages/runner/test/rejection-limit.test.ts` (the model recovers; repeats park `rejection_limit`).
+- Reason: §2.3.1 rules 5 and 6, §2.7.1. CLAUDE.md §2 rule 5: no test was weakened; each changed assertion follows the specification's change and is recorded here.
+
+## D-109 — A2: how an untrusted scope violation is found, recorded and cleared (Slice 1.5 Increment 1)
+- Date: 2026-11-03
+- Status: Accepted (implementation record of §8.2 A2 and §6.2; the readings below are the spec's words or the more restrictive reading, autopilot ruling under CLAUDE.md §7 step 3; §8.2 is outside §2, §3.2 and §4.3)
+- Applies to: Slice 1.5 onward
+- Decision:
+  - **"Caused by an `untrusted` value"** means the out-of-scope value's integrity is `untrusted`, or has no established integrity (judged `untrusted`, §1.5). The spec names the level, so `derived` and above are not included. A relative argv operand is read against the call's `cwd` (§2.7.1 D4), so its cause is the lower of the operand's and `cwd`'s integrity; an absolute operand is its own cause. A path in a map field (D-050) has no recorded integrity of its own and counts as `untrusted`.
+  - **Mixed values:** if any out-of-scope value of the call is untrusted, the rule applies to the park.
+  - **Recorded:** the boundary's `scope_violation` detail lists the untrusted out-of-scope arguments (`untrusted`). The runner's park entry records `overridable: false`, `remedy: "grant"` and the capability. Other parks record `overridable` as before and no `remedy`.
+  - **Cleared:** a plain resume is refused, and the task is left unchanged. A resume succeeds only when the task's grants after the resume include a usable grant for the parked capability (valid, unexpired, unrevoked, with invocations left) whose path scope covers **every** out-of-scope path the park recorded, untrusted or not. That is the more restrictive reading of "issue or widen a Grant, then resume". The parked call is not replayed: the model is told it parked and retries it, and the retry is judged again.
+  - **Old journals:** a park recorded before v0.6 has no `remedy`. Its recorded `overridable` is honoured fail-closed: a park recorded `overridable: false` is never resumed unless its remedy is `grant`.
+- Reason: §8.2 ("Override is not offered. The remedy is to issue or widen a Grant (§3.2), then resume"), §6.2. Proven by `packages/runner/test/scope-override.test.ts`.
+
+## D-110 — A3: what a park records as the source of each value that caused it (Slice 1.5 Increment 1)
+- Date: 2026-11-03
+- Status: Accepted (implementation record of §11.1 A3 and V6-8; where the text leaves a choice, the reading that lists more is taken, as an autopilot ruling under CLAUDE.md §7 step 3; §11.1 is outside §2, §3.2 and §4.3)
+- Applies to: Slice 1.5 onward
+- Decision: every park the enforcement boundary produces (in the turn loop, at verification, and for the protected-path listing) records `sources`: one item per value that caused it, each with its argument, provenance class, integrity and source:
+  - **Which values caused it:**
+    - `integrity_floor`: every value below its floor or below a candidate grant's raised floor;
+    - `scope_violation`: every out-of-scope value, over every candidate grant;
+    - `sensitivity_ceiling`: every argument above the ceiling that was exceeded (the capability's own when the aggregate exceeds it, else the lowest candidate grant's). When none is above it, the composing context raised the class, so every argument is listed;
+    - parks no value causes (`awaiting_grant`, `adapter_quarantined`, and the runner's own parks) list none.
+  - **The source:**
+    - `bound`: the entry it was bound to, and the `binding_resolution` entry that recorded the binding;
+    - `constant`: the admission entry and the slot;
+    - `synthesized`: `possible_sources`, the untrusted entries in the model's context since the last context item of `operator` integrity. For each, it names the entry the content came from (the `capability_result` for a tool result, else the context note) and the context note itself. The model's own turns are not listed: they are what it composed. No contents are compared (invariant 7);
+    - a value with no established integrity (an unresolved reference, or a value stating no provenance) is listed as `untrusted` with that reason.
+  - Each context item now keeps the `seq` of the note that recorded it, also on rebuild.
+- Reason: §11.1 ("for every value that caused the park, the journal entry it came from … for a synthesized value … the untrusted entries in the model's context since the last operator input, as possible sources"). Proven by `packages/runner/test/park-sources.test.ts`. There is no approval interface yet (CLAUDE.md rule 9); this is the park record only.
+
+## D-111 — B1: constants are fixed per actor; the Slice 1.2 test that pinned the old behaviour is replaced by a stricter one (Slice 1.5 Increment 1)
+- Date: 2026-11-03
+- Status: Accepted (implementation record of §2.6 v0.6 B1; the test change follows the specification's change)
+- Applies to: Slice 1.5 onward
+- Decision:
+  - The admission request's constants take `actors`, a non-empty list without repeats drawn from `executing` and `verifier`; the default is `["executing"]`. The operator fixes a value for both actors only by listing both.
+  - Every slot admission fixes from the criterion (its command, arguments, protected-path listing) is fixed for `verifier` only.
+  - The runner passes the enforcement boundary only the constants fixed for the calling actor. The model's calls are `executing`; the criterion check and the protected-path listings are `verifier`. A slot of another actor is unknown to the boundary, so naming one is an unresolved reference (`unknown_slot`), a rejection (§2.7.1) that counts toward the rejection limit (D-107). Step 3 still runs first, so a verifier slot named in an instruction field cannot turn a park into a rejection (§2.7.1 D5).
+  - The executing model is offered only constants fixed for `executing` (D-075 unchanged otherwise).
+  - A journal written before v0.6 records no actors: a `criterion.` slot reads as `verifier`, every other constant as `executing`, which is the fail-closed reading of what Slice 1 meant.
+- **Test change** (the build plan requires it to have its own D-number and to be stricter): `packages/runner/test/runner.test.ts`, "still resolves a verifier slot the model names (objection for spec v0.6)", asserted that the model's call naming `criterion.program`, `criterion.argv.0` and `criterion.cwd` proceeded as an operator constant. Under v0.6 that is the defect B1 fixes. It is replaced by "rejects a verifier slot the model names as an unresolved reference", which asserts:
+  - the model's call is rejected `unresolved_argument`, with `unknown_slot` for each of the three arguments;
+  - the model is told so;
+  - nothing it proposed runs;
+  - the verifier's own call still resolves the same slots and proceeds.
+
+  The old test was also weaker than its name: once the model's call was rejected, its lookup matched the verifier's call. The new test separates the two. Two tests are added: a value fixed for both actors resolves for both, and one fixed for the verifier only is neither offered to nor resolvable by the model; admission refuses an empty, repeated or unknown actor.
+- Reason: §2.6 ("A `constant` source resolves only in calls made by the actor it was fixed for … naming one is an unresolved reference"); CLAUDE.md §2 rule 5.
+
+## D-112 — B2: how verification inputs are pinned; "verification scope" defined; D-067's listing comparison replaced (Slice 1.5 Increment 1)
+- Date: 2026-11-03
+- Status: Accepted (implementation record of §3.4.4 B2 and V6-1, with D-097; autopilot rulings marked below, CLAUDE.md §7 step 3. The provenance of the hashed file names follows from §2.6 and §5.1, quoted below. A reviewer who reads it as a new §2 ambiguity should raise it for the operator.)
+- Applies to: Slice 1.5 onward
+- Decision:
+  - **Criterion fields.** The criterion takes `outputs` (never pinned) and `verification_inputs` (pinned, or pinned as absent), both work paths, default empty.
+  - **Verification scope (D-097's term; autopilot ruling, the restrictive reading).** It is the directory the criterion's command runs in (its `cwd` field), plus each protected path. A root inside another is listed through it.
+  - **What is pinned.** Every path in the scope that is not within a declared output:
+    - each entry's type and mode;
+    - each regular file's SHA-256;
+    - each symlink's target;
+    - the set of paths itself, so a new or removed path is a change.
+
+    A directory's size and every timestamp are not compared: a directory's size changes when an output is created in it, and its contents are compared entry by entry.
+  - **Admission refuses:**
+    - an output or input outside the scope;
+    - an output overlapping a protected path or an input;
+    - a scope root no task grant lets the verifier list;
+    - a registry without `ls` and `sha256sum` in `shell.run`.
+  - **Mechanism.** Before the first turn (§5.1: admission records the pins), and again at closure after the criterion's command passes:
+    - the verifier runs `ls -l -a -R -n --time-style=full-iso --quoting-style=escape -- <roots>`, then `sha256sum -z -- <files>` in batches of 100, both through `shell.run` and the boundary;
+    - escape quoting makes the listing unambiguous (checked on the workload's coreutils 9.1);
+    - a name that cannot be decoded, a line of another shape, a missing root, more than 10,000 entries, or more than 2,000 files to hash means no pins: the task fails (`protected_listing_failed` when the listing did not run cleanly, `verification_pins_failed` otherwise). It is never skipped.
+  - **Result.** At closure, any changed path (added, removed, different type, mode, hash or target), or a hash that cannot be computed on either side, makes `verified` impossible. The task fails `verification_fail`, and the verification note records `inputs`, `protected_paths` and `changed_paths`. Symlinks are never hashed, since their target may lie outside the scope.
+  - **The hashed files' names.** They are found by the admission listing and fixed then as verifier constants, one slot each (`criterion.pin.file.<n>`), with the listing result's class (integrity `untrusted`, since they are names from the workspace; they are data operands). They are journalled (`pin_files`) so a rebuilt task hashes the same files. Basis:
+    - §2.6 counts "a Strategy template slot filled by the runtime" as `constant`;
+    - §5.1 says admission records the pins;
+    - B1 keeps them the verifier's alone.
+
+    The program, flags and cwd of both calls are criterion constants fixed at admission for the verifier.
+  - **Registry and image.** `sha256sum` joins the `shell.run` enum, with a code-free surface (`-z`, `--zero`, `--`, operands); the workload image copies `/usr/bin/sha256sum` (libc only). It is never offered to the executing model (B1); a model naming it by a literal or a bound value is held to the instruction floor and parks. `ls` gains `--quoting-style=escape`. This is a change to an operator-authored trust root (§2.5): drafted by the agent, it becomes operator-authored when the operator reviews and merges it (as D-035).
+  - **Replaces D-067's listing comparison**, which a write that kept size and mtime could pass.
+- **Tests changed** because the mechanism changed, each recorded here:
+  - `packages/runner/test/runner.test.ts`:
+    - "verifies by running the criterion's command" now expects three verifier calls (command, listing, hash), the hashed names at the listing's integrity, and `inputs: "unchanged"`;
+    - "fails verification when the protected paths' listing changed" faked a change with a stand-in "generation". It now rewrites a protected file at the same size, which is stricter, and asserts the changed path;
+    - two B1 tests now exclude the verifier's calls by the call seqs its notes record, not by position.
+  - `packages/runner/test/admission.test.ts`: the narrow-grant refusal is now D-112's check (it was D-057's); the refusal is unchanged.
+  - `test/acceptance/acceptance.test.ts`: the model-results helper also excludes the hash calls.
+  - `test/containers/runner.test.ts`: the call order now includes the hash calls; it asserts the real `ls` and `sha256sum` output (escape-quoted header, three hashed files, identical hashes at admission and closure, `inputs: "unchanged"`).
+  - The unit tests' stand-in workload now emulates `ls` (escape style) and `sha256sum -z` over a per-harness host directory standing for `/work`; the real programs are proven by the container tests.
+- New tests:
+  - `packages/runner/test/pins.test.ts`: the readings, on a real `ls` fixture;
+  - `packages/runner/test/pins-runner.test.ts`: outputs allowed; a new non-output file, a created absent input, a same-size change and an unhashable file each fail; admission refusals;
+  - `packages/runner/test/resume.test.ts`: a rebuilt task is checked against the pins taken before the restart. This test found, and now guards, a bug where the rebuild lost the pinned file list;
+  - `test/containers/registry.test.ts`: `sha256sum` runs in the workload, owned by root.
+- Reason: §3.4.4 ("At admission the runner records a content hash of every verification input and every protected path … A file the method reads that is in neither set is treated as an input … A hash that cannot be computed counts as changed"), §5.1, §2.6, D-097.
+
+## D-113 — C4: canonical scope; resolution in the workload; D-047's residual closed (Slice 1.5 Increment 1)
+- Date: 2026-11-03
+- Status: Accepted (implementation record of §2.7.1 "Data fields and scope" (v0.6 C4) and "Paths that do not exist yet" (v0.6.1 V6-2). Every rule below is the spec's text applied; where an implementation choice was needed it is the fail-closed one.)
+- Applies to: Slice 1.5 onward
+- Decision:
+  - **What is judged.** Step 4 judges each path-typed data value and each argv operand (by the D-037 reading) on its canonical form. A path in a map field still always fails (D-050). The raw path is absolute as given, or `cwd` + `/` + operand, with nothing collapsed. One function (`scopePaths`) lists the raw paths for both the caller's resolution and step 4, so they cannot judge different paths.
+  - **Where it is resolved.** Where the effect runs: an operator-fixed program, the workload image's own node (`/nodejs/bin/node`) running `RESOLVER_SCRIPT`, in a fresh workload container with the same isolation as every call. It is not in any capability's program enum, so the model cannot name it. It uses libc `realpath(3)` (`fs.realpathSync.native`), so `..` is resolved physically after a symlink, as the kernel does.
+  - **The boundary stays synchronous.** The runner asks the boundary for the paths a proposal names (`pathsToResolve`: reads exactly as `authorize` does, writes nothing), resolves them, and passes the answers in the task context. A path missing from the answers, or answered "cannot be resolved", is outside every scope, and the park records why (`unresolved`). The runner requires a resolver (`RunnerOptions.resolver`).
+  - **Paths that do not exist yet.** They resolve through the longest existing ancestor, whose canonical form must lie in the workload's `/work` view. The missing remainder must hold no `..` and no empty component (so a trailing `/` on a missing path is refused), and its first component must not exist as an entry `realpath` could not follow (a dangling symlink). `.` components are dropped, since the spec does not forbid them.
+  - **Cannot be resolved:** a symlink loop (`ELOOP`), a permission error, a canonical form outside `/work`, a remainder failing the conditions above, a resolver that did not run or whose output cannot be read.
+  - Unit tests resolve with the same script over the stand-in's host `/work`. The enforcement unit tests resolve lexically, as if the content held no symlinks (the old judgement), except the C4 cases, which supply canonical forms explicitly.
+- Closes D-047's accepted residual (a symlink in the work content reaching outside the scope).
+- Tests:
+  - `packages/enforcement/test/canonical.test.ts`: the script on a real host tree, covering existing paths, chains, escapes, `..` after a symlink, a loop, new paths, refused remainders and fail-closed answers;
+  - `packages/enforcement/test/enforcement.test.ts`, "§2.7.1 C4": no canonical form parks; a canonical form outside parks with the path judged; an unresolvable path parks with its reason; the pre-pass writes nothing;
+  - `test/containers/canonical.test.ts` (real workload):
+    - parks: a symlink leaving the scope, a symlink loop, and missing remainders with `..` or an empty component;
+    - proceeds: an in-scope chain, and a new path under an in-scope ancestor.
+  - `scopeViolations` now takes the canonical answers. The three direct calls in `enforcement.test.ts` pass them, with the same assertions.
+- Reason: §2.7.1 ("Scope is judged on the canonical form … with symlinks resolved against the volume the effect will touch. A path that cannot be resolved is outside scope"; "A missing path is resolved through its longest existing ancestor … never mere non-existence").
+
+## D-114 — PR #31 review round 1 fixes: A2 on the verifier's own calls; the verification scope includes the paths the criterion names (Slice 1.5 Increment 1)
+- Date: 2026-11-03
+- Status: Accepted (fixes of two review findings; the restrictive readings, autopilot rulings under CLAUDE.md §7 step 3)
+- Applies to: Slice 1.5 onward; amends D-109 and D-112
+- Decision:
+  - **A2 on every boundary park (amends D-109).** The criterion check, the pin listing and the pin hashing are verifier calls. Their parks now go through the same rule as the model's (`#boundaryPark`): a `scope_violation` with an untrusted value records `overridable: false` and `remedy: "grant"`, and a plain resume is refused. Before, only the model's own calls did. The review's probe: a pinned input replaced by a symlink leading out of the volume, then a claim of done. It parked `pin_check` as overridable and accepted a plain resume.
+  - **A grant remedy applies to `scope_violation` only.** A park of any other reason recorded not overridable is never resumed, whatever remedy it names.
+  - **A parked path with no canonical form is resolved again on resume** (§2.7.1 C4). A grant covers only a canonical path, so a path that still cannot be resolved is never covered and the resume is refused. Once it resolves inside a grant the task holds, the resume is taken.
+  - **Verification scope (amends D-112; the restrictive reading).** It now also includes every path the criterion's command names: its path-typed data values and argv operands, normalised, by the reading step 4 uses. A declared output is excluded. §3.4.4: "a file the method reads that is in neither set is treated as an input"; the command visibly reads them.
+    - A named path inside another root is listed through it.
+    - One that does not exist at admission makes the pin listing fail, so the task fails before its first turn. A file the task is to create belongs in `outputs`.
+    - A named path outside every task grant cannot be pinned, so admission refuses to license `verified`.
+    - The review's probe: a criterion `cat /work/project/data/expected.txt` run in `/work/project/sub` closed `verified` after the task rewrote that file.
+- **Test change:** `packages/runner/test/runner.test.ts`, "hides an instruction value that appears among the criterion's data values". It used a criterion reading `/usr/bin/ls`, which is now refused at admission (it cannot be pinned); the test asserts that refusal. It proves its property (D-087 hides an instruction value inside a data value) with `/work/project/usr/bin/ls`, which carries the same instruction value inside the work content. Its assertions are unchanged.
+- New tests, in `packages/runner/test/pins-runner.test.ts`, "review fixes (D-114)":
+  - a file the criterion reads outside its cwd is pinned and its change fails verification;
+  - the verifier's untrusted scope violation records remedy `grant` and refuses a plain resume, and the resume is taken once the path resolves inside the grant.
+- Reason: §8.2, §3.4.4, §2.7.1; review round 1 of PR #31.

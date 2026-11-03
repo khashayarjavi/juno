@@ -2,7 +2,7 @@
   "capability": {
     "id": "shell.run",
     "interface": {
-      "program": { "type": { "kind": "enum", "values": ["/usr/bin/cat", "/usr/bin/ls"] }, "role": "instruction" },
+      "program": { "type": { "kind": "enum", "values": ["/usr/bin/cat", "/usr/bin/ls", "/usr/bin/sha256sum"] }, "role": "instruction" },
       "argv": { "type": { "kind": "list", "items": { "kind": "string" } }, "role": "data" },
       "cwd": { "type": { "kind": "path" }, "role": "data" }
     },
@@ -67,9 +67,19 @@
         { "position": { "kind": "flag", "flag": "-t" }, "executes_code": false },
         { "position": { "kind": "flag", "flag": "--time-style=full-iso" }, "executes_code": false },
         { "position": { "kind": "flag", "flag": "--full-time" }, "executes_code": false },
+        { "position": { "kind": "flag", "flag": "--quoting-style=escape" }, "executes_code": false },
         { "position": { "kind": "flag", "flag": "-p" }, "executes_code": false },
         { "position": { "kind": "flag", "flag": "--help" }, "executes_code": false },
         { "position": { "kind": "flag", "flag": "--version" }, "executes_code": false },
+        { "position": { "kind": "flag", "flag": "--" }, "executes_code": false },
+        { "position": { "kind": "operand" }, "executes_code": false }
+      ]
+    },
+    {
+      "program": "/usr/bin/sha256sum",
+      "positions": [
+        { "position": { "kind": "flag", "flag": "-z" }, "executes_code": false },
+        { "position": { "kind": "flag", "flag": "--zero" }, "executes_code": false },
         { "position": { "kind": "flag", "flag": "--" }, "executes_code": false },
         { "position": { "kind": "operand" }, "executes_code": false }
       ]

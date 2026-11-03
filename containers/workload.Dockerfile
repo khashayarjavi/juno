@@ -17,6 +17,9 @@ FROM gcr.io/distroless/nodejs22-debian12:nonroot@sha256:13593b7570658e8477de39e2
 COPY --from=programs /usr/bin/cat /usr/bin/cat
 # /usr/bin/ls, the discovery program acceptance test 3 needs (D-029's forward record, D-067).
 COPY --from=programs /usr/bin/ls /usr/bin/ls
+# /usr/bin/sha256sum, the verifier's hashing program for verification-input pins (spec §3.4.4 B2, D-112).
+# It needs only libc. It is in the shell.run enum but never offered to the executing model: its constant is the verifier's (§2.6 B1).
+COPY --from=programs /usr/bin/sha256sum /usr/bin/sha256sum
 COPY --from=programs /libstage/ /
 
 # The work-vol mount point, owned by the workload user. A new named volume

@@ -8,7 +8,7 @@ import { RunnerLockError } from "../src/lock.js";
 import type { ProviderRequest } from "../src/provider.js";
 import { explainTask } from "../src/explain.js";
 import { HIDDEN_VALUE, MAX_UNREAD_CHARS, REGISTRY_RECORD, RUNNER_ACTOR, Runner, VERIFIER_ACTOR, unreadText } from "../src/runner.js";
-import { CAT, DAY_MS, type Harness, OPERATOR_CRITERION, PRINCIPAL, PROFILE, SHELL_RUN_FILE, harness, request, shellRun, standInAdapter, turn } from "./helpers.js";
+import { CAT, DAY_MS, type Harness, OPERATOR_CRITERION, PRINCIPAL, PROFILE, SHELL_RUN_FILE, harness, request, shellRun, standInAdapter, turn, writeWork } from "./helpers.js";
 
 let h: Harness;
 beforeEach(() => {
@@ -175,12 +175,16 @@ describe("verification and closure (§3.4.4, §6.1)", () => {
     });
     // The closure entry is the runner's, never a model turn.
     expect(entries.filter((entry) => entry.kind === "note" && h.payload(entry)["type"] === "closure").map((entry) => entry.actor)).toEqual([RUNNER_ACTOR]);
-    // The verification command, then the protected-path listing (D-057), ran as constants fixed by the criterion, at operator integrity.
+    // The verification command, then the pin listing and hashing (D-057, D-112), ran as verifier constants: the criterion's
+    // at operator integrity; the hashed files' names, found by the admission listing, at that listing's integrity (§2.6, D-112).
     const start = entries.find((entry) => entry.kind === "note" && h.payload(entry)["type"] === "verification")?.seq ?? Infinity;
     const verificationCalls = entries.filter((entry) => entry.kind === "capability_call" && entry.seq > start);
-    expect(verificationCalls).toHaveLength(2);
-    for (const call of verificationCalls) expect(call.argument_provenance?.every((item) => item.class === "constant" && item.integrity === "operator")).toBe(true);
-    expect(notes(entries, "verification", h.payload).at(-1)).toMatchObject({ result: "pass", protected_paths: "unchanged" });
+    expect(verificationCalls).toHaveLength(3);
+    for (const call of verificationCalls.slice(0, 2)) expect(call.argument_provenance?.every((item) => item.class === "constant" && item.integrity === "operator")).toBe(true);
+    const hashCall = verificationCalls[2];
+    expect(hashCall?.argument_provenance?.every((item) => item.class === "constant")).toBe(true);
+    expect(hashCall?.argument_provenance?.filter((item) => item.integrity !== "operator").map((item) => item.argument)).toEqual(["argv[2]", "argv[3]", "argv[4]"]);
+    expect(notes(entries, "verification", h.payload).at(-1)).toMatchObject({ result: "pass", protected_paths: "unchanged", inputs: "unchanged", changed_paths: [] });
     const verificationCall = verificationCalls[0];
     expect(verificationCall?.argument_provenance).toEqual([
       { argument: "program", class: "constant", integrity: "operator" },
@@ -199,29 +203,25 @@ describe("verification and closure (§3.4.4, §6.1)", () => {
     expect(notes(h.entries(), "verification", h.payload).at(-1)).toMatchObject({ result: "fail", exit_code: 3, expected_exit_code: 0 });
   });
 
-  // proves D-057 / D-025 Inc 7: verification fails when anything under a protected path changed during the task
-  it("fails verification when the protected paths' listing changed", async () => {
-    let generation = "before";
-    const marking: Adapter = {
-      id: WORKLOAD_EXECFILE,
-      // The listing a stand-in "ls" prints carries the current generation, so a write in between shows as a changed listing.
-      plan: (call) => {
-        const base = standInAdapter.plan(call);
-        return call["program"] === "/usr/bin/ls" ? { file: base.file, args: [...base.args, generation] } : base;
-      },
-    };
-    h.cleanup();
-    h = harness(marking);
+  // proves D-057 / D-025 Inc 7 / §3.4.4 B2: verification fails when anything under a protected path changed during the
+  // task, even a rewrite of the same size (which Slice 1's listing comparison could pass); the changed path is recorded
+  it("fails verification when a protected file changed, even at the same size", async () => {
     const { runner } = h.runner([
       () => {
-        generation = "after";
+        writeWork({ "/work/project/protected/keep.txt": "KEEP\n" });
         return turn([shellRun(["notes.txt"])]);
       },
       turn([]),
     ]);
     admitted(runner, { criterion: OPERATOR_CRITERION, verification: "command_exit" });
     expect(await runner.run("task-1")).toEqual({ task_id: "task-1", state: "failed", reason: "verification_fail" });
-    expect(notes(h.entries(), "verification", h.payload).at(-1)).toMatchObject({ result: "fail", exit_code: 0, protected_paths: "changed" });
+    expect(notes(h.entries(), "verification", h.payload).at(-1)).toMatchObject({
+      result: "fail",
+      exit_code: 0,
+      protected_paths: "changed",
+      inputs: "changed",
+      changed_paths: ["/work/project/protected/keep.txt"],
+    });
     expect(notes(h.entries(), "protected_listing", h.payload).map((note) => note["phase"])).toEqual(["baseline", "check"]);
     expect(notes(h.entries(), "closure", h.payload)).toEqual([]);
   });
@@ -411,6 +411,7 @@ describe("the turn loop (build plan Increment 5)", () => {
   });
 
   // proves §6.4 / D-025: TTL counts wall time since admission; on expiry the task fails with ttl_expired
+  // proves §6.4 (v0.6 D2): TTL expiry is failed, never a park
   it("fails the task with ttl_expired once its ttl has passed", async () => {
     const { runner } = h.runner([
       () => {
@@ -530,7 +531,13 @@ describe("Slice 1.3: the criterion in plain words (D-087)", () => {
 
   // proves D-087 / D-075: an instruction value is hidden even where the criterion carries it in a data field
   it("hides an instruction value that appears among the criterion's data values", async () => {
-    const criterion = { ...OPERATOR_CRITERION, statement: { ...OPERATOR_CRITERION.statement, command: { capability: "shell.run", arguments: { program: CAT, argv: ["/usr/bin/ls"], cwd: "/work/project" } } } };
+    // A criterion reading /usr/bin/ls itself names a file outside every grant, which the verifier cannot pin, so it is
+    // refused (§3.4.4, D-114); the data value here still carries the instruction value inside the work content.
+    const outside = { ...OPERATOR_CRITERION, statement: { ...OPERATOR_CRITERION.statement, command: { capability: "shell.run", arguments: { program: CAT, argv: ["/usr/bin/ls"], cwd: "/work/project" } } } };
+    const probe = h.runner([]).runner;
+    expect(probe.admit(request({ id: "task-outside", ...withCriterion, criterion: outside })).admitted).toBe(false);
+    probe.close();
+    const criterion = { ...OPERATOR_CRITERION, statement: { ...OPERATOR_CRITERION.statement, command: { capability: "shell.run", arguments: { program: CAT, argv: ["/work/project/usr/bin/ls"], cwd: "/work/project" } } } };
     const { text } = await shown({ ...withCriterion, criterion });
     expect(String(text)).not.toContain("/usr/bin/");
     expect(String(text)).toContain("exits with code 0");
@@ -562,20 +569,59 @@ describe("Slice 1.2: what the executing model is offered (D-075), continued", ()
     expect(JSON.stringify(provider.requests[0]?.tools)).not.toContain("criterion.");
   });
 
-  // Documents the objection for spec v0.6 recorded in STATE.md (D-075): a slot fixed for the verifier is not offered, but
-  // the boundary still resolves it when the model names one, as an operator constant. Slice 1.2 does not change the
-  // boundary; this test pins today's behaviour so a spec change to it is visible.
-  it("still resolves a verifier slot the model names (objection for spec v0.6)", async () => {
-    const { runner } = h.runner([turn([shellRun([{ slot: "criterion.argv.0" }], { slot: "criterion.program" }, { slot: "criterion.cwd" })]), turn()]);
+  // proves §2.6 (v0.6 B1; replaces the Slice 1.2 test that pinned the old behaviour, D-111): a constant resolves only for
+  // the actor it was fixed for, so the executing model naming the verifier's slots is an unresolved-reference rejection:
+  // nothing it proposed runs, and the verifier still resolves the same slots when it checks the criterion
+  it("rejects a verifier slot the model names as an unresolved reference", async () => {
+    const { runner, provider } = h.runner([turn([shellRun([{ slot: "criterion.argv.0" }], { slot: "criterion.program" }, { slot: "criterion.cwd" })]), turn()]);
     admitted(runner, withCriterion);
     await runner.run("task-1");
-    const call = h
+    const calls = h
       .entries()
       .filter((entry) => entry.kind === "capability_call")
-      .map((entry) => ({ entry, body: h.payload(entry) }))
-      .find(({ body }) => JSON.stringify(body["arguments"]).includes("criterion.program"));
-    expect(call?.entry.argument_provenance).toContainEqual({ argument: "program", class: "constant", integrity: "operator" });
-    expect((call?.body["verdict"] as { outcome: string }).outcome).toBe("proceed");
+      .map((entry) => ({ entry, body: h.payload(entry) }));
+    const verificationStart = h.entries().find((entry) => entry.kind === "note" && h.payload(entry)["type"] === "verification")?.seq ?? Infinity;
+    const pinCalls = new Set([...notes(h.entries(), "protected_listing", h.payload), ...notes(h.entries(), "pin_hash", h.payload)].map((note) => note["call_seq"]));
+    const modelCalls = calls.filter(({ entry }) => entry.seq < verificationStart && !pinCalls.has(entry.seq));
+    expect(modelCalls).toHaveLength(1);
+    const [model] = modelCalls;
+    expect(model?.body["verdict"]).toMatchObject({ outcome: "reject", reason: "unresolved_argument" });
+    const unresolved = (model?.body["unresolved"] as { argument: string; code: string }[]).map((item) => [item.argument, item.code]);
+    expect(unresolved).toEqual(expect.arrayContaining([["program", "unknown_slot"], ["argv[0]", "unknown_slot"], ["cwd", "unknown_slot"]]));
+    expect(provider.requests[1]?.context.at(-1)?.content).toMatchObject({ outcome: "rejected", reason: "unresolved_argument" });
+    // The verifier's own call names the same slots and resolves them, as constants of the criterion's integrity.
+    const verifier = calls.find(({ entry }) => entry.seq > verificationStart);
+    expect(verifier?.entry.argument_provenance).toContainEqual({ argument: "program", class: "constant", integrity: "operator" });
+    expect((verifier?.body["verdict"] as { outcome: string }).outcome).toBe("proceed");
+  });
+
+  // proves §2.6 (v0.6 B1): the operator may fix the same value for both actors, explicitly; it then resolves for both
+  it("resolves a constant the operator fixed for both actors for each of them", async () => {
+    const both = { ...withCriterion, constants: { ...withCriterion.constants, shared: { value: "done.txt", actors: ["executing", "verifier"] } } };
+    const { runner, provider } = h.runner([turn([shellRun([{ slot: "shared" }])]), turn()]);
+    admitted(runner, both);
+    expect((await runner.run("task-1")).state).toBe("verified");
+    expect(h.entries().filter((entry) => entry.kind === "capability_call").map((entry) => (h.payload(entry)["verdict"] as { outcome: string }).outcome)).not.toContain("reject");
+    expect(JSON.stringify(provider.requests[0]?.context)).toContain("shared");
+    // A constant fixed for the verifier only is never offered to the executing model, nor resolvable by it.
+    const verifierOnly = { ...withCriterion, constants: { ...withCriterion.constants, secret: { value: "done.txt", actors: ["verifier"] } } };
+    h.cleanup();
+    h = harness();
+    const second = h.runner([turn([shellRun([{ slot: "secret" }])]), turn()]);
+    admitted(second.runner, verifierOnly);
+    await second.runner.run("task-1");
+    expect(JSON.stringify(second.provider.requests[0]?.context)).not.toContain("secret");
+    const pinned = new Set([...notes(h.entries(), "protected_listing", h.payload), ...notes(h.entries(), "pin_hash", h.payload)].map((note) => note["call_seq"]));
+    const modelCall = h.entries().find((entry) => entry.kind === "capability_call" && !pinned.has(entry.seq));
+    expect(h.payload(modelCall as TrajectoryEntry)["verdict"]).toMatchObject({ outcome: "reject", reason: "unresolved_argument" });
+  });
+
+  // proves §2.6 (v0.6 B1): admission refuses an empty or repeated actor list
+  it("refuses a constant fixed for no actor, or for one actor twice", () => {
+    const { runner } = h.runner([]);
+    for (const [index, actors] of [[], ["executing", "executing"], ["model"]].entries()) {
+      expect(runner.admit(request({ id: `task-${String(index)}`, constants: { x: { value: "a", actors } } })).admitted, JSON.stringify(actors)).toBe(false);
+    }
   });
 });
 

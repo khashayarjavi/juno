@@ -1,26 +1,71 @@
 # STATE
 
 ## Current increment
-**Slice 1.5 — Part 0 revision: the build plan brought to spec v0.6.1 and the operator's rulings of 2026-11-03** (D-091 to D-095, D-098). Branch `claude/gallant-mccarthy-alppyu`, **PR #30** (https://github.com/khashayarjavi/juno/pull/30; supersedes PR #29). Plan: `docs/plans/slice-1.5-build-plan.md`.
+**Slice 1.5 — Increment 1: conform Slice 1 to v0.6** (`docs/plans/slice-1.5-build-plan.md`, Increment 1). Branch `claude/gallant-mccarthy-alppyu` (fast-forwarded to `main` c405996 after PR #30 merged). Spec v0.6.1 on `main`. No objection open.
 
-Status: **V61-3 ruled (a) (D-105); a fourth review round allowed (D-106). PR #30 goes to review round 4, then the §7 gate. No objection is open. Increment 1 has not started.**
-- **PR #27 merged by the agent on the operator's explicit ruling (D-100):** merge commit 603284c, pinned to head fcb1a60; PR CI run 41673760530 success. `spec/` on `main` is identical to fcb1a60 and reads Version 0.6.1. The STOP of D-096/D-099 is lifted.
-- `main` merged into this branch (eee8523) so later increments build on v0.6.1.
-- V6-1 to V6-10 resolved by D-091, V61-1 by D-098. V61-2 by D-102. V61-3 by D-105. No objection is open.
-- CI on `main` for 603284c: run 41686229757 (push), success.
-- **Review round 1 on 700731f (fresh subagent, P2 verbatim): DO NOT MERGE.** All six checks PASS (no tests due or touched; lint rule intact; nothing out of scope; D-091 to D-100 recorded; container seal untouched; spec on `main` identical to fcb1a60). FAIL-level findings, all stale wording: (A) the PR description still said STOP; (B) STATE "Remaining" and "For the operator" still asked the operator to merge PR #27 and rule V61-1; (C) the plan's header, §5 and §9 still said the spec was not on `main`; (D) CI not finished. A to C fixed in be989a0; D is read at the gate. Notes for the director: confirm D-100; CLAUDE.md §1 and §7 step 1 still name the Slice 1 plan.
-- **Review round 2 on be989a0 (fresh subagent, P2 verbatim): DO NOT MERGE.** Checks 1, 2, 3, 4 and 6 PASS; the plan's quotes of v0.6.1 match `main`. **Check 5 FAIL:** D-091 said, under an operator ruling, that a turn the runner cannot read neither counts toward nor resets the rejection limit. The operator never ruled that, §2.7.1 does not decide it ("a malformed call" is a rejection), and it is the less restrictive reading. **Fixed on the branch:** D-091 corrected; open objection V61-2 recorded (D-101); the plan's Increment 1 item 3, its test and §6 say the question is open. Smaller notes, also fixed: the "Resolved" line wording, D-094's conflict marked as history, the "make verify" section. Not fixed (Increment 1 work): D-097 does not define "verification scope"; Increment 1 must define it in the same D-number.
-- *(Superseded by D-102 and D-103.)* Round 2 stopped the work: a §2 ambiguity (V61-2) and two DO NOT MERGE rounds.
-- **Operator ruling (2026-11-03): V61-2 (a)** — recorded as D-102; D-091, the plan's Increment 1 item 3, its test and §6 updated.
-- **Review round 3 on 5e2a06c (D-103; fresh subagent, P2 verbatim): DO NOT MERGE.** Checks 1, 2, 3, 4 and 6 PASS. Check 5 FAIL on three items (D-104):
-  - (a) the plan parked a shell keyword only as the **first** word; §2.3.2 says any word. Fixed to the spec's words, with tests `cat x eval` and `cat x .`;
-  - (b) the plan had dropped §4.3's "tool results raise the session's `sensitivity_floor`". Restored word for word;
-  - (c) **V61-3 (since ruled (a), D-105):** §2.3.2's grammar does not say what an unquoted `#` does. A shell treats `#y` as a comment, so `cat x #y` would be judged as `cat` with two operands while only `cat x` runs. D-091's V6-5 bullet corrected.
-  CI `verify` on 5e2a06c (run 41687548140) was still running when the reviewer read it. I did not read its result.
-- **Operator rulings (2026-11-03):** V61-3 (a), D-105: any `#` outside single quotes parks; round 4 allowed, D-106.
-- **Next:** review round 4, CI on the pinned head, SHA-pinned merge; then Increment 1.
+Status: **built; going through the §7 gate.** Every item of the plan's Increment 1 is built and tested. PR #31.
+- **Review round 1 (head 0b011fc; fresh subagent, P2 verbatim): DO NOT MERGE.** Checks 2, 3, 4 and 6 PASS; CI on 0b011fc passed (run 41717053614). Two defects, both fixed (D-114):
+  - the verifier's own scope-violation parks were overridable;
+  - a file the criterion reads outside its cwd was not pinned.
+
+  Also fixed: a grant remedy applies to `scope_violation` only, and a parked path with no canonical form is resolved again on resume. Local `make verify: GREEN` after the fixes (776 unit, 58 container). Review round 2 next.
+- **§0.0 rows built by Increment 1 (each with tests naming its section):**
+  - A2 (§8.2; D-109), A3 (§11.1; D-110), A4 (§2.7.1; D-107, D-102), A5 (§2.3.1 rule 6; D-108);
+  - B1 (§2.6; D-111), B2 (§3.4.4, §5.1; D-112);
+  - C4 (§2.7.1; D-113).
+- **Confirmed against the code** (built in Slice 1; their tests now name the v0.6 row):
+  - D1 (§2.3, §2.3.1: D-036/037, amended by A5);
+  - D2 (§6.4: TTL expiry is `failed`);
+  - D3 (§3.2: invocation cap never exceeds the parent's; new test);
+  - D4 (§2.7.1: grant bounds tighten; argv operands are paths: D-046/047);
+  - D5 (§2.7.1: provenance before shape: D-048/052/054);
+  - D6 (§18: injection criterion: D-080).
+- **Not in Increment 1:**
+  - A1 (Increment 3);
+  - C1 (Increment 2);
+  - C2 (deferred, D-095);
+  - C3 (hosted product);
+  - E1 to E3 (Increments 4 to 6).
+- **Order of work** (smallest and most isolated first; one commit each, `make verify` before each push):
+  1. D3 (§3.2): already built and tested (`packages/contracts/test/grant.test.ts`); add the v0.6 § name to the test.
+  2. A4 rejection limit (§2.7.1, D-102): runner counts consecutive rejections, unreadable turns included; resets on proceed, park, resume; `rejection_limit` park (overridable); admission field 1–10, default 3.
+  3. A5 (§2.3.1 rule 6): undeclared flag on an all-code-free, unlisted program is a `malformed_call` rejection.
+  4. A2 (§8.2): `scope_violation` from an `untrusted` value is not overridable; resume needs a covering grant.
+  5. A3 (§11.1): source entries in park records; "possible sources" for synthesized values.
+  6. B1 (§2.6): per-actor constants; the Slice 1.2 runner test changed with its own D-number, stricter.
+  7. B2 (§3.4.4, D-097): hash-pinned verification inputs; define "verification scope" in a D-number.
+  8. C4 (§2.7.1): canonical scope, symlinks and not-yet-existing paths; container tests.
+- **B2 (built 2026-11-03; D-112 is the record; the design notes below are kept):**
+  - **Criterion fields:** the criterion gains `outputs` and `verification_inputs` (work paths, default empty). Admission refuses:
+    - an input or output outside the verification scope;
+    - an output inside a protected path.
+  - **Verification scope (to be recorded as a D-number, defining D-097's term):** the criterion command's `cwd`, plus each protected path; a root inside another is dropped.
+  - **Mechanism, verified against the workload's coreutils 9.1 (2026-11-03):**
+    - one verifier listing, `ls -l -a -R -n --time-style=full-iso --quoting-style=escape -- <roots>`. Escape style makes it unambiguous: spaces are `\ `, newlines `\n`, `:` in headers `\:`, so a raw space only separates fields and a symlink's ` -> ` cannot be forged;
+    - then `sha256sum -z -- <files>`, in batches, over every regular file in scope that is not an output. Output is `HASH  NAME\0` with raw names; a missing file gives no record, which counts as changed.
+  - **Workload image:** add `/usr/bin/sha256sum` (libc only).
+  - **Registry:** add sha256sum to the shell.run enum with a code-free surface (`-z`, `--zero`, `--`, operand). It is never offered to the model, because its constant is verifier-only (B1).
+  - **The hash call's file operands:** verifier constants filled at pin time, one per file, with the listing result's class, and journalled so a rebuild restores them. Basis: §2.6 calls "a template slot filled by the runtime" a constant, and §5.1 makes pin-taking part of admission. This must be recorded as a D-number. If a reviewer reads it as a new §2.6 ambiguity, STOP for the operator.
+  - **Compare at closure:**
+    - the set of paths, excluding outputs;
+    - per path: type and mode;
+    - files: hash; symlinks: target;
+    - directories: mode only (their size and time change when an output is created).
+
+    Any difference, or a hash that cannot be computed, makes `verified` impossible: the task fails, with the changed paths recorded.
+  - **Bounds:** at most 2,000 hashed files and 10,000 entries; beyond that the task fails (it never skips).
+  - **Replaces D-067's listing comparison.**
+  - **Test infrastructure:** the unit tests' stand-in adapter must emulate `ls` (escape style) and `sha256sum -z` over a host directory, or unit tests use a fixed pin fixture. The acceptance, container, resume and runner tests that read `protected_listing` notes change accordingly; record each in a D-number.
+- **C4 design (2026-11-03, being built):** the boundary keeps a synchronous `authorize`. It gains a side-effect-free pre-pass, `scopePaths`, listing the raw path of every path-typed data value and argv operand (cwd + "/" + operand, `..` not collapsed). Step 4 uses the same function. The runner resolves those paths with a `PathResolver` and passes the canonical forms in the task context; a path missing from them is unresolvable, so it is outside scope (fail-closed).
+  - The production resolver runs an operator-fixed node script in the workload (the image's own node, not in the shell.run enum).
+  - The algorithm is the longest existing ancestor via `realpath`. A missing remainder holding `..` or an empty component is unresolvable, and so is a dangling symlink. A symlink loop or a permission error is unresolvable too.
+  - The unit tests use the same script against the stand-in's host `/work`.
+  - Container tests cover symlinks in the real workload.
+- **Gate record for the plan:** see "Merges recorded" (PR #30).
 
 ## Previous increment
+**Slice 1.5 — Part 0 revision: the build plan on spec v0.6.1** (D-091 to D-106). PR #30 merged through the §7 gate (see "Merges recorded"). Along the way: PR #27 (spec v0.6.1) merged on the operator's ruling (D-100); three objections raised and ruled (V61-1 public, D-098; V61-2 (a), D-102; V61-3 (a), D-105); review rounds 3 and 4 allowed by the operator (D-103, D-106). PR #29 is superseded by PR #30 and still open; the operator may close it.
+
 **Slice 1.5 — Part 0 revision, STOP of 2026-11-03 (D-099).** PR #27 was still unmerged when this session started, so it stopped (PR #30 head 42f286c, CI runs 41675990794 and 41676016930 success). Lifted by D-100.
 
 **Slice 1.5 — Part 0 revision, first session** (D-091 to D-097). Branch `claude/youthful-bohr-hpxzg1`, PR #29 (draft, head c9408cd, CI `verify` runs 41670675286 and 41670679331 success). Stopped because PR #27 had been closed unmerged (D-096). Its two commits are carried unchanged on `claude/gallant-mccarthy-alppyu`.
@@ -130,6 +175,13 @@ Status: **Slice 1.2 complete. Part 1 (PR #19), the interface fix (PR #20), Part 
 **Slice 1.1 — real-model evidence (complete).** Parts 1 to 4 merged (PR #12, #13, #16, #17; STATE record PR #18). Report: `docs/evidence/slice-1.1.md`.
 
 ## Merges recorded (CLAUDE.md §7 step 6)
+- **Slice 1.5 Part 0 revision (D-091 to D-106), PR #30** (https://github.com/khashayarjavi/juno/pull/30):
+  - Head bb6aef5fc597ee3946633e388be7899f196ceb7f; PR CI `verify` run 41688473651 (job 126100437341, success).
+  - Merged as merge commit c4059961616b10d2013e87562acacdafad5ec2ce, pinned to the head SHA. CI `verify` on `main` for the merge commit: run 41688851640 (event `push`, job 126101743836), success.
+  - Reviewer verdict: round 4 (D-106) MERGE on bb6aef5, after the PR description (not a commit) was corrected; all six checks PASS. Rounds 1 to 3 DO NOT MERGE, each fixed (D-101, D-104).
+- **Spec v0.6.1 (operator's change), PR #27** (https://github.com/khashayarjavi/juno/pull/27), merged by the agent on the operator's ruling (D-100):
+  - Head fcb1a6076dadc803be945d026f7c438f69d7e5e7; PR CI `verify` run 41673760530 (success).
+  - Merge commit 603284c346aa29ce51699587064b75512e1cf8d3, pinned; CI on `main` run 41686229757 (success). No agent review: the content is the operator's spec.
 - **Slice 1.3 Part 2 (D-088), PR #25** (https://github.com/khashayarjavi/juno/pull/25):
   - Head 83c7e2ece250648f414d6be9f7d4aa0b4ce656e5; PR CI `verify` run 41522114318 (success).
   - Merged as merge commit 80de0b1561ee1b4828ff7c030df67cca2d664688, pinned to the head SHA; CI `verify` on `main` for the merge commit, run 41522550656 (event `push`, success).

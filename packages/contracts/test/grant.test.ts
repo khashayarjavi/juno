@@ -159,6 +159,15 @@ describe("attenuation (§3.2): a derived grant never widens its parent", () => {
     expect(attenuationViolations(parent, narrow)).toEqual([]);
   });
 
+  // proves §3.2 (v0.6, D3): a child's max_invocations never exceeds its parent's, and a bounded parent cannot have an unbounded child
+  it("refuses a child whose invocation cap exceeds its parent's, or is unbounded under a bounded parent (v0.6 D3)", () => {
+    expect(parent.max_invocations).toBe(10);
+    expect(isValidAttenuation(parent, child({ max_invocations: 11 }))).toBe(false);
+    expect(isValidAttenuation(parent, child({ max_invocations: null }))).toBe(false);
+    expect(isValidAttenuation(parent, child({ max_invocations: 10 }))).toBe(true);
+    expect(isValidAttenuation(parent, child({ max_invocations: 1 }))).toBe(true);
+  });
+
   // proves §3.2: a capped child under an uncapped parent narrows the cap
   it("treats adding an invocation cap as narrowing", () => {
     const uncapped = child({ max_invocations: null });

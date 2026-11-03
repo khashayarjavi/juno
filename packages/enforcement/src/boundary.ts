@@ -36,7 +36,7 @@ import { type ResolutionFailureCode, resolveReference } from "./binding.js";
 import { type DeliveryFailure, deliveryFailures } from "./delivery.js";
 import type { GrantRefusal, GrantStore } from "./grants.js";
 import { ArgumentSource, ProposalEnvelope, ProposedCall, type TaskContext } from "./proposal.js";
-import { type ScopeViolation, scopeViolations } from "./scope.js";
+import { type ScopeViolation, scopePaths, scopeViolations } from "./scope.js";
 
 /**
  * The enforcement boundary (spec §2.6–2.7, §3.2; build plan Increment 4;
@@ -110,7 +110,16 @@ export type ParkDetail =
       readonly grants: readonly GrantFloorViolations[];
     }
   | { readonly reason: "awaiting_grant"; readonly refused: readonly GrantRefusal[] }
-  | { readonly reason: "scope_violation"; readonly grants: readonly { readonly grant: string; readonly outside: readonly ScopeViolation[] }[] }
+  | {
+      readonly reason: "scope_violation";
+      readonly grants: readonly { readonly grant: string; readonly outside: readonly ScopeViolation[] }[];
+      /**
+       * §8.2 (v0.6, A2): the out-of-scope arguments whose value is `untrusted` (or has no established integrity, §1.5).
+       * For a relative argv operand the call's `cwd` is part of the value, so the lower of the two counts (D-109). When
+       * any is listed, the park is not overridden: the remedy is a grant.
+       */
+      readonly untrusted: readonly string[];
+    }
   | {
       readonly reason: "sensitivity_ceiling";
       readonly aggregate: Sensitivity;
@@ -441,6 +450,29 @@ function judgeUnparsed(
 }
 
 /**
+ * §8.2 (A2): the integrity of what put an out-of-scope value where it is (D-109). A value with no established integrity
+ * is `untrusted` (§1.5). An argv operand is read against the call's `cwd` (§2.7.1 D4), so a relative one takes the lower
+ * of its own integrity and `cwd`'s.
+ */
+function causingIntegrity(entry: RegistryEntry, call: CapabilityCall, argument: string, integrityOf: ReadonlyMap<string, Integrity>): Integrity {
+  const own = integrityOf.get(argument) ?? "untrusted";
+  const prefix = `${entry.argv_field}[`;
+  if (!argument.startsWith(prefix)) return own;
+  const element = (call[entry.argv_field] as readonly unknown[])[Number(argument.slice(prefix.length, -1))];
+  if (typeof element === "string" && element.startsWith("/")) return own;
+  const cwd = integrityOf.get(entry.cwd_field) ?? "untrusted";
+  return compareIntegrity(cwd, own) < 0 ? cwd : own;
+}
+
+/** §2.3.1 rule 6 (A5): the first undeclared flag of a parsed call whose program's surface is code-free everywhere, or `null`. */
+function undeclaredFlagOf(entry: RegistryEntry, call: CapabilityCall): number | null {
+  const program = String(call[entry.program_field]);
+  const argv = (call[entry.argv_field] as readonly unknown[]).map(String);
+  const surface = entry.program_surfaces.find((candidate) => candidate.program === program);
+  return argvRoles(program, surface, argv).undeclaredFlag;
+}
+
+/**
  * D-053: reads an adapter's planned invocation exactly once (`file` once,
  * `args` once, each element once) into a frozen copy of plain strings. An
  * adapter that returns anything else has not planned an invocation; the
@@ -492,6 +524,25 @@ export class EnforcementBoundary {
     this.#grants = options.grants;
     this.#journal = options.journal;
     this.#clock = options.clock ?? (() => new Date());
+  }
+
+  /**
+   * The raw paths step 4 would judge for this proposal (§2.7.1 C4, D-113), for the caller to resolve where the effect
+   * will run before calling `authorize`. It reads exactly as `authorize` does, by the same `scopePaths`, and writes
+   * nothing: no entry, no binding record. A proposal that would not reach step 4 names no path.
+   */
+  pathsToResolve(context: TaskContext, input: unknown): string[] {
+    const envelope = ProposalEnvelope.safeParse(input);
+    const proposal = ProposedCall.safeParse(input);
+    if (!envelope.success || !proposal.success) return [];
+    const entry = this.#registry.entry(envelope.data.capability);
+    if (entry === undefined) return [];
+    const leaves = leavesOf(envelope.data.arguments);
+    const { records, failures } = this.#resolve(context, envelope.data.capability, leaves, synthesizedClass(context), false);
+    if (failures.length > 0) return [];
+    const valueOf = new Map<string, CallScalar>(records.map((item) => [item.argument, item.value]));
+    const call = callSchemaFor(entry.capability.interface).safeParse(assemble(proposal.data.arguments, valueOf));
+    return call.success ? [...new Set(scopePaths(entry, call.data).map((path) => path.raw))] : [];
   }
 
   /** Judges one proposed call by a running task, records it, and returns the verdict. Nothing runs here. */
@@ -549,6 +600,12 @@ export class EnforcementBoundary {
     if (failures.length > 0) return reject({ reason: "unresolved_argument", failures });
     if (!proposal.success) return reject({ reason: "malformed_call", message: `not a capability call proposal: ${proposal.error.message}` });
     if (!floors.parsed.ok) return reject({ reason: "malformed_call", message: floors.parsed.message });
+    // §2.3.1 rule 6 (v0.6, A5): an undeclared flag on a program whose surface is code-free everywhere, and which is not
+    // on the §2.3 list, is a rejection. Step 3 has passed, so no instruction value is below its floor.
+    const undeclared = undeclaredFlagOf(entry, floors.parsed.call);
+    if (undeclared !== null) {
+      return reject({ reason: "malformed_call", message: `${entry.argv_field}[${String(undeclared)}] is a flag the program's declared surface does not list (§2.3.1 rule 6)` });
+    }
     // One frozen copy of the inspected call: the adapter plans from it, and the Authorization carries it (D-053).
     const parsedCall = frozenCall(floors.parsed.call);
 
@@ -556,10 +613,13 @@ export class EnforcementBoundary {
     if (coverage.covering.length === 0) return park({ reason: "awaiting_grant", refused: coverage.refused });
 
     // Step 4.
-    const scoped = meetFloors.map((grant) => ({ grant, outside: scopeViolations(entry, parsedCall, grant) }));
+    const canonical = context.canonical ?? new Map();
+    const scoped = meetFloors.map((grant) => ({ grant, outside: scopeViolations(entry, parsedCall, grant, canonical) }));
     const inScope = scoped.filter((candidate) => candidate.outside.length === 0).map((candidate) => candidate.grant);
     if (inScope.length === 0) {
-      return park({ reason: "scope_violation", grants: scoped.map(({ grant, outside }) => ({ grant: grant.id, outside })) });
+      const outside = [...new Set(scoped.flatMap((candidate) => candidate.outside.map((violation) => violation.argument)))].sort();
+      const untrusted = outside.filter((argument) => causingIntegrity(entry, parsedCall, argument, integrityOf) === "untrusted");
+      return park({ reason: "scope_violation", grants: scoped.map(({ grant, outside: values }) => ({ grant: grant.id, outside: values })), untrusted });
     }
 
     // Step 5: the capability's ceiling, then each remaining candidate's lower ceiling.
@@ -618,6 +678,7 @@ export class EnforcementBoundary {
     capability: string,
     leaves: readonly Leaf[],
     synthesized: DataClass,
+    journal = true,
   ): { records: ArgumentRecord[]; failures: UnresolvedArgument[] } {
     const { task, constants } = context;
     const root = this.#journal.root;
@@ -660,7 +721,7 @@ export class EnforcementBoundary {
         const base = { capability, argument, reference: source.reference };
         if (resolution.ok) {
           const candidates = resolution.candidates.length > 1 ? { binding_candidates: [...resolution.candidates] } : {};
-          const bindingEntry = this.#append(
+          const bindingEntry = !journal ? -1 : this.#append(
             task.id,
             { ...this.#draft("binding_resolution", join([synthesized, resolution.data_class])), ...candidates },
             { ...base, outcome: "resolved", bound_to: resolution.seq, value: resolution.value, candidates: [...resolution.candidates] },
@@ -673,7 +734,7 @@ export class EnforcementBoundary {
             origin: { class: "bound", reference: source.reference, bound_to: resolution.seq, binding_entry: bindingEntry },
           });
         } else {
-          this.#append(task.id, this.#draft("binding_resolution", synthesized), {
+          if (journal) this.#append(task.id, this.#draft("binding_resolution", synthesized), {
             ...base,
             outcome: "rejected",
             code: resolution.code,

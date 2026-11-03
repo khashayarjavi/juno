@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { TrajectoryEntry } from "../../packages/contracts/src/index.js";
-import { GrantStore } from "../../packages/enforcement/src/index.js";
+import { GrantStore, WorkloadPathResolver } from "../../packages/enforcement/src/index.js";
 import { JournalWriter, readPayload, readTrajectory } from "../../packages/journal/src/index.js";
 import { CapabilityRegistry, RegistryEntry, WorkloadExecFileAdapter } from "../../packages/registry/src/index.js";
 import type { SourceRegistration } from "../../packages/runner/src/admission.js";
@@ -289,7 +289,7 @@ export async function runScenario(scenario: Scenario, index: number, groq: GroqP
       for (const item of options.grants ?? [grant("grant-main", Date.now())]) grants.add(item);
       const provider = options.provider ?? groq;
       if (provider.profile !== groq.profile) throw new Error("a scenario's provider must serve the Groq profile");
-      const runner = new Runner({ journal, registry: options.registry ?? standardRegistry(), grants, providers: [provider], sources: SOURCES, clock: options.clock ?? (() => new Date()) });
+      const runner = new Runner({ resolver: new WorkloadPathResolver({ composeFile, project, service: "workload" }), journal, registry: options.registry ?? standardRegistry(), grants, providers: [provider], sources: SOURCES, clock: options.clock ?? (() => new Date()) });
       runners.push(runner);
       return runner;
     },

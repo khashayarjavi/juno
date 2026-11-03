@@ -14,10 +14,12 @@ import {
   TaskState as TaskStateSchema,
   closureSchemaFor,
   compareIntegrity,
+  compareSensitivity,
   join,
   maxSensitivity,
   minIntegrity,
   parseAtBoundary,
+  pathWithin,
   raiseSensitivityFloor,
 } from "../../contracts/src/index.js";
 import {
@@ -26,6 +28,7 @@ import {
   EnforcementBoundary,
   type GrantStore,
   type ParkDetail,
+  type PathResolver,
   type RejectDetail,
   type TaskContext,
   type Verdict,
@@ -34,17 +37,26 @@ import { type EntryDraft, JournalIntegrityError, type JournalWriter, canonicalJs
 import type { CapabilityRegistry, InvocationResult, RegistryEntry } from "../../registry/src/index.js";
 import {
   type AdmissionResult,
+  type AdmittedConstant,
   type AdmittedTask,
+  type ConstantActor,
+  ConstantActors,
   CriterionStatement,
+  DEFAULT_REJECTION_LIMIT,
   RESERVED_ID_PREFIX,
+  RejectionLimit,
   type SourceRegistration,
   admit,
   PROTECTED_LISTING,
   criterionSlots,
   grantChecks,
+  hashSlots,
+  pinFileSlot,
   protectedSlots,
   routable,
+  verificationScope,
 } from "./admission.js";
+import { MAX_PINNED_FILES, PIN_HASH_BATCH, type Pin, changedPins, filesToHash, parseHashes, parseListing, pinsOf, within } from "./pins.js";
 import { type BudgetAxis, NO_SPEND, type Spend, exhaustedAxes, overrunAxes } from "./budget.js";
 import { type RunnerLock, acquireRunnerLock } from "./lock.js";
 import { ProviderProfile } from "./profile.js";
@@ -80,7 +92,7 @@ export const REGISTRY_RECORD = `${RESERVED_ID_PREFIX}registry`;
 export const RUNNER_RECORD = `${RESERVED_ID_PREFIX}runner`;
 
 /** Parks the boundary produces and the runner adds (§6.2). */
-export type ParkReason = ParkDetail["reason"] | "budget_exceeded" | "routing_unavailable";
+export type ParkReason = ParkDetail["reason"] | "budget_exceeded" | "routing_unavailable" | "rejection_limit";
 
 /** §8.3: a park is not overridable when the operator cannot observe the consequence of proceeding. */
 export const NON_OVERRIDABLE: ReadonlySet<ParkReason> = new Set<ParkReason>(["integrity_floor", "adapter_quarantined"]);
@@ -101,13 +113,16 @@ export type RunnerOptions = {
   readonly clock?: () => Date;
   /** Who verifies. Defaults to `juno.verifier`; a closure naming an executing actor is refused (§3.4.4). */
   readonly verifierIdentity?: string;
+  /** Resolves the paths a call names to their canonical forms where the effect will run (§2.7.1 C4, D-113). */
+  readonly resolver: PathResolver;
 };
 
 export class RunnerError extends Error {
   override readonly name = "RunnerError";
 }
 
-type Contextual = { readonly item: ContextItem; readonly data_class: DataClass };
+/** A context item, its class, and the `seq` of the journal note that recorded it (§11.1 "possible sources"). */
+type Contextual = { readonly item: ContextItem; readonly data_class: DataClass; readonly seq: number };
 
 type TaskRun = {
   task: Task;
@@ -122,6 +137,17 @@ type TaskRun = {
   /** Every actor that took part in executing the task; none may verify it (§3.4.4, invariant 3). */
   readonly executingActors: Set<string>;
   turns: number;
+  /**
+   * The consecutive rejections since the count last reset (§2.7.1, A4): each a rejected call's `call_seq`, or the
+   * `turn_seq` of a turn the runner could not read, which counts as one rejection (D-102). Reset when a call proceeds,
+   * when the task parks, and on resume.
+   */
+  rejections: { readonly kind: "call" | "unreadable_turn"; readonly seq: number }[];
+  /**
+   * The files the verifier hashes, found by the admission listing and fixed then as verifier constants, one slot each
+   * (§2.6 "a template slot filled by the runtime", §5.1, D-112), with the listing result's class. `null` until taken.
+   */
+  pinFiles: { readonly files: readonly string[]; readonly data_class: DataClass } | null;
 };
 
 const QuarantineRecord = z.strictObject({ type: z.literal("quarantine"), capability: z.string(), adapter: z.string(), observation: z.string() });
@@ -139,19 +165,55 @@ const Replayed = z.object({
   removed_grants: z.array(z.string()).optional(),
 });
 
-const ParkRecord = z.object({ reason: z.string(), tool_call: z.string().optional() }).transform((park) => ({ ...park, reason: park.reason as ParkReason }));
+const ParkRecord = z
+  .object({
+    reason: z.string(),
+    tool_call: z.string().optional(),
+    overridable: z.boolean().optional(),
+    remedy: z.string().optional(),
+    capability: z.string().optional(),
+    detail: z.object({ grants: z.array(z.object({ outside: z.array(z.object({ path: z.string(), unresolved: z.string().optional() })) })).optional() }).optional(),
+  })
+  .transform((park) => ({ ...park, reason: park.reason as ParkReason }));
+
+/** The park as resume reads it (§6.3, §8.2). */
+type LastPark = {
+  readonly seq: number;
+  readonly reason: ParkReason;
+  readonly tool_call: string | null;
+  /** As recorded; `true` for a journal written before v0.6 that did not record it and whose reason is overridable. */
+  readonly overridable: boolean;
+  /** §8.2 (A2): `grant` when the park is cleared only by a grant covering the out-of-scope values, never by a plain resume. */
+  readonly remedy: string | null;
+  readonly capability: string | null;
+  /** The out-of-scope paths of a `scope_violation`, over every candidate grant. */
+  readonly outside: readonly { readonly path: string; readonly unresolved: boolean }[];
+};
 
 const AdmissionRecord = z.object({
   type: z.literal("admission"),
   outcome: z.literal("admitted"),
   admitted_at: z.iso.datetime(),
   task: TaskSchema,
-  constants: z.record(z.string(), z.strictObject({ value: z.union([z.string(), z.number(), z.boolean()]), data_class: DataClassSchema })),
+  // A journal written before v0.6 records no actors: a criterion slot was the verifier's, every other constant the
+  // executing actor's (§2.6 B1, D-111). Recorded actors are read as written.
+  constants: z
+    .record(z.string(), z.strictObject({ value: z.union([z.string(), z.number(), z.boolean()]), data_class: DataClassSchema, actors: ConstantActors.optional() }))
+    .transform((constants) =>
+      Object.fromEntries(
+        Object.entries(constants).map(([slot, constant]) => [
+          slot,
+          { ...constant, actors: constant.actors ?? (slot.startsWith(VERIFIER_SLOT_PREFIX) ? (["verifier"] as const) : (["executing"] as const)) },
+        ]),
+      ),
+    ),
   criterion: CriterionStatement.nullable(),
   provider: z.string(),
   provider_profile: ProviderProfile,
   sources: z.array(z.strictObject({ id: z.string(), selector: ResourceSelector, data_class: DataClassSchema })),
   warnings: z.array(z.string()),
+  // A journal written before v0.6 has no limit recorded; it gets the default (§2.7.1).
+  rejection_limit: RejectionLimit.default(DEFAULT_REJECTION_LIMIT),
 });
 
 const RunnerRecordEntry = z.discriminatedUnion("type", [
@@ -160,7 +222,12 @@ const RunnerRecordEntry = z.discriminatedUnion("type", [
   z.object({ type: z.literal("stale_lock_cleared"), reason: z.string(), holder: z.record(z.string(), z.unknown()) }),
 ]);
 
-const ProtectedNote = z.object({ type: z.literal("protected_listing"), phase: z.enum(["baseline", "check"]), result_seq: z.number() });
+const PinFilesNote = z.object({ type: z.literal("pin_files"), files: z.array(z.string()), data_class: DataClassSchema });
+const PinsNote = z.object({
+  type: z.literal("verification_pins"),
+  phase: z.enum(["baseline", "check"]),
+  pins: z.record(z.string(), z.object({ type: z.enum(["file", "directory", "symlink", "other"]), mode: z.string(), size: z.string(), target: z.string().nullable(), sha256: z.string().nullable() })),
+});
 
 const NO_COST = { tokens_in: 0, tokens_out: 0, tokens_cached: 0, currency: 0, duration_ms: 0 };
 
@@ -249,6 +316,7 @@ export class Runner {
   readonly #clock: () => Date;
   readonly #verifier: string;
   readonly #boundary: EnforcementBoundary;
+  readonly #resolver: PathResolver;
   readonly #lock: RunnerLock;
   readonly #runs = new Map<string, TaskRun>();
   readonly #recordedQuarantines = new Set<string>();
@@ -265,6 +333,7 @@ export class Runner {
     this.#sources = options.sources;
     this.#clock = options.clock ?? (() => new Date());
     this.#verifier = options.verifierIdentity ?? VERIFIER_ACTOR;
+    this.#resolver = options.resolver;
     this.#lock = acquireRunnerLock(this.#journal.root, this.#clock);
     try {
       this.#reapplyQuarantines();
@@ -338,6 +407,7 @@ export class Runner {
       provider_profile: admission.provider,
       sources: admission.sources,
       warnings: admission.warnings,
+      rejection_limit: admission.rejection_limit,
     });
     this.#runs.set(task.id, {
       task,
@@ -350,6 +420,8 @@ export class Runner {
       context: [],
       executingActors: new Set([RUNNER_ACTOR, ENFORCEMENT_ACTOR]),
       turns: 0,
+      rejections: [],
+      pinFiles: null,
     });
     result = { admitted: true, admission };
     return result;
@@ -411,7 +483,9 @@ export class Runner {
     // TTL first (§6.4): an expired task fails whatever it is parked on, a non-overridable park included.
     if (this.#ttlExpired(run)) return this.#fail(run, "ttl_expired");
     const park = this.#lastPark(run);
-    if (park !== null && NON_OVERRIDABLE.has(park.reason)) {
+    // §8.2: only a scope violation is cleared by a grant; any other park recorded not overridable is never resumed (§8.3).
+    const grantRemedy = park !== null && park.reason === "scope_violation" && park.remedy === "grant";
+    if (park !== null && !park.overridable && !grantRemedy) {
       throw new RunnerError(`task ${id} is parked ${park.reason}, which is not overridable (§8.3); it is never resumed. Remedy the cause and start a new task`);
     }
 
@@ -429,6 +503,16 @@ export class Runner {
     const strays = removed.filter((grantId) => !run.task.grants.includes(grantId) || added.includes(grantId));
     if (strays.length > 0) throw new RunnerError(`grants to remove must be on the task and not also added: ${strays.join(", ")}`);
     const grants = [...run.task.grants, ...added.filter((grantId) => !run.task.grants.includes(grantId))].filter((grantId) => !removed.includes(grantId));
+    if (park !== null && !park.overridable && grantRemedy) {
+      // §8.2 (A2): no plain resume. The task must now hold a usable grant for the capability whose scope covers every
+      // out-of-scope path the park recorded (D-109).
+      const uncovered = await this.#uncoveredByGrants(run, grants, park);
+      if (uncovered.length > 0) {
+        throw new RunnerError(
+          `task ${id} is parked scope_violation on an untrusted value, which is not overridden (§8.2): issue or widen a grant covering ${uncovered.join(", ")} and add it on resume`,
+        );
+      }
+    }
     run.task = TaskSchema.parse({ ...run.task, grants });
 
     const now = this.#clock();
@@ -461,6 +545,8 @@ export class Runner {
     }
     run.task = TaskSchema.parse({ ...run.task, state: "running", runtime_substate: "active" });
     run.runningSince = this.#clock().getTime();
+    // §2.7.1: the rejection count resets on resume.
+    run.rejections = [];
     if (park !== null && park.tool_call !== null) {
       this.#pushContext(run, { role: "tool", content: { tool_call: park.tool_call, outcome: "parked", reason: park.reason, park_seq: park.seq, resumed: true } }, this.#runnerClass(run));
     }
@@ -471,13 +557,13 @@ export class Runner {
     if (this.#active !== null && this.#active !== run.task.id) throw new RunnerError(`task ${this.#active} is running; this runner runs one task at a time`);
     this.#active = run.task.id;
     try {
-      // D-057: before the first turn of a task the verifier will check, record how its protected paths look.
-      // A task whose first listing parked has none yet, so it is taken when the task runs again (D-067).
-      if (run.task.closure_mode === "verified" && run.admission.criterion !== null && this.#protectedBaselineSeq(run) === null) {
-        const baseline = await this.#listProtected(run, "baseline");
+      // §3.4.4 B2 / §5.1 (D-112): before the first turn of a task the verifier will check, pin its verification scope.
+      // A task whose pinning parked has no pins yet, so they are taken when the task runs again (D-067).
+      if (run.task.closure_mode === "verified" && run.admission.criterion !== null && this.#baselinePins(run) === null) {
+        const baseline = await this.#pin(run, "baseline");
         if (!baseline.ok) return baseline.outcome;
-        // A baseline that did not list the paths can protect nothing: the task fails before any turn (D-067).
-        if (!listed(baseline.listing)) return this.#fail(run, "protected_listing_failed");
+        // Pins that were not taken protect nothing: the task fails before any turn (D-067, D-112).
+        if (baseline.pins === null) return this.#fail(run, baseline.failure);
       }
       return await this.#loop(run);
     } finally {
@@ -552,6 +638,9 @@ export class Runner {
       );
       if (!parsed.success) {
         this.#pushContext(run, { role: "user", content: { turn_seq: turnSeq, error: "the runner could not read that turn", detail: parsed.error.message } }, turnClass);
+        // A turn the runner cannot read counts as one rejection and never resets the count (§2.7.1, D-102).
+        run.rejections.push({ kind: "unreadable_turn", seq: turnSeq });
+        if (run.rejections.length >= run.admission.rejection_limit) return this.#rejectionPark(run, turnClass, { turn_seq: turnSeq, not_acted_on: [] });
         continue;
       }
       const response = parsed.data;
@@ -567,22 +656,21 @@ export class Runner {
         const clock = exhaustedAxes(this.#spentNow(run), run.task.budget, ["wall_clock_ms"]);
         if (clock.length > 0) return this.#budgetPark(run, clock, { turn_seq: turnSeq, not_acted_on: [call.id, ...rest] });
 
-        const verdict = this.#authorize(run, toProposal(call), turnClass.sensitivity);
-        if (verdict.outcome === "park") {
-          return this.#park(run, verdict.detail.reason, this.#entryClass(run.task.id, verdict.call_seq), {
-            call_seq: verdict.call_seq,
-            tool_call: call.id,
-            not_acted_on: rest,
-            detail: verdict.detail,
-          });
-        }
+        const verdict = await this.#authorize(run, toProposal(call), turnClass.sensitivity, "executing");
+        if (verdict.outcome === "park") return this.#boundaryPark(run, verdict, call.capability, { tool_call: call.id, not_acted_on: rest });
         if (verdict.outcome === "reject") {
           // The rejection's text can name an instruction field's allowed values (for example a registry message listing
           // the program enum); the model is shown it with those values hidden (D-075). The journal keeps the full detail.
           const shown = hideValues(rejection(call.id, verdict.call_seq, verdict.detail), this.#instructionValues(run));
           this.#pushContext(run, { role: "tool", content: shown }, this.#entryClass(run.task.id, verdict.call_seq));
+          run.rejections.push({ kind: "call", seq: verdict.call_seq });
+          if (run.rejections.length >= run.admission.rejection_limit) {
+            return this.#rejectionPark(run, this.#entryClass(run.task.id, verdict.call_seq), { call_seq: verdict.call_seq, tool_call: call.id, not_acted_on: rest });
+          }
           continue;
         }
+        // §2.7.1: the rejection count resets when a call proceeds.
+        run.rejections = [];
         const { seq, dataClass, payload } = await this.#perform(run, verdict.authorization);
         for (const actor of [verdict.authorization.adapter]) run.executingActors.add(actor);
         this.#pushContext(run, { role: "tool", content: { tool_call: call.id, call_seq: verdict.call_seq, result_seq: seq, ...payload } }, dataClass);
@@ -616,14 +704,16 @@ export class Runner {
     for (const [field, value] of Object.entries(criterion.command.arguments)) if (Array.isArray(value) && value.length === 0) args[field] = [];
     this.#append(run.task.id, "note", this.#runnerClass(run), { type: "verification", phase: "start", method: run.task.verification, claimed_at_turn: turnSeq });
 
-    const verdict = this.#authorize(run, { capability: criterion.command.capability, arguments: args }, run.task.sensitivity_floor);
+    const verdict = await this.#authorize(run, { capability: criterion.command.capability, arguments: args }, run.task.sensitivity_floor, "verifier");
     if (verdict.outcome === "park") {
-      return this.#park(run, verdict.detail.reason, this.#entryClass(run.task.id, verdict.call_seq), { call_seq: verdict.call_seq, phase: "verification", detail: verdict.detail });
+      return this.#boundaryPark(run, verdict, criterion.command.capability, { phase: "verification" });
     }
     let result: "pass" | "fail" | "inconclusive" = "inconclusive";
     let resultSeq: number | null = null;
     let exitCode: number | null = null;
     let protectedPaths: "unchanged" | "changed" | null = null;
+    let inputs: "unchanged" | "changed" | null = null;
+    let changedPaths: string[] = [];
     if (verdict.outcome === "proceed") {
       const performed = await this.#perform(run, verdict.authorization);
       resultSeq = performed.seq;
@@ -631,16 +721,19 @@ export class Runner {
       if (performed.exitCode !== null) result = performed.exitCode === criterion.expect_exit_code ? "pass" : "fail";
     }
     if (result === "pass") {
-      // D-057: verification fails if the task wrote under a protected path.
-      const check = await this.#listProtected(run, "check");
+      // §3.4.4 B2 (D-112): verification fails if any pinned path changed: a verification input, or anything under a
+      // protected path (D-057).
+      const check = await this.#pin(run, "check");
       if (!check.ok) return check.outcome;
-      if (!listed(check.listing)) {
-        // A check that did not list the paths cannot show they are unchanged (D-067).
-        protectedPaths = null;
+      const baseline = this.#baselinePins(run);
+      if (check.pins === null || baseline === null) {
+        // Pins that were not taken cannot show anything is unchanged (D-067).
         result = "inconclusive";
       } else {
-        protectedPaths = canonicalJson(check.listing) === canonicalJson(this.#protectedBaseline(run)) ? "unchanged" : "changed";
-        if (protectedPaths === "changed") result = "fail";
+        changedPaths = changedPins(baseline, check.pins);
+        inputs = changedPaths.length === 0 ? "unchanged" : "changed";
+        protectedPaths = changedPaths.some((path) => criterion.protected_paths.some((prefix) => within(path, prefix))) ? "changed" : "unchanged";
+        if (inputs === "changed") result = "fail";
       }
     }
     this.#append(run.task.id, "note", this.#runnerClass(run), {
@@ -652,6 +745,8 @@ export class Runner {
       exit_code: exitCode,
       expected_exit_code: criterion.expect_exit_code,
       protected_paths: protectedPaths,
+      inputs,
+      changed_paths: changedPaths,
       rejected: verdict.outcome === "reject" ? verdict.detail.reason : null,
     });
     if (result !== "pass") return this.#fail(run, `verification_${result}`);
@@ -673,45 +768,88 @@ export class Runner {
   async #listProtected(
     run: TaskRun,
     phase: "baseline" | "check",
-  ): Promise<{ ok: true; listing: Record<string, unknown> } | { ok: false; outcome: RunOutcome }> {
+  ): Promise<{ ok: true; listing: Record<string, unknown>; result_seq: number } | { ok: false; outcome: RunOutcome }> {
     const criterion = run.admission.criterion;
     if (criterion === null) throw new RunnerError(`task ${run.task.id} has no criterion`);
     const args: Record<string, unknown> = {};
-    for (const { slot, field, index } of protectedSlots(criterion)) {
+    for (const { slot, field, index } of protectedSlots(criterion, this.#registry.entry(criterion.command.capability))) {
       const source = { class: "constant", slot };
       if (index === null) args[field] = source;
       else ((args[field] ??= []) as unknown[])[index] = source;
     }
-    const verdict = this.#authorize(run, { capability: PROTECTED_LISTING.capability, arguments: args }, run.task.sensitivity_floor);
+    const verdict = await this.#authorize(run, { capability: PROTECTED_LISTING.capability, arguments: args }, run.task.sensitivity_floor, "verifier");
     if (verdict.outcome === "park") {
-      return { ok: false, outcome: this.#park(run, verdict.detail.reason, this.#entryClass(run.task.id, verdict.call_seq), { call_seq: verdict.call_seq, phase: `protected_${phase}`, detail: verdict.detail }) };
+      return { ok: false, outcome: this.#boundaryPark(run, verdict, PROTECTED_LISTING.capability, { phase: ["protected", phase].join("_") }) };
     }
     if (verdict.outcome === "reject") return { ok: false, outcome: this.#fail(run, "protected_listing_rejected") };
     const performed = await this.#perform(run, verdict.authorization);
     const listing = listingOf(performed.payload);
     this.#append(run.task.id, "note", this.#runnerClass(run), { type: "protected_listing", phase, call_seq: verdict.call_seq, result_seq: performed.seq });
-    return { ok: true, listing };
+    return { ok: true, listing, result_seq: performed.seq };
   }
 
-  /** The `seq` of the baseline listing's result, or null when none was taken yet. */
-  #protectedBaselineSeq(run: TaskRun): number | null {
+  /**
+   * Pins the verification scope (§3.4.4 B2, D-097, D-112): the listing, then `sha256sum -z` over the pinned files in
+   * batches, every argument a verifier constant. At the baseline the files to hash are fixed from the listing; at the
+   * check the same files are hashed again, and the listing shows anything added or removed. Returns the pins, or `null`
+   * with the reason the task fails when they could not be taken; a park parks the task.
+   */
+  async #pin(
+    run: TaskRun,
+    phase: "baseline" | "check",
+  ): Promise<{ ok: true; pins: Record<string, Pin>; failure?: undefined } | { ok: true; pins: null; failure: string } | { ok: false; outcome: RunOutcome }> {
+    const criterion = run.admission.criterion;
+    if (criterion === null) throw new RunnerError(`task ${run.task.id} has no criterion`);
+    const listed_ = await this.#listProtected(run, phase);
+    if (!listed_.ok) return listed_;
+    if (!listed(listed_.listing)) return { ok: true, pins: null, failure: "protected_listing_failed" };
+    const roots = verificationScope(criterion, this.#registry.entry(criterion.command.capability));
+    const parsed = parseListing(String(listed_.listing["stdout"]), roots);
+    if (!parsed.ok) return this.#pinsFailed(run, phase, parsed.reason);
+    if (phase === "baseline") {
+      const files = filesToHash(parsed.entries, criterion.outputs);
+      if (files.length > MAX_PINNED_FILES) return this.#pinsFailed(run, phase, `the verification scope has more than ${String(MAX_PINNED_FILES)} files to pin`);
+      // Fixed now, before the first turn, as part of admission's pins (§5.1); journalled so a rebuilt task hashes the same files.
+      run.pinFiles = { files, data_class: this.#entryClass(run.task.id, listed_.result_seq) };
+      this.#append(run.task.id, "note", this.#runnerClass(run), { type: "pin_files", files, data_class: run.pinFiles.data_class });
+    }
+    const files = run.pinFiles?.files ?? [];
+    const hashes = new Map<string, string>();
+    for (let start = 0; start < files.length; start += PIN_HASH_BATCH) {
+      const argv: unknown[] = hashSlots(criterion, this.#registry.entry(criterion.command.capability))
+        .filter((slot) => slot.field === "argv")
+        .map((slot) => ({ class: "constant", slot: slot.slot }));
+      for (let index = start; index < Math.min(files.length, start + PIN_HASH_BATCH); index += 1) argv.push({ class: "constant", slot: pinFileSlot(index) });
+      const args = { program: { class: "constant", slot: "criterion.pin.program" }, argv, cwd: { class: "constant", slot: "criterion.pin.cwd" } };
+      const verdict = await this.#authorize(run, { capability: PROTECTED_LISTING.capability, arguments: args }, run.task.sensitivity_floor, "verifier");
+      if (verdict.outcome === "park") {
+        return { ok: false, outcome: this.#boundaryPark(run, verdict, PROTECTED_LISTING.capability, { phase: ["pin", phase].join("_") }) };
+      }
+      if (verdict.outcome === "reject") return this.#pinsFailed(run, phase, `the hashing call was rejected: ${verdict.detail.reason}`);
+      const performed = await this.#perform(run, verdict.authorization);
+      this.#append(run.task.id, "note", this.#runnerClass(run), { type: "pin_hash", phase, call_seq: verdict.call_seq, result_seq: performed.seq });
+      const stdout = performed.payload["stdout"];
+      if (typeof stdout === "string") for (const [path, hash] of parseHashes(stdout)) hashes.set(path, hash);
+    }
+    const pins = pinsOf(parsed.entries, hashes, criterion.outputs);
+    this.#append(run.task.id, "note", this.#runnerClass(run), { type: "verification_pins", phase, roots, outputs: criterion.outputs, pins });
+    return { ok: true, pins };
+  }
+
+  #pinsFailed(run: TaskRun, phase: "baseline" | "check", reason: string): { ok: true; pins: null; failure: string } {
+    this.#append(run.task.id, "note", this.#runnerClass(run), { type: "verification_pins", phase, failed: reason });
+    return { ok: true, pins: null, failure: "verification_pins_failed" };
+  }
+
+  /** The pins taken at admission, read back from the journal so a rebuilt task is checked against the same record. */
+  #baselinePins(run: TaskRun): Record<string, Pin> | null {
+    let pins: Record<string, Pin> | null = null;
     for (const entry of readTrajectory(this.#journal.root, run.task.id)) {
       if (entry.kind !== "note") continue;
-      const note = ProtectedNote.safeParse(this.#payloadOf(entry.payload_ref));
-      if (note.success && note.data.phase === "baseline") return note.data.result_seq;
+      const note = PinsNote.safeParse(this.#payloadOf(entry.payload_ref));
+      if (note.success && note.data.phase === "baseline") pins = note.data.pins;
     }
-    return null;
-  }
-
-  /** The baseline listing, read back from the journal so a rebuilt task is checked against the same record. */
-  #protectedBaseline(run: TaskRun): Record<string, unknown> {
-    const result_seq = this.#protectedBaselineSeq(run);
-    if (result_seq === null) throw new RunnerError(`task ${run.task.id} has no protected-path baseline`);
-    const entries = readTrajectory(this.#journal.root, run.task.id);
-    const result = entries.find((entry) => entry.seq === result_seq);
-    if (result === undefined) throw new RunnerError(`task ${run.task.id} has no entry ${String(result_seq)}`);
-    const payload = this.#payloadOf(result.payload_ref) as Record<string, unknown>;
-    return listingOf(payload);
+    return pins;
   }
 
   /** The closure (§3.4.4), written by the runner and checked against its executing actors at write time. */
@@ -732,8 +870,19 @@ export class Runner {
     this.#append(task.id, "note", this.#runnerClass(run), { type: "closure", closure });
   }
 
-  #authorize(run: TaskRun, proposal: unknown, sensitivity: Sensitivity): Verdict {
-    const context: TaskContext = { task: run.task, constants: run.admission.constants, synthesis: { sensitivity } };
+  /**
+   * Judges one call through the boundary. Only the constants fixed for `actor` are resolvable (§2.6, v0.6 B1): the
+   * executing model naming a verifier constant is an unresolved reference, a rejection (§2.7.1).
+   */
+  async #authorize(run: TaskRun, proposal: unknown, sensitivity: Sensitivity, actor: ConstantActor): Promise<Verdict> {
+    const constants: Record<string, AdmittedConstant> = Object.fromEntries(Object.entries(run.admission.constants).filter(([, constant]) => constant.actors.includes(actor)));
+    if (actor === "verifier" && run.pinFiles !== null) {
+      for (const [index, path] of run.pinFiles.files.entries()) constants[pinFileSlot(index)] = { value: path, data_class: run.pinFiles.data_class, actors: ["verifier"] };
+    }
+    const base: TaskContext = { task: run.task, constants, synthesis: { sensitivity } };
+    // §2.7.1 C4 (D-113): the paths the call names are resolved where the effect will run, then the boundary judges them.
+    const canonical = await this.#resolver.resolve(this.#boundary.pathsToResolve(base, proposal));
+    const context: TaskContext = { ...base, canonical };
     const verdict = this.#boundary.authorize(context, proposal);
     this.#recordQuarantines();
     return verdict;
@@ -798,15 +947,42 @@ export class Runner {
     this.#append(run.task.id, "note", this.#runnerClass(run), { type: "sensitivity_floor", from, to, cause_seq: causeSeq });
   }
 
+  /**
+   * Parks on a boundary verdict, whoever made the call: the executing model, or the verifier checking the criterion,
+   * listing or hashing (§6.2). §8.2 (A2): a scope violation caused by an untrusted value is cleared only by a grant,
+   * never by a plain resume, on every one of these paths (D-109). The park names the capability, so a resume can check
+   * a grant covers the parked paths, and the source of each value that caused it (§11.1).
+   */
+  #boundaryPark(run: TaskRun, verdict: Extract<Verdict, { outcome: "park" }>, capability: string, extra: Record<string, unknown>): RunOutcome {
+    const grantOnly = verdict.detail.reason === "scope_violation" && verdict.detail.untrusted.length > 0;
+    return this.#park(
+      run,
+      verdict.detail.reason,
+      this.#entryClass(run.task.id, verdict.call_seq),
+      { call_seq: verdict.call_seq, capability, ...extra, detail: verdict.detail, sources: this.#parkSources(run, verdict.call_seq, verdict.detail) },
+      grantOnly ? "grant" : null,
+    );
+  }
+
+  /** §2.7.1 (A4): the limit's worth of consecutive rejections parks `rejection_limit` (overridable, §6.2), naming each one. */
+  #rejectionPark(run: TaskRun, dataClass: DataClass, extra: Record<string, unknown>): RunOutcome {
+    return this.#park(run, "rejection_limit", dataClass, { limit: run.admission.rejection_limit, rejections: [...run.rejections], ...extra });
+  }
+
   #budgetPark(run: TaskRun, axes: readonly BudgetAxis[], extra: Record<string, unknown> = {}): RunOutcome {
     return this.#park(run, "budget_exceeded", this.#runnerClass(run), { axes, spent: this.#spentNow(run), budget: run.task.budget, ...extra });
   }
 
-  #park(run: TaskRun, reason: ParkReason, dataClass: DataClass, detail: Record<string, unknown>): RunOutcome {
+  #park(run: TaskRun, reason: ParkReason, dataClass: DataClass, detail: Record<string, unknown>, remedy: "grant" | null = null): RunOutcome {
     this.#stopClock(run);
     const entryClass = join([dataClass, this.#runnerClass(run)]);
-    this.#append(run.task.id, "park", entryClass, { reason, overridable: !NON_OVERRIDABLE.has(reason), from: run.task.state, ...detail, spent: this.#spentNow(run) });
+    // §8.2 (A2): a park whose only remedy is a grant is not overridden; §8.3: some reasons never are.
+    const overridable = !NON_OVERRIDABLE.has(reason) && remedy === null;
+    const rules = remedy === null ? { overridable } : { overridable, remedy };
+    this.#append(run.task.id, "park", entryClass, { reason, ...rules, from: run.task.state, ...detail, spent: this.#spentNow(run) });
     run.task = TaskSchema.parse({ ...run.task, state: "parked", runtime_substate: null });
+    // §2.7.1: the rejection count resets when a call parks (and on any park: the task stops either way).
+    run.rejections = [];
     return this.#outcome(run, reason);
   }
 
@@ -920,16 +1096,85 @@ export class Runner {
 
   /** Adds an item to the task's context and journals it, so a rebuilt task sends exactly the same context (D-066). */
   #pushContext(run: TaskRun, item: ContextItem, dataClass: DataClass): void {
-    run.context.push({ item, data_class: dataClass });
-    this.#append(run.task.id, "note", join([dataClass, this.#runnerClass(run)]), { type: "context", item, data_class: dataClass });
+    const seq = this.#append(run.task.id, "note", join([dataClass, this.#runnerClass(run)]), { type: "context", item, data_class: dataClass });
+    run.context.push({ item, data_class: dataClass, seq });
   }
 
   /** The park entry the task is parked on, with the call it stopped at. */
-  #lastPark(run: TaskRun): { seq: number; reason: ParkReason; tool_call: string | null } | null {
+  #lastPark(run: TaskRun): LastPark | null {
     const entry = readTrajectory(this.#journal.root, run.task.id).findLast((candidate) => candidate.kind === "park");
     if (entry === undefined) return null;
     const payload = ParkRecord.parse(this.#payloadOf(entry.payload_ref));
-    return { seq: entry.seq, reason: payload.reason, tool_call: payload.tool_call ?? null };
+    return {
+      seq: entry.seq,
+      reason: payload.reason,
+      tool_call: payload.tool_call ?? null,
+      // Fail-closed: a park recorded as not overridable stays so, whatever its reason (§8.2, §8.3).
+      overridable: payload.overridable !== false && !NON_OVERRIDABLE.has(payload.reason),
+      remedy: payload.remedy ?? null,
+      capability: payload.capability ?? null,
+      outside: [
+        ...new Map(
+          (payload.detail?.grants ?? []).flatMap((item) => item.outside.map((violation) => [violation.path, { path: violation.path, unresolved: violation.unresolved !== undefined }] as const)),
+        ).values(),
+      ],
+    };
+  }
+
+  /**
+   * §11.1 (v0.6 A3, v0.6.1 V6-8): for every value that caused a boundary park, its provenance class, its integrity, and
+   * where it came from (D-110). A `bound` value names the entry it was bound to; a `constant` names the admission entry
+   * and its slot; a `synthesized` value cannot be traced without comparing contents (invariant 7), so it lists the
+   * untrusted entries in the model's context since the last operator input as possible sources.
+   */
+  #parkSources(run: TaskRun, callSeq: number, detail: ParkDetail): Record<string, unknown>[] {
+    const call = CallRecord.parse(this.#payloadOf(this.#entryAt(run.task.id, callSeq).payload_ref));
+    const causing = causingArguments(detail, call.arguments);
+    const admissionSeq = readTrajectory(this.#journal.root, run.task.id)[0]?.seq ?? null;
+    const lastOperator = run.context.findLastIndex((entry) => entry.data_class.integrity === "operator");
+    const possible = run.context
+      .slice(lastOperator + 1)
+      // Content the model read, not its own turns: those are what it composed, including the value being traced.
+      .filter((entry) => entry.data_class.integrity === "untrusted" && entry.item.role !== "assistant")
+      .map((entry) => ({ entry: sourceSeqOf(entry), context_entry: entry.seq, role: entry.item.role }));
+    return causing.map((argument) => {
+      const record = call.arguments.find((item) => item.argument === argument);
+      const unresolved = call.unresolved.find((item) => item.argument === argument);
+      if (record === undefined) {
+        // No established value: an unresolved reference (judged untrusted, D-048) or a value with no provenance (D-054).
+        return { argument, class: unresolved?.class ?? "none", integrity: "untrusted", source: { kind: unresolved === undefined ? "no_provenance" : "unresolved" } };
+      }
+      const base = { argument, class: record.class, integrity: record.integrity };
+      if (record.origin.class === "bound") return { ...base, source: { kind: "entry", entry: record.origin.bound_to, binding_entry: record.origin.binding_entry } };
+      if (record.origin.class === "constant") return { ...base, source: { kind: "admission", entry: admissionSeq, slot: record.origin.slot } };
+      return { ...base, source: { kind: "possible_sources", since_operator_input: lastOperator < 0 ? null : (run.context[lastOperator]?.seq ?? null), entries: possible } };
+    });
+  }
+
+  #entryAt(taskId: string, seq: number): TrajectoryEntry {
+    const entry = readTrajectory(this.#journal.root, taskId).find((candidate) => candidate.seq === seq);
+    if (entry === undefined) throw new RunnerError(`task ${taskId} has no entry ${String(seq)}`);
+    return entry;
+  }
+
+  /**
+   * The parked out-of-scope paths no usable grant among `grants` covers for the parked capability (§8.2, D-109). A path
+   * that had no canonical form when it parked is resolved again now (§2.7.1 C4, D-114): a grant can cover only a
+   * canonical path, so one that still cannot be resolved is never covered.
+   */
+  async #uncoveredByGrants(run: TaskRun, grants: readonly string[], park: LastPark): Promise<string[]> {
+    if (park.capability === null || park.outside.length === 0) return ["the parked values (the park does not name them)"];
+    const covering = this.#grants.coverage({ principal: run.task.principal, grants }, park.capability, this.#clock()).covering;
+    const covered = (path: string): boolean => covering.some((grant) => grant.resource_scope.some((selector) => selector.kind === "path" && pathWithin(path, selector.prefix)));
+    const unresolved = park.outside.filter((item) => item.unresolved).map((item) => item.path);
+    const now = await this.#resolver.resolve(unresolved);
+    return park.outside
+      .filter((item) => {
+        if (!item.unresolved) return !covered(item.path);
+        const answer = now.get(item.path);
+        return answer === undefined || !answer.ok || !covered(answer.canonical);
+      })
+      .map((item) => item.path);
   }
 
   #payloadOf(ref: string): unknown {
@@ -968,6 +1213,7 @@ export class Runner {
       provider: record.provider_profile,
       sources: record.sources,
       warnings: record.warnings,
+      rejection_limit: record.rejection_limit,
     };
     const run: TaskRun = {
       task: record.task,
@@ -980,6 +1226,8 @@ export class Runner {
       context: [],
       executingActors: new Set([RUNNER_ACTOR, ENFORCEMENT_ACTOR]),
       turns: 0,
+      rejections: [],
+      pinFiles: null,
     };
     let state: TaskState = "admitted";
     let floor = record.task.sensitivity_floor;
@@ -1004,7 +1252,12 @@ export class Runner {
         for (const grant of body.removed_grants ?? []) if (grants.includes(grant)) grants.splice(grants.indexOf(grant), 1);
       } else if (body.type === "state" && body.to !== undefined) state = TaskStateSchema.parse(body.to);
       else if (body.type === "sensitivity_floor" && body.to !== undefined) floor = SensitivitySchema.parse(body.to);
-      else if (body.type === "context" && body.item !== undefined && body.data_class !== undefined) run.context.push({ item: body.item, data_class: body.data_class });
+      else if (body.type === "context" && body.item !== undefined && body.data_class !== undefined) run.context.push({ item: body.item, data_class: body.data_class, seq: entry.seq });
+      else if (body.type === "pin_files") {
+        // Read from the note itself: the replay record keeps only the fields every note shares.
+        const pinned = PinFilesNote.parse(this.#payloadOf(entry.payload_ref));
+        run.pinFiles = { files: pinned.files, data_class: pinned.data_class };
+      }
     }
     run.task = TaskSchema.parse({ ...record.task, state, runtime_substate: state === "running" ? "active" : null, sensitivity_floor: floor, grants });
     this.#runs.set(id, run);
@@ -1077,8 +1330,10 @@ type Constants = AdmittedTask["constants"];
 
 /** The constant slots offered to the executing model: the operator's, never the verifier's (D-075). */
 export function offeredConstants(constants: Constants): string[] {
-  return Object.keys(constants)
-    .filter((slot) => !slot.startsWith(VERIFIER_SLOT_PREFIX))
+  // Only constants fixed for the executing actor (§2.6, v0.6 B1); a criterion slot never is (D-075, D-111).
+  return Object.entries(constants)
+    .filter(([slot, constant]) => constant.actors.includes("executing") && !slot.startsWith(VERIFIER_SLOT_PREFIX))
+    .map(([slot]) => slot)
     .sort();
 }
 
@@ -1154,4 +1409,55 @@ export function hideValues<T>(message: T, values: readonly string[]): T {
 
 function rejection(toolCall: string, callSeq: number, detail: RejectDetail): Record<string, unknown> {
   return { tool_call: toolCall, call_seq: callSeq, outcome: "rejected", ...detail };
+}
+
+/** What `#parkSources` reads from a `capability_call` entry the boundary wrote. Unknown fields are ignored. */
+const CallRecord = z.object({
+  arguments: z.array(
+    z.object({
+      argument: z.string(),
+      class: z.string(),
+      integrity: z.string(),
+      sensitivity: z.string(),
+      origin: z.discriminatedUnion("class", [
+        z.object({ class: z.literal("bound"), bound_to: z.number(), binding_entry: z.number() }),
+        z.object({ class: z.literal("constant"), slot: z.string() }),
+        z.object({ class: z.literal("synthesized") }),
+      ]),
+    }),
+  ),
+  unresolved: z.array(z.object({ argument: z.string(), class: z.string() })),
+});
+
+/**
+ * The arguments that caused a boundary park (§11.1, D-110): the values below a floor; the out-of-scope values; the
+ * values above the ceiling that was exceeded (every argument when none is above it, since the composing context then
+ * raised the class). Parks that no value caused (`awaiting_grant`, `adapter_quarantined`) name none.
+ */
+function causingArguments(detail: ParkDetail, args: readonly { readonly argument: string; readonly sensitivity: string }[]): string[] {
+  const unique = (items: readonly string[]): string[] => [...new Set(items)];
+  switch (detail.reason) {
+    case "integrity_floor":
+      return unique([...detail.violations.map((item) => item.argument), ...detail.grants.flatMap((item) => item.violations.map((violation) => violation.argument))]);
+    case "scope_violation":
+      return unique(detail.grants.flatMap((item) => item.outside.map((violation) => violation.argument)));
+    case "sensitivity_ceiling": {
+      const ceilings = compareSensitivity(detail.aggregate, detail.ceiling) > 0 ? [detail.ceiling] : detail.grants.map((item) => item.max_sensitivity);
+      const lowest = ceilings.reduce<Sensitivity | null>((low, item) => (low === null || compareSensitivity(item, low) < 0 ? item : low), null);
+      const above = args.filter((item) => lowest !== null && compareSensitivity(SensitivitySchema.parse(item.sensitivity), lowest) > 0).map((item) => item.argument);
+      return unique(above.length > 0 ? above : args.map((item) => item.argument));
+    }
+    default:
+      return [];
+  }
+}
+
+/** The entry a context item's content came from: the result or turn it carries, else the context note itself. */
+function sourceSeqOf(entry: Contextual): number {
+  const content = entry.item.content;
+  if (typeof content === "object" && content !== null) {
+    const record = content as Record<string, unknown>;
+    for (const key of ["result_seq", "turn_seq"]) if (typeof record[key] === "number") return record[key];
+  }
+  return entry.seq;
 }

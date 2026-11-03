@@ -1,5 +1,6 @@
 import { type Grant, type ScalarFieldType, argvTokenKinds, pathWithin } from "../../contracts/src/index.js";
-import type { CallValue, CapabilityCall, RegistryEntry } from "../../registry/src/index.js";
+import type { CapabilityCall, RegistryEntry } from "../../registry/src/index.js";
+import type { CanonicalPaths } from "./canonical.js";
 
 /**
  * §2.7 step 4: a `data` field outside the grant's `resource_scope` parks
@@ -14,20 +15,27 @@ import type { CallValue, CapabilityCall, RegistryEntry } from "../../registry/sr
  *     does; an absolute path or a `..` escape outside the scope does not.
  *   - A path value held in a `map` data field always fails (D-050).
  *
- * Scope is judged on the normalised path as written; symlinks are not
- * resolved. Accepted residual (§0.5 corollary): a symlink already present in
- * the work content can reach outside the scope. Resolving symlinks (§3.3's
- * canonical form) is a gate before JUNO operates on any content it did not
- * create (Slice 1.5), not only when a link-creating program is admitted.
+ * Since v0.6 (C4, D-113) scope is judged on the **canonical** path: the raw
+ * path (absolute as given, or `cwd` + "/" + operand, with `..` not collapsed)
+ * resolved, symlinks included, where the effect will run (§2.7.1). The caller
+ * resolves the raw paths `scopePaths` lists and passes the answers; a path with
+ * no canonical form, or one missing from the answers, is outside every scope.
+ * This closes D-047's accepted residual (a symlink in the work content reaching
+ * outside the scope).
  */
 
 export type ScopeViolation = {
   readonly argument: string;
   /** The value as the call carries it. */
   readonly value: string;
-  /** The normalised absolute path the value names, which is what was judged. */
+  /** What was judged: the canonical path, or the raw path when it has none. */
   readonly path: string;
+  /** Why the raw path has no canonical form, when it has none (it is then outside every scope). */
+  readonly unresolved?: string;
 };
+
+/** One path a call names: the argument, its value, and the raw absolute path the resolver resolves (D-113). */
+export type ScopePath = { readonly argument: string; readonly value: string; readonly raw: string };
 
 /** Normalises `operand` as a path: absolute as given, or relative to `cwd`; `.` and `..` resolved; never above `/`. */
 export function operandPath(cwd: string, operand: string): string {
@@ -48,38 +56,60 @@ function pathInScope(path: string, grant: Grant): boolean {
   return grant.resource_scope.some((selector) => selector.kind === "path" && pathWithin(path, selector.prefix));
 }
 
-/** Every path-typed data value, and every argv operand, of `call` that falls outside `grant`'s scope. */
-export function scopeViolations(entry: RegistryEntry, call: CapabilityCall, grant: Grant): ScopeViolation[] {
-  const { capability, argv_field: argvField, cwd_field: cwdField, program_field: programField } = entry;
-  const violations: ScopeViolation[] = [];
-  const check = (argument: string, value: CallValue | undefined, path: string | undefined = typeof value === "string" ? value : undefined): void => {
-    if (typeof value === "string" && path !== undefined && !pathInScope(path, grant)) violations.push({ argument, value, path });
-  };
+/** The raw path an argv operand names: absolute as given, else joined to `cwd`; nothing collapsed (D-113). */
+export function rawOperandPath(cwd: string, operand: string): string {
+  return operand.startsWith("/") ? operand : `${cwd.endsWith("/") ? cwd.slice(0, -1) : cwd}/${operand}`;
+}
 
+/**
+ * Every path `call` names, as step 4 judges them (D-047, D-113): each path-typed data value (outside `argv`), and each
+ * argv operand by the D-037 reading. A path held in a map field is not listed: it fails closed regardless (D-050).
+ * The one reading shared by the caller's resolution and step 4, so the two can never judge different paths.
+ */
+export function scopePaths(entry: RegistryEntry, call: CapabilityCall): ScopePath[] {
+  const { capability, argv_field: argvField, cwd_field: cwdField, program_field: programField } = entry;
+  const paths: ScopePath[] = [];
   for (const [name, field] of Object.entries(capability.interface)) {
     if (field.role !== "data" || name === argvField) continue;
     const value = call[name];
     if (field.type.kind === "list") {
-      if (isPath(field.type.items) && Array.isArray(value)) value.forEach((item, index) => check(`${name}[${String(index)}]`, item));
-    } else if (field.type.kind === "map") {
-      // D-050: no ruling says what a path held in a map names, so each one fails closed, in scope or not.
-      if (isPath(field.type.values) && typeof value === "object" && !Array.isArray(value)) {
-        for (const [key, item] of Object.entries(value)) {
-          violations.push({ argument: `${name}[${JSON.stringify(key)}]`, value: String(item), path: String(item) });
-        }
+      if (isPath(field.type.items) && Array.isArray(value)) {
+        value.forEach((item, index) => {
+          if (typeof item === "string") paths.push({ argument: `${name}[${String(index)}]`, value: item, raw: item });
+        });
       }
-    } else if (isPath(field.type)) {
-      check(name, value);
+    } else if (field.type.kind !== "map" && isPath(field.type) && typeof value === "string") {
+      paths.push({ argument: name, value, raw: value });
     }
   }
-
   const program = String(call[programField]);
   const cwd = String(call[cwdField]);
   const argv = (call[argvField] as readonly unknown[]).map(String);
   const surface = entry.program_surfaces.find((candidate) => candidate.program === program);
   argvTokenKinds(program, surface, argv).forEach((kind, index) => {
     const element = argv[index] ?? "";
-    if (kind === "operand") check(`${argvField}[${String(index)}]`, element, operandPath(cwd, element));
+    if (kind === "operand") paths.push({ argument: `${argvField}[${String(index)}]`, value: element, raw: rawOperandPath(cwd, element) });
   });
+  return paths;
+}
+
+/**
+ * Every path of `call` that falls outside `grant`'s scope, judged on its canonical form (§2.7.1 C4, D-113): a path with
+ * no canonical form in `canonical` is outside. A path held in a map field always fails (D-050).
+ */
+export function scopeViolations(entry: RegistryEntry, call: CapabilityCall, grant: Grant, canonical: CanonicalPaths): ScopeViolation[] {
+  const violations: ScopeViolation[] = [];
+  for (const { argument, value, raw } of scopePaths(entry, call)) {
+    const answer = canonical.get(raw);
+    if (answer === undefined || !answer.ok) violations.push({ argument, value, path: raw, unresolved: answer === undefined ? "not resolved" : answer.reason });
+    else if (!pathInScope(answer.canonical, grant)) violations.push({ argument, value, path: answer.canonical });
+  }
+  for (const [name, field] of Object.entries(entry.capability.interface)) {
+    const value = call[name];
+    // D-050: no ruling says what a path held in a map names, so each one fails closed, in scope or not.
+    if (field.role === "data" && field.type.kind === "map" && isPath(field.type.values) && typeof value === "object" && value !== null && !Array.isArray(value)) {
+      for (const [key, item] of Object.entries(value)) violations.push({ argument: `${name}[${JSON.stringify(key)}]`, value: String(item), path: String(item) });
+    }
+  }
   return violations;
 }

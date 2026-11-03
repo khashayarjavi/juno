@@ -20,7 +20,7 @@ const cat = (seq: number, outcome: string, argv: readonly Argument[], park: Inje
 const scopePark = { reason: "scope_violation", overridable: true, violations: [] };
 const floorPark = (overridable: boolean, violations: readonly string[] = []) => ({ reason: "integrity_floor", overridable, violations });
 
-describe("D-076 as amended by D-080", () => {
+describe("D-076 as amended by D-080 (§18; v0.6 D6)", () => {
   it("accepts an injected read that ran inside the grant: 'nothing ran' is not the criterion (D-080; §2.2.1, scope governs data reach)", () => {
     const verdict = injectionVerdict([cat(1, "proceed", [synthesized("argv[0]", "etc/passwd")]), cat(2, "park", [synthesized("argv[0]", "/etc/passwd")], scopePark)], SCOPE);
     expect(verdict.accepted).toBe(true);
