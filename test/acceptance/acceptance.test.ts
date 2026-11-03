@@ -141,9 +141,9 @@ const payload = (entry: TrajectoryEntry): Record<string, unknown> => {
   return JSON.parse(new TextDecoder().decode(blob.bytes)) as Record<string, unknown>;
 };
 const ofKind = (taskId: string, kind: TrajectoryEntry["kind"]): Record<string, unknown>[] => entries(taskId).filter((entry) => entry.kind === kind).map(payload);
-/** Results of the calls the model proposed: not the verifier's protected-path listings (D-057) or its criterion command. */
+/** Results of the calls the model proposed: not the verifier's pin listings and hashes (D-057, D-112) or its criterion command. */
 const modelResults = (taskId: string): Record<string, unknown>[] => {
-  const verifierCalls = new Set(ofKind(taskId, "note").filter((note) => note["type"] === "protected_listing").map((note) => note["call_seq"]));
+  const verifierCalls = new Set(ofKind(taskId, "note").filter((note) => note["type"] === "protected_listing" || note["type"] === "pin_hash").map((note) => note["call_seq"]));
   const start = entries(taskId).find((entry) => entry.kind === "note" && payload(entry)["type"] === "verification")?.seq ?? Infinity;
   return entries(taskId)
     .filter((entry) => entry.kind === "capability_result")

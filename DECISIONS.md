@@ -1089,3 +1089,51 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
 
   The old test was also weaker than its name: once the model's call was rejected, its lookup matched the verifier's call. The new test separates the two. Two tests are added: a value fixed for both actors resolves for both, and one fixed for the verifier only is neither offered to nor resolvable by the model; admission refuses an empty, repeated or unknown actor.
 - Reason: §2.6 ("A `constant` source resolves only in calls made by the actor it was fixed for … naming one is an unresolved reference"); CLAUDE.md §2 rule 5.
+
+## D-112 — B2: how verification inputs are pinned; "verification scope" defined; D-067's listing comparison replaced (Slice 1.5 Increment 1)
+- Date: 2026-11-03
+- Status: Accepted (implementation record of §3.4.4 B2 and V6-1, with D-097; autopilot rulings marked below, CLAUDE.md §7 step 3. The provenance of the hashed file names follows from §2.6 and §5.1, quoted below. A reviewer who reads it as a new §2 ambiguity should raise it for the operator.)
+- Applies to: Slice 1.5 onward
+- Decision:
+  - **Criterion fields.** The criterion takes `outputs` (never pinned) and `verification_inputs` (pinned, or pinned as absent), both work paths, default empty.
+  - **Verification scope (D-097's term; autopilot ruling, the restrictive reading).** It is the directory the criterion's command runs in (its `cwd` field), plus each protected path. A root inside another is listed through it.
+  - **What is pinned.** Every path in the scope that is not within a declared output:
+    - each entry's type and mode;
+    - each regular file's SHA-256;
+    - each symlink's target;
+    - the set of paths itself, so a new or removed path is a change.
+
+    A directory's size and every timestamp are not compared: a directory's size changes when an output is created in it, and its contents are compared entry by entry.
+  - **Admission refuses:**
+    - an output or input outside the scope;
+    - an output overlapping a protected path or an input;
+    - a scope root no task grant lets the verifier list;
+    - a registry without `ls` and `sha256sum` in `shell.run`.
+  - **Mechanism.** Before the first turn (§5.1: admission records the pins), and again at closure after the criterion's command passes:
+    - the verifier runs `ls -l -a -R -n --time-style=full-iso --quoting-style=escape -- <roots>`, then `sha256sum -z -- <files>` in batches of 100, both through `shell.run` and the boundary;
+    - escape quoting makes the listing unambiguous (checked on the workload's coreutils 9.1);
+    - a name that cannot be decoded, a line of another shape, a missing root, more than 10,000 entries, or more than 2,000 files to hash means no pins: the task fails (`protected_listing_failed` when the listing did not run cleanly, `verification_pins_failed` otherwise). It is never skipped.
+  - **Result.** At closure, any changed path (added, removed, different type, mode, hash or target), or a hash that cannot be computed on either side, makes `verified` impossible. The task fails `verification_fail`, and the verification note records `inputs`, `protected_paths` and `changed_paths`. Symlinks are never hashed, since their target may lie outside the scope.
+  - **The hashed files' names.** They are found by the admission listing and fixed then as verifier constants, one slot each (`criterion.pin.file.<n>`), with the listing result's class (integrity `untrusted`, since they are names from the workspace; they are data operands). They are journalled (`pin_files`) so a rebuilt task hashes the same files. Basis:
+    - §2.6 counts "a Strategy template slot filled by the runtime" as `constant`;
+    - §5.1 says admission records the pins;
+    - B1 keeps them the verifier's alone.
+
+    The program, flags and cwd of both calls are criterion constants fixed at admission for the verifier.
+  - **Registry and image.** `sha256sum` joins the `shell.run` enum, with a code-free surface (`-z`, `--zero`, `--`, operands); the workload image copies `/usr/bin/sha256sum` (libc only). It is never offered to the executing model (B1); a model naming it by a literal or a bound value is held to the instruction floor and parks. `ls` gains `--quoting-style=escape`. This is a change to an operator-authored trust root (§2.5): drafted by the agent, it becomes operator-authored when the operator reviews and merges it (as D-035).
+  - **Replaces D-067's listing comparison**, which a write that kept size and mtime could pass.
+- **Tests changed** because the mechanism changed, each recorded here:
+  - `packages/runner/test/runner.test.ts`:
+    - "verifies by running the criterion's command" now expects three verifier calls (command, listing, hash), the hashed names at the listing's integrity, and `inputs: "unchanged"`;
+    - "fails verification when the protected paths' listing changed" faked a change with a stand-in "generation". It now rewrites a protected file at the same size, which is stricter, and asserts the changed path;
+    - two B1 tests now exclude the verifier's calls by the call seqs its notes record, not by position.
+  - `packages/runner/test/admission.test.ts`: the narrow-grant refusal is now D-112's check (it was D-057's); the refusal is unchanged.
+  - `test/acceptance/acceptance.test.ts`: the model-results helper also excludes the hash calls.
+  - `test/containers/runner.test.ts`: the call order now includes the hash calls; it asserts the real `ls` and `sha256sum` output (escape-quoted header, three hashed files, identical hashes at admission and closure, `inputs: "unchanged"`).
+  - The unit tests' stand-in workload now emulates `ls` (escape style) and `sha256sum -z` over a per-harness host directory standing for `/work`; the real programs are proven by the container tests.
+- New tests:
+  - `packages/runner/test/pins.test.ts`: the readings, on a real `ls` fixture;
+  - `packages/runner/test/pins-runner.test.ts`: outputs allowed; a new non-output file, a created absent input, a same-size change and an unhashable file each fail; admission refusals;
+  - `packages/runner/test/resume.test.ts`: a rebuilt task is checked against the pins taken before the restart. This test found, and now guards, a bug where the rebuild lost the pinned file list;
+  - `test/containers/registry.test.ts`: `sha256sum` runs in the workload, owned by root.
+- Reason: §3.4.4 ("At admission the runner records a content hash of every verification input and every protected path … A file the method reads that is in neither set is treated as an input … A hash that cannot be computed counts as changed"), §5.1, §2.6, D-097.

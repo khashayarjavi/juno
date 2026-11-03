@@ -203,17 +203,37 @@ describe("a task run by the host runner against the real workload (build plan In
       const blob = readPayload(journalRoot, entry.payload_ref);
       return blob.status === "present" ? (JSON.parse(new TextDecoder().decode(blob.bytes)) as Record<string, unknown>) : null;
     });
-    // In order: the protected-path baseline (D-057), the task's call, the criterion's command, the protected-path check.
-    const listing = "/work/project/protected:";
-    expect(results.map((result) => [result?.["exit_code"], String(result?.["stdout"]).startsWith(listing) ? listing : result?.["stdout"]])).toEqual([
+    // In order: the pins at admission (the scope listing, then sha256sum, D-112), the task's call, the criterion's
+    // command, and the pins again at closure.
+    const listing = "/work/project:";
+    const hashes = "hashes";
+    const shown = (result: Record<string, unknown> | null): unknown => {
+      const stdout = String(result?.["stdout"]);
+      return stdout.startsWith(listing) ? listing : /^[0-9a-f]{64} {2}\/work\//.test(stdout) ? hashes : result?.["stdout"];
+    };
+    expect(results.map((result) => [result?.["exit_code"], shown(result)])).toEqual([
       [0, listing],
+      [0, hashes],
       [0, "hello\n"],
       [0, "ok\n"],
       [0, listing],
+      [0, hashes],
     ]);
-    // The protected listing was taken twice and did not change; it names the file under the protected path.
-    expect(results[3]?.["stdout"]).toBe(results[0]?.["stdout"]);
-    expect(String(results[0]?.["stdout"])).toContain("keep.txt");
+    // The real ls and sha256sum ran in the workload: the escape-quoted listing names the file under the protected path,
+    // every pinned file was hashed, and nothing changed between admission and closure.
+    expect(String(results[0]?.["stdout"])).toMatch(/^\/work\/project\/protected:$/m);
+    expect(String(results[0]?.["stdout"])).toContain(" keep.txt");
+    expect(String(results[1]?.["stdout"]).split("\0").filter((record) => record !== "").map((record) => record.slice(66)).sort()).toEqual([
+      "/work/project/done.txt",
+      "/work/project/notes.txt",
+      "/work/project/protected/keep.txt",
+    ]);
+    expect(results[5]?.["stdout"]).toBe(results[1]?.["stdout"]);
+    const verification = entries.filter((entry) => entry.kind === "note").map((entry) => {
+      const blob = readPayload(journalRoot, entry.payload_ref);
+      return blob.status === "present" ? (JSON.parse(new TextDecoder().decode(blob.bytes)) as Record<string, unknown>) : {};
+    }).filter((note) => note["type"] === "verification").at(-1);
+    expect(verification).toMatchObject({ result: "pass", inputs: "unchanged", changed_paths: [] });
   });
 });
 

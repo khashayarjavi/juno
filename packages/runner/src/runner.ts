@@ -36,6 +36,7 @@ import { type EntryDraft, JournalIntegrityError, type JournalWriter, canonicalJs
 import type { CapabilityRegistry, InvocationResult, RegistryEntry } from "../../registry/src/index.js";
 import {
   type AdmissionResult,
+  type AdmittedConstant,
   type AdmittedTask,
   type ConstantActor,
   ConstantActors,
@@ -48,9 +49,13 @@ import {
   PROTECTED_LISTING,
   criterionSlots,
   grantChecks,
+  hashSlots,
+  pinFileSlot,
   protectedSlots,
   routable,
+  verificationScope,
 } from "./admission.js";
+import { MAX_PINNED_FILES, PIN_HASH_BATCH, type Pin, changedPins, filesToHash, parseHashes, parseListing, pinsOf, within } from "./pins.js";
 import { type BudgetAxis, NO_SPEND, type Spend, exhaustedAxes, overrunAxes } from "./budget.js";
 import { type RunnerLock, acquireRunnerLock } from "./lock.js";
 import { ProviderProfile } from "./profile.js";
@@ -135,6 +140,11 @@ type TaskRun = {
    * when the task parks, and on resume.
    */
   rejections: { readonly kind: "call" | "unreadable_turn"; readonly seq: number }[];
+  /**
+   * The files the verifier hashes, found by the admission listing and fixed then as verifier constants, one slot each
+   * (§2.6 "a template slot filled by the runtime", §5.1, D-112), with the listing result's class. `null` until taken.
+   */
+  pinFiles: { readonly files: readonly string[]; readonly data_class: DataClass } | null;
 };
 
 const QuarantineRecord = z.strictObject({ type: z.literal("quarantine"), capability: z.string(), adapter: z.string(), observation: z.string() });
@@ -209,7 +219,12 @@ const RunnerRecordEntry = z.discriminatedUnion("type", [
   z.object({ type: z.literal("stale_lock_cleared"), reason: z.string(), holder: z.record(z.string(), z.unknown()) }),
 ]);
 
-const ProtectedNote = z.object({ type: z.literal("protected_listing"), phase: z.enum(["baseline", "check"]), result_seq: z.number() });
+const PinFilesNote = z.object({ type: z.literal("pin_files"), files: z.array(z.string()), data_class: DataClassSchema });
+const PinsNote = z.object({
+  type: z.literal("verification_pins"),
+  phase: z.enum(["baseline", "check"]),
+  pins: z.record(z.string(), z.object({ type: z.enum(["file", "directory", "symlink", "other"]), mode: z.string(), size: z.string(), target: z.string().nullable(), sha256: z.string().nullable() })),
+});
 
 const NO_COST = { tokens_in: 0, tokens_out: 0, tokens_cached: 0, currency: 0, duration_ms: 0 };
 
@@ -401,6 +416,7 @@ export class Runner {
       executingActors: new Set([RUNNER_ACTOR, ENFORCEMENT_ACTOR]),
       turns: 0,
       rejections: [],
+      pinFiles: null,
     });
     result = { admitted: true, admission };
     return result;
@@ -534,13 +550,13 @@ export class Runner {
     if (this.#active !== null && this.#active !== run.task.id) throw new RunnerError(`task ${this.#active} is running; this runner runs one task at a time`);
     this.#active = run.task.id;
     try {
-      // D-057: before the first turn of a task the verifier will check, record how its protected paths look.
-      // A task whose first listing parked has none yet, so it is taken when the task runs again (D-067).
-      if (run.task.closure_mode === "verified" && run.admission.criterion !== null && this.#protectedBaselineSeq(run) === null) {
-        const baseline = await this.#listProtected(run, "baseline");
+      // §3.4.4 B2 / §5.1 (D-112): before the first turn of a task the verifier will check, pin its verification scope.
+      // A task whose pinning parked has no pins yet, so they are taken when the task runs again (D-067).
+      if (run.task.closure_mode === "verified" && run.admission.criterion !== null && this.#baselinePins(run) === null) {
+        const baseline = await this.#pin(run, "baseline");
         if (!baseline.ok) return baseline.outcome;
-        // A baseline that did not list the paths can protect nothing: the task fails before any turn (D-067).
-        if (!listed(baseline.listing)) return this.#fail(run, "protected_listing_failed");
+        // Pins that were not taken protect nothing: the task fails before any turn (D-067, D-112).
+        if (baseline.pins === null) return this.#fail(run, baseline.failure);
       }
       return await this.#loop(run);
     } finally {
@@ -699,6 +715,8 @@ export class Runner {
     let resultSeq: number | null = null;
     let exitCode: number | null = null;
     let protectedPaths: "unchanged" | "changed" | null = null;
+    let inputs: "unchanged" | "changed" | null = null;
+    let changedPaths: string[] = [];
     if (verdict.outcome === "proceed") {
       const performed = await this.#perform(run, verdict.authorization);
       resultSeq = performed.seq;
@@ -706,16 +724,19 @@ export class Runner {
       if (performed.exitCode !== null) result = performed.exitCode === criterion.expect_exit_code ? "pass" : "fail";
     }
     if (result === "pass") {
-      // D-057: verification fails if the task wrote under a protected path.
-      const check = await this.#listProtected(run, "check");
+      // §3.4.4 B2 (D-112): verification fails if any pinned path changed: a verification input, or anything under a
+      // protected path (D-057).
+      const check = await this.#pin(run, "check");
       if (!check.ok) return check.outcome;
-      if (!listed(check.listing)) {
-        // A check that did not list the paths cannot show they are unchanged (D-067).
-        protectedPaths = null;
+      const baseline = this.#baselinePins(run);
+      if (check.pins === null || baseline === null) {
+        // Pins that were not taken cannot show anything is unchanged (D-067).
         result = "inconclusive";
       } else {
-        protectedPaths = canonicalJson(check.listing) === canonicalJson(this.#protectedBaseline(run)) ? "unchanged" : "changed";
-        if (protectedPaths === "changed") result = "fail";
+        changedPaths = changedPins(baseline, check.pins);
+        inputs = changedPaths.length === 0 ? "unchanged" : "changed";
+        protectedPaths = changedPaths.some((path) => criterion.protected_paths.some((prefix) => within(path, prefix))) ? "changed" : "unchanged";
+        if (inputs === "changed") result = "fail";
       }
     }
     this.#append(run.task.id, "note", this.#runnerClass(run), {
@@ -727,6 +748,8 @@ export class Runner {
       exit_code: exitCode,
       expected_exit_code: criterion.expect_exit_code,
       protected_paths: protectedPaths,
+      inputs,
+      changed_paths: changedPaths,
       rejected: verdict.outcome === "reject" ? verdict.detail.reason : null,
     });
     if (result !== "pass") return this.#fail(run, `verification_${result}`);
@@ -748,11 +771,11 @@ export class Runner {
   async #listProtected(
     run: TaskRun,
     phase: "baseline" | "check",
-  ): Promise<{ ok: true; listing: Record<string, unknown> } | { ok: false; outcome: RunOutcome }> {
+  ): Promise<{ ok: true; listing: Record<string, unknown>; result_seq: number } | { ok: false; outcome: RunOutcome }> {
     const criterion = run.admission.criterion;
     if (criterion === null) throw new RunnerError(`task ${run.task.id} has no criterion`);
     const args: Record<string, unknown> = {};
-    for (const { slot, field, index } of protectedSlots(criterion)) {
+    for (const { slot, field, index } of protectedSlots(criterion, this.#registry.entry(criterion.command.capability))) {
       const source = { class: "constant", slot };
       if (index === null) args[field] = source;
       else ((args[field] ??= []) as unknown[])[index] = source;
@@ -765,28 +788,71 @@ export class Runner {
     const performed = await this.#perform(run, verdict.authorization);
     const listing = listingOf(performed.payload);
     this.#append(run.task.id, "note", this.#runnerClass(run), { type: "protected_listing", phase, call_seq: verdict.call_seq, result_seq: performed.seq });
-    return { ok: true, listing };
+    return { ok: true, listing, result_seq: performed.seq };
   }
 
-  /** The `seq` of the baseline listing's result, or null when none was taken yet. */
-  #protectedBaselineSeq(run: TaskRun): number | null {
+  /**
+   * Pins the verification scope (§3.4.4 B2, D-097, D-112): the listing, then `sha256sum -z` over the pinned files in
+   * batches, every argument a verifier constant. At the baseline the files to hash are fixed from the listing; at the
+   * check the same files are hashed again, and the listing shows anything added or removed. Returns the pins, or `null`
+   * with the reason the task fails when they could not be taken; a park parks the task.
+   */
+  async #pin(
+    run: TaskRun,
+    phase: "baseline" | "check",
+  ): Promise<{ ok: true; pins: Record<string, Pin>; failure?: undefined } | { ok: true; pins: null; failure: string } | { ok: false; outcome: RunOutcome }> {
+    const criterion = run.admission.criterion;
+    if (criterion === null) throw new RunnerError(`task ${run.task.id} has no criterion`);
+    const listed_ = await this.#listProtected(run, phase);
+    if (!listed_.ok) return listed_;
+    if (!listed(listed_.listing)) return { ok: true, pins: null, failure: "protected_listing_failed" };
+    const roots = verificationScope(criterion, this.#registry.entry(criterion.command.capability));
+    const parsed = parseListing(String(listed_.listing["stdout"]), roots);
+    if (!parsed.ok) return this.#pinsFailed(run, phase, parsed.reason);
+    if (phase === "baseline") {
+      const files = filesToHash(parsed.entries, criterion.outputs);
+      if (files.length > MAX_PINNED_FILES) return this.#pinsFailed(run, phase, `the verification scope has more than ${String(MAX_PINNED_FILES)} files to pin`);
+      // Fixed now, before the first turn, as part of admission's pins (§5.1); journalled so a rebuilt task hashes the same files.
+      run.pinFiles = { files, data_class: this.#entryClass(run.task.id, listed_.result_seq) };
+      this.#append(run.task.id, "note", this.#runnerClass(run), { type: "pin_files", files, data_class: run.pinFiles.data_class });
+    }
+    const files = run.pinFiles?.files ?? [];
+    const hashes = new Map<string, string>();
+    for (let start = 0; start < files.length; start += PIN_HASH_BATCH) {
+      const argv: unknown[] = hashSlots(criterion, this.#registry.entry(criterion.command.capability))
+        .filter((slot) => slot.field === "argv")
+        .map((slot) => ({ class: "constant", slot: slot.slot }));
+      for (let index = start; index < Math.min(files.length, start + PIN_HASH_BATCH); index += 1) argv.push({ class: "constant", slot: pinFileSlot(index) });
+      const args = { program: { class: "constant", slot: "criterion.pin.program" }, argv, cwd: { class: "constant", slot: "criterion.pin.cwd" } };
+      const verdict = this.#authorize(run, { capability: PROTECTED_LISTING.capability, arguments: args }, run.task.sensitivity_floor, "verifier");
+      if (verdict.outcome === "park") {
+        return { ok: false, outcome: this.#park(run, verdict.detail.reason, this.#entryClass(run.task.id, verdict.call_seq), { call_seq: verdict.call_seq, phase: `pin_${phase}`, detail: verdict.detail, sources: this.#parkSources(run, verdict.call_seq, verdict.detail) }) };
+      }
+      if (verdict.outcome === "reject") return this.#pinsFailed(run, phase, `the hashing call was rejected: ${verdict.detail.reason}`);
+      const performed = await this.#perform(run, verdict.authorization);
+      this.#append(run.task.id, "note", this.#runnerClass(run), { type: "pin_hash", phase, call_seq: verdict.call_seq, result_seq: performed.seq });
+      const stdout = performed.payload["stdout"];
+      if (typeof stdout === "string") for (const [path, hash] of parseHashes(stdout)) hashes.set(path, hash);
+    }
+    const pins = pinsOf(parsed.entries, hashes, criterion.outputs);
+    this.#append(run.task.id, "note", this.#runnerClass(run), { type: "verification_pins", phase, roots, outputs: criterion.outputs, pins });
+    return { ok: true, pins };
+  }
+
+  #pinsFailed(run: TaskRun, phase: "baseline" | "check", reason: string): { ok: true; pins: null; failure: string } {
+    this.#append(run.task.id, "note", this.#runnerClass(run), { type: "verification_pins", phase, failed: reason });
+    return { ok: true, pins: null, failure: "verification_pins_failed" };
+  }
+
+  /** The pins taken at admission, read back from the journal so a rebuilt task is checked against the same record. */
+  #baselinePins(run: TaskRun): Record<string, Pin> | null {
+    let pins: Record<string, Pin> | null = null;
     for (const entry of readTrajectory(this.#journal.root, run.task.id)) {
       if (entry.kind !== "note") continue;
-      const note = ProtectedNote.safeParse(this.#payloadOf(entry.payload_ref));
-      if (note.success && note.data.phase === "baseline") return note.data.result_seq;
+      const note = PinsNote.safeParse(this.#payloadOf(entry.payload_ref));
+      if (note.success && note.data.phase === "baseline") pins = note.data.pins;
     }
-    return null;
-  }
-
-  /** The baseline listing, read back from the journal so a rebuilt task is checked against the same record. */
-  #protectedBaseline(run: TaskRun): Record<string, unknown> {
-    const result_seq = this.#protectedBaselineSeq(run);
-    if (result_seq === null) throw new RunnerError(`task ${run.task.id} has no protected-path baseline`);
-    const entries = readTrajectory(this.#journal.root, run.task.id);
-    const result = entries.find((entry) => entry.seq === result_seq);
-    if (result === undefined) throw new RunnerError(`task ${run.task.id} has no entry ${String(result_seq)}`);
-    const payload = this.#payloadOf(result.payload_ref) as Record<string, unknown>;
-    return listingOf(payload);
+    return pins;
   }
 
   /** The closure (§3.4.4), written by the runner and checked against its executing actors at write time. */
@@ -812,7 +878,10 @@ export class Runner {
    * executing model naming a verifier constant is an unresolved reference, a rejection (§2.7.1).
    */
   #authorize(run: TaskRun, proposal: unknown, sensitivity: Sensitivity, actor: ConstantActor): Verdict {
-    const constants = Object.fromEntries(Object.entries(run.admission.constants).filter(([, constant]) => constant.actors.includes(actor)));
+    const constants: Record<string, AdmittedConstant> = Object.fromEntries(Object.entries(run.admission.constants).filter(([, constant]) => constant.actors.includes(actor)));
+    if (actor === "verifier" && run.pinFiles !== null) {
+      for (const [index, path] of run.pinFiles.files.entries()) constants[pinFileSlot(index)] = { value: path, data_class: run.pinFiles.data_class, actors: ["verifier"] };
+    }
     const context: TaskContext = { task: run.task, constants, synthesis: { sensitivity } };
     const verdict = this.#boundary.authorize(context, proposal);
     this.#recordQuarantines();
@@ -1124,6 +1193,7 @@ export class Runner {
       executingActors: new Set([RUNNER_ACTOR, ENFORCEMENT_ACTOR]),
       turns: 0,
       rejections: [],
+      pinFiles: null,
     };
     let state: TaskState = "admitted";
     let floor = record.task.sensitivity_floor;
@@ -1149,6 +1219,11 @@ export class Runner {
       } else if (body.type === "state" && body.to !== undefined) state = TaskStateSchema.parse(body.to);
       else if (body.type === "sensitivity_floor" && body.to !== undefined) floor = SensitivitySchema.parse(body.to);
       else if (body.type === "context" && body.item !== undefined && body.data_class !== undefined) run.context.push({ item: body.item, data_class: body.data_class, seq: entry.seq });
+      else if (body.type === "pin_files") {
+        // Read from the note itself: the replay record keeps only the fields every note shares.
+        const pinned = PinFilesNote.parse(this.#payloadOf(entry.payload_ref));
+        run.pinFiles = { files: pinned.files, data_class: pinned.data_class };
+      }
     }
     run.task = TaskSchema.parse({ ...record.task, state, runtime_substate: state === "running" ? "active" : null, sensitivity_floor: floor, grants });
     this.#runs.set(id, run);

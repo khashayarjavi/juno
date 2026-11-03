@@ -64,7 +64,8 @@ describe("§5.4 admission checks", () => {
     expect(failedChecks(request({ criterion: bad, verification: "command_exit" }))).toContain("2");
   });
 
-  // proves D-057 / D-025 Inc 7: every criterion names protected paths the task's sources classify and its grants can list
+  // proves D-057 / D-025 Inc 7 / D-112: every criterion names protected paths the task's sources classify, and its
+  // verification scope must be one its grants let the verifier pin (refused under D-112 since v0.6 B2)
   it("rejects a criterion without protected paths, or with ones it cannot check", () => {
     const withPaths = (paths: unknown) => ({ ...OPERATOR_CRITERION, statement: { ...OPERATOR_CRITERION.statement, protected_paths: paths } });
     expect(failedChecks(request({ criterion: withPaths([]), verification: "command_exit" }))).toEqual(["schema"]);
@@ -73,7 +74,7 @@ describe("§5.4 admission checks", () => {
     expect(failedChecks(request({ criterion: { ...OPERATOR_CRITERION, statement: withoutPaths }, verification: "command_exit" }))).toEqual(["schema"]);
     expect(failedChecks(request({ criterion: withPaths(["/work/elsewhere"]), verification: "command_exit" }))).toContain("D-057");
     h.grants.add(grant({ id: "grant-narrow", resource_scope: [{ kind: "path", prefix: "/work/project/src" }] }));
-    expect(failedChecks(request({ criterion: OPERATOR_CRITERION, verification: "command_exit", grants: ["grant-narrow"] }))).toContain("D-057");
+    expect(failedChecks(request({ criterion: OPERATOR_CRITERION, verification: "command_exit", grants: ["grant-narrow"] }))).toContain("D-112");
     expect(failedChecks(request({ criterion: OPERATOR_CRITERION, verification: "command_exit" }))).toEqual([]);
   });
 

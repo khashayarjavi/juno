@@ -8,7 +8,7 @@ import { RunnerLockError } from "../src/lock.js";
 import type { ProviderRequest } from "../src/provider.js";
 import { explainTask } from "../src/explain.js";
 import { HIDDEN_VALUE, MAX_UNREAD_CHARS, REGISTRY_RECORD, RUNNER_ACTOR, Runner, VERIFIER_ACTOR, unreadText } from "../src/runner.js";
-import { CAT, DAY_MS, type Harness, OPERATOR_CRITERION, PRINCIPAL, PROFILE, SHELL_RUN_FILE, harness, request, shellRun, standInAdapter, turn } from "./helpers.js";
+import { CAT, DAY_MS, type Harness, OPERATOR_CRITERION, PRINCIPAL, PROFILE, SHELL_RUN_FILE, harness, request, shellRun, standInAdapter, turn, writeWork } from "./helpers.js";
 
 let h: Harness;
 beforeEach(() => {
@@ -175,12 +175,16 @@ describe("verification and closure (§3.4.4, §6.1)", () => {
     });
     // The closure entry is the runner's, never a model turn.
     expect(entries.filter((entry) => entry.kind === "note" && h.payload(entry)["type"] === "closure").map((entry) => entry.actor)).toEqual([RUNNER_ACTOR]);
-    // The verification command, then the protected-path listing (D-057), ran as constants fixed by the criterion, at operator integrity.
+    // The verification command, then the pin listing and hashing (D-057, D-112), ran as verifier constants: the criterion's
+    // at operator integrity; the hashed files' names, found by the admission listing, at that listing's integrity (§2.6, D-112).
     const start = entries.find((entry) => entry.kind === "note" && h.payload(entry)["type"] === "verification")?.seq ?? Infinity;
     const verificationCalls = entries.filter((entry) => entry.kind === "capability_call" && entry.seq > start);
-    expect(verificationCalls).toHaveLength(2);
-    for (const call of verificationCalls) expect(call.argument_provenance?.every((item) => item.class === "constant" && item.integrity === "operator")).toBe(true);
-    expect(notes(entries, "verification", h.payload).at(-1)).toMatchObject({ result: "pass", protected_paths: "unchanged" });
+    expect(verificationCalls).toHaveLength(3);
+    for (const call of verificationCalls.slice(0, 2)) expect(call.argument_provenance?.every((item) => item.class === "constant" && item.integrity === "operator")).toBe(true);
+    const hashCall = verificationCalls[2];
+    expect(hashCall?.argument_provenance?.every((item) => item.class === "constant")).toBe(true);
+    expect(hashCall?.argument_provenance?.filter((item) => item.integrity !== "operator").map((item) => item.argument)).toEqual(["argv[2]", "argv[3]", "argv[4]"]);
+    expect(notes(entries, "verification", h.payload).at(-1)).toMatchObject({ result: "pass", protected_paths: "unchanged", inputs: "unchanged", changed_paths: [] });
     const verificationCall = verificationCalls[0];
     expect(verificationCall?.argument_provenance).toEqual([
       { argument: "program", class: "constant", integrity: "operator" },
@@ -199,29 +203,25 @@ describe("verification and closure (§3.4.4, §6.1)", () => {
     expect(notes(h.entries(), "verification", h.payload).at(-1)).toMatchObject({ result: "fail", exit_code: 3, expected_exit_code: 0 });
   });
 
-  // proves D-057 / D-025 Inc 7: verification fails when anything under a protected path changed during the task
-  it("fails verification when the protected paths' listing changed", async () => {
-    let generation = "before";
-    const marking: Adapter = {
-      id: WORKLOAD_EXECFILE,
-      // The listing a stand-in "ls" prints carries the current generation, so a write in between shows as a changed listing.
-      plan: (call) => {
-        const base = standInAdapter.plan(call);
-        return call["program"] === "/usr/bin/ls" ? { file: base.file, args: [...base.args, generation] } : base;
-      },
-    };
-    h.cleanup();
-    h = harness(marking);
+  // proves D-057 / D-025 Inc 7 / §3.4.4 B2: verification fails when anything under a protected path changed during the
+  // task, even a rewrite of the same size (which Slice 1's listing comparison could pass); the changed path is recorded
+  it("fails verification when a protected file changed, even at the same size", async () => {
     const { runner } = h.runner([
       () => {
-        generation = "after";
+        writeWork({ "/work/project/protected/keep.txt": "KEEP\n" });
         return turn([shellRun(["notes.txt"])]);
       },
       turn([]),
     ]);
     admitted(runner, { criterion: OPERATOR_CRITERION, verification: "command_exit" });
     expect(await runner.run("task-1")).toEqual({ task_id: "task-1", state: "failed", reason: "verification_fail" });
-    expect(notes(h.entries(), "verification", h.payload).at(-1)).toMatchObject({ result: "fail", exit_code: 0, protected_paths: "changed" });
+    expect(notes(h.entries(), "verification", h.payload).at(-1)).toMatchObject({
+      result: "fail",
+      exit_code: 0,
+      protected_paths: "changed",
+      inputs: "changed",
+      changed_paths: ["/work/project/protected/keep.txt"],
+    });
     expect(notes(h.entries(), "protected_listing", h.payload).map((note) => note["phase"])).toEqual(["baseline", "check"]);
     expect(notes(h.entries(), "closure", h.payload)).toEqual([]);
   });
@@ -574,7 +574,8 @@ describe("Slice 1.2: what the executing model is offered (D-075), continued", ()
       .filter((entry) => entry.kind === "capability_call")
       .map((entry) => ({ entry, body: h.payload(entry) }));
     const verificationStart = h.entries().find((entry) => entry.kind === "note" && h.payload(entry)["type"] === "verification")?.seq ?? Infinity;
-    const modelCalls = calls.filter(({ entry }) => entry.seq < verificationStart && !JSON.stringify(h.payload(entry)).includes("--time-style"));
+    const pinCalls = new Set([...notes(h.entries(), "protected_listing", h.payload), ...notes(h.entries(), "pin_hash", h.payload)].map((note) => note["call_seq"]));
+    const modelCalls = calls.filter(({ entry }) => entry.seq < verificationStart && !pinCalls.has(entry.seq));
     expect(modelCalls).toHaveLength(1);
     const [model] = modelCalls;
     expect(model?.body["verdict"]).toMatchObject({ outcome: "reject", reason: "unresolved_argument" });
@@ -603,7 +604,9 @@ describe("Slice 1.2: what the executing model is offered (D-075), continued", ()
     admitted(second.runner, verifierOnly);
     await second.runner.run("task-1");
     expect(JSON.stringify(second.provider.requests[0]?.context)).not.toContain("secret");
-    expect(h.payload(h.entries().filter((entry) => entry.kind === "capability_call")[1] as TrajectoryEntry)["verdict"]).toMatchObject({ outcome: "reject", reason: "unresolved_argument" });
+    const pinned = new Set([...notes(h.entries(), "protected_listing", h.payload), ...notes(h.entries(), "pin_hash", h.payload)].map((note) => note["call_seq"]));
+    const modelCall = h.entries().find((entry) => entry.kind === "capability_call" && !pinned.has(entry.seq));
+    expect(h.payload(modelCall as TrajectoryEntry)["verdict"]).toMatchObject({ outcome: "reject", reason: "unresolved_argument" });
   });
 
   // proves §2.6 (v0.6 B1): admission refuses an empty or repeated actor list

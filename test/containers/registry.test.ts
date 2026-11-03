@@ -89,4 +89,13 @@ describe("shell.run through the conforming adapter, in the workload container (ย
     expect(libLines).toHaveLength(2);
     for (const line of libLines) expect(line.split(/\s+/).slice(2, 4)).toEqual(["0", "0"]);
   });
+
+  // proves ยง3.4.4 B2 / D-112: the verifier's hashing program runs in the workload, owned by root, and prints NUL-terminated records with raw names
+  it("runs sha256sum -z in the workload, owned by root", async () => {
+    const owner = await registry.invoke("shell.run", { program: "/usr/bin/ls", argv: ["-l", "-n", "--", "/usr/bin/sha256sum"], cwd: "/work" });
+    expect(owner.stdout.toString("utf8").trim().split(/\s+/).slice(2, 4)).toEqual(["0", "0"]);
+    const hashed = await registry.invoke("shell.run", { program: "/usr/bin/sha256sum", argv: ["-z", "--", "/usr/bin/cat", "/work/does-not-exist"], cwd: "/work" });
+    expect(hashed.exitCode).toBe(1);
+    expect(hashed.stdout.toString("utf8")).toMatch(/^[0-9a-f]{64} {2}\/usr\/bin\/cat\0$/);
+  });
 });

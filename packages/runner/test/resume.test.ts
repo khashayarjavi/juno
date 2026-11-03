@@ -7,7 +7,7 @@ import { entriesFile, headFile } from "../../journal/src/layout.js";
 import { CapabilityRegistry, WORKLOAD_EXECFILE, loadRegistryEntry } from "../../registry/src/index.js";
 import type { ProviderRequest } from "../src/provider.js";
 import { RUNNER_RECORD, type Runner, RunnerError } from "../src/runner.js";
-import { DAY_MS, type Harness, OPERATOR_CRITERION, PROFILE, SHELL_RUN_FILE, grant, harness, request, shellRun, standInAdapter, turn } from "./helpers.js";
+import { DAY_MS, type Harness, OPERATOR_CRITERION, PROFILE, SHELL_RUN_FILE, grant, harness, request, shellRun, standInAdapter, turn, writeWork } from "./helpers.js";
 
 // Increment 6: resume (§6.3) and TTL (§6.4).
 
@@ -300,5 +300,35 @@ describe("what resume will not do (§6.3, §8.3)", () => {
     admitted(runner, { criterion: OPERATOR_CRITERION, verification: "command_exit" });
     await runner.run("task-1");
     await expect(runner.resume("task-1")).rejects.toThrow(/only a parked task resumes/);
+  });
+});
+
+describe("§3.4.4 B2 across a restart (D-112)", () => {
+  // proves §3.4.5 / §3.4.4 B2: a task rebuilt from its journal hashes the same pinned files at closure and is checked against
+  // the pins taken at admission, so a restart neither drops a pin nor lets a change through
+  it("checks a rebuilt task against the pins taken before the restart", async () => {
+    const { runner } = h.runner([unavailable]);
+    admitted(runner, { criterion: OPERATOR_CRITERION, verification: "command_exit" });
+    expect((await runner.run("task-1")).reason).toBe("routing_unavailable");
+    runner.close();
+    const unchanged = restart([turn([])]);
+    expect((await unchanged.runner.resume("task-1")).state).toBe("verified");
+    const verification = ofKind("note").filter((note) => note["type"] === "verification").at(-1);
+    expect(verification).toMatchObject({ result: "pass", inputs: "unchanged" });
+    // The closure's hashes covered the files fixed at admission.
+    const [baseline, check] = ofKind("note").filter((note) => note["type"] === "verification_pins");
+    expect(Object.keys((check?.["pins"] ?? {}) as object)).toEqual(Object.keys((baseline?.["pins"] ?? {}) as object));
+    unchanged.runner.close();
+
+    h.cleanup();
+    h = harness();
+    const second = h.runner([unavailable]);
+    admitted(second.runner, { criterion: OPERATOR_CRITERION, verification: "command_exit" });
+    await second.runner.run("task-1");
+    second.runner.close();
+    writeWork({ "/work/project/done.txt": "OK\n" });
+    const changed = restart([turn([])]);
+    expect((await changed.runner.resume("task-1")).reason).toBe("verification_fail");
+    expect(ofKind("note").filter((note) => note["type"] === "verification").at(-1)?.["changed_paths"]).toEqual(["/work/project/done.txt"]);
   });
 });

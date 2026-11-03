@@ -68,13 +68,21 @@ function describe(entry: TrajectoryEntry, body: Record<string, unknown>): string
         case "state":
           return `${head} state ${show(body["from"])} -> ${show(body["to"])} (${show(body["reason"])})`;
         case "verification":
-          return body["phase"] === "start" ? `${head} verification started` : `${head} verification ${show(body["result"])}: exit ${show(body["exit_code"])} (expected ${show(body["expected_exit_code"])}), protected paths ${show(body["protected_paths"])}`;
+          return body["phase"] === "start"
+            ? `${head} verification started`
+            : `${head} verification ${show(body["result"])}: exit ${show(body["exit_code"])} (expected ${show(body["expected_exit_code"])}), protected paths ${show(body["protected_paths"])}, verification inputs ${show(body["inputs"] ?? null)}${
+                Array.isArray(body["changed_paths"]) && body["changed_paths"].length > 0 ? `; changed: ${show(body["changed_paths"])}` : ""
+              }`;
         case "closure":
           return `${head} CLOSED ${show((body["closure"] as Record<string, unknown>)["closure_mode"])} by ${show((body["closure"] as Record<string, unknown>)["verifier_identity"])}`;
         case "sensitivity_floor":
           return `${head} sensitivity floor ${show(body["from"])} -> ${show(body["to"])} after entry #${show(body["cause_seq"])}`;
         case "protected_listing":
-          return `${head} protected paths listed (${show(body["phase"])})`;
+          return `${head} verification scope listed (${show(body["phase"])})`;
+        case "verification_pins":
+          return body["failed"] === undefined
+            ? `${head} verification inputs pinned (${show(body["phase"])}): ${String(Object.keys((body["pins"] ?? {}) as object).length)} paths under ${show(body["roots"])}, outputs ${show(body["outputs"])}`
+            : `${head} verification inputs could not be pinned (${show(body["phase"])}): ${show(body["failed"])}`;
         default:
           return null;
       }

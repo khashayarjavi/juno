@@ -22,7 +22,8 @@ import {
   selectorWithin,
 } from "../../contracts/src/index.js";
 import type { GrantStore } from "../../enforcement/src/index.js";
-import { type CapabilityRegistry, callSchemaFor } from "../../registry/src/index.js";
+import { type CapabilityRegistry, type RegistryEntry, callSchemaFor } from "../../registry/src/index.js";
+import { PIN_HASH_FLAGS, PIN_HASH_PROGRAM, PIN_LISTING_FLAGS, pinRoots, within } from "./pins.js";
 import type { ProviderProfile } from "./profile.js";
 
 /**
@@ -59,8 +60,15 @@ export const CriterionStatement = z.strictObject({
     arguments: z.record(z.string(), z.union([Scalar, z.array(Scalar)])),
   }),
   expect_exit_code: z.int().min(0).max(255),
-  /** Paths the task must not write under (D-025 Inc 7, D-057). Verification fails if their listing changed. */
+  /** Paths the task must not write under (D-025 Inc 7, D-057). Pinned with the rest of the verification scope (D-112). */
   protected_paths: z.array(WorkPath).min(1).max(32),
+  /**
+   * §3.4.4 (v0.6.1, V6-1): what the task is expected to create or change. Never pinned. Every path in the verification
+   * scope that is not an output is pinned (D-097), including a file that does not exist yet.
+   */
+  outputs: z.array(WorkPath).max(64).default([]),
+  /** §3.4.4: inputs the method reads, named explicitly; each must lie in the verification scope (D-112). */
+  verification_inputs: z.array(WorkPath).max(256).default([]),
 });
 export type CriterionStatement = z.infer<typeof CriterionStatement>;
 
@@ -176,23 +184,53 @@ export function routable(policy: ModelPolicy, floor: Sensitivity, profile: Provi
   return !needsStateless || profile.conversation_state === "stateless";
 }
 
-/** The constant slots a criterion fixes, by name. */
 /**
- * How the verifier lists the protected paths (D-067): `ls` through `shell.run`, long format with
- * full timestamps, recursive, every entry. A write, a new file or a removed one changes the listing.
+ * How the verifier pins the verification scope (§3.4.4 B2, D-112), through `shell.run`: `ls`, long format, recursive,
+ * numeric ids, full timestamps and escape quoting, then `sha256sum -z` over every regular file that is not an output.
+ * Replaces D-067's listing comparison.
  */
-export const PROTECTED_LISTING = { capability: "shell.run", program: "/usr/bin/ls", flags: ["-l", "-a", "-R", "--time-style=full-iso", "--"] } as const;
+export const PROTECTED_LISTING = { capability: "shell.run", program: "/usr/bin/ls", flags: PIN_LISTING_FLAGS, hash_program: PIN_HASH_PROGRAM, hash_flags: PIN_HASH_FLAGS } as const;
 
-/** The constant slots of the protected-path listing, each fixed by the criterion. */
-export function protectedSlots(statement: CriterionStatement): CriterionSlot[] {
-  const cwd = statement.command.arguments["cwd"];
-  const argv = [...PROTECTED_LISTING.flags, ...statement.protected_paths];
+/**
+ * The verification scope (D-097 "verification scope", defined by D-112): the directory the criterion's command runs in
+ * (its `cwd` field), and each protected path; a root inside another is listed through it.
+ */
+export function verificationScope(statement: CriterionStatement, entry: RegistryEntry | undefined): string[] {
+  const cwd = entry === undefined ? undefined : statement.command.arguments[entry.cwd_field];
+  return pinRoots([...(typeof cwd === "string" ? [cwd] : []), ...statement.protected_paths]);
+}
+
+/** The cwd the verifier's pin calls run in: the scope's first root. */
+function pinCwd(roots: readonly string[], statement: CriterionStatement): string {
+  return roots[0] ?? statement.protected_paths[0] ?? WORK_NAMESPACE;
+}
+
+/** The constant slots of the pin listing, each fixed at admission for the verifier (D-112). */
+export function protectedSlots(statement: CriterionStatement, entry: RegistryEntry | undefined): CriterionSlot[] {
+  const roots = verificationScope(statement, entry);
+  const argv = [...PROTECTED_LISTING.flags, ...roots];
   return [
     { slot: "criterion.protected.program", field: "program", index: null, value: PROTECTED_LISTING.program },
     ...argv.map((value, index): CriterionSlot => ({ slot: `criterion.protected.argv.${String(index)}`, field: "argv", index, value })),
-    { slot: "criterion.protected.cwd", field: "cwd", index: null, value: typeof cwd === "string" ? cwd : (statement.protected_paths[0] ?? WORK_NAMESPACE) },
+    { slot: "criterion.protected.cwd", field: "cwd", index: null, value: pinCwd(roots, statement) },
   ];
 }
+
+/**
+ * The constant slots of the pin hashing call that admission fixes: the program, its flags and its cwd. The files it
+ * hashes are found by the admission listing and fixed then, one slot each (`criterion.pin.file.<n>`, D-112).
+ */
+export function hashSlots(statement: CriterionStatement, entry: RegistryEntry | undefined): CriterionSlot[] {
+  const roots = verificationScope(statement, entry);
+  return [
+    { slot: "criterion.pin.program", field: "program", index: null, value: PROTECTED_LISTING.hash_program },
+    ...PROTECTED_LISTING.hash_flags.map((value, index): CriterionSlot => ({ slot: `criterion.pin.flag.${String(index)}`, field: "argv", index, value })),
+    { slot: "criterion.pin.cwd", field: "cwd", index: null, value: pinCwd(roots, statement) },
+  ];
+}
+
+/** The slot of the `index`th file the pin hashing call hashes (D-112). */
+export const pinFileSlot = (index: number): string => `criterion.pin.file.${String(index)}`;
 
 export type CriterionSlot = { readonly slot: string; readonly field: string; readonly index: number | null; readonly value: string | number | boolean };
 
@@ -252,23 +290,38 @@ export function admit(input: unknown, env: AdmissionEnvironment): AdmissionResul
   if (request.verification !== null && criterion === null) fail("2", "a verification method needs a criterion to establish");
   const licensed = criterion !== null && request.verification !== null && criterionIntegrity === "operator";
   if (criterion !== null) {
-    // D-057: the protected paths must be content the task's sources classify, and, for a task the verifier will
-    // check, reachable by the listing under one of its grants.
+    // D-057: the protected paths must be content the task's sources classify.
     for (const path of criterion.protected_paths) {
       const selector = { kind: "path" as const, prefix: path };
       if (!request.sources.some((id) => env.sources.some((source) => source.id === id && selectorWithin(selector, source.selector)))) {
         fail("D-057", `protected path ${path} lies within no source the task references`);
       }
+    }
+    // D-112: for a task the verifier will check, every root of the verification scope must be reachable by the pin
+    // listing and hashing under one of its grants, and both programs must be registered.
+    const listing = env.registry.entry(PROTECTED_LISTING.capability);
+    const roots = verificationScope(criterion, env.registry.entry(criterion.command.capability));
+    for (const root of roots) {
+      const selector = { kind: "path" as const, prefix: root };
       const listable = request.grants.some((id) => {
         const grant = env.grants.get(id);
         return grant !== undefined && grant.capability_selector.capabilities.includes(PROTECTED_LISTING.capability) && grant.resource_scope.some((scope) => selectorWithin(selector, scope));
       });
-      if (licensed && !listable) fail("D-057", `protected path ${path} lies within no grant for ${PROTECTED_LISTING.capability}, so the verifier could not list it`);
+      if (licensed && !listable) fail("D-112", `verification scope ${root} lies within no grant for ${PROTECTED_LISTING.capability}, so the verifier could not pin it`);
     }
-    const listing = env.registry.entry(PROTECTED_LISTING.capability);
     const programs = listing?.capability.interface[listing.program_field]?.type;
-    if (licensed && (programs?.kind !== "enum" || !programs.values.includes(PROTECTED_LISTING.program))) {
-      fail("D-057", `${PROTECTED_LISTING.capability} with ${PROTECTED_LISTING.program} must be registered to check protected paths`);
+    for (const program of [PROTECTED_LISTING.program, PROTECTED_LISTING.hash_program]) {
+      if (licensed && (programs?.kind !== "enum" || !programs.values.includes(program))) {
+        fail("D-112", `${PROTECTED_LISTING.capability} with ${program} must be registered to pin verification inputs`);
+      }
+    }
+    // §3.4.4 (V6-1) with D-112: outputs and inputs lie in the scope; an output is never protected; nothing is both.
+    for (const path of [...criterion.outputs, ...criterion.verification_inputs]) {
+      if (!roots.some((root) => within(path, root))) fail("D-112", `${path} lies outside the verification scope ${roots.join(", ")}`);
+    }
+    for (const output of criterion.outputs) {
+      for (const path of criterion.protected_paths) if (within(output, path) || within(path, output)) fail("D-112", `output ${output} overlaps protected path ${path}`);
+      for (const input of criterion.verification_inputs) if (within(input, output) || within(output, input)) fail("D-112", `output ${output} overlaps verification input ${input}`);
     }
   }
   const closureMode: ClosureMode = request.closure_mode === "verified" && licensed ? "verified" : "accepted";
@@ -378,7 +431,8 @@ export function admit(input: unknown, env: AdmissionEnvironment): AdmissionResul
     constants[slot] = { value: constant.value, data_class: { sensitivity: constant.sensitivity ?? floor, integrity: "operator" }, actors: [...constant.actors] };
   }
   if (criterion !== null) {
-    for (const { slot, value } of [...criterionSlots(criterion), ...protectedSlots(criterion)]) constants[slot] = { value, data_class: { sensitivity: floor, integrity: criterionIntegrity }, actors: ["verifier"] };
+    const entry = env.registry.entry(criterion.command.capability);
+    for (const { slot, value } of [...criterionSlots(criterion), ...protectedSlots(criterion, entry), ...hashSlots(criterion, entry)]) constants[slot] = { value, data_class: { sensitivity: floor, integrity: criterionIntegrity }, actors: ["verifier"] };
   }
   return { admitted: true, admission: { task, constants, criterion, provider, sources, warnings, rejection_limit: request.rejection_limit } };
 }
