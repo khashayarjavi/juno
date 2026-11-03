@@ -1,6 +1,19 @@
 # STATE
 
 ## Current increment
+**Slice 1.5 — Increment 2: signed grants and an anchored journal head (C1)** (`docs/plans/slice-1.5-build-plan.md`, Increment 2). Branch `claude/gallant-mccarthy-alppyu` (fast-forwarded to `main` 1432cc3). Spec v0.6.1. No objection open.
+
+Status: **started 2026-11-03; nothing built yet.** Estimate: 2 sessions.
+- **Order of work:**
+  1. Grant signatures: Ed25519 over the canonical form of every other field, with `node:crypto` (no new package). Verified at lookup; a missing or invalid signature means the grant does not exist (`signature_invalid` recorded).
+  2. The trust anchor: the operator's public key, in a location the runner cannot write; the runner refuses to start otherwise.
+  3. Test keys generated per run, never committed; every fixture grant signed by a per-run test key.
+  4. `juno grant sign` and `juno grant verify` (operator CLI).
+  5. The anchored journal head: a separate journal key; an append-only stand-in container for tests; `juno journal check`.
+  6. Selectors may not name the journal, the checkpoint store, the trust anchor or the configuration.
+- **First point needing the operator's hands** (the code does not wait for it): Windows keychain key, signing a grant, and creating `juno-anchors`. The Windows signing mechanism is chosen from current documentation at the start of this increment (rule 13) and recorded as a D-number; click-by-click steps go into STATE.md then.
+
+## Previous increment (Slice 1.5 Increment 1, merged)
 **Slice 1.5 — Increment 1: conform Slice 1 to v0.6** (`docs/plans/slice-1.5-build-plan.md`, Increment 1). Branch `claude/gallant-mccarthy-alppyu` (fast-forwarded to `main` c405996 after PR #30 merged). Spec v0.6.1 on `main`. No objection open.
 
 Status: **built; going through the §7 gate.** Every item of the plan's Increment 1 is built and tested. PR #31.
@@ -175,6 +188,14 @@ Status: **Slice 1.2 complete. Part 1 (PR #19), the interface fix (PR #20), Part 
 **Slice 1.1 — real-model evidence (complete).** Parts 1 to 4 merged (PR #12, #13, #16, #17; STATE record PR #18). Report: `docs/evidence/slice-1.1.md`.
 
 ## Merges recorded (CLAUDE.md §7 step 6)
+- **Slice 1.5 Increment 1 (D-107 to D-114), PR #31** (https://github.com/khashayarjavi/juno/pull/31):
+  - Head ae5b38a0c2630210e72e3f88a25d6353c24558b9; PR CI `verify` run 41719481819 (job 126208141078, success).
+  - Merged as merge commit 1432cc3dee9489c1225ea04e28dc399e9c122e3c, pinned to the head SHA. CI `verify` on `main` for the merge commit: run 41720351290 (event `push`), read below.
+  - Reviewer verdict: round 2 MERGE on ae5b38a (all six checks PASS). Round 1 on 0b011fc was DO NOT MERGE for two defects, both fixed (D-114).
+  - Notes from the reviewers for the operator, not defects:
+    - D-109 reads A2's "untrusted" as the literal level, so an out-of-scope `derived` value stays overridable;
+    - D-112's hashed file names are `constant` with `untrusted` integrity (§2.6 "a template slot filled by the runtime");
+    - the C4 resolver and the effect run in separate containers, so the gap between them must be re-examined when write programs arrive (Increment 3).
 - **Slice 1.5 Part 0 revision (D-091 to D-106), PR #30** (https://github.com/khashayarjavi/juno/pull/30):
   - Head bb6aef5fc597ee3946633e388be7899f196ceb7f; PR CI `verify` run 41688473651 (job 126100437341, success).
   - Merged as merge commit c4059961616b10d2013e87562acacdafad5ec2ce, pinned to the head SHA. CI `verify` on `main` for the merge commit: run 41688851640 (event `push`, job 126101743836), success.
