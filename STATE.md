@@ -13,6 +13,28 @@ Status: **in progress.** Done: D3 (test names v0.6 §3.2), A4 (rejection limit, 
   6. B1 (§2.6): per-actor constants; the Slice 1.2 runner test changed with its own D-number, stricter.
   7. B2 (§3.4.4, D-097): hash-pinned verification inputs; define "verification scope" in a D-number.
   8. C4 (§2.7.1): canonical scope, symlinks and not-yet-existing paths; container tests.
+- **B2 design (worked out 2026-11-03, not yet built):**
+  - **Criterion fields:** the criterion gains `outputs` and `verification_inputs` (work paths, default empty). Admission refuses:
+    - an input or output outside the verification scope;
+    - an output inside a protected path.
+  - **Verification scope (to be recorded as a D-number, defining D-097's term):** the criterion command's `cwd`, plus each protected path; a root inside another is dropped.
+  - **Mechanism, verified against the workload's coreutils 9.1 (2026-11-03):**
+    - one verifier listing, `ls -l -a -R -n --time-style=full-iso --quoting-style=escape -- <roots>`. Escape style makes it unambiguous: spaces are `\ `, newlines `\n`, `:` in headers `\:`, so a raw space only separates fields and a symlink's ` -> ` cannot be forged;
+    - then `sha256sum -z -- <files>`, in batches, over every regular file in scope that is not an output. Output is `HASH  NAME\0` with raw names; a missing file gives no record, which counts as changed.
+  - **Workload image:** add `/usr/bin/sha256sum` (libc only).
+  - **Registry:** add sha256sum to the shell.run enum with a code-free surface (`-z`, `--zero`, `--`, operand). It is never offered to the model, because its constant is verifier-only (B1).
+  - **The hash call's file operands:** verifier constants filled at pin time, one per file, with the listing result's class, and journalled so a rebuild restores them. Basis: §2.6 calls "a template slot filled by the runtime" a constant, and §5.1 makes pin-taking part of admission. This must be recorded as a D-number. If a reviewer reads it as a new §2.6 ambiguity, STOP for the operator.
+  - **Compare at closure:**
+    - the set of paths, excluding outputs;
+    - per path: type and mode;
+    - files: hash; symlinks: target;
+    - directories: mode only (their size and time change when an output is created).
+
+    Any difference, or a hash that cannot be computed, makes `verified` impossible: the task fails, with the changed paths recorded.
+  - **Bounds:** at most 2,000 hashed files and 10,000 entries; beyond that the task fails (it never skips).
+  - **Replaces D-067's listing comparison.**
+  - **Test infrastructure:** the unit tests' stand-in adapter must emulate `ls` (escape style) and `sha256sum -z` over a host directory, or unit tests use a fixed pin fixture. The acceptance, container, resume and runner tests that read `protected_listing` notes change accordingly; record each in a D-number.
+- **C4 (after B2):** canonical scope; resolution runs in the workload with an operator-fixed resolver (for example `realpath -e`/`-m`, to be verified in the image), boundary-only. A not-yet-existing path resolves through its longest existing ancestor (§2.7.1 v0.6.1). Container tests.
 - **Gate record for the plan:** see "Merges recorded" (PR #30).
 
 ## Previous increment
