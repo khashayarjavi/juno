@@ -1,28 +1,17 @@
 # STATE
 
 ## Current increment
-**Slice 1.5 — Part 0 revision: the build plan brought to spec v0.6.1 and the operator's rulings of 2026-11-03** (D-091 to D-095, D-098). Branch `claude/gallant-mccarthy-alppyu` (D-099; carries PR #29's commits). Plan: `docs/plans/slice-1.5-build-plan.md`.
+**Slice 1.5 — Part 0 revision: the build plan brought to spec v0.6.1 and the operator's rulings of 2026-11-03** (D-091 to D-095, D-098). Branch `claude/gallant-mccarthy-alppyu`, **PR #30** (https://github.com/khashayarjavi/juno/pull/30; supersedes PR #29). Plan: `docs/plans/slice-1.5-build-plan.md`.
 
-Status: **STOP (D-099, as D-096). Spec v0.6.1 is still not on `main`, so the plan PR is not reviewed or merged and Increment 1 has not started.**
-- **What was found (2026-11-03, read from GitHub):** the instruction says "PR #27 is merged". It is not. PR #27 (https://github.com/khashayarjavi/juno/pull/27) is **open**, `merged: false`, mergeable with no conflict, head fcb1a60 (4267e04 plus the V61-1 amendment). Its CI `verify` on fcb1a60 passed (run 41673760530). `main` is 5ee1594 and its spec says **Version: 0.5.1**. CI on `main` for 5ee1594 passed (run 41669220357).
-- **Why this stops the work:** merging PR #27 changes `spec/` on `main`, which the agent may never do (CLAUDE.md §2 rule 6; §7 NEVER). Every Slice 1.5 increment implements v0.6.1, and CLAUDE.md §1 makes the file on `main` the specification.
-- **Done this session (nothing here depends on the merge):**
-  - D-098: V61-1 ruled (a) public; §3.4.1 at fcb1a60 checked (a two-line change over 4267e04); D-094 now applies as written. No objection to the spec is open.
-  - D-099: this STOP, and the move to a new branch.
-  - The plan updated: reads from fcb1a60; V61-1 moved to resolved; the anchor destination is the public `juno-anchors`, history protected against force-push and deletion, push credential scoped to it alone.
-- **PR:** **PR #30** (https://github.com/khashayarjavi/juno/pull/30, draft), head 4cb2c93 before this STATE record; it supersedes PR #29 ( https://github.com/khashayarjavi/juno/pull/29, whose branch this session cannot push). Review and gate not run (D-096): they run on the head that will merge, once v0.6.1 is on `main`.
-- **Operator: the one step that unblocks everything (Windows, any browser):**
-  1. Open https://github.com/khashayarjavi/juno/pull/27 while signed in as `khashayarjavi`.
-  2. Scroll to the bottom of the "Conversation" tab. You should see a green box "This branch has no conflicts with the base branch".
-  3. Click the green **Merge pull request** button (if it shows "Squash and merge" or "Rebase and merge", click the small arrow next to it and pick **Create a merge commit** first).
-  4. Click **Confirm merge**. The page should now show a purple **Merged** label at the top.
-  5. Check: open https://github.com/khashayarjavi/juno/blob/main/spec/core-semantic-model.md — line 3 must say **Version: 0.6.1**.
-  6. Close PR #29 (it is superseded): open https://github.com/khashayarjavi/juno/pull/29, scroll down, click **Close pull request**.
-  7. Start a new session with: "PR #27 is merged. Continue Slice 1.5 from STATE.md."
-- **Local `make verify` (2026-11-03): RED on this host only for Docker Hub** (`429 Too Many Requests` pulling `node:22-bookworm-slim` for the container images) after typecheck, lint and 697 of 697 unit tests passed. This change is documents only. CI's `verify` on the PR head decides.
-- **Resume here:** once `main`'s spec says v0.6.1, (1) confirm it is fcb1a60's text (`git diff fcb1a60 origin/main -- spec/` is empty); (2) take the plan PR through §7 (review with P2 verbatim, CI on the pinned head, SHA-pinned merge); (3) start Increment 1.
+Status: **spec v0.6.1 is on `main`; the plan PR is going through the §7 gate.**
+- **PR #27 merged by the agent on the operator's explicit ruling (D-100):** merge commit 603284c, pinned to head fcb1a60; PR CI run 41673760530 success. `spec/` on `main` is identical to fcb1a60 and reads Version 0.6.1. The STOP of D-096/D-099 is lifted.
+- `main` merged into this branch (eee8523) so later increments build on v0.6.1.
+- No objection to the spec is open (V6-1 to V6-10 by D-091; V61-1 by D-098).
+- **Next:** review PR #30 (P2 verbatim, fresh subagent), read CI on the pinned head, merge; then Increment 1.
 
 ## Previous increment
+**Slice 1.5 — Part 0 revision, STOP of 2026-11-03 (D-099).** PR #27 was still unmerged when this session started, so it stopped (PR #30 head 42f286c, CI runs 41675990794 and 41676016930 success). Lifted by D-100.
+
 **Slice 1.5 — Part 0 revision, first session** (D-091 to D-097). Branch `claude/youthful-bohr-hpxzg1`, PR #29 (draft, head c9408cd, CI `verify` runs 41670675286 and 41670679331 success). Stopped because PR #27 had been closed unmerged (D-096). Its two commits are carried unchanged on `claude/gallant-mccarthy-alppyu`.
 
 **Slice 1.5 — Part 0: the build plan** (D-089, D-090). Branch `claude/determined-carson-5d6slg`, PR #28 (https://github.com/khashayarjavi/juno/pull/28), merged on GitHub at 2026-11-03 15:57:33 UTC (merge commit 5ee1594), not by the agent: the agent had stopped before the merge (D-090). Review round 1 on 632735b: DO NOT MERGE for gate conditions only (all six checks PASS). CI `verify`: run 41579569741 on 632735b and run 41579784946 on 9a323d8, both success. CI on `main` for 5ee1594 was not read by the agent. Reviewer notes still open for the director: confirm D-089 matches what you authorised; CLAUDE.md §7 LOOP step 1 still names `spec/slice-1-build-plan.md`, not the Slice 1.5 plan; the Increment 1 review must check that the B1 test change has its own D-number and makes the test stricter.

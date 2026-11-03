@@ -952,3 +952,11 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
 - Decision: as D-096. The agent does not merge PR #27 (it changes `spec/` on `main`: CLAUDE.md §2 rule 6, §7 NEVER). The plan PR is not reviewed or merged, and Increment 1 does not start, until v0.6.1 is on `main`. Done meanwhile (nothing depends on the merge): D-098 recorded; the plan updated to fcb1a60 and the ruling.
 - The plan revision moves to a new PR from `claude/gallant-mccarthy-alppyu`: this session's harness allows pushes only to that branch (as D-028), so PR #29's branch cannot be updated. The new PR carries PR #29's two commits unchanged plus this session's, and supersedes PR #29.
 - Reason: CLAUDE.md §1, §2 rule 6, §7 (NEVER edit spec/; STOP when the only way forward is editing spec/).
+
+## D-100 — The agent merged PR #27 (spec v0.6.1) on the operator's explicit ruling (operator ruling; one action only)
+- Date: 2026-11-03
+- Status: Accepted (operator ruling: "Operator ruling: merge PR #27 on my behalf.")
+- Applies to: this one merge only. CLAUDE.md §2 rule 6 and §7 NEVER ("edit spec/") are unchanged for every other action.
+- Decision: the agent merged PR #27 as a merge commit pinned to its head fcb1a6076dadc803be945d026f7c438f69d7e5e7 (the API's expected-head parameter). Merge commit 603284c346aa29ce51699587064b75512e1cf8d3. Before the merge: PR #27 CI `verify` on fcb1a60, run 41673760530, success; GitHub reported no conflicts. After the merge: `spec/` on `main` is byte-identical to fcb1a60 (`git diff fcb1a60 603284c -- spec/` is empty) and reads **Version: 0.6.1**. The spec text is entirely the operator's; the agent changed none of it.
+- Effect: D-096 and D-099's STOP is lifted. D-091 and D-098 take effect.
+- Reason: the operator's instruction. The agent offered this route only as an explicit operator ruling, because the action changes `spec/` on `main`.
