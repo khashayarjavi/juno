@@ -849,3 +849,23 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   - **Counting.** D-078's rules, unchanged: a benign run with at least one park counts; a run cut by a provider STOP is set aside and run again, never counted.
   - **The comparison.** Autopilot ruling, so the before figure cannot be chosen after the fact. The operator's "before" is Slice 1.2's 3 of 27 benign runs (11%), and the report states the after rate against it. The same 3 parks all fell in the six ordinary tasks, which ran 18 times in Slice 1.2, so the report also gives the like-for-like rate: 3 of 18 (17%) before, against the same 18 runs after. Neither figure is put forward as the only one.
 - Reason: the operator's instruction; D-078 requires the counting rule to be fixed before the runs.
+
+## D-089 — Spec v0.6 is the specification; Slice 1.5 is authorised; CLAUDE.md changes (operator change)
+- Date: 2026-11-03
+- Status: Accepted (operator change, in the Slice 1.5 Part 0 instruction)
+- Applies to: Slice 1.5 onward
+- Decision:
+  - **Spec v0.6 is the specification.** Its §0.0 lists what changed from v0.5.1. The operator named the change proposal on their own machine (`A:\Obsidian\Vaults\X-vault\Projects\JUNO\juno\JUNO Spec v0.6 — Change Proposal.md`); the specification text itself is the operator's PR #27 (branch `spec-v0.6`, commit 51a395af0de863affdb5c8e7b87d8b6c70db298f), which the director wrote from that proposal and which says it was approved in full on 2026-11-03.
+  - **Slice 1.5 is authorised.** Part 0 only in the first session: write `docs/plans/slice-1.5-build-plan.md`, take it through the CLAUDE.md §7 gate as one PR, then stop for the director's review. Increment 1 does not start until the director has reviewed the plan.
+  - **CLAUDE.md, three edits and nothing else:** in §7, "until Increment 7 is merged" becomes "until the current slice's plan is complete", and "start Slice 1.5 or any roadmap item" becomes "start any roadmap item beyond the current slice"; in §2 rule 9, MCP leaves the out-of-scope list and a sentence says hooks and MCP are in scope for Slice 1.5 only (rule 9 never listed hooks by name).
+- Reason: the operator's instruction of 2026-11-03.
+
+## D-090 — How Slice 1.5 Part 0 reads v0.6 and goes through the gate (autopilot rulings)
+- Date: 2026-11-03
+- Status: Accepted (autopilot rulings: the more restrictive reading, CLAUDE.md §7 step 3)
+- Applies to: Slice 1.5 Part 0 (the plan PR)
+- Decision:
+  - **Where v0.6 is read from.** The Windows path is on the operator's machine and cannot be reached from a cloud session. The plan is written against `spec/core-semantic-model.md` as it stands on PR #27's head (51a395a), read in full. No text was reconstructed from memory or from the build plan (CLAUDE.md §1). `main` still carries v0.5.1 until the operator merges PR #27.
+  - **The plan PR is not merged while either holds:** (a) an objection to the spec is open in STATE.md (CLAUDE.md §7 step 6a requires none; the operator's instruction requires the plan's ambiguities to be listed there unresolved); (b) PR #27 is unmerged, since the plan cites v0.6 sections that `main` would not yet contain. The gate is run up to the merge (review, CI on the pinned head), the PR is marked ready, and the session stops.
+  - **PR #26's STATE record** (the PR #25 merge, Slice 1.3 complete) is merged into this branch so STATE.md starts from it. PR #26 then carries nothing this PR lacks; closing it is the operator's call.
+- Reason: CLAUDE.md §1 forbids reconstructing the spec; §7 step 6a and the operator's "do not resolve them" together leave no merge path while objections are open.

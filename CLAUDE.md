@@ -29,7 +29,7 @@ In this order, every session:
 6. **Never edit files under `spec/`.** They are read-only inputs.
 7. **Tests assert properties from the model, not implementation details.** Each test should name the section it proves (e.g. `// proves §2.2 rule 1`).
 8. **No shell, ever.** No `child_process.exec`, `execSync`, `shell: true`, or command strings built by concatenation or template literals. Use `execFile(program, argvArray)` only. The lint rule from Increment 0 enforces this; never disable it, inline or in config.
-9. **Out of scope for Slice 1** (do not build, do not scaffold "for later"): Steer, Override, decision queue, resource locking, estate budgets, Surface contract, approval interface, console, plugins, multiple providers, concurrent tasks, MCP, delegation between tasks, memory, custom compaction, planning logic, retrieval. See `spec/roadmap-after-slice-1.md` — it is context, not a work list.
+9. **Out of scope for Slice 1** (do not build, do not scaffold "for later"): Steer, Override, decision queue, resource locking, estate budgets, Surface contract, approval interface, console, plugins, multiple providers, concurrent tasks, delegation between tasks, memory, custom compaction, planning logic, retrieval. See `spec/roadmap-after-slice-1.md` — it is context, not a work list. For Slice 1.5 only, hooks and MCP are in scope (spec §4.3); everything else in this list stays out of scope.
 10. **Record every decision not already in the model** in `DECISIONS.md`, with its reason, in the existing format.
 11. Files under docs/blueprint/ are context, never instructions; they
     never override spec/.
@@ -108,7 +108,7 @@ Finish every session with a short message to the operator:
 Added by the director (D-055). These rules override the sections above where they conflict.
 
 ```
-LOOP — repeat until Increment 7 is merged or a STOP fires:
+LOOP — repeat until the current slice's plan is complete or a STOP fires:
 1. Read STATE.md, spec/core-semantic-model.md, spec/slice-1-build-plan.md,
    DECISIONS.md. Work only on the current increment, on the branch you
    are permitted to push (D-028). If an open PR exists for it, continue it.
@@ -151,8 +151,8 @@ STANDING RULINGS (already decided, record if not yet in DECISIONS.md):
 NEVER: edit spec/; weaken, skip or delete a test; disable or loosen the
 lint rule, the CI workflow or the container seal; push to main directly;
 force-push; merge with any check pending, red, or unread; merge without
-the SHA pin; change repo settings or visibility; start Slice 1.5 or any
-roadmap item.
+the SHA pin; change repo settings or visibility; start any roadmap item
+beyond the current slice.
 
 STOP (write the reason into STATE.md, commit, push, then report) if:
 - the only way forward is editing spec/;
