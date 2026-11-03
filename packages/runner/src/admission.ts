@@ -21,7 +21,7 @@ import {
   maxSensitivity,
   selectorWithin,
 } from "../../contracts/src/index.js";
-import type { GrantStore } from "../../enforcement/src/index.js";
+import { type GrantStore, operandPath, scopePaths } from "../../enforcement/src/index.js";
 import { type CapabilityRegistry, type RegistryEntry, callSchemaFor } from "../../registry/src/index.js";
 import { PIN_HASH_FLAGS, PIN_HASH_PROGRAM, PIN_LISTING_FLAGS, pinRoots, within } from "./pins.js";
 import type { ProviderProfile } from "./profile.js";
@@ -192,12 +192,26 @@ export function routable(policy: ModelPolicy, floor: Sensitivity, profile: Provi
 export const PROTECTED_LISTING = { capability: "shell.run", program: "/usr/bin/ls", flags: PIN_LISTING_FLAGS, hash_program: PIN_HASH_PROGRAM, hash_flags: PIN_HASH_FLAGS } as const;
 
 /**
- * The verification scope (D-097 "verification scope", defined by D-112): the directory the criterion's command runs in
- * (its `cwd` field), and each protected path; a root inside another is listed through it.
+ * The verification scope (D-097 "verification scope", defined by D-112 as amended by D-114): the directory the
+ * criterion's command runs in (its `cwd` field); every path the command names (its path-typed data values and argv
+ * operands, by the reading step 4 uses), since the method visibly reads them (§3.4.4: "a file the method reads that is
+ * in neither set is treated as an input"), except a declared output; and each protected path. A root inside another is
+ * listed through it. A root that does not exist at admission makes the pin listing fail, so the task fails before its
+ * first turn (fail-closed); a file the task is to create belongs in `outputs`.
  */
 export function verificationScope(statement: CriterionStatement, entry: RegistryEntry | undefined): string[] {
   const cwd = entry === undefined ? undefined : statement.command.arguments[entry.cwd_field];
-  return pinRoots([...(typeof cwd === "string" ? [cwd] : []), ...statement.protected_paths]);
+  const named: string[] = [];
+  if (entry !== undefined) {
+    const call = callSchemaFor(entry.capability.interface).safeParse(statement.command.arguments);
+    if (call.success) {
+      for (const { raw } of scopePaths(entry, call.data)) {
+        const path = operandPath("/", raw);
+        if (!statement.outputs.some((output) => within(path, output))) named.push(path);
+      }
+    }
+  }
+  return pinRoots([...(typeof cwd === "string" ? [cwd] : []), ...named, ...statement.protected_paths]);
 }
 
 /** The cwd the verifier's pin calls run in: the scope's first root. */

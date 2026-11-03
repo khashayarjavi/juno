@@ -1158,3 +1158,22 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
     - proceeds: an in-scope chain, and a new path under an in-scope ancestor.
   - `scopeViolations` now takes the canonical answers. The three direct calls in `enforcement.test.ts` pass them, with the same assertions.
 - Reason: §2.7.1 ("Scope is judged on the canonical form … with symlinks resolved against the volume the effect will touch. A path that cannot be resolved is outside scope"; "A missing path is resolved through its longest existing ancestor … never mere non-existence").
+
+## D-114 — PR #31 review round 1 fixes: A2 on the verifier's own calls; the verification scope includes the paths the criterion names (Slice 1.5 Increment 1)
+- Date: 2026-11-03
+- Status: Accepted (fixes of two review findings; the restrictive readings, autopilot rulings under CLAUDE.md §7 step 3)
+- Applies to: Slice 1.5 onward; amends D-109 and D-112
+- Decision:
+  - **A2 on every boundary park (amends D-109).** The criterion check, the pin listing and the pin hashing are verifier calls. Their parks now go through the same rule as the model's (`#boundaryPark`): a `scope_violation` with an untrusted value records `overridable: false` and `remedy: "grant"`, and a plain resume is refused. Before, only the model's own calls did. The review's probe: a pinned input replaced by a symlink leading out of the volume, then a claim of done. It parked `pin_check` as overridable and accepted a plain resume.
+  - **A grant remedy applies to `scope_violation` only.** A park of any other reason recorded not overridable is never resumed, whatever remedy it names.
+  - **A parked path with no canonical form is resolved again on resume** (§2.7.1 C4). A grant covers only a canonical path, so a path that still cannot be resolved is never covered and the resume is refused. Once it resolves inside a grant the task holds, the resume is taken.
+  - **Verification scope (amends D-112; the restrictive reading).** It now also includes every path the criterion's command names: its path-typed data values and argv operands, normalised, by the reading step 4 uses. A declared output is excluded. §3.4.4: "a file the method reads that is in neither set is treated as an input"; the command visibly reads them.
+    - A named path inside another root is listed through it.
+    - One that does not exist at admission makes the pin listing fail, so the task fails before its first turn. A file the task is to create belongs in `outputs`.
+    - A named path outside every task grant cannot be pinned, so admission refuses to license `verified`.
+    - The review's probe: a criterion `cat /work/project/data/expected.txt` run in `/work/project/sub` closed `verified` after the task rewrote that file.
+- **Test change:** `packages/runner/test/runner.test.ts`, "hides an instruction value that appears among the criterion's data values". It used a criterion reading `/usr/bin/ls`, which is now refused at admission (it cannot be pinned); the test asserts that refusal. It proves its property (D-087 hides an instruction value inside a data value) with `/work/project/usr/bin/ls`, which carries the same instruction value inside the work content. Its assertions are unchanged.
+- New tests, in `packages/runner/test/pins-runner.test.ts`, "review fixes (D-114)":
+  - a file the criterion reads outside its cwd is pinned and its change fails verification;
+  - the verifier's untrusted scope violation records remedy `grant` and refuses a plain resume, and the resume is taken once the path resolves inside the grant.
+- Reason: §8.2, §3.4.4, §2.7.1; review round 1 of PR #31.

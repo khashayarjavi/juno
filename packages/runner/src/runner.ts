@@ -172,7 +172,7 @@ const ParkRecord = z
     overridable: z.boolean().optional(),
     remedy: z.string().optional(),
     capability: z.string().optional(),
-    detail: z.object({ grants: z.array(z.object({ outside: z.array(z.object({ path: z.string() })) })).optional() }).optional(),
+    detail: z.object({ grants: z.array(z.object({ outside: z.array(z.object({ path: z.string(), unresolved: z.string().optional() })) })).optional() }).optional(),
   })
   .transform((park) => ({ ...park, reason: park.reason as ParkReason }));
 
@@ -187,7 +187,7 @@ type LastPark = {
   readonly remedy: string | null;
   readonly capability: string | null;
   /** The out-of-scope paths of a `scope_violation`, over every candidate grant. */
-  readonly outside: readonly string[];
+  readonly outside: readonly { readonly path: string; readonly unresolved: boolean }[];
 };
 
 const AdmissionRecord = z.object({
@@ -483,7 +483,9 @@ export class Runner {
     // TTL first (§6.4): an expired task fails whatever it is parked on, a non-overridable park included.
     if (this.#ttlExpired(run)) return this.#fail(run, "ttl_expired");
     const park = this.#lastPark(run);
-    if (park !== null && !park.overridable && park.remedy !== "grant") {
+    // §8.2: only a scope violation is cleared by a grant; any other park recorded not overridable is never resumed (§8.3).
+    const grantRemedy = park !== null && park.reason === "scope_violation" && park.remedy === "grant";
+    if (park !== null && !park.overridable && !grantRemedy) {
       throw new RunnerError(`task ${id} is parked ${park.reason}, which is not overridable (§8.3); it is never resumed. Remedy the cause and start a new task`);
     }
 
@@ -501,10 +503,10 @@ export class Runner {
     const strays = removed.filter((grantId) => !run.task.grants.includes(grantId) || added.includes(grantId));
     if (strays.length > 0) throw new RunnerError(`grants to remove must be on the task and not also added: ${strays.join(", ")}`);
     const grants = [...run.task.grants, ...added.filter((grantId) => !run.task.grants.includes(grantId))].filter((grantId) => !removed.includes(grantId));
-    if (park !== null && !park.overridable && park.remedy === "grant") {
+    if (park !== null && !park.overridable && grantRemedy) {
       // §8.2 (A2): no plain resume. The task must now hold a usable grant for the capability whose scope covers every
       // out-of-scope path the park recorded (D-109).
-      const uncovered = this.#uncoveredByGrants(run, grants, park);
+      const uncovered = await this.#uncoveredByGrants(run, grants, park);
       if (uncovered.length > 0) {
         throw new RunnerError(
           `task ${id} is parked scope_violation on an untrusted value, which is not overridden (§8.2): issue or widen a grant covering ${uncovered.join(", ")} and add it on resume`,
@@ -655,17 +657,7 @@ export class Runner {
         if (clock.length > 0) return this.#budgetPark(run, clock, { turn_seq: turnSeq, not_acted_on: [call.id, ...rest] });
 
         const verdict = await this.#authorize(run, toProposal(call), turnClass.sensitivity, "executing");
-        if (verdict.outcome === "park") {
-          // §8.2 (A2): a scope violation caused by an untrusted value is cleared only by a grant, never by a plain resume.
-          const grantOnly = verdict.detail.reason === "scope_violation" && verdict.detail.untrusted.length > 0;
-          return this.#park(
-            run,
-            verdict.detail.reason,
-            this.#entryClass(run.task.id, verdict.call_seq),
-            { call_seq: verdict.call_seq, tool_call: call.id, capability: call.capability, not_acted_on: rest, detail: verdict.detail, sources: this.#parkSources(run, verdict.call_seq, verdict.detail) },
-            grantOnly ? "grant" : null,
-          );
-        }
+        if (verdict.outcome === "park") return this.#boundaryPark(run, verdict, call.capability, { tool_call: call.id, not_acted_on: rest });
         if (verdict.outcome === "reject") {
           // The rejection's text can name an instruction field's allowed values (for example a registry message listing
           // the program enum); the model is shown it with those values hidden (D-075). The journal keeps the full detail.
@@ -714,7 +706,7 @@ export class Runner {
 
     const verdict = await this.#authorize(run, { capability: criterion.command.capability, arguments: args }, run.task.sensitivity_floor, "verifier");
     if (verdict.outcome === "park") {
-      return this.#park(run, verdict.detail.reason, this.#entryClass(run.task.id, verdict.call_seq), { call_seq: verdict.call_seq, phase: "verification", detail: verdict.detail, sources: this.#parkSources(run, verdict.call_seq, verdict.detail) });
+      return this.#boundaryPark(run, verdict, criterion.command.capability, { phase: "verification" });
     }
     let result: "pass" | "fail" | "inconclusive" = "inconclusive";
     let resultSeq: number | null = null;
@@ -787,7 +779,7 @@ export class Runner {
     }
     const verdict = await this.#authorize(run, { capability: PROTECTED_LISTING.capability, arguments: args }, run.task.sensitivity_floor, "verifier");
     if (verdict.outcome === "park") {
-      return { ok: false, outcome: this.#park(run, verdict.detail.reason, this.#entryClass(run.task.id, verdict.call_seq), { call_seq: verdict.call_seq, phase: `protected_${phase}`, detail: verdict.detail, sources: this.#parkSources(run, verdict.call_seq, verdict.detail) }) };
+      return { ok: false, outcome: this.#boundaryPark(run, verdict, PROTECTED_LISTING.capability, { phase: ["protected", phase].join("_") }) };
     }
     if (verdict.outcome === "reject") return { ok: false, outcome: this.#fail(run, "protected_listing_rejected") };
     const performed = await this.#perform(run, verdict.authorization);
@@ -831,7 +823,7 @@ export class Runner {
       const args = { program: { class: "constant", slot: "criterion.pin.program" }, argv, cwd: { class: "constant", slot: "criterion.pin.cwd" } };
       const verdict = await this.#authorize(run, { capability: PROTECTED_LISTING.capability, arguments: args }, run.task.sensitivity_floor, "verifier");
       if (verdict.outcome === "park") {
-        return { ok: false, outcome: this.#park(run, verdict.detail.reason, this.#entryClass(run.task.id, verdict.call_seq), { call_seq: verdict.call_seq, phase: `pin_${phase}`, detail: verdict.detail, sources: this.#parkSources(run, verdict.call_seq, verdict.detail) }) };
+        return { ok: false, outcome: this.#boundaryPark(run, verdict, PROTECTED_LISTING.capability, { phase: ["pin", phase].join("_") }) };
       }
       if (verdict.outcome === "reject") return this.#pinsFailed(run, phase, `the hashing call was rejected: ${verdict.detail.reason}`);
       const performed = await this.#perform(run, verdict.authorization);
@@ -953,6 +945,23 @@ export class Runner {
     if (to === from) return;
     run.task = TaskSchema.parse({ ...run.task, sensitivity_floor: to });
     this.#append(run.task.id, "note", this.#runnerClass(run), { type: "sensitivity_floor", from, to, cause_seq: causeSeq });
+  }
+
+  /**
+   * Parks on a boundary verdict, whoever made the call: the executing model, or the verifier checking the criterion,
+   * listing or hashing (§6.2). §8.2 (A2): a scope violation caused by an untrusted value is cleared only by a grant,
+   * never by a plain resume, on every one of these paths (D-109). The park names the capability, so a resume can check
+   * a grant covers the parked paths, and the source of each value that caused it (§11.1).
+   */
+  #boundaryPark(run: TaskRun, verdict: Extract<Verdict, { outcome: "park" }>, capability: string, extra: Record<string, unknown>): RunOutcome {
+    const grantOnly = verdict.detail.reason === "scope_violation" && verdict.detail.untrusted.length > 0;
+    return this.#park(
+      run,
+      verdict.detail.reason,
+      this.#entryClass(run.task.id, verdict.call_seq),
+      { call_seq: verdict.call_seq, capability, ...extra, detail: verdict.detail, sources: this.#parkSources(run, verdict.call_seq, verdict.detail) },
+      grantOnly ? "grant" : null,
+    );
   }
 
   /** §2.7.1 (A4): the limit's worth of consecutive rejections parks `rejection_limit` (overridable, §6.2), naming each one. */
@@ -1104,7 +1113,11 @@ export class Runner {
       overridable: payload.overridable !== false && !NON_OVERRIDABLE.has(payload.reason),
       remedy: payload.remedy ?? null,
       capability: payload.capability ?? null,
-      outside: [...new Set((payload.detail?.grants ?? []).flatMap((item) => item.outside.map((violation) => violation.path)))],
+      outside: [
+        ...new Map(
+          (payload.detail?.grants ?? []).flatMap((item) => item.outside.map((violation) => [violation.path, { path: violation.path, unresolved: violation.unresolved !== undefined }] as const)),
+        ).values(),
+      ],
     };
   }
 
@@ -1144,11 +1157,24 @@ export class Runner {
     return entry;
   }
 
-  /** The parked out-of-scope paths no usable grant among `grants` covers for the parked capability (§8.2, D-109). */
-  #uncoveredByGrants(run: TaskRun, grants: readonly string[], park: LastPark): string[] {
+  /**
+   * The parked out-of-scope paths no usable grant among `grants` covers for the parked capability (§8.2, D-109). A path
+   * that had no canonical form when it parked is resolved again now (§2.7.1 C4, D-114): a grant can cover only a
+   * canonical path, so one that still cannot be resolved is never covered.
+   */
+  async #uncoveredByGrants(run: TaskRun, grants: readonly string[], park: LastPark): Promise<string[]> {
     if (park.capability === null || park.outside.length === 0) return ["the parked values (the park does not name them)"];
     const covering = this.#grants.coverage({ principal: run.task.principal, grants }, park.capability, this.#clock()).covering;
-    return park.outside.filter((path) => !covering.some((grant) => grant.resource_scope.some((selector) => selector.kind === "path" && pathWithin(path, selector.prefix))));
+    const covered = (path: string): boolean => covering.some((grant) => grant.resource_scope.some((selector) => selector.kind === "path" && pathWithin(path, selector.prefix)));
+    const unresolved = park.outside.filter((item) => item.unresolved).map((item) => item.path);
+    const now = await this.#resolver.resolve(unresolved);
+    return park.outside
+      .filter((item) => {
+        if (!item.unresolved) return !covered(item.path);
+        const answer = now.get(item.path);
+        return answer === undefined || !answer.ok || !covered(answer.canonical);
+      })
+      .map((item) => item.path);
   }
 
   #payloadOf(ref: string): unknown {

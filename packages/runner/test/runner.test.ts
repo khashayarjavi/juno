@@ -531,7 +531,13 @@ describe("Slice 1.3: the criterion in plain words (D-087)", () => {
 
   // proves D-087 / D-075: an instruction value is hidden even where the criterion carries it in a data field
   it("hides an instruction value that appears among the criterion's data values", async () => {
-    const criterion = { ...OPERATOR_CRITERION, statement: { ...OPERATOR_CRITERION.statement, command: { capability: "shell.run", arguments: { program: CAT, argv: ["/usr/bin/ls"], cwd: "/work/project" } } } };
+    // A criterion reading /usr/bin/ls itself names a file outside every grant, which the verifier cannot pin, so it is
+    // refused (§3.4.4, D-114); the data value here still carries the instruction value inside the work content.
+    const outside = { ...OPERATOR_CRITERION, statement: { ...OPERATOR_CRITERION.statement, command: { capability: "shell.run", arguments: { program: CAT, argv: ["/usr/bin/ls"], cwd: "/work/project" } } } };
+    const probe = h.runner([]).runner;
+    expect(probe.admit(request({ id: "task-outside", ...withCriterion, criterion: outside })).admitted).toBe(false);
+    probe.close();
+    const criterion = { ...OPERATOR_CRITERION, statement: { ...OPERATOR_CRITERION.statement, command: { capability: "shell.run", arguments: { program: CAT, argv: ["/work/project/usr/bin/ls"], cwd: "/work/project" } } } };
     const { text } = await shown({ ...withCriterion, criterion });
     expect(String(text)).not.toContain("/usr/bin/");
     expect(String(text)).toContain("exits with code 0");

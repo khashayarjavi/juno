@@ -3,7 +3,12 @@
 ## Current increment
 **Slice 1.5 — Increment 1: conform Slice 1 to v0.6** (`docs/plans/slice-1.5-build-plan.md`, Increment 1). Branch `claude/gallant-mccarthy-alppyu` (fast-forwarded to `main` c405996 after PR #30 merged). Spec v0.6.1 on `main`. No objection open.
 
-Status: **built; going through the §7 gate.** Every item of the plan's Increment 1 is built and tested; local `make verify: GREEN` on 03e4035 (774 unit, 58 container). PR #31.
+Status: **built; going through the §7 gate.** Every item of the plan's Increment 1 is built and tested. PR #31.
+- **Review round 1 (head 0b011fc; fresh subagent, P2 verbatim): DO NOT MERGE.** Checks 2, 3, 4 and 6 PASS; CI on 0b011fc passed (run 41717053614). Two defects, both fixed (D-114):
+  - the verifier's own scope-violation parks were overridable;
+  - a file the criterion reads outside its cwd was not pinned.
+
+  Also fixed: a grant remedy applies to `scope_violation` only, and a parked path with no canonical form is resolved again on resume. Local `make verify: GREEN` after the fixes (776 unit, 58 container). Review round 2 next.
 - **§0.0 rows built by Increment 1 (each with tests naming its section):**
   - A2 (§8.2; D-109), A3 (§11.1; D-110), A4 (§2.7.1; D-107, D-102), A5 (§2.3.1 rule 6; D-108);
   - B1 (§2.6; D-111), B2 (§3.4.4, §5.1; D-112);

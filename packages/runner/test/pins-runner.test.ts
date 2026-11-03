@@ -1,3 +1,5 @@
+import { rmSync, symlinkSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Runner } from "../src/runner.js";
 import { type Harness, OPERATOR_CRITERION, harness, request, shellRun, turn, writeWork } from "./helpers.js";
@@ -105,5 +107,39 @@ describe("§3.4.4 B2: verification inputs are pinned at admission", () => {
       expect(result.admitted, JSON.stringify(statement)).toBe(false);
       expect(result.admitted ? [] : result.failures.map((failure) => failure.check)).toContain("D-112");
     }
+  });
+});
+
+describe("review fixes (D-114)", () => {
+  // proves §3.4.4 ("a file the method reads that is in neither set is treated as an input") with D-114: a file the
+  // criterion's command names outside its cwd is pinned, so a task that rewrites it cannot close verified
+  it("pins a file the criterion reads outside its cwd", async () => {
+    writeWork({ "/work/project/data/expected.txt": "expected\n", "/work/project/sub/readme.txt": "sub\n" });
+    const { runner } = h.runner(changing({ "/work/project/data/expected.txt": "EXPECTED\n" }));
+    admitted(runner, withCriterion({ command: { capability: "shell.run", arguments: { program: "/usr/bin/cat", argv: ["/work/project/data/expected.txt"], cwd: "/work/project/sub" } } }));
+    expect((await runner.run("task-1")).reason).toBe("verification_fail");
+    expect(notes("verification").at(-1)?.["changed_paths"]).toEqual(["/work/project/data/expected.txt"]);
+  });
+
+  // proves §8.2 (A2) on the verifier's own calls (D-109, D-114): when the closure's hashing names an untrusted path that
+  // now leaves the scope, the park is not overridable, its remedy is a grant, and a plain resume is refused
+  it("records the verifier's untrusted scope violation as remedy-grant, refusing a plain resume", async () => {
+    const { runner } = h.runner([
+      () => {
+        // The task replaces an input with a symlink leading out of the volume.
+        rmSync(join(h.dir, "work/project/notes.txt"));
+        symlinkSync("/etc/hostname", join(h.dir, "work/project/notes.txt"));
+        return turn([]);
+      },
+    ]);
+    admitted(runner, withCriterion());
+    expect((await runner.run("task-1")).reason).toBe("scope_violation");
+    const park = h.entries().filter((entry) => entry.kind === "park").map(h.payload).at(-1);
+    expect(park).toMatchObject({ reason: "scope_violation", overridable: false, remedy: "grant", phase: "pin_check", capability: "shell.run" });
+    await expect(runner.resume("task-1")).rejects.toThrow(/§8\.2/);
+    // Once the path resolves again inside a grant the task holds, the parked path is covered and the resume is taken (D-114).
+    rmSync(join(h.dir, "work/project/notes.txt"));
+    writeWork({ "/work/project/notes.txt": "notes\n" });
+    await expect(runner.resume("task-1")).resolves.toMatchObject({ task_id: "task-1" });
   });
 });
