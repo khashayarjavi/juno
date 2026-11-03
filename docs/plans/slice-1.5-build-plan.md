@@ -1,7 +1,7 @@
 # JUNO — Slice 1.5 Build Plan
 
 **Implements:** Core Semantic Model **v0.6.1** — §0.0's changes A1–A5, B1–B2, C1, C4, D1–D6, E1–E3, the ten v0.6.1 clarifications, and §4.3's Slice 1.5 acceptance. C2 is deferred to Slice 2 (D-095).
-**Read from:** `spec/core-semantic-model.md` at commit `4267e04` (branch `spec-v0.6`, the operator's PR #27), the v0.6 text read in full on 2026-11-03 (D-090) and the v0.6.1 sections re-read on 2026-11-03 (D-096).
+**Read from:** `spec/core-semantic-model.md` at commit `fcb1a60` (branch `spec-v0.6`, head of the operator's PR #27, open and not yet merged), the v0.6 text read in full on 2026-11-03 (D-090), the v0.6.1 sections re-read on 2026-11-03 (D-096), and fcb1a60's one change over `4267e04` (§0.0 and §3.4.1, V61-1) read on 2026-11-03 (D-098).
 **Status:** Part 0, revised to the operator's rulings of 2026-11-03 (D-091 to D-095). **No increment starts until v0.6.1 is on `main`** (D-096): PR #27 was closed without merging, so `main` still carries v0.5.1.
 **Built by:** the coding agent in autopilot (CLAUDE.md §7), one increment per pull request, each through the §7 gate.
 
@@ -24,7 +24,7 @@ CLAUDE.md rule 13: nothing below is taken from memory. Each source was fetched o
 | Source | URL | Version / date | Hash |
 |---|---|---|---|
 | Spec v0.6 | PR #27, `spec/core-semantic-model.md` | v0.6, approved 2026-11-03 | commit `51a395a` |
-| Spec v0.6.1 | PR #27 (closed unmerged), `spec/core-semantic-model.md` | v0.6.1, 2026-11-03 | commit `4267e04` |
+| Spec v0.6.1 | PR #27 (open, not merged on 2026-11-03), `spec/core-semantic-model.md` | v0.6.1, 2026-11-03 | commit `fcb1a60` (4267e04 plus V61-1) |
 | GitHub plans | https://docs.github.com/en/get-started/learning-about-github/githubs-plans | read 2026-11-03 | protected branches in private repositories are a GitHub Pro feature (V61-1) |
 | Claude Code hooks reference | https://code.claude.com/docs/en/hooks.md | page undated; mentions features up to v2.1.304 | `524960c086d43f6e` |
 | Claude Code headless (`-p`) | https://code.claude.com/docs/en/headless.md | undated | `208eeb28afce5a43` |
@@ -99,7 +99,7 @@ Off the host: the anchor destination (append-only; in tests, a separate append-o
 
 Six increments, dependency-ordered. Each is its own pull request through the CLAUDE.md §7 gate. **Do not start an increment until the previous one is merged.** Every test names the section it proves (CLAUDE.md rule 7). Estimates are in Pro-plan sessions and include the review rounds.
 
-The ten objections the first draft raised (V6-1 to V6-10) are resolved by v0.6.1 (D-091; §6 below says where). One objection is open, V61-1 (§6): it blocks only the setup of the real anchor destination, not any increment's code or tests. An increment does not start while an objection that blocks it is open, unless the director has ruled.
+The ten objections the first draft raised (V6-1 to V6-10) are resolved by v0.6.1 (D-091; §6 below says where). V61-1, raised against v0.6.1 itself, is ruled (a) public (D-098) and resolved in §3.4.1 at fcb1a60 (branch `spec-v0.6`). No objection is open. An increment does not start while an objection that blocks it is open, unless the director has ruled.
 
 ---
 
@@ -148,7 +148,7 @@ The ten objections the first draft raised (V6-1 to V6-10) are resolved by v0.6.1
 1. **Grant signatures.** The `signature` field becomes mandatory: an Ed25519 signature over the canonical form of every other field (the journal's existing canonical JSON). Verification uses Node's built-in `node:crypto` (no new package). The boundary verifies at lookup; a grant with a missing or invalid signature **does not exist** — the call sees no covering grant.
 2. **Where the keys live.** The operator's private key lives in the **Windows OS keychain** on the operator's machine (D-093), never in the repository, a container, the journal, or any directory the runner can write. JUNO holds only the operator's **public** key (the trust anchor), in a location the runner cannot write; the runner refuses to start if it can write the anchor file or its directory. The exact Windows signing mechanism is chosen at the start of the increment from its current documentation (rule 13) and recorded as a D-number. Tests generate a throwaway key per run (D-093).
 3. **Operator CLI:** `juno grant sign` (operator-side, uses the key), `juno grant verify`. The runner and every mediated mode only ever verify.
-4. **Anchored head (§3.4.1, v0.6.1).** At a recorded interval the runner signs the journal head hash with a separate **journal key** it holds (never the operator key, which never enters the runner) and copies it to an append-only destination off the host. The signature only says which runner wrote the anchor; the protection is the copy. `juno journal check` compares the chain with the latest anchor: a rewrite of anything at or before the anchored head is reported, naming the first entry that differs. **In tests** the destination is a separate container exposing an append-only interface over its own volume. **For real use** it is the operator's GitHub repository `juno-anchors` (D-094), pushed with a credential that cannot force-push or delete; whether it is public or private is open objection V61-1. Anchors hold only hashes, sequence numbers, times and signatures — no task content.
+4. **Anchored head (§3.4.1, v0.6.1).** At a recorded interval the runner signs the journal head hash with a separate **journal key** it holds (never the operator key, which never enters the runner) and copies it to an append-only destination off the host. The signature only says which runner wrote the anchor; the protection is the copy. `juno journal check` compares the chain with the latest anchor: a rewrite of anything at or before the anchored head is reported, naming the first entry that differs. **In tests** the destination is a separate container exposing an append-only interface over its own volume. **For real use** it is the operator's **public** GitHub repository `juno-anchors` (D-094, D-098; §3.4.1 v0.6.1), whose history is protected against force-push and deletion, pushed to by a credential scoped to that repository alone. Anchors hold only hashes, sequence numbers, times and signatures — no task content.
 5. Journal storage, the checkpoint store (Increment 3), the trust anchor and JUNO's configuration are all outside every name a selector can reach; grant creation rejects a selector that names any of them (§3.2 "No selector may name journal storage").
 
 **Tests:**
@@ -160,7 +160,7 @@ The ten objections the first draft raised (V6-1 to V6-10) are resolved by v0.6.1
 - §3.4.1 C1: the stand-in destination refuses to overwrite or delete an anchor already written; an anchor signed with a stolen journal key cannot replace an earlier one; no code path gives the runner the operator key.
 - §3.2, §3.4.1: a grant selector naming the journal, the checkpoint store or the trust anchor is rejected at creation.
 
-**Done when:** the tests above are green; every grant in the repository's fixtures is signed by a per-run test key; STATE.md gives the operator click-by-click Windows steps to create the keychain key, sign a grant, and (once V61-1 is ruled) create `juno-anchors` and its push credential. **That is the first point that needs the operator's hands; the increment's code and tests do not wait for it.**
+**Done when:** the tests above are green; every grant in the repository's fixtures is signed by a per-run test key; STATE.md gives the operator click-by-click Windows steps to create the keychain key, sign a grant, and create `juno-anchors` (public), its protection against force-push and deletion, and a push credential scoped to it alone. **That is the first point that needs the operator's hands; the increment's code and tests do not wait for it.**
 **Depends on:** Increment 1. **Estimate:** 2 sessions.
 
 ---
@@ -299,8 +299,8 @@ No acceptance test needs a real model. The injection in tests 2 and 3 is scripte
 ## 5. What needs the operator's own machine
 
 - **For acceptance: nothing.** Every test above runs in CI or in a cloud session.
-- **Now, before Increment 1:** put spec v0.6.1 on `main` (reopen and merge PR #27; D-096), and rule V61-1 (public or private `juno-anchors`).
-- **Once, for real use (Increment 2):** creating the operator's signing key in the Windows OS keychain (D-093) and signing one grant with `juno grant sign`; creating `juno-anchors` and a push credential that cannot force-push or delete (D-094). CI cannot hold a keychain, so it uses throwaway per-run keys and the stand-in anchor container; the real-key path is proven only on the operator's machine. Increment 2 writes click-by-click Windows steps into STATE.md.
+- **Now, before Increment 1:** put spec v0.6.1 on `main` (merge PR #27, head fcb1a60; D-096, D-099). V61-1 is ruled (D-098).
+- **Once, for real use (Increment 2):** creating the operator's signing key in the Windows OS keychain (D-093) and signing one grant with `juno grant sign`; creating the public repository `juno-anchors`, protecting its history against force-push and deletion, and a push credential scoped to it alone (D-094, D-098; §3.4.1). CI cannot hold a keychain, so it uses throwaway per-run keys and the stand-in anchor container; the real-key path is proven only on the operator's machine. Increment 2 writes click-by-click Windows steps into STATE.md.
 - **Optional, not acceptance:** one interactive Claude Code session on the operator's machine with the hook installed, to see an interactive `deny` in the terminal. It uses the operator's own Claude Code plan (no extra money); the automated tests use `-p` mode only, because the interactive terminal cannot be driven by a test.
 
 ---
@@ -324,9 +324,7 @@ No acceptance test needs a real model. The injection in tests 2 and 3 is scripte
 
 ### 6.2 Open
 
-| ID | § | Question | Blocks |
-|---|---|---|---|
-| V61-1 | §3.4.1 | The operator ruled `juno-anchors` **public** (D-094); §3.4.1 (v0.6.1) says "an append-only **private** git repository whose push credential cannot force-push or delete". On GitHub Free a private repository cannot have protected branches (GitHub's plans page), so a private repo's push credential can force-push. Options: (a) amend §3.4.1 to allow a public repository (anchors hold only hashes, times and signatures); (b) keep private and upgrade the account to GitHub Pro. | The real anchor destination only (Increment 2's operator setup); no code or test |
+None. V61-1 (§3.4.1, public or private `juno-anchors`) was ruled (a) public by the operator on 2026-11-03 (D-098); §3.4.1 at fcb1a60 says "a **public** git repository whose history is protected against force-push and deletion, pushed to by a credential scoped to that repository alone".
 
 ---
 
@@ -334,7 +332,7 @@ No acceptance test needs a real model. The injection in tests 2 and 3 is scripte
 
 1. **Where the real-binary tests run:** cloud sessions only, never vendored (D-092).
 2. **The signing mechanism:** the Windows OS keychain; tests use a generated key (D-093).
-3. **The anchor destination:** the operator's GitHub repository `juno-anchors`, public (D-094) — pending V61-1, because §3.4.1 says private.
+3. **The anchor destination:** the operator's GitHub repository `juno-anchors`, public (D-094); §3.4.1 now says public (V61-1 ruled (a), D-098).
 4. **PR #26** was merged on 2026-11-03.
 5. **C2:** deferred to Slice 2 (D-095).
 

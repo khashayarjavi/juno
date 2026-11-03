@@ -904,7 +904,7 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
 
 ## D-094 — Journal anchors go to a public GitHub repository, `juno-anchors` (operator ruling; conflicts with §3.4.1, see V61-1)
 - Date: 2026-11-03
-- Status: Recorded. **Not applied to the real destination** while V61-1 is open; tests are unaffected.
+- Status: Recorded. Applies as written from D-098 (V61-1 ruled (a) public; §3.4.1 amended at fcb1a60). Tests are unaffected.
 - Applies to: Slice 1.5, Increment 2 onward
 - Decision: the real anchor destination is a GitHub repository `juno-anchors` owned by the operator, public. Tests use the append-only stand-in container §3.4.1 (v0.6.1) describes.
 - Conflict: §3.4.1 (v0.6.1) says "for v1, an append-only **private** git repository whose push credential cannot force-push or delete". GitHub's plans page (read 2026-11-03, https://docs.github.com/en/get-started/learning-about-github/githubs-plans) lists "Protected branches" under GitHub Pro's "Advanced tools and insights in private repositories", so on GitHub Free a private repository cannot stop its push credential from force-pushing. The ruling and the spec cannot both hold on a Free account. CLAUDE.md §2 rules 1 and 2: the spec text governs until the operator changes it, so this is open objection V61-1, not an autopilot ruling.
@@ -935,3 +935,20 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
 - Applies to: Slice 1.5 Increment 1 (B2)
 - Decision: JUNO cannot observe which files a verification command reads. So every file in the criterion's verification scope that is not a declared output is treated as a verification input: existing files are pinned by content hash, and the scope's listing is pinned, so a file the task creates that is not a declared output makes `verified` impossible ("an input that does not exist at admission is pinned as absent", §3.4.4). This catches "the agent added a test file that passes".
 - Reason: §3.4.4 (v0.6.1): "A file the method reads that is in neither set is treated as an input"; the restrictive reading fails closed (D8).
+
+## D-098 — V61-1 ruled (a): the anchor repository is public (operator ruling; Slice 1.5)
+- Date: 2026-11-03
+- Status: Accepted (operator ruling). Takes effect in the build once v0.6.1 is on `main` (D-096, D-099).
+- Applies to: Slice 1.5, Increment 2 onward (the real anchor destination only; no code or test changes)
+- Decision: V61-1 is resolved by option (a). §3.4.1 (v0.6.1, commit fcb1a6076dadc803be945d026f7c438f69d7e5e7, branch `spec-v0.6`, head of PR #27) now reads: "for v1, a **public** git repository whose history is protected against force-push and deletion, pushed to by a credential scoped to that repository alone". D-094 applies as written: the real destination is the operator's public GitHub repository `juno-anchors`. V61-1 is removed from STATE.md's open objections and from the plan's §6.2.
+- Checked: `git diff 4267e04 fcb1a60` changes two lines only, §0.0's 0.6.1 paragraph (adds the V61-1 note) and §3.4.1's "Who signs, and what counts as off-host" paragraph. PR #27's CI `verify` on fcb1a60, run 41673760530, succeeded.
+- Reason: the operator's instruction of 2026-11-03 ("Operator ruling on V61-1: (a) public").
+
+## D-099 — PR #27 is still not merged; STOP again (autopilot record)
+- Date: 2026-11-03
+- Status: Accepted (autopilot record; D-096 unchanged and still in force)
+- Applies to: Slice 1.5
+- Finding: the operator's instruction says "PR #27 is merged: spec v0.6.1 is on main". Read from GitHub on 2026-11-03: PR #27 is **open, not merged** (`merged: false`, `mergeable_state: clean`), head fcb1a60, last updated 16:23:46 UTC (it was reopened and the V61-1 commit added). `main` is still 5ee1594 and its `spec/core-semantic-model.md` says **Version: 0.5.1**. `git merge-tree` shows PR #27 merges into `main` without conflict.
+- Decision: as D-096. The agent does not merge PR #27 (it changes `spec/` on `main`: CLAUDE.md §2 rule 6, §7 NEVER). The plan PR is not reviewed or merged, and Increment 1 does not start, until v0.6.1 is on `main`. Done meanwhile (nothing depends on the merge): D-098 recorded; the plan updated to fcb1a60 and the ruling.
+- The plan revision moves to a new PR from `claude/gallant-mccarthy-alppyu`: this session's harness allows pushes only to that branch (as D-028), so PR #29's branch cannot be updated. The new PR carries PR #29's two commits unchanged plus this session's, and supersedes PR #29.
+- Reason: CLAUDE.md §1, §2 rule 6, §7 (NEVER edit spec/; STOP when the only way forward is editing spec/).

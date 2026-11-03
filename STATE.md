@@ -1,20 +1,30 @@
 # STATE
 
 ## Current increment
-**Slice 1.5 — Part 0 revision: the build plan brought to spec v0.6.1 and the operator's rulings of 2026-11-03** (D-091 to D-095). Branch `claude/youthful-bohr-hpxzg1`. Plan: `docs/plans/slice-1.5-build-plan.md`.
+**Slice 1.5 — Part 0 revision: the build plan brought to spec v0.6.1 and the operator's rulings of 2026-11-03** (D-091 to D-095, D-098). Branch `claude/gallant-mccarthy-alppyu` (D-099; carries PR #29's commits). Plan: `docs/plans/slice-1.5-build-plan.md`.
 
-Status: **STOP (D-096). The plan is revised; it is not reviewed or merged, and Increment 1 has not started, because spec v0.6.1 is not on `main`.**
-- **What was found.** The instruction says "Spec v0.6.1 is on main". It is not. PR #28 (the plan) was merged at 2026-11-03 15:57:33 UTC; **PR #27 (spec v0.6.1, head 4267e04) was closed without merging** at 15:57:46 UTC. `main` (5ee1594) carries spec **v0.5.1**. PR #27 still merges into `main` with no conflict (checked with `git merge-tree`).
-- **Why this stops the work.** CLAUDE.md §1 makes `spec/core-semantic-model.md` on `main` the specification; every Slice 1.5 increment implements v0.6.1. The agent may never change `spec/` (§2 rule 6; §7 NEVER), so the only way forward is the operator's: reopen and merge PR #27 (§7 STOP, "the only way forward is editing spec/"). Steps under "For the operator".
-- **Done this session (nothing here depends on the spec merge):**
-  - D-091 to D-095 recorded (the operator's five rulings); D-096 (this STOP); D-097 (autopilot ruling: files in neither of §3.4.4's sets are pinned, so a new non-output file makes `verified` impossible).
-  - V6-1 to V6-10 removed from "Open objections", each mapped to its v0.6.1 section (D-091). V6-9's unanswered part (does an unreadable turn count?) follows from §2.7.1's own definition of a rejection: it is not a call, so no.
-  - The plan revised to v0.6.1: every "blocked by V6-n" replaced with the ruled behaviour and tests for it; keychain, cloud-only real-binary runs (`make mediated-e2e`), the journal key, the stand-in anchor container, C2 deferred.
-- **New open objection: V61-1** (§3.4.1; public vs private `juno-anchors`). It blocks only the real anchor setup in Increment 2, not code or tests.
-- **Review and gate: not run (D-096).** PR #28 is merged, so the revision is a new PR: **PR #29** (https://github.com/khashayarjavi/juno/pull/29, draft), head 773b1f4 before this STATE record. The gate cannot complete while v0.6.1 is off `main` and V61-1 is open, and the review must run on the head that will merge.
-- **Resume here:** once PR #27 is merged, (1) re-read `spec/core-semantic-model.md` on `main` and confirm it is 4267e04's text; (2) take this PR through §7 (review with P2 verbatim, CI on the pinned head, merge); (3) start Increment 1.
+Status: **STOP (D-099, as D-096). Spec v0.6.1 is still not on `main`, so the plan PR is not reviewed or merged and Increment 1 has not started.**
+- **What was found (2026-11-03, read from GitHub):** the instruction says "PR #27 is merged". It is not. PR #27 (https://github.com/khashayarjavi/juno/pull/27) is **open**, `merged: false`, mergeable with no conflict, head fcb1a60 (4267e04 plus the V61-1 amendment). Its CI `verify` on fcb1a60 passed (run 41673760530). `main` is 5ee1594 and its spec says **Version: 0.5.1**. CI on `main` for 5ee1594 passed (run 41669220357).
+- **Why this stops the work:** merging PR #27 changes `spec/` on `main`, which the agent may never do (CLAUDE.md §2 rule 6; §7 NEVER). Every Slice 1.5 increment implements v0.6.1, and CLAUDE.md §1 makes the file on `main` the specification.
+- **Done this session (nothing here depends on the merge):**
+  - D-098: V61-1 ruled (a) public; §3.4.1 at fcb1a60 checked (a two-line change over 4267e04); D-094 now applies as written. No objection to the spec is open.
+  - D-099: this STOP, and the move to a new branch.
+  - The plan updated: reads from fcb1a60; V61-1 moved to resolved; the anchor destination is the public `juno-anchors`, history protected against force-push and deletion, push credential scoped to it alone.
+- **PR:** the revision is now on a new draft PR from `claude/gallant-mccarthy-alppyu` (see the PR list; it supersedes PR #29, https://github.com/khashayarjavi/juno/pull/29, whose branch this session cannot push). Review and gate not run (D-096): they run on the head that will merge, once v0.6.1 is on `main`.
+- **Operator: the one step that unblocks everything (Windows, any browser):**
+  1. Open https://github.com/khashayarjavi/juno/pull/27 while signed in as `khashayarjavi`.
+  2. Scroll to the bottom of the "Conversation" tab. You should see a green box "This branch has no conflicts with the base branch".
+  3. Click the green **Merge pull request** button (if it shows "Squash and merge" or "Rebase and merge", click the small arrow next to it and pick **Create a merge commit** first).
+  4. Click **Confirm merge**. The page should now show a purple **Merged** label at the top.
+  5. Check: open https://github.com/khashayarjavi/juno/blob/main/spec/core-semantic-model.md — line 3 must say **Version: 0.6.1**.
+  6. Close PR #29 (it is superseded): open https://github.com/khashayarjavi/juno/pull/29, scroll down, click **Close pull request**.
+  7. Start a new session with: "PR #27 is merged. Continue Slice 1.5 from STATE.md."
+- **Local `make verify` (2026-11-03): RED on this host only for Docker Hub** (`429 Too Many Requests` pulling `node:22-bookworm-slim` for the container images) after typecheck, lint and 697 of 697 unit tests passed. This change is documents only. CI's `verify` on the PR head decides.
+- **Resume here:** once `main`'s spec says v0.6.1, (1) confirm it is fcb1a60's text (`git diff fcb1a60 origin/main -- spec/` is empty); (2) take the plan PR through §7 (review with P2 verbatim, CI on the pinned head, SHA-pinned merge); (3) start Increment 1.
 
 ## Previous increment
+**Slice 1.5 — Part 0 revision, first session** (D-091 to D-097). Branch `claude/youthful-bohr-hpxzg1`, PR #29 (draft, head c9408cd, CI `verify` runs 41670675286 and 41670679331 success). Stopped because PR #27 had been closed unmerged (D-096). Its two commits are carried unchanged on `claude/gallant-mccarthy-alppyu`.
+
 **Slice 1.5 — Part 0: the build plan** (D-089, D-090). Branch `claude/determined-carson-5d6slg`, PR #28 (https://github.com/khashayarjavi/juno/pull/28), merged on GitHub at 2026-11-03 15:57:33 UTC (merge commit 5ee1594), not by the agent: the agent had stopped before the merge (D-090). Review round 1 on 632735b: DO NOT MERGE for gate conditions only (all six checks PASS). CI `verify`: run 41579569741 on 632735b and run 41579784946 on 9a323d8, both success. CI on `main` for 5ee1594 was not read by the agent. Reviewer notes still open for the director: confirm D-089 matches what you authorised; CLAUDE.md §7 LOOP step 1 still names `spec/slice-1-build-plan.md`, not the Slice 1.5 plan; the Increment 1 review must check that the B1 test change has its own D-number and makes the test stricter.
 
 ## Earlier increments (Slice 1.3)
@@ -251,9 +261,9 @@ Earlier: local container stage RED on 1bd3c52 for Docker Hub's 429 (environmenta
 The four items recorded during Slice 1.2 are each answered in v0.6 (§0.0): untrusted arguments to write, external and irreversible capabilities by A1 (§2.2.2); verifier slots addressable by the executing model by B1 (§2.6); provenance and the source entry in an approval by A3 (§11.1); no override of an untrusted `scope_violation` by A2 (§8.2). They are built in Slice 1.5 Increments 1 and 3. The original text is in git history (STATE.md before this commit).
 
 ## Open objections to the spec
-- **V61-1 (§3.4.1, D-094) — public or private anchor repository. Blocks only the real anchor destination (Increment 2's operator setup); no code, no test.** The operator ruled `juno-anchors` public. §3.4.1 (v0.6.1): "for v1, an append-only private git repository whose push credential cannot force-push or delete." GitHub's plans page (read 2026-11-03) lists protected branches in private repositories as a GitHub Pro feature, so on GitHub Free a private repository's push credential can force-push; public plus a ruleset blocking force-push and deletion is append-only. The ruling and the spec text cannot both hold on a Free account. **Question:** (a) amend §3.4.1 to allow a public repository, or (b) private on GitHub Pro?
+None.
 
-**Resolved by spec v0.6.1 (operator ruling D-091; takes effect when v0.6.1 is on `main`):** V6-1 §3.4.4 "What is pinned"; V6-2 §2.7.1 "Paths that do not exist yet"; V6-3 §4.3 "Park in B and C" (always deny); V6-4 §3.4.1 "Who signs, and what counts as off-host"; V6-5 §2.3.2 "Reading a shell command string"; V6-6 §4.3 "A session is a Task"; V6-7 §4.3 "Sensitivity in B and C"; V6-8 §11.1 "possible sources"; V6-9 §2.7.1 "The count resets" (an unreadable turn is not a rejection); V6-10 §2.3.2 "Effect per program". Full text: DECISIONS.md D-091 and the spec at 4267e04.
+**Resolved:** V61-1 (§3.4.1, public or private anchor repository) — operator ruled (a) public, D-098; §3.4.1 at fcb1a60. V6-1 to V6-10 by spec v0.6.1 (operator ruling D-091; takes effect when v0.6.1 is on `main`): V6-1 §3.4.4 "What is pinned"; V6-2 §2.7.1 "Paths that do not exist yet"; V6-3 §4.3 "Park in B and C" (always deny); V6-4 §3.4.1 "Who signs, and what counts as off-host"; V6-5 §2.3.2 "Reading a shell command string"; V6-6 §4.3 "A session is a Task"; V6-7 §4.3 "Sensitivity in B and C"; V6-8 §11.1 "possible sources"; V6-9 §2.7.1 "The count resets" (an unreadable turn is not a rejection); V6-10 §2.3.2 "Effect per program". Full text: DECISIONS.md D-091 and D-098, and the spec at fcb1a60.
 
 ## Notes for the next session
 - **Minor notes from the last review of PR #10, for the operator (not defects):**
