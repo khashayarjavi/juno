@@ -190,7 +190,7 @@ Status: **Slice 1.2 complete. Part 1 (PR #19), the interface fix (PR #20), Part 
 ## Merges recorded (CLAUDE.md §7 step 6)
 - **Slice 1.5 Increment 1 (D-107 to D-114), PR #31** (https://github.com/khashayarjavi/juno/pull/31):
   - Head ae5b38a0c2630210e72e3f88a25d6353c24558b9; PR CI `verify` run 41719481819 (job 126208141078, success).
-  - Merged as merge commit 1432cc3dee9489c1225ea04e28dc399e9c122e3c, pinned to the head SHA. CI `verify` on `main` for the merge commit: run 41720351290 (event `push`), read below.
+  - Merged as merge commit 1432cc3dee9489c1225ea04e28dc399e9c122e3c, pinned to the head SHA. CI `verify` on `main` for the merge commit: run 41720351290 (event `push`, job 126211167933), success.
   - Reviewer verdict: round 2 MERGE on ae5b38a (all six checks PASS). Round 1 on 0b011fc was DO NOT MERGE for two defects, both fixed (D-114).
   - Notes from the reviewers for the operator, not defects:
     - D-109 reads A2's "untrusted" as the literal level, so an out-of-scope `derived` value stays overridable;
