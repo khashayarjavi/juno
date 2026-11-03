@@ -1,6 +1,6 @@
 # JUNO — Core Semantic Model
 
-**Version:** 0.6
+**Version:** 0.6.1
 **Supersedes:** v0.5.1
 **Status:** Implementation baseline. Written to be implementable by a coding agent working from this document alone.
 **Reading note:** This document is the memory of the project. Build sessions are irregular; assume no session remembers the previous one. Anything not written here does not exist.
@@ -39,6 +39,8 @@ Approved by the operator on 2026-11-03 from the *JUNO Spec v0.6 — Change Propo
 | E1 | In hook and gateway modes the model may choose among an interpreter-free program set; shell syntax and interpreters park | §4.3 (new), §2.3 |
 | E2 | `gateway` and `hook` rows in the steer table, both `none` | §7.8 |
 | E3 | Each ingress mode states what it does not protect | §4.3 |
+
+**0.6.1 — clarifications (2026-11-03).** The Slice 1.5 plan raised ten implementation objections, V6-1 to V6-10. Each is resolved in place, marked "v0.6.1": V6-1 outputs vs pinned inputs (§3.4.4); V6-2 paths that do not exist yet (§2.7.1); V6-3 hook parks always deny, never defer (§4.3); V6-4 journal key, and what off-host means (§3.4.1); V6-5 reading a shell command string and the name map (§2.3.2); V6-6 a session is a Task, unmetered axes (§4.3); V6-7 gate reads by provider clearance (§4.3); V6-8 possible sources for synthesized values (§11.1); V6-9 rejection count reset and range (§2.7.1); V6-10 side effect per enum member (§2.3.2). No approved decision changed. C2 (secret detection) is deferred to Slice 2, where JUNO routes model calls again.
 
 Deferred to v0.7, after Slice 1.5 produces evidence: standing tasks and per-period budgets; the GUI-action capability class; A2A peers as a Capability kind; grant fields compatible with payment mandates; the delegation provenance test (D-006). §0.6's stopping rule applies again: design review resumes when Slice 1.5's journals exist.
 
@@ -358,7 +360,11 @@ At each call, argv is read left to right against the surface:
 
 *New in 0.6 (E1).* In hook and gateway modes (§4.3) JUNO sees only the finished call, so every model-written value — including the program — is `untrusted`, and a program field at an `attested` floor would park every command.
 
-The interpreter test is what makes an enum safe: if no member can execute code it was not named for, choosing *which* member runs is a choice of data, bounded by scope and §2.2.2. Therefore, **in hook and gateway modes only**, a program field whose enum has passed the interpreter test for every member takes floor `untrusted`. A command that uses shell syntax (pipes, `;`, `&&`, substitution, redirection, globbing the harness would expand) or names a program outside the enum parks `integrity_floor`.
+The interpreter test is what makes an enum safe: if no member can execute code it was not named for, choosing *which* member runs is a choice of data, bounded by scope and §2.2.2. Therefore, **in hook and gateway modes only**, a program field whose enum has passed the interpreter test for every member takes floor `untrusted`. A command that uses shell syntax or names a program outside the enum parks `integrity_floor`.
+
+**Reading a shell command string (v0.6.1, V6-5).** The string is split into words without a shell. Allowed: words separated by spaces or tabs; single-quoted words (no expansion inside); double-quoted words containing none of `$`, `` ` ``, `\`, `!`. **Shell syntax — any of these outside single quotes parks:** `|` `&` `;` `<` `>` `(` `)` `$` `` ` `` `\` `{` `}` newline; unquoted `*` `?` `[` `]`; a leading `~`; a leading `NAME=value` assignment; a word that is a shell keyword or builtin (`if`, `for`, `eval`, `source`, `.`, `exec`, `cd`, …). The first word is the program. **It maps to an enum member only through an operator-authored name map** (`cat` → `/usr/bin/cat`); `PATH` is never consulted, because the environment is not a trust root. A name not in the map parks.
+
+**Effect per program (v0.6.1, V6-10).** In an enum, `side_effect` is declared **per member**, not per capability: `cat` is `read`, `rm` is `write` inside a reversible workspace and `irreversible` elsewhere (§2.2.2). A call takes the effect of the member it runs. Registration review (§2.5) rejects a member whose declared effect is lower than what the program can do; the declaration is an operator-authored trust root.
 
 JUNO's own loop (§18) keeps the `attested` floor: there the model can name operator constants, so nothing is lost by the stricter rule.
 
@@ -434,9 +440,11 @@ At each capability call, the enforcement boundary:
 
 **Data fields and scope (D4, C4).** Every argv operand (per §2.3.1's reading; flags are not resources) is a path relative to `cwd` and must fall inside a path selector of the grant. Scope is judged on the **canonical** form (§3.3): normalized, with symlinks resolved against the volume the effect will touch. A path that cannot be resolved is outside scope. Absolute paths and `..` escapes outside scope park `scope_violation`.
 
+**Paths that do not exist yet (v0.6.1, V6-2).** A missing path is resolved through its **longest existing ancestor**: that ancestor is canonicalized (symlinks resolved) and must lie in scope, and the missing remainder must contain no `..`, no symlink, and no empty component. "Cannot be resolved" means a symlink loop, a permission error, or a missing remainder that fails those conditions — never mere non-existence, so a task may create files inside its scope.
+
 **Effects (A1).** Step 4 also applies §2.2.2's table to target fields.
 
-**Rejections and the rejection limit (A4).** A rejection — an unresolved reference in a `data` field, a malformed call, an unregistered capability, an undeclared flag under §2.3.1 rule 6 — runs nothing, charges no grant invocation, and is journalled; the model may retry within its turn budget. **Three consecutive rejections park `rejection_limit`.** A looping model then costs one visible interruption instead of a silent budget burn. The count is a default, adjustable per task at admission.
+**Rejections and the rejection limit (A4).** A rejection — an unresolved reference in a `data` field, a malformed call, an unregistered capability, an undeclared flag under §2.3.1 rule 6 — runs nothing, charges no grant invocation, and is journalled; the model may retry within its turn budget. **Three consecutive rejections park `rejection_limit`.** A looping model then costs one visible interruption instead of a silent budget burn. **The count resets (v0.6.1, V6-9)** when a call proceeds, when a call parks, and on resume. It may be set per task at admission between 1 and 10; the default is 3. In hook and gateway modes the count is per session.
 
 ---
 
@@ -535,7 +543,9 @@ Structural, not procedural: journal storage lives outside the capability namespa
 
 The console reads through it. Task-held authority can never name it. Read authority over the journal is a property of the **principal and the Surface** (§3.6, `journal_read`), not of any running task — so a task can never read its siblings' trajectories, and the console can read everything.
 
-**Anchored head (v0.6, C1).** The hash chain detects partial edits, not a wholesale rewrite by something that can write journal storage and recompute every hash — any process on a shared host with root or container-runtime access. The journal's head hash is therefore **signed with the operator key (§3.2) at intervals and copied off the host**, to a destination the host cannot rewrite. A rewrite then contradicts an anchor the attacker cannot reach. The interval bounds how much recent history an attacker could still rewrite; it is recorded in the journal. *Residual: a compromised host can stop JUNO or withhold new entries. It can no longer fake past ones or fake permission.*
+**Anchored head (v0.6, C1).** The hash chain detects partial edits, not a wholesale rewrite by something that can write journal storage and recompute every hash — any process on a shared host with root or container-runtime access. The journal's head hash is therefore **copied off the host at intervals**, to an append-only destination the host cannot rewrite. A rewrite then contradicts an anchor the attacker cannot reach.
+
+**Who signs, and what counts as off-host (v0.6.1, V6-4).** The operator key never enters the runner, so the runner cannot use it. Each anchor is signed with a separate **journal key** held by the runner; the signature only proves which runner wrote the anchor. **The protection comes from the copy, not the signature:** an attacker who steals the journal key can sign a new head but cannot rewrite anchors already off the host. *Off the host* means a destination whose history the host's credentials cannot rewrite: for v1, an append-only private git repository whose push credential cannot force-push or delete. In tests, a separate container exposing an append-only interface and holding its own volume stands in for it. The interval bounds how much recent history an attacker could still rewrite; it is recorded in the journal. *Residual: a compromised host can stop JUNO or withhold new entries. It can no longer fake past ones or fake permission.*
 
 #### 3.4.2 Trajectory entry
 
@@ -595,7 +605,9 @@ A field on the Provider Capability Profile (§13.1), **recorded in closure**, an
 
 **`verified` additionally requires `criterion_integrity = operator`.** A model-drafted criterion the operator merely glanced at cannot license the strongest closure.
 
-**`verified` additionally requires unchanged verification inputs (v0.6, B2).** At admission the runner records a content hash of every file the verification method reads and of every protected path the criterion names (§5.1). At closure the hashes are recomputed. **Any difference makes `verified` impossible**: the closure is `failed` with the changed paths recorded, or `accepted` if the operator closes it. A hash that cannot be computed counts as changed. *This closes "the tests pass because the agent changed the tests" by mechanism, replacing Slice 1's listing comparison, which a write that preserved size and modification time would pass.*
+**`verified` additionally requires unchanged verification inputs (v0.6, B2).** At admission the runner records a content hash of every **verification input** and every protected path the criterion names (§5.1).
+
+**What is pinned (v0.6.1, V6-1).** The criterion declares two sets. **Outputs** are what the task is expected to create or change; they are never pinned. **Verification inputs** are everything else the verification method reads: its scripts, test files, fixtures and configuration. An input that exists at admission is pinned by content hash; an input that does not exist at admission is pinned as **absent**, so a task that creates it cannot close `verified`. A file the method reads that is in neither set is treated as an input. This keeps every check honest without forbidding a check that reads what the task made. At closure the hashes are recomputed. **Any difference makes `verified` impossible**: the closure is `failed` with the changed paths recorded, or `accepted` if the operator closes it. A hash that cannot be computed counts as changed. *This closes "the tests pass because the agent changed the tests" by mechanism, replacing Slice 1's listing comparison, which a write that preserved size and modification time would pass.*
 
 *Status flag: RB-2 (verification beyond code) not run. Reasoned position, not validated.*
 
@@ -670,7 +682,11 @@ JUNO's enforcement governs *effects on the machine and the estate*; a governance
 
 **Provenance in B and C.** JUNO cannot see how the model arrived at a value, so every model-written value is `untrusted`. Values the operator lists for the session — an exact command string, a path, a destination — are `constant` at `operator` integrity. Server responses (B) and tool results (C) are `untrusted` content and raise the session's `sensitivity_floor` like any read (§1.2).
 
-**Park in B and C.** A park is a pause JUNO can later lift. Hook protocols may offer only some of: allow, deny, ask the user, or defer the call for a later resume. The binding rule: **where the protocol can defer and resume a call, a park defers it; where it cannot, a park denies the call with its reason, journals the park, and the remedy (a grant) applies to the model's retry.** A park is never mapped to an interactive "ask": that would spend an interruption at the moment of the call instead of through the batched queue (D9), and would put a one-click approval in front of exactly the content §8.3 warns about. *As of 2026-11-03, Claude Code's hooks can deny or ask in interactive sessions, and defer only in non-interactive (`-p`) runs, for a single tool call per turn (code.claude.com/docs/en/hooks). The build plan must re-read the current reference before implementing.*
+**Park in B and C.** A park is a pause JUNO can later lift. Hook protocols may offer only some of: allow, deny, ask the user, or defer the call for a later resume. **The binding rule (v0.6.1, V6-3): in hook and gateway modes a park always denies the call with its reason, journals the park, and the remedy (a grant) applies to the model's retry.** A protocol's "defer" is not used: Claude Code ignores it silently in interactive sessions and when the model makes several calls in a turn, and the call then proceeds — a park that can turn into an allow without JUNO knowing is fail-open. A park is never mapped to an interactive "ask": that would spend an interruption at the moment of the call instead of through the batched queue (D9), and would put a one-click approval in front of exactly the content §8.3 warns about. *As of 2026-11-03, Claude Code's hooks can deny or ask in interactive sessions, and defer only in non-interactive (`-p`) runs, for a single tool call per turn (code.claude.com/docs/en/hooks). The build plan must re-read the current reference before implementing.*
+
+**A session is a Task (v0.6.1, V6-6).** Each harness session (Claude Code's `session_id`, or a gateway client connection) is admitted as a Task: principal, objective ("operator session via <harness>"), attendance, `ttl`, grants, and the session's provider and its sensitivity clearance, declared by the operator. It has no criterion, so it can close only as `accepted`. **Budgets JUNO cannot measure are not enforced and say so:** tool calls (counted as turns) and wall-clock are enforced; token and currency axes are recorded as `unmetered`, and admission requires the operator to accept that the harness's own limits govern them.
+
+**Sensitivity in B and C (v0.6.1, V6-7).** JUNO does not route the harness's model calls, so it cannot keep a sensitive value away from the provider after it is read. It gates the **read** instead: a call that would read a source classified above the session provider's declared clearance parks before it runs. Later calls are unaffected by an earlier permitted read.
 
 **Fail-closed ingress.** A hook or gateway that cannot reach the boundary, times out, or gets no explicit decision must **block** the call. A configuration in which a hook failure lets a call proceed is a misconfiguration and is refused at setup.
 
@@ -1066,7 +1082,7 @@ Interface design produced a larger effect on review quality than volume did (Akh
 |---|---|
 | State the **specific effect**, not the capability name | "Delete 47 files in `/src`" not "shell.run requested" |
 | State **irreversibility explicitly** where `side_effect = irreversible` | The main decision input |
-| Show **per-argument provenance and integrity**, and for every value that caused the park, **the journal entry it came from** (v0.6, A3) — e.g. "`/etc/passwd`, typed by the model after reading `notes.txt` (entry 14), untrusted" | Plausibility is not a safety signal; an approver who cannot see that a value came from content an attacker controls cannot weigh it |
+| Show **per-argument provenance and integrity**, and for every value that caused the park, **the journal entry it came from** (v0.6, A3). For a `bound` value that is the referenced entry. **For a `synthesized` value (v0.6.1, V6-8)** no source can be named without comparing contents, which invariant 7 forbids; the record lists instead the untrusted entries in the model's context since the last operator input, as "possible sources" — e.g. "`/etc/passwd`, typed by the model; untrusted content in context: `notes.txt` (entry 14)" | Plausibility is not a safety signal; an approver who cannot see that a value came from content an attacker controls cannot weigh it |
 | Show **what was already decided at admission** | Distinguishes policy gaps from genuine exceptions |
 | **Accountability framing** — what the operator is taking responsibility for | Mosier et al. 1996 |
 | **No default-affirmative control.** No pre-selected "approve" | Removes the one-click path |
