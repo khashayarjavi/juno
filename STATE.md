@@ -11,6 +11,19 @@ Status: **in progress.** Done: grant signatures (D-115); the trust anchor (D-116
   4. `juno grant sign` and `juno grant verify` (operator CLI).
   5. The anchored journal head: a separate journal key; an append-only stand-in container for tests; `juno journal check`.
   6. Selectors may not name the journal, the checkpoint store, the trust anchor or the configuration.
+- **Anchored head: design for the next session (not built).**
+  - **Journal key:** a separate Ed25519 key the runner holds (never the operator's), generated at first start into a runner-only file outside `/work` and the journal.
+  - **Anchor record:** `{task, seq, head_hash, at, interval_ms, signature}`, signed with the journal key. Anchors hold no task content.
+  - **When:** the runner appends an anchor per task at a recorded interval, and always at park and at close, to a destination interface `AnchorSink` with `append(anchor)` and `list(task)`. The interval is recorded in the journal (§3.4.1).
+  - **Test sink:** a separate container with its own volume, exposing append-only operations (append; refuse overwrite and delete). The runner reaches it only through those operations (`docker compose run` of an `anchors` service, no network).
+  - **`juno journal check <task>`:** verifies the chain, then compares every anchor's `seq` and `head_hash` with the chain. The first differing entry is reported as a rewrite; entries after the latest anchor are not a rewrite.
+  - **Tests (plan):**
+    - a rewritten entry with every later hash recomputed passes the chain check but fails the anchor check;
+    - an append after the anchor is not reported;
+    - the sink refuses overwrite and delete;
+    - an anchor signed with a stolen journal key cannot replace an earlier one;
+    - no code path gives the runner the operator key (a static test: no runner module imports `signGrant` or reads a private key).
+  - **Real destination:** the operator's public GitHub repository `juno-anchors` (D-094, D-098), added with the operator's steps.
 - **First point needing the operator's hands** (the code does not wait for it): Windows keychain key, signing a grant, and creating `juno-anchors`. The Windows signing mechanism is chosen from current documentation at the start of this increment (rule 13) and recorded as a D-number; click-by-click steps go into STATE.md then.
 
 ## Previous increment (Slice 1.5 Increment 1, merged)
