@@ -981,3 +981,10 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
 - Applies to: Slice 1.5 Increment 1 (A4, §2.7.1) and the per-session count in Increments 4 and 5
 - Decision: a turn the runner cannot read as calls (a provider refusal such as `tool_use_failed` or `output_parse_failed`, arguments that are not an object, more calls than one turn allows: whatever the runner records today as a malformed turn) counts as **one** rejection toward the §2.7.1 limit, however many calls it held. It never resets the count. It runs nothing and charges no grant invocation. It is journalled as today and still costs a turn (D-087). With the default limit of 3, the third consecutive rejection of any kind, unreadable turns included, parks `rejection_limit`.
 - Reason: the operator's ruling. It is the more restrictive reading, and it is A4's purpose (§2.7.1: "one visible interruption instead of a silent budget burn").
+
+## D-103 — A third review round for PR #30 (operator ruling)
+- Date: 2026-11-03
+- Status: Accepted (operator ruling, answered in this session: "Yes, round 3")
+- Applies to: PR #30 only
+- Decision: after two review rounds ended DO NOT MERGE (CLAUDE.md §7 STOP), the operator allowed one third round. If it says MERGE and CI `verify` on the exact head has passed, the agent merges PR #30 pinned to that head and starts Increment 1. If it says DO NOT MERGE, the agent stops and reports.
+- Reason: the operator's instruction. Round 2's only FAIL was V61-2, which the operator has now ruled (D-102).

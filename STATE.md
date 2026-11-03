@@ -3,7 +3,7 @@
 ## Current increment
 **Slice 1.5 — Part 0 revision: the build plan brought to spec v0.6.1 and the operator's rulings of 2026-11-03** (D-091 to D-095, D-098). Branch `claude/gallant-mccarthy-alppyu`, **PR #30** (https://github.com/khashayarjavi/juno/pull/30; supersedes PR #29). Plan: `docs/plans/slice-1.5-build-plan.md`.
 
-Status: **V61-2 ruled (a) by the operator (D-102). Spec v0.6.1 is on `main`. The plan PR (#30) is not merged; it waits for the operator's leave for a third review round (CLAUDE.md §7: two rounds ended DO NOT MERGE). Increment 1 has not started.**
+Status: **V61-2 ruled (a) by the operator (D-102). Spec v0.6.1 is on `main`. The plan PR (#30) is not merged; the operator allowed a third review round (D-103). Increment 1 has not started.**
 - **PR #27 merged by the agent on the operator's explicit ruling (D-100):** merge commit 603284c, pinned to head fcb1a60; PR CI run 41673760530 success. `spec/` on `main` is identical to fcb1a60 and reads Version 0.6.1. The STOP of D-096/D-099 is lifted.
 - `main` merged into this branch (eee8523) so later increments build on v0.6.1.
 - V6-1 to V6-10 resolved by D-091, V61-1 by D-098. V61-2 by D-102. No objection is open.
