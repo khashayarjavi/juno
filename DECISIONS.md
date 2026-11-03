@@ -869,3 +869,148 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   - **The plan PR is not merged while either holds:** (a) an objection to the spec is open in STATE.md (CLAUDE.md §7 step 6a requires none; the operator's instruction requires the plan's ambiguities to be listed there unresolved); (b) PR #27 is unmerged, since the plan cites v0.6 sections that `main` would not yet contain. The gate is run up to the merge (review, CI on the pinned head), the PR is marked ready, and the session stops.
   - **PR #26's STATE record** (the PR #25 merge, Slice 1.3 complete) is merged into this branch so STATE.md starts from it. PR #26 then carries nothing this PR lacks; closing it is the operator's call.
 - Reason: CLAUDE.md §1 forbids reconstructing the spec; §7 step 6a and the operator's "do not resolve them" together leave no merge path while objections are open.
+
+## D-091 — V6-1 to V6-10 are resolved by spec v0.6.1 (operator ruling; Slice 1.5)
+- Date: 2026-11-03
+- Status: Accepted (operator ruling). Takes effect in the build once v0.6.1 is on `main` (D-096).
+- Applies to: Slice 1.5
+- Decision: the ten objections the plan raised against v0.6 are resolved by the sections of spec v0.6.1 marked "v0.6.1" (branch `spec-v0.6`, commit 4267e04c5fd09fe1f2db6a45295d15e6622a1fbc; §0.0 lists them). They are removed from STATE.md's open objections:
+  - V6-1 → §3.4.4 "What is pinned": the criterion declares outputs (never pinned) and verification inputs (pinned by hash, or as absent); a file the method reads in neither set is an input.
+  - V6-2 → §2.7.1 "Paths that do not exist yet": resolved through the longest existing ancestor; mere non-existence is never "cannot be resolved".
+  - V6-3 → §4.3 "Park in B and C": a park always denies, never defers.
+  - V6-4 → §3.4.1 "Who signs, and what counts as off-host": a separate journal key held by the runner signs anchors; the protection is the off-host append-only copy; in tests, an append-only container stands in.
+  - V6-5 → §2.3.2 "Reading a shell command string": a fixed word grammar; the program maps to the enum only through an operator-authored name map; `PATH` is never consulted. V6-5's sub-question about `#` comments is **not** answered by v0.6.1 and is not part of this ruling: it was raised as V61-3 (D-104) and ruled (a) by the operator (D-105).
+  - V6-6 → §4.3 "A session is a Task": tool calls (as turns) and wall-clock are enforced; tokens and currency are `unmetered`, accepted by the operator at admission.
+  - V6-7 → §4.3 "Sensitivity in B and C": a read above the session provider's declared clearance parks before it runs; earlier permitted reads do not affect later calls.
+  - V6-8 → §11.1: for a synthesized value, the park lists the untrusted entries in context since the last operator input as "possible sources".
+  - V6-9 → §2.7.1 "The count resets": on a proceeding call, a park, and resume; settable 1 to 10 at admission, default 3; per session in B and C. V6-9's other question (does a turn the runner cannot read count?) is **not** answered by v0.6.1 and is not part of this ruling: it was raised as objection V61-2 (D-101) and ruled (a) by the operator (D-102).
+  - V6-10 → §2.3.2 "Effect per program": `side_effect` is declared per enum member; registration review rejects a member declared lower than what it can do.
+- Reason: the operator's instruction of 2026-11-03, checked line by line against 4267e04.
+
+## D-092 — Real-program tests run only in cloud sessions, never vendored (operator ruling; Slice 1.5)
+- Date: 2026-11-03
+- Status: Accepted (operator ruling; the plan's operator decision 1, option (b))
+- Applies to: Slice 1.5, Increments 4 to 6
+- Decision: tests that run the real Claude Code CLI run only in cloud sessions, which already have it installed, through a separate make target (`make mediated-e2e`, run the way `make smoke` is). `@anthropic-ai/claude-code` is never added to the lockfile or copied into the repository or an image. CI's `make verify` runs the protocol-level tests only. Each PR whose done-when includes a real-binary run records that run (CLI version, date, result) in its description and in STATE.md.
+- Reason: the operator's instruction. It also keeps the open-source core free of a package whose licence is "SEE LICENSE IN README.md".
+
+## D-093 — The operator signing key lives in the Windows OS keychain; tests use a generated key (operator ruling; Slice 1.5)
+- Date: 2026-11-03
+- Status: Accepted (operator ruling; the plan's operator decision 2)
+- Applies to: Slice 1.5, Increment 2 onward
+- Decision: the operator's grant-signing private key is held in the Windows OS keychain on the operator's machine (§3.2 allows "an OS keychain or a hardware key"). Tests generate a throwaway key per run in a temporary directory outside the work volume and the journal; no key, private or public, is committed. The exact Windows mechanism is chosen at the start of Increment 2 from its current documentation (rule 13) and recorded as a D-number.
+- Residual, stated plainly: a keychain entry the operator's Windows user can unlock can be used by any program running as that user. The plan's earlier recommendation (a hardware key) is superseded by this ruling.
+- Reason: the operator's instruction.
+
+## D-094 — Journal anchors go to a public GitHub repository, `juno-anchors` (operator ruling; conflicts with §3.4.1, see V61-1)
+- Date: 2026-11-03
+- Status: Recorded. Applies as written from D-098 (V61-1 ruled (a) public; §3.4.1 amended at fcb1a60). Tests are unaffected.
+- Applies to: Slice 1.5, Increment 2 onward
+- Decision: the real anchor destination is a GitHub repository `juno-anchors` owned by the operator, public. Tests use the append-only stand-in container §3.4.1 (v0.6.1) describes.
+- Conflict (history; resolved by D-098): §3.4.1 (v0.6.1 at 4267e04) said "for v1, an append-only **private** git repository whose push credential cannot force-push or delete". GitHub's plans page (read 2026-11-03, https://docs.github.com/en/get-started/learning-about-github/githubs-plans) lists "Protected branches" under GitHub Pro's "Advanced tools and insights in private repositories", so on GitHub Free a private repository cannot stop its push credential from force-pushing. The ruling and the spec cannot both hold on a Free account. CLAUDE.md §2 rules 1 and 2: the spec text governs until the operator changes it, so this is open objection V61-1, not an autopilot ruling.
+- Reason: the operator's instruction; the conflict found while recording it.
+
+## D-095 — C2 (secret detection) is deferred to Slice 2 (operator ruling)
+- Date: 2026-11-03
+- Status: Accepted (operator ruling; matches spec v0.6.1 §0.0, "C2 (secret detection) is deferred to Slice 2, where JUNO routes model calls again")
+- Applies to: Slice 1.5
+- Decision: C2 (§1.4) is not part of Slice 1.5 and is not scaffolded.
+- Reason: the operator's instruction.
+
+## D-096 — PR #27 was closed unmerged; v0.6.1 is not on `main`; STOP (autopilot record and ruling)
+- Date: 2026-11-03
+- Status: Accepted (autopilot ruling; CLAUDE.md §7 STOP "the only way forward is editing spec/")
+- Applies to: Slice 1.5
+- Finding: the operator's instruction says "Spec v0.6.1 is on main". It is not. On GitHub, PR #28 (the plan) was merged at 2026-11-03T15:57:33Z, and PR #27 (spec v0.6.1, head 4267e04) was **closed without merging** at 15:57:46Z. `main` (5ee1594) carries `spec/core-semantic-model.md` **v0.5.1**. `git merge-tree` shows PR #27 still merges into `main` without conflict.
+- Decision:
+  - **Where v0.6.1 is read from:** `spec/core-semantic-model.md` at 4267e04 (branch `spec-v0.6`), read in the sections marked "v0.6.1" and their surroundings. Nothing reconstructed (CLAUDE.md §1).
+  - **The plan update is a new PR** (PR #28 is merged and cannot carry new work). It is **not merged, and no increment starts, until v0.6.1 is on `main`**: the plan cites sections `main` would not contain (D-090 (b), unchanged), and CLAUDE.md §1 makes the file on `main` the specification.
+  - **The agent does not reopen or merge PR #27.** That would change `spec/` on `main`, which CLAUDE.md §2 rule 6 and §7 NEVER forbid the agent. It is the operator's action.
+  - **The review is not run on this head.** The gate cannot complete while v0.6.1 is off `main` and V61-1 is open, and the review must be against the head that will merge; it runs then.
+- Reason: CLAUDE.md §1, §2 rule 6, §7 (NEVER edit spec/; STOP when the only way forward is editing spec/).
+
+## D-097 — Planned reading of §3.4.4 "a file the method reads that is in neither set" (autopilot ruling; Slice 1.5 Increment 1)
+- Date: 2026-11-03
+- Status: Accepted (autopilot ruling: the more restrictive reading, CLAUDE.md §7 step 3; §3.4.4 is outside §2, §3.2 and §4.3)
+- Applies to: Slice 1.5 Increment 1 (B2)
+- Decision: JUNO cannot observe which files a verification command reads. So every file in the criterion's verification scope that is not a declared output is treated as a verification input: existing files are pinned by content hash, and the scope's listing is pinned, so a file the task creates that is not a declared output makes `verified` impossible ("an input that does not exist at admission is pinned as absent", §3.4.4). This catches "the agent added a test file that passes".
+- Reason: §3.4.4 (v0.6.1): "A file the method reads that is in neither set is treated as an input"; the restrictive reading fails closed (D8).
+
+## D-098 — V61-1 ruled (a): the anchor repository is public (operator ruling; Slice 1.5)
+- Date: 2026-11-03
+- Status: Accepted (operator ruling). Takes effect in the build once v0.6.1 is on `main` (D-096, D-099).
+- Applies to: Slice 1.5, Increment 2 onward (the real anchor destination only; no code or test changes)
+- Decision: V61-1 is resolved by option (a). §3.4.1 (v0.6.1, commit fcb1a6076dadc803be945d026f7c438f69d7e5e7, branch `spec-v0.6`, head of PR #27) now reads: "for v1, a **public** git repository whose history is protected against force-push and deletion, pushed to by a credential scoped to that repository alone". D-094 applies as written: the real destination is the operator's public GitHub repository `juno-anchors`. V61-1 is removed from STATE.md's open objections and from the plan's §6.2.
+- Checked: `git diff 4267e04 fcb1a60` changes two lines only, §0.0's 0.6.1 paragraph (adds the V61-1 note) and §3.4.1's "Who signs, and what counts as off-host" paragraph. PR #27's CI `verify` on fcb1a60, run 41673760530, succeeded.
+- Reason: the operator's instruction of 2026-11-03 ("Operator ruling on V61-1: (a) public").
+
+## D-099 — PR #27 is still not merged; STOP again (autopilot record)
+- Date: 2026-11-03
+- Status: Accepted (autopilot record; D-096 unchanged and still in force)
+- Applies to: Slice 1.5
+- Finding: the operator's instruction says "PR #27 is merged: spec v0.6.1 is on main". Read from GitHub on 2026-11-03: PR #27 is **open, not merged** (`merged: false`, `mergeable_state: clean`), head fcb1a60, last updated 16:23:46 UTC (it was reopened and the V61-1 commit added). `main` is still 5ee1594 and its `spec/core-semantic-model.md` says **Version: 0.5.1**. `git merge-tree` shows PR #27 merges into `main` without conflict.
+- Decision: as D-096. The agent does not merge PR #27 (it changes `spec/` on `main`: CLAUDE.md §2 rule 6, §7 NEVER). The plan PR is not reviewed or merged, and Increment 1 does not start, until v0.6.1 is on `main`. Done meanwhile (nothing depends on the merge): D-098 recorded; the plan updated to fcb1a60 and the ruling.
+- The plan revision moves to a new PR from `claude/gallant-mccarthy-alppyu`: this session's harness allows pushes only to that branch (as D-028), so PR #29's branch cannot be updated. The new PR carries PR #29's two commits unchanged plus this session's, and supersedes PR #29.
+- Reason: CLAUDE.md §1, §2 rule 6, §7 (NEVER edit spec/; STOP when the only way forward is editing spec/).
+
+## D-100 — The agent merged PR #27 (spec v0.6.1) on the operator's explicit ruling (operator ruling; one action only)
+- Date: 2026-11-03
+- Status: Accepted (operator ruling: "Operator ruling: merge PR #27 on my behalf.")
+- Applies to: this one merge only. CLAUDE.md §2 rule 6 and §7 NEVER ("edit spec/") are unchanged for every other action.
+- Decision: the agent merged PR #27 as a merge commit pinned to its head fcb1a6076dadc803be945d026f7c438f69d7e5e7 (the API's expected-head parameter). Merge commit 603284c346aa29ce51699587064b75512e1cf8d3. Before the merge: PR #27 CI `verify` on fcb1a60, run 41673760530, success; GitHub reported no conflicts. After the merge: `spec/` on `main` is byte-identical to fcb1a60 (`git diff fcb1a60 603284c -- spec/` is empty) and reads **Version: 0.6.1**. The spec text is entirely the operator's; the agent changed none of it.
+- After the merge, CI `verify` on `main` for 603284c: run 41686229757 (event `push`), success.
+- Effect: D-096 and D-099's STOP is lifted. D-091 and D-098 take effect.
+- Reason: the operator's instruction. The agent offered this route only as an explicit operator ruling, because the action changes `spec/` on `main`.
+
+## D-101 — Open objection V61-2: does a turn the runner cannot read count toward the rejection limit? STOP (autopilot record)
+- Date: 2026-11-03
+- Status: Resolved by D-102 (operator ruled (a)). Was: open objection; STOP: a new ambiguity touching §2 (the operator's Slice 1.5 instruction), and PR #30's second review round ended DO NOT MERGE (CLAUDE.md §7 STOP).
+- Applies to: Slice 1.5 Increment 1 (A4) and Increments 4 to 5 (the per-session count)
+- Finding (PR #30 review round 2): D-091 as first written said "an unreadable turn is not a call, so it is not a rejection: it neither counts nor resets the count", and filed that under an operator ruling. The operator did not rule it, and §2.7.1 (v0.6.1, line 447) does not decide it: it defines a rejection as "an unresolved reference in a `data` field, **a malformed call**, an unregistered capability, an undeclared flag", and says only what resets the count. The runner today records a provider refusal (`tool_use_failed`, `output_parse_failed`), non-object arguments and too many calls as a "malformed turn" (`packages/runner/src/groq.ts`, `packages/runner/src/provider.ts`); some of these are plausibly "a malformed call". A4's purpose ("one visible interruption instead of a silent budget burn") points at exactly this case: Slice 1.2's s18-4b run 1 ended `budget_exceeded` after 8 refused turns.
+- Correction: D-091's V6-9 bullet now says the question is open; the plan's Increment 1 item 3 and test, and §6, say the same.
+- Options for the operator:
+  - **(a) recommended, the more restrictive reading:** a turn the runner cannot read counts as one rejection and never resets the count. Eight refused turns then park `rejection_limit` at the third, visibly.
+  - (b) it neither counts nor resets (the first draft's reading).
+  - (c) amend §2.7.1 to say which.
+- Why not an autopilot ruling: CLAUDE.md §7 step 3 would take (a), but the operator's Slice 1.5 instruction says to STOP on any new spec ambiguity touching §2, §3.2 or §4.3, and §2.7.1 is in §2.
+- Reason: CLAUDE.md §2 rule 2, §7 step 3 and STOP; the operator's Slice 1.5 instruction.
+
+## D-102 — V61-2 ruled (a): a turn the runner cannot read counts as one rejection and never resets the count (operator ruling; Slice 1.5)
+- Date: 2026-11-03
+- Status: Accepted (operator ruling: "a", in reply to D-101's options)
+- Applies to: Slice 1.5 Increment 1 (A4, §2.7.1) and the per-session count in Increments 4 and 5
+- Decision: a turn the runner cannot read as calls (a provider refusal such as `tool_use_failed` or `output_parse_failed`, arguments that are not an object, more calls than one turn allows: whatever the runner records today as a malformed turn) counts as **one** rejection toward the §2.7.1 limit, however many calls it held. It never resets the count. It runs nothing and charges no grant invocation. It is journalled as today and still costs a turn (D-087). With the default limit of 3, the third consecutive rejection of any kind, unreadable turns included, parks `rejection_limit`.
+- Reason: the operator's ruling. It is the more restrictive reading, and it is A4's purpose (§2.7.1: "one visible interruption instead of a silent budget burn").
+
+## D-103 — A third review round for PR #30 (operator ruling)
+- Date: 2026-11-03
+- Status: Accepted (operator ruling, answered in this session: "Yes, round 3")
+- Applies to: PR #30 only
+- Decision: after two review rounds ended DO NOT MERGE (CLAUDE.md §7 STOP), the operator allowed one third round. If it says MERGE and CI `verify` on the exact head has passed, the agent merges PR #30 pinned to that head and starts Increment 1. If it says DO NOT MERGE, the agent stops and reports.
+- Reason: the operator's instruction. Round 2's only FAIL was V61-2, which the operator has now ruled (D-102).
+
+## D-104 — PR #30 review round 3: DO NOT MERGE; plan corrected to the spec's words; open objection V61-3 (`#` in a shell command string); STOP (autopilot record)
+- Date: 2026-11-03
+- Status: V61-3 resolved by D-105 (operator ruled (a)); round 4 allowed by D-106. Was: open objection; STOP: D-103 allowed one third round, which ended DO NOT MERGE; and V61-3 is a new ambiguity touching §2 (the operator's Slice 1.5 instruction).
+- Applies to: PR #30; Slice 1.5 Increments 4 and 5
+- Review round 3 on 5e2a06c (fresh subagent, P2 verbatim): checks 1, 2, 3, 4 and 6 PASS; check 5 FAIL on three items, each checked by the agent against the spec on `main`:
+  - (a) The plan said "a **first** word that is a shell keyword or builtin parks"; §2.3.2 says "a word". A copying error that loosened the rule. **Fixed:** the plan now uses the spec's words (any position) and tests `cat x eval` and `cat x .`.
+  - (b) The plan had dropped §4.3's "Server responses (B) and tool results (C) are `untrusted` content and raise the session's `sensitivity_floor` like any read (§1.2)". **Fixed:** restored word for word in Increments 4 and 5, next to the V6-7 clearance gate. Both sentences are the spec's; what the raised floor then governs, beyond being recorded, is settled in Increment 4 from the spec text, or stopped on (it is §4.3).
+  - (c) **V61-3, open.** §2.3.2's grammar does not mention `#`. A shell treats an unquoted word beginning with `#` as a comment, so `cat x #y` would be judged as `argv ["x", "#y"]` while the shell runs `cat x`. D-091 had filed V6-5 (which asked about `#` comments) as fully resolved; corrected.
+- Options for V61-3: **(a) recommended, the more restrictive reading:** any `#` outside single quotes parks `integrity_floor` as shell syntax (it also parks harmless cases such as `cat "a#b"`); (b) only an unquoted word beginning with `#` parks (exactly where a shell starts a comment); (c) amend §2.3.2.
+- Noted by the reviewer, not FAIL, for Increments 4 and 5 to settle from the spec text with D-numbers, or to stop on: which park reason the clearance gate uses (§4.3 names none); whether "a leading `~`" means the start of the string or of any word; D-097's "verification scope" (Increment 1).
+- Reason: CLAUDE.md §2 rule 2, §7 STOP; D-103; the operator's Slice 1.5 instruction.
+
+## D-105 — V61-3 ruled (a): any `#` outside single quotes in a shell command string parks `integrity_floor` (operator ruling; Slice 1.5)
+- Date: 2026-11-03
+- Status: Accepted (operator ruling: "a", in reply to D-104's options)
+- Applies to: Slice 1.5 Increments 4 and 5 (reading a shell command string, §2.3.2)
+- Decision: when JUNO reads a shell command string (§2.3.2, hook and gateway modes), a `#` anywhere outside single quotes is shell syntax and parks `integrity_floor`, like `|` or `$`. This includes `#` inside double quotes (`cat "a#b"` parks) and in the middle of a word (`cat a#b` parks). Inside single quotes it is literal (`cat 'a#b'` proceeds). An exact command string the operator listed as a constant is accepted as written, as before.
+- Reason: the operator's ruling. It is the more restrictive reading: what JUNO judges is then never shortened by a comment.
+
+## D-106 — A fourth review round for PR #30 (operator ruling)
+- Date: 2026-11-03
+- Status: Accepted (operator ruling: "yes", in reply to the question after D-104)
+- Applies to: PR #30 only
+- Decision: one fourth review round. If it says MERGE and CI `verify` on the exact head has passed, the agent merges PR #30 pinned to that head and starts Increment 1. If it says DO NOT MERGE, the agent stops and reports.
+- Reason: the operator's instruction.
