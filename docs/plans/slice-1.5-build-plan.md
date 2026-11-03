@@ -99,7 +99,7 @@ Off the host: the anchor destination (append-only; in tests, a separate append-o
 
 Six increments, dependency-ordered. Each is its own pull request through the CLAUDE.md §7 gate. **Do not start an increment until the previous one is merged.** Every test names the section it proves (CLAUDE.md rule 7). Estimates are in Pro-plan sessions and include the review rounds.
 
-The ten objections the first draft raised (V6-1 to V6-10) are resolved by v0.6.1 (D-091; §6 below says where). V61-1, raised against v0.6.1 itself, is ruled (a) public (D-098) and resolved in §3.4.1 at fcb1a60 (branch `spec-v0.6`). One objection is open, V61-2 (§2.7.1, D-101; §6.2 below); it blocks Increment 1. An increment does not start while an objection that blocks it is open, unless the director has ruled.
+The ten objections the first draft raised (V6-1 to V6-10) are resolved by v0.6.1 (D-091; §6 below says where). V61-1, raised against v0.6.1 itself, is ruled (a) public (D-098) and resolved in §3.4.1 at fcb1a60 (branch `spec-v0.6`). V61-2 (§2.7.1), raised in review, is ruled (a) (D-102). No objection is open. An increment does not start while an objection that blocks it is open, unless the director has ruled.
 
 ---
 
@@ -112,7 +112,7 @@ The ten objections the first draft raised (V6-1 to V6-10) are resolved by v0.6.1
 **Builds:**
 1. **Per-actor constants (B1).** Admission fixes each constant for a named actor: `executing` or `verifier`. The criterion's command, its arguments and its protected-path listing become verifier constants. A `constant` source resolves only in calls by the actor it was fixed for; naming a verifier constant from the executing model is an unresolved reference (a rejection, §2.7.1). The operator may fix the same value for both actors, explicitly, at admission.
 2. **Hash-pinned verification inputs (B2).** At admission the runner records a content hash of every verification input and every protected path (a directory is hashed as its listing plus each file's hash). At closure it recomputes them; any difference, or a hash that cannot be computed, makes `verified` impossible: the task fails with the changed paths recorded. This replaces D-067's listing comparison. Hashing runs in the workload with an operator-fixed, verifier-only program (for example `sha256sum`, a non-interpreter, added to the image like `cat` and `ls`), never offered to the executing model. **What is pinned (§3.4.4, v0.6.1):** the criterion declares **outputs** (never pinned) and **verification inputs** (pinned by hash, or as absent if they do not exist at admission). Because JUNO cannot see what a command reads, every other file in the verification scope is treated as an input, and the scope's listing is pinned, so a file the task creates that is not a declared output makes `verified` impossible (D-097). Every §18 fixture's criterion declares its outputs; if that reading makes a §18 test impossible, the increment STOPs (CLAUDE.md §7).
-3. **Rejection limit (A4).** Three consecutive rejections park `rejection_limit` (overridable). **§2.7.1 (v0.6.1):** the count resets when a call proceeds, when a call parks, and on resume; it may be set per task at admission from 1 to 10 (default 3); admission refuses any other value. Whether a turn the runner cannot read counts is open objection V61-2 (D-101); the recommended reading (a) counts it as one rejection that never resets the count.
+3. **Rejection limit (A4).** Three consecutive rejections park `rejection_limit` (overridable). **§2.7.1 (v0.6.1):** the count resets when a call proceeds, when a call parks, and on resume; it may be set per task at admission from 1 to 10 (default 3); admission refuses any other value. A turn the runner cannot read counts as one rejection and never resets the count (V61-2 ruled (a), D-102).
 4. **A5's rejection rule.** On a program whose surface marks every position code-free and which is not on §2.3's list, an undeclared flag is a `malformed_call` rejection, not a promotion. `cat -c cat` and `ls -c …` (two of Slice 1.3's four benign parks) then become recoverable rejections. A program with any code-bearing position, or on the list, still promotes every element and parks `integrity_floor`.
 5. **A2's no-override rule.** A `scope_violation` caused by an `untrusted` value records `overridable: false` and `remedy: "grant"`. Resuming it requires that the task now holds a grant covering the parked value; a plain resume is refused. Mixed values: if any out-of-scope value is `untrusted`, the rule applies.
 6. **A3's source entry in park records.** Each park records, for every value that caused it, its provenance class, its integrity, and its source: for a `bound` value, the referenced entry; **for a `synthesized` value (§11.1, v0.6.1)**, the untrusted entries in the model's context since the last operator input, listed as "possible sources". No content is compared (invariant 7).
@@ -124,7 +124,7 @@ The ten objections the first draft raised (V6-1 to V6-10) are resolved by v0.6.1
 - §2.6 B1: a value the operator fixed for both actors resolves for both.
 - §3.4.4 B2: a protected file rewritten with the same size and modification time makes `verified` impossible (Slice 1's listing comparison would have passed it) — the failure records the path.
 - §3.4.4 B2: an unchanged pin set closes `verified`; a pin that cannot be computed counts as changed; a declared output the task creates or changes does not prevent `verified`; a verification input absent at admission that the task creates, or any new file that is not a declared output, makes `verified` impossible.
-- §2.7.1 A4: three consecutive rejections park `rejection_limit`; two rejections then a proceeding call do not; a park and a resume each reset the count; a limit of 1 and of 10 is honoured, and 0 or 11 is refused at admission; an unreadable turn is treated as V61-2's ruling says (D-101).
+- §2.7.1 A4: three consecutive rejections park `rejection_limit`; two rejections then a proceeding call do not; a park and a resume each reset the count; a limit of 1 and of 10 is honoured, and 0 or 11 is refused at admission; a turn the runner cannot read counts as one rejection and does not reset the count, so three in a row park `rejection_limit` (D-102).
 - §2.3.1 rule 6 A5: `cat -c x` is a `malformed_call` rejection; `cat -c x` on a surface that has any code-bearing position still parks `integrity_floor`; a listed interpreter with an undeclared flag still parks.
 - §8.2 A2: an untrusted out-of-scope value parks `scope_violation` with `overridable: false`; plain resume is refused; resume after a covering grant is added succeeds; an operator-integrity out-of-scope value stays overridable.
 - §11.1 A3: the park record names the referenced entry for a bound value, and the untrusted entries since the last operator input as "possible sources" for a synthesized one.
@@ -319,16 +319,12 @@ No acceptance test needs a real model. The injection in tests 2 and 3 is scripte
 | V6-6 | What record a mediated session is | §4.3 "A session is a Task" |
 | V6-7 | A raised floor JUNO cannot route around | §4.3 "Sensitivity in B and C" |
 | V6-8 | Source entry for a synthesized value | §11.1, "possible sources" |
-| V6-9 | Rejection count reset and range | §2.7.1 "The count resets"; whether an unreadable turn counts is open, V61-2 (D-101) |
+| V6-9 | Rejection count reset and range | §2.7.1 "The count resets"; an unreadable turn counts as one rejection, never resets (V61-2, D-102) |
 | V6-10 | A program's effect vs its capability's | §2.3.2 "Effect per program" |
 
 ### 6.2 Open
 
-| ID | § | Question | Blocks |
-|---|---|---|---|
-| V61-2 | §2.7.1 | Does a turn the runner cannot read (a provider refusal, unreadable arguments, too many calls) count toward the rejection limit? §2.7.1 calls "a malformed call" a rejection but does not say whether such a turn is one. Options (D-101): (a) recommended, it counts as one rejection and never resets the count; (b) it neither counts nor resets; (c) amend §2.7.1. | Increment 1 (A4) and the per-session count in Increments 4 and 5 |
-
-Resolved: V61-1 (§3.4.1, public or private `juno-anchors`) was ruled (a) public by the operator on 2026-11-03 (D-098); §3.4.1 at fcb1a60 says "a **public** git repository whose history is protected against force-push and deletion, pushed to by a credential scoped to that repository alone".
+None. Resolved: V61-2 (§2.7.1) — the operator ruled (a) on 2026-11-03 (D-102): a turn the runner cannot read counts as one rejection and never resets the count. V61-1 (§3.4.1, public or private `juno-anchors`) was ruled (a) public by the operator on 2026-11-03 (D-098); §3.4.1 at fcb1a60 says "a **public** git repository whose history is protected against force-push and deletion, pushed to by a credential scoped to that repository alone".
 
 ---
 

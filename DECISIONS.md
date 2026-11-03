@@ -883,7 +883,7 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   - V6-6 → §4.3 "A session is a Task": tool calls (as turns) and wall-clock are enforced; tokens and currency are `unmetered`, accepted by the operator at admission.
   - V6-7 → §4.3 "Sensitivity in B and C": a read above the session provider's declared clearance parks before it runs; earlier permitted reads do not affect later calls.
   - V6-8 → §11.1: for a synthesized value, the park lists the untrusted entries in context since the last operator input as "possible sources".
-  - V6-9 → §2.7.1 "The count resets": on a proceeding call, a park, and resume; settable 1 to 10 at admission, default 3; per session in B and C. V6-9's other question (does a turn the runner cannot read count?) is **not** answered by v0.6.1 and is not part of this ruling: it is open objection V61-2 (D-101).
+  - V6-9 → §2.7.1 "The count resets": on a proceeding call, a park, and resume; settable 1 to 10 at admission, default 3; per session in B and C. V6-9's other question (does a turn the runner cannot read count?) is **not** answered by v0.6.1 and is not part of this ruling: it was raised as objection V61-2 (D-101) and ruled (a) by the operator (D-102).
   - V6-10 → §2.3.2 "Effect per program": `side_effect` is declared per enum member; registration review rejects a member declared lower than what it can do.
 - Reason: the operator's instruction of 2026-11-03, checked line by line against 4267e04.
 
@@ -964,7 +964,7 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
 
 ## D-101 — Open objection V61-2: does a turn the runner cannot read count toward the rejection limit? STOP (autopilot record)
 - Date: 2026-11-03
-- Status: Open objection (not ruled). STOP: a new ambiguity touching §2 (the operator's Slice 1.5 instruction), and PR #30's second review round ended DO NOT MERGE (CLAUDE.md §7 STOP).
+- Status: Resolved by D-102 (operator ruled (a)). Was: open objection; STOP: a new ambiguity touching §2 (the operator's Slice 1.5 instruction), and PR #30's second review round ended DO NOT MERGE (CLAUDE.md §7 STOP).
 - Applies to: Slice 1.5 Increment 1 (A4) and Increments 4 to 5 (the per-session count)
 - Finding (PR #30 review round 2): D-091 as first written said "an unreadable turn is not a call, so it is not a rejection: it neither counts nor resets the count", and filed that under an operator ruling. The operator did not rule it, and §2.7.1 (v0.6.1, line 447) does not decide it: it defines a rejection as "an unresolved reference in a `data` field, **a malformed call**, an unregistered capability, an undeclared flag", and says only what resets the count. The runner today records a provider refusal (`tool_use_failed`, `output_parse_failed`), non-object arguments and too many calls as a "malformed turn" (`packages/runner/src/groq.ts`, `packages/runner/src/provider.ts`); some of these are plausibly "a malformed call". A4's purpose ("one visible interruption instead of a silent budget burn") points at exactly this case: Slice 1.2's s18-4b run 1 ended `budget_exceeded` after 8 refused turns.
 - Correction: D-091's V6-9 bullet now says the question is open; the plan's Increment 1 item 3 and test, and §6, say the same.
@@ -974,3 +974,10 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   - (c) amend §2.7.1 to say which.
 - Why not an autopilot ruling: CLAUDE.md §7 step 3 would take (a), but the operator's Slice 1.5 instruction says to STOP on any new spec ambiguity touching §2, §3.2 or §4.3, and §2.7.1 is in §2.
 - Reason: CLAUDE.md §2 rule 2, §7 step 3 and STOP; the operator's Slice 1.5 instruction.
+
+## D-102 — V61-2 ruled (a): a turn the runner cannot read counts as one rejection and never resets the count (operator ruling; Slice 1.5)
+- Date: 2026-11-03
+- Status: Accepted (operator ruling: "a", in reply to D-101's options)
+- Applies to: Slice 1.5 Increment 1 (A4, §2.7.1) and the per-session count in Increments 4 and 5
+- Decision: a turn the runner cannot read as calls (a provider refusal such as `tool_use_failed` or `output_parse_failed`, arguments that are not an object, more calls than one turn allows: whatever the runner records today as a malformed turn) counts as **one** rejection toward the §2.7.1 limit, however many calls it held. It never resets the count. It runs nothing and charges no grant invocation. It is journalled as today and still costs a turn (D-087). With the default limit of 3, the third consecutive rejection of any kind, unreadable turns included, parks `rejection_limit`.
+- Reason: the operator's ruling. It is the more restrictive reading, and it is A4's purpose (§2.7.1: "one visible interruption instead of a silent budget burn").
