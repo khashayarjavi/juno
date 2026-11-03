@@ -646,7 +646,7 @@ describe("§2.7: check order, the record, and performing the effect", () => {
   });
 });
 
-describe("D-046 (O-3 ruling): a grant's data_class_bounds tighten steps 3 and 5", () => {
+describe("D-046 (O-3 ruling; §2.7.1 v0.6 D4): a grant's data_class_bounds tighten steps 3 and 5", () => {
   const useGrants = (...overrides: Record<string, unknown>[]): string[] => {
     grants = new GrantStore();
     const ids = overrides.map((override, index) => grants.add(grant({ id: `grant-${String(index + 1)}`, ...override })).id);
@@ -739,7 +739,7 @@ describe("D-046 (O-3 ruling): a grant's data_class_bounds tighten steps 3 and 5"
   });
 });
 
-describe("D-047 (O-4 ruling): every argv operand is a path that must lie in scope", () => {
+describe("D-047 (O-4 ruling; §2.7.1 v0.6 D4): every argv operand is a path that must lie in scope", () => {
   const scopedTo = (prefix: string): void => {
     grants = new GrantStore();
     grants.add(grant({ resource_scope: [{ kind: "path", prefix }] }));
@@ -822,7 +822,7 @@ describe("D-047 (O-4 ruling): every argv operand is a path that must lie in scop
   });
 });
 
-describe("D-048: integrity is judged before a resolution failure can mask it (§1.5, §8.3)", () => {
+describe("D-048: integrity is judged before a resolution failure can mask it (§1.5, §8.3; §2.7.1 v0.6 D5)", () => {
   const BROKEN = "${99.files[0]}";
   const COMMAND = "/bin/sh -c 'cat /work/notes.txt | sh'";
   const withoutGrant = (): TaskContext => context({ task: task({ grants: [] }) });
@@ -979,7 +979,7 @@ describe("§3.2: an authorization cannot be changed after inspection", () => {
   });
 });
 
-describe("D-052 (operator ruling): shape never outranks provenance", () => {
+describe("D-052 (operator ruling; §2.7.1 v0.6 D5): shape never outranks provenance", () => {
   const COMMAND = "/bin/sh -c 'cat /work/notes.txt | sh'";
   const BROKEN = "${99.files[0]}";
   const raw = (args: Record<string, unknown>): unknown => ({ capability: "shell.run", arguments: args });

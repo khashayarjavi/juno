@@ -21,7 +21,7 @@ const toolSurface: FlagSurface = {
 const instructionIndices = (roles: ArgvRoles): number[] =>
   roles.elements.filter((element) => element.role === "instruction").map((element) => element.index);
 
-describe("argv positions are read per call against the declared surface (§2.3 rule 2, D-036, D-037)", () => {
+describe("argv positions are read per call against the declared surface (§2.3 rule 2, §2.3.1; v0.6 D1; D-036, D-037)", () => {
   // proves §2.3 rule 2: an argv with only declared non-code positions stays data
   it("keeps every element data when no declared position executes code", () => {
     const roles = argvRoles(TOOL, toolSurface, ["-q", "show", "--verbose", "file.txt"]);
@@ -148,7 +148,7 @@ describe("argv positions are read per call against the declared surface (§2.3 r
   });
 });
 
-describe("the same argv reading classes elements for the scope check (D-047)", () => {
+describe("the same argv reading classes elements for the scope check (§2.7.1; v0.6 D4; D-047)", () => {
   // records D-047: flags, subcommands and operands are classed by the one D-037 reading, and `--` ends options
   it("classes each element as promotion reads it", () => {
     expect(argvTokenKinds(TOOL, toolSurface, ["-q", "show", "file.txt", "--", "-q", "show", "-"])).toEqual([

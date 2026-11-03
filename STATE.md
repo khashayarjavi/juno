@@ -3,7 +3,24 @@
 ## Current increment
 **Slice 1.5 — Increment 1: conform Slice 1 to v0.6** (`docs/plans/slice-1.5-build-plan.md`, Increment 1). Branch `claude/gallant-mccarthy-alppyu` (fast-forwarded to `main` c405996 after PR #30 merged). Spec v0.6.1 on `main`. No objection open.
 
-Status: **in progress.** Done: D3 (test names v0.6 §3.2), A4 (rejection limit, D-107), A5 (undeclared flag on a code-free program is a rejection, D-108), A2 (untrusted scope violation: remedy a grant, D-109), A3 (park sources, D-110), B1 (per-actor constants, D-111), B2 (hash-pinned verification inputs, D-112), C4 (canonical scope, D-113). Local `make verify: GREEN` on the C4 commit (774 unit, 58 container). Estimate: 3 sessions.
+Status: **built; going through the §7 gate.** Every item of the plan's Increment 1 is built and tested; local `make verify: GREEN` on 03e4035 (774 unit, 58 container). PR #31.
+- **§0.0 rows built by Increment 1 (each with tests naming its section):**
+  - A2 (§8.2; D-109), A3 (§11.1; D-110), A4 (§2.7.1; D-107, D-102), A5 (§2.3.1 rule 6; D-108);
+  - B1 (§2.6; D-111), B2 (§3.4.4, §5.1; D-112);
+  - C4 (§2.7.1; D-113).
+- **Confirmed against the code** (built in Slice 1; their tests now name the v0.6 row):
+  - D1 (§2.3, §2.3.1: D-036/037, amended by A5);
+  - D2 (§6.4: TTL expiry is `failed`);
+  - D3 (§3.2: invocation cap never exceeds the parent's; new test);
+  - D4 (§2.7.1: grant bounds tighten; argv operands are paths: D-046/047);
+  - D5 (§2.7.1: provenance before shape: D-048/052/054);
+  - D6 (§18: injection criterion: D-080).
+- **Not in Increment 1:**
+  - A1 (Increment 3);
+  - C1 (Increment 2);
+  - C2 (deferred, D-095);
+  - C3 (hosted product);
+  - E1 to E3 (Increments 4 to 6).
 - **Order of work** (smallest and most isolated first; one commit each, `make verify` before each push):
   1. D3 (§3.2): already built and tested (`packages/contracts/test/grant.test.ts`); add the v0.6 § name to the test.
   2. A4 rejection limit (§2.7.1, D-102): runner counts consecutive rejections, unreadable turns included; resets on proceed, park, resume; `rejection_limit` park (overridable); admission field 1–10, default 3.

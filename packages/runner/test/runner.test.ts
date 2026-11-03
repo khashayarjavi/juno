@@ -411,6 +411,7 @@ describe("the turn loop (build plan Increment 5)", () => {
   });
 
   // proves §6.4 / D-025: TTL counts wall time since admission; on expiry the task fails with ttl_expired
+  // proves §6.4 (v0.6 D2): TTL expiry is failed, never a park
   it("fails the task with ttl_expired once its ttl has passed", async () => {
     const { runner } = h.runner([
       () => {
