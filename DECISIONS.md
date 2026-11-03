@@ -958,5 +958,6 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
 - Status: Accepted (operator ruling: "Operator ruling: merge PR #27 on my behalf.")
 - Applies to: this one merge only. CLAUDE.md §2 rule 6 and §7 NEVER ("edit spec/") are unchanged for every other action.
 - Decision: the agent merged PR #27 as a merge commit pinned to its head fcb1a6076dadc803be945d026f7c438f69d7e5e7 (the API's expected-head parameter). Merge commit 603284c346aa29ce51699587064b75512e1cf8d3. Before the merge: PR #27 CI `verify` on fcb1a60, run 41673760530, success; GitHub reported no conflicts. After the merge: `spec/` on `main` is byte-identical to fcb1a60 (`git diff fcb1a60 603284c -- spec/` is empty) and reads **Version: 0.6.1**. The spec text is entirely the operator's; the agent changed none of it.
+- After the merge, CI `verify` on `main` for 603284c: run 41686229757 (event `push`), success.
 - Effect: D-096 and D-099's STOP is lifted. D-091 and D-098 take effect.
 - Reason: the operator's instruction. The agent offered this route only as an explicit operator ruling, because the action changes `spec/` on `main`.

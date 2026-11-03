@@ -1,8 +1,8 @@
 # JUNO — Slice 1.5 Build Plan
 
 **Implements:** Core Semantic Model **v0.6.1** — §0.0's changes A1–A5, B1–B2, C1, C4, D1–D6, E1–E3, the ten v0.6.1 clarifications, and §4.3's Slice 1.5 acceptance. C2 is deferred to Slice 2 (D-095).
-**Read from:** `spec/core-semantic-model.md` at commit `fcb1a60` (branch `spec-v0.6`, head of the operator's PR #27, open and not yet merged), the v0.6 text read in full on 2026-11-03 (D-090), the v0.6.1 sections re-read on 2026-11-03 (D-096), and fcb1a60's one change over `4267e04` (§0.0 and §3.4.1, V61-1) read on 2026-11-03 (D-098).
-**Status:** Part 0, revised to the operator's rulings of 2026-11-03 (D-091 to D-095). **No increment starts until v0.6.1 is on `main`** (D-096): PR #27 was closed without merging, so `main` still carries v0.5.1.
+**Read from:** `spec/core-semantic-model.md` at commit `fcb1a60` (branch `spec-v0.6`, head of the operator's PR #27, merged into `main` on 2026-11-03 as 603284c, D-100; `spec/` on `main` is identical to fcb1a60), the v0.6 text read in full on 2026-11-03 (D-090), the v0.6.1 sections re-read on 2026-11-03 (D-096), and fcb1a60's one change over `4267e04` (§0.0 and §3.4.1, V61-1) read on 2026-11-03 (D-098).
+**Status:** Part 0, revised to the operator's rulings of 2026-11-03 (D-091 to D-095, D-098). Spec v0.6.1 is on `main` (PR #27, merge commit 603284c, D-100); the D-096 STOP is lifted.
 **Built by:** the coding agent in autopilot (CLAUDE.md §7), one increment per pull request, each through the §7 gate.
 
 ---
@@ -24,7 +24,7 @@ CLAUDE.md rule 13: nothing below is taken from memory. Each source was fetched o
 | Source | URL | Version / date | Hash |
 |---|---|---|---|
 | Spec v0.6 | PR #27, `spec/core-semantic-model.md` | v0.6, approved 2026-11-03 | commit `51a395a` |
-| Spec v0.6.1 | PR #27 (open, not merged on 2026-11-03), `spec/core-semantic-model.md` | v0.6.1, 2026-11-03 | commit `fcb1a60` (4267e04 plus V61-1) |
+| Spec v0.6.1 | PR #27 (merged 2026-11-03, 603284c, D-100), `spec/core-semantic-model.md` | v0.6.1, 2026-11-03 | commit `fcb1a60` (4267e04 plus V61-1) |
 | GitHub plans | https://docs.github.com/en/get-started/learning-about-github/githubs-plans | read 2026-11-03 | protected branches in private repositories are a GitHub Pro feature (V61-1) |
 | Claude Code hooks reference | https://code.claude.com/docs/en/hooks.md | page undated; mentions features up to v2.1.304 | `524960c086d43f6e` |
 | Claude Code headless (`-p`) | https://code.claude.com/docs/en/headless.md | undated | `208eeb28afce5a43` |
@@ -299,7 +299,7 @@ No acceptance test needs a real model. The injection in tests 2 and 3 is scripte
 ## 5. What needs the operator's own machine
 
 - **For acceptance: nothing.** Every test above runs in CI or in a cloud session.
-- **Now, before Increment 1:** put spec v0.6.1 on `main` (merge PR #27, head fcb1a60; D-096, D-099). V61-1 is ruled (D-098).
+- **Before Increment 1: nothing.** Spec v0.6.1 is on `main` (D-100) and V61-1 is ruled (D-098).
 - **Once, for real use (Increment 2):** creating the operator's signing key in the Windows OS keychain (D-093) and signing one grant with `juno grant sign`; creating the public repository `juno-anchors`, protecting its history against force-push and deletion, and a push credential scoped to it alone (D-094, D-098; §3.4.1). CI cannot hold a keychain, so it uses throwaway per-run keys and the stand-in anchor container; the real-key path is proven only on the operator's machine. Increment 2 writes click-by-click Windows steps into STATE.md.
 - **Optional, not acceptance:** one interactive Claude Code session on the operator's machine with the hook installed, to see an interactive `deny` in the terminal. It uses the operator's own Claude Code plan (no extra money); the automated tests use `-p` mode only, because the interactive terminal cannot be driven by a test.
 
@@ -351,4 +351,3 @@ None. V61-1 (§3.4.1, public or private `juno-anchors`) was ruled (a) public by 
 - **Claude Code's hook behaviour can change between releases.** Each mediated increment re-reads the reference; `juno hook install` pins a minimum version; the end-to-end test records the version it ran against.
 - **Hashing large workspaces** (B2 pins, Increment 3 checkpoints) may be slow; both are bounded per task at admission, and exceeding the bound refuses admission rather than skipping the check.
 - **D-097 may conflict with a §18 fixture.** If a §18 task creates a file its criterion cannot declare as an output, the restrictive reading would make that test impossible — a CLAUDE.md §7 STOP. Increment 1 checks every fixture first.
-- **The spec is not on `main` yet** (D-096). Nothing in this plan starts until it is.
