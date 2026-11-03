@@ -5,3 +5,4 @@ export * from "./grants.js";
 export * from "./proposal.js";
 export * from "./scope.js";
 export * from "./canonical.js";
+export * from "./signature.js";

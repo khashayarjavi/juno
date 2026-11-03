@@ -98,6 +98,11 @@ export const Grant = z
     max_invocations: Count.nullable(),
     attenuation_parent: Ref.nullable(),
     revoked_at: Timestamp.nullable(),
+    /**
+     * Mandatory (§3.2, v0.6 C1): the operator's Ed25519 signature, base64, over the canonical form of every other field.
+     * A grant stated without one is read with an empty signature, which never verifies: it does not exist at lookup.
+     */
+    signature: z.string().max(256).default(""),
   })
   .refine((grant) => instant(grant.expires_at) > instant(grant.issued_at), {
     path: ["expires_at"],

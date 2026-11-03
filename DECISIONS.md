@@ -1177,3 +1177,21 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   - a file the criterion reads outside its cwd is pinned and its change fails verification;
   - the verifier's untrusted scope violation records remedy `grant` and refuses a plain resume, and the resume is taken once the path resolves inside the grant.
 - Reason: §8.2, §3.4.4, §2.7.1; review round 1 of PR #31.
+
+## D-115 — C1 (part): grant signatures (Slice 1.5 Increment 2)
+- Date: 2026-11-03
+- Status: Accepted (implementation record of §3.2 v0.6 C1; the fail-closed choice wherever the text leaves one)
+- Applies to: Slice 1.5 onward
+- Decision:
+  - **The signature.** A grant's `signature` is an Ed25519 signature, base64, over the canonical JSON (the journal's canonical form) of every other field, `revoked_at` included. It uses Node's built-in `node:crypto`; no package was added.
+  - **Verification.** It happens at lookup, in the grant store, against the trust anchor (the operator's public key), which the store is given when it is created. A grant stated without a signature is read with an empty one, which never verifies. A missing, malformed or non-verifying signature means the grant does not exist at lookup: it is refused `signature_invalid`, so the call sees no covering grant and parks `awaiting_grant` with that reason recorded.
+  - **Order of refusals.** `revoked` is checked before the signature. A revocation recorded by the runner changes `revoked_at`, so the signature no longer verifies; the grant is then reported as what it is. Either way it is refused.
+  - **Test keys.** One Ed25519 pair per test file, generated in memory when the file loads (`packages/enforcement/test/test-keys.ts`). It is never written to disk and never committed: stricter than the plan's temporary directory. Every fixture grant in the repository is signed with it, and every test grant store trusts its public half.
+- Tests: `packages/enforcement/test/enforcement.test.ts`, "§3.2 C1":
+  - each of these is refused `signature_invalid`, recorded, with nothing charged: no signature; another key's signature; a field changed after signing; a cap removed after signing; a signature that is not base64;
+  - a signed grant is honoured;
+  - a revoked grant reports `revoked`.
+
+  A signed grant is honoured after a restart: `packages/runner/test/resume.test.ts`, whose stores are rebuilt with the same anchor.
+- Not yet built (rest of Increment 2): loading the trust anchor from a file the runner cannot write; `juno grant sign` and `juno grant verify`; the anchored journal head; refusing selectors that name JUNO's own storage.
+- Reason: §3.2 ("`signature` … Mandatory (v0.6, C1). Operator signature over every other field"; "The boundary verifies the signature at lookup; a grant with a missing or invalid signature does not exist").

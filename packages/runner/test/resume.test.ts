@@ -8,6 +8,7 @@ import { CapabilityRegistry, WORKLOAD_EXECFILE, loadRegistryEntry } from "../../
 import type { ProviderRequest } from "../src/provider.js";
 import { RUNNER_RECORD, type Runner, RunnerError } from "../src/runner.js";
 import { DAY_MS, type Harness, OPERATOR_CRITERION, PROFILE, SHELL_RUN_FILE, grant, harness, request, shellRun, standInAdapter, turn, writeWork } from "./helpers.js";
+import { TEST_ANCHOR } from "../../enforcement/test/test-keys.js";
 
 // Increment 6: resume (§6.3) and TTL (§6.4).
 
@@ -37,7 +38,7 @@ const ofKind = (kind: TrajectoryEntry["kind"], taskId = "task-1"): Record<string
 function restart(steps: Parameters<Harness["runner"]>[0], grants: readonly Record<string, unknown>[] = [grant()]): { runner: Runner; requests: ProviderRequest[] } {
   const registry = new CapabilityRegistry();
   registry.register(loadRegistryEntry(SHELL_RUN_FILE), [standInAdapter]);
-  const store = new GrantStore();
+  const store = new GrantStore(TEST_ANCHOR);
   for (const item of grants) store.add(item);
   const { runner, provider } = h.runner(steps, { registry, grants: store });
   return { runner, requests: provider.requests };
@@ -122,7 +123,7 @@ describe("resume across a restart (§6.3, §3.4.5, D-066)", () => {
     const capped = grant({ max_invocations: 2 });
     h.cleanup();
     h = harness();
-    const store = new GrantStore();
+    const store = new GrantStore(TEST_ANCHOR);
     store.add(capped);
     const usage = { tokens_in: 7, tokens_out: 3, tokens_cached: 0 };
     const first = h.runner([turn([shellRun(["notes.txt"])], usage), unavailable], { grants: store });
@@ -155,7 +156,7 @@ describe("resume across a restart (§6.3, §3.4.5, D-066)", () => {
     runner.close();
     const registry = new CapabilityRegistry();
     registry.register(loadRegistryEntry(SHELL_RUN_FILE), [standInAdapter]);
-    const store = new GrantStore();
+    const store = new GrantStore(TEST_ANCHOR);
     store.add(grant());
     const { runner: next, provider } = h.runner([turn([])], { registry, grants: store, profile: { ...PROFILE, id: "juno.other" } });
     expect((await next.resume("task-1")).reason).toBe("routing_unavailable");
@@ -215,7 +216,7 @@ describe("resume across a restart (§6.3, §3.4.5, D-066)", () => {
 
   // proves D-066: the runner's record is the only grant count, so it refuses a store that already holds charges
   it("refuses to start with a grant store that already has charges", () => {
-    const store = new GrantStore();
+    const store = new GrantStore(TEST_ANCHOR);
     store.add(grant());
     store.charge("grant-1");
     expect(() => h.runner([], { grants: store })).toThrow(/already has charges/);

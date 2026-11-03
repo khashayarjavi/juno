@@ -10,6 +10,7 @@ import type { SourceRegistration } from "../src/admission.js";
 import { type ProviderProfile, SCRIPTED_PROFILE_FILE, loadProviderProfile } from "../src/profile.js";
 import { type ScriptStep, ScriptedProvider } from "../src/provider.js";
 import { Runner, type RunnerOptions } from "../src/runner.js";
+import { TEST_ANCHOR, signed } from "../../enforcement/test/test-keys.js";
 
 export const SHELL_RUN_FILE = fileURLToPath(new URL("../../registry/definitions/shell.run.json", import.meta.url));
 export const CAT = "/usr/bin/cat";
@@ -107,7 +108,7 @@ export const PROJECT_SOURCE: SourceRegistration = {
 };
 
 export function grant(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return {
+  return signed({
     id: "grant-1",
     principal: PRINCIPAL,
     capability_selector: { capabilities: ["shell.run"] },
@@ -121,7 +122,7 @@ export function grant(overrides: Record<string, unknown> = {}): Record<string, u
     attenuation_parent: null,
     revoked_at: null,
     ...overrides,
-  };
+  });
 }
 
 export const OPERATOR_CRITERION = {
@@ -189,7 +190,7 @@ export function harness(adapter: Adapter = standInAdapter): Harness {
   const registry = new CapabilityRegistry();
   const registered = registry.register(loadRegistryEntry(SHELL_RUN_FILE), [adapter]);
   if (!registered.registered) throw new Error(`shell.run did not register: ${JSON.stringify(registered.refusals)}`);
-  const grants = new GrantStore();
+  const grants = new GrantStore(TEST_ANCHOR);
   grants.add(grant());
   const now = { value: new Date(Date.parse(T0) + 60 * 60 * 1000) };
   const runners: Runner[] = [];

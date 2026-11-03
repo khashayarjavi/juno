@@ -1,3 +1,4 @@
+import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -31,7 +32,9 @@ import {
   operandPath,
   scopePaths,
   scopeViolations,
+  signGrant,
 } from "../src/index.js";
+import { TEST_ANCHOR, signed } from "./test-keys.js";
 
 const SHELL_RUN_FILE = fileURLToPath(new URL("../../registry/definitions/shell.run.json", import.meta.url));
 const CAT = "/usr/bin/cat";
@@ -65,7 +68,7 @@ const INTERNAL_OPERATOR: DataClass = { sensitivity: "internal", integrity: "oper
 const INTERNAL_UNTRUSTED: DataClass = { sensitivity: "internal", integrity: "untrusted" };
 
 function grant(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return {
+  return signed({
     id: "grant-1",
     principal: PRINCIPAL,
     capability_selector: { capabilities: ["shell.run"] },
@@ -80,7 +83,7 @@ function grant(overrides: Record<string, unknown> = {}): Record<string, unknown>
     attenuation_parent: null,
     revoked_at: null,
     ...overrides,
-  };
+  });
 }
 
 function task(overrides: Record<string, unknown> = {}): Task {
@@ -141,7 +144,7 @@ function setUp(adapter: Adapter = workloadAdapter()): void {
   registry = new CapabilityRegistry();
   const registered = registry.register(loadRegistryEntry(SHELL_RUN_FILE), [adapter]);
   expect(registered.registered).toBe(true);
-  grants = new GrantStore();
+  grants = new GrantStore(TEST_ANCHOR);
   boundary = new EnforcementBoundary({ registry, grants, journal, clock: () => now });
 }
 
@@ -161,7 +164,7 @@ function setUpOperandless(adapter: Adapter = workloadAdapter()): void {
   registry = new CapabilityRegistry();
   const registered = registry.register(operandless, [adapter]);
   expect(registered.registered).toBe(true);
-  grants = new GrantStore();
+  grants = new GrantStore(TEST_ANCHOR);
   boundary = new EnforcementBoundary({ registry, grants, journal, clock: () => now });
 }
 
@@ -434,7 +437,7 @@ describe("§3.2 and §6.2: a call with no covering grant parks awaiting_grant", 
 
   // proves build plan Inc 4 test 5 / §3.2 `max_invocations`: a grant fails once its invocations are used up
   it("fails an over-count grant", () => {
-    grants = new GrantStore();
+    grants = new GrantStore(TEST_ANCHOR);
     grants.add(grant({ max_invocations: 2 }));
     boundary = new EnforcementBoundary({ registry, grants, journal, clock: () => now });
     expect(judge(context(), call()).outcome).toBe("proceed");
@@ -445,7 +448,7 @@ describe("§3.2 and §6.2: a call with no covering grant parks awaiting_grant", 
 
   // records D-042: only a call that proceeds is charged; a parked or rejected call uses up nothing
   it("charges only calls that proceed", () => {
-    grants = new GrantStore();
+    grants = new GrantStore(TEST_ANCHOR);
     grants.add(grant({ max_invocations: 1 }));
     boundary = new EnforcementBoundary({ registry, grants, journal, clock: () => now });
     expect(parkReason(judge(context(), proposal(synthesized(CAT), [])))).toBe("integrity_floor");
@@ -462,7 +465,7 @@ describe("§3.2 and §6.2: a call with no covering grant parks awaiting_grant", 
     ["a grant not yet issued", { issued_at: "2026-10-29T09:00:00.000Z", expires_at: "2026-10-30T09:00:00.000Z" }, "not_yet_issued"],
     ["a grant recorded with a future revocation time", { revoked_at: "2026-10-29T09:00:00.000Z" }, "revoked"],
   ])("does not cover with %s", (_name, overrides, reason) => {
-    grants = new GrantStore();
+    grants = new GrantStore(TEST_ANCHOR);
     grants.add(grant(overrides));
     boundary = new EnforcementBoundary({ registry, grants, journal, clock: () => now });
     expect(refused(judge(context(), call()))).toEqual([{ grant: "grant-1", reason }]);
@@ -489,7 +492,7 @@ describe("§2.7 step 4: a data field outside the grant's resource_scope parks sc
 
   // proves §2.7 step 4: a path-typed data field outside the grant's path scope parks scope_violation
   it("parks a cwd outside the scope, and passes one inside it", () => {
-    grants = new GrantStore();
+    grants = new GrantStore(TEST_ANCHOR);
     withScope("/work/project");
     boundary = new EnforcementBoundary({ registry, grants, journal, clock: () => now });
     const outside = judge(context(), proposal(constant("cat"), [], synthesized("/work/other")));
@@ -503,7 +506,7 @@ describe("§2.7 step 4: a data field outside the grant's resource_scope parks sc
 
   // records D-042: when several grants cover the capability, the call proceeds under the first, in the task's order, whose scope holds it, and is charged to that one
   it("proceeds under a grant whose scope holds the call, and charges that grant", () => {
-    grants = new GrantStore();
+    grants = new GrantStore(TEST_ANCHOR);
     withScope("/work/a", "grant-a");
     withScope("/work/b", "grant-b");
     boundary = new EnforcementBoundary({ registry, grants, journal, clock: () => now });
@@ -588,7 +591,7 @@ describe("§2.7 step 6 and §2.5: an adapter observed building a string from a d
 describe("§2.7: check order, the record, and performing the effect", () => {
   // records D-045: the checks run in §2.7 order with the grant check before step 4; the first failure decides
   it("reports the first failing check in order", () => {
-    grants = new GrantStore();
+    grants = new GrantStore(TEST_ANCHOR);
     grants.add(grant({ resource_scope: [{ kind: "path", prefix: "/work/project" }] }));
     boundary = new EnforcementBoundary({ registry, grants, journal, clock: () => now });
     const confidential = seed({ files: ["payroll.csv"] }, { sensitivity: "confidential", integrity: "untrusted" });
@@ -648,7 +651,7 @@ describe("§2.7: check order, the record, and performing the effect", () => {
 
 describe("D-046 (O-3 ruling; §2.7.1 v0.6 D4): a grant's data_class_bounds tighten steps 3 and 5", () => {
   const useGrants = (...overrides: Record<string, unknown>[]): string[] => {
-    grants = new GrantStore();
+    grants = new GrantStore(TEST_ANCHOR);
     const ids = overrides.map((override, index) => grants.add(grant({ id: `grant-${String(index + 1)}`, ...override })).id);
     boundary = new EnforcementBoundary({ registry, grants, journal, clock: () => now });
     return ids;
@@ -741,7 +744,7 @@ describe("D-046 (O-3 ruling; §2.7.1 v0.6 D4): a grant's data_class_bounds tight
 
 describe("D-047 (O-4 ruling; §2.7.1 v0.6 D4): every argv operand is a path that must lie in scope", () => {
   const scopedTo = (prefix: string): void => {
-    grants = new GrantStore();
+    grants = new GrantStore(TEST_ANCHOR);
     grants.add(grant({ resource_scope: [{ kind: "path", prefix }] }));
     boundary = new EnforcementBoundary({ registry, grants, journal, clock: () => now });
   };
@@ -898,7 +901,7 @@ describe("D-048: integrity is judged before a resolution failure can mask it (§
 
   // proves D-048 / D-046: a grant's raised floor is judged before the rejection too
   it("applies a grant's raised floor before rejecting a broken data reference", () => {
-    grants = new GrantStore();
+    grants = new GrantStore(TEST_ANCHOR);
     grants.add(grant({ data_class_bounds: { max_sensitivity: "secret", min_integrity: "operator" } }));
     boundary = new EnforcementBoundary({ registry, grants, journal, clock: () => now });
     const attested = seed({ program: CAT }, { sensitivity: "internal", integrity: "attested" });
@@ -1048,7 +1051,7 @@ describe("D-052 (operator ruling; §2.7.1 v0.6 D5): shape never outranks provena
 
   // proves D-052 / D-046: a candidate grant's raised floor applies to a wrapped instruction value too
   it("applies a grant's raised floor to a wrapped program value", () => {
-    grants = new GrantStore();
+    grants = new GrantStore(TEST_ANCHOR);
     grants.add(grant({ data_class_bounds: { max_sensitivity: "secret", min_integrity: "operator" } }));
     boundary = new EnforcementBoundary({ registry, grants, journal, clock: () => now });
     const attested = seed({ program: CAT }, { sensitivity: "internal", integrity: "attested" });
@@ -1325,5 +1328,47 @@ describe("§2.7.1 C4 (v0.6): step 4 judges canonical paths", () => {
     const paths = boundary.pathsToResolve(context(), proposal(constant("cat"), [bound(`\${${String(seq.seq)}.stdout_lines[0]}`), synthesized("/work/abs")]));
     expect(paths.sort()).toEqual(["/work", "/work/abs", "/work/sub/../x"]);
     expect(entries()).toHaveLength(before);
+  });
+});
+
+describe("§3.2 C1 (v0.6): a grant whose signature does not verify does not exist", () => {
+  const unsignedFields = (): Record<string, unknown> => {
+    const { signature: _signature, ...fields } = grant();
+    void _signature;
+    return fields;
+  };
+  const refusedWith = (input: Record<string, unknown>): Verdict => {
+    grants = new GrantStore(TEST_ANCHOR);
+    grants.add(input);
+    boundary = new EnforcementBoundary({ registry, grants, journal, clock: () => now });
+    return judge(context(), proposal(constant("cat"), [synthesized("notes.txt")]));
+  };
+
+  // proves §3.2 C1: a grant with no signature, one signed by another key, or one changed after signing is not honoured;
+  // the call parks awaiting_grant and the journal records why the grant was refused
+  it.each([
+    ["no signature", (): Record<string, unknown> => unsignedFields()],
+    ["a signature by another key", (): Record<string, unknown> => signGrant(unsignedFields(), generateKeyPairSync("ed25519").privateKey)],
+    ["a field changed after signing", (): Record<string, unknown> => ({ ...grant(), principal: "someone-else" })],
+    ["a cap removed after signing", (): Record<string, unknown> => ({ ...grant({ max_invocations: 1 }), max_invocations: null })],
+    ["a signature that is not base64", (): Record<string, unknown> => ({ ...grant(), signature: "not a signature!" })],
+  ])("refuses a grant with %s", (_name, make) => {
+    const verdict = refusedWith(make());
+    expect(verdict).toMatchObject({ outcome: "park", detail: { reason: "awaiting_grant", refused: [{ grant: "grant-1", reason: "signature_invalid" }] } });
+    expect(payloadOf(entryAt(verdict.call_seq))).toMatchObject({ verdict: { outcome: "park", reason: "awaiting_grant", refused: [{ grant: "grant-1", reason: "signature_invalid" }] } });
+    expect(grants.invocations("grant-1")).toBe(0);
+  });
+
+  // proves §3.2 C1: a correctly signed grant is honoured
+  it("honours a grant signed by the operator's key", () => {
+    expect(refusedWith(grant()).outcome).toBe("proceed");
+  });
+
+  // proves §3.2: a revoked grant is reported revoked, though its signature (which covers revoked_at) no longer verifies
+  it("reports a revoked grant as revoked", () => {
+    grants = new GrantStore(TEST_ANCHOR);
+    grants.add(grant());
+    grants.revoke("grant-1", now);
+    expect(grants.coverage(task(), "shell.run", now).refused).toEqual([{ grant: "grant-1", reason: "revoked" }]);
   });
 });

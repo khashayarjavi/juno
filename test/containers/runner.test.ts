@@ -16,6 +16,7 @@ import { parseRunnerConfig } from "../../packages/runner/src/config.js";
 import { SCRIPTED_PROFILE_FILE, loadProviderProfile } from "../../packages/runner/src/profile.js";
 import { ScriptedProvider } from "../../packages/runner/src/provider.js";
 import { Runner, type RunOutcome } from "../../packages/runner/src/runner.js";
+import { TEST_ANCHOR, signed } from "../../packages/enforcement/test/test-keys.js";
 
 // Increment 5 with DECISIONS.md D-065: the runner runs on the host, starts
 // each workload container through the docker CLI, and keeps the journal in a
@@ -129,21 +130,21 @@ beforeAll(async () => {
   const registry = new CapabilityRegistry();
   const registered = registry.register(JSON.parse(readFileSync(definitionFile, "utf8")), [new WorkloadExecFileAdapter({ composeFile, project, service: "workload" })]);
   if (!registered.registered) throw new Error(`shell.run did not register: ${JSON.stringify(registered.refusals)}`);
-  const grants = new GrantStore();
-  grants.add({
-    id: "grant-1",
-    principal: PRINCIPAL,
-    capability_selector: { capabilities: ["shell.run"] },
-    resource_scope: [{ kind: "path", prefix: "/work/project" }],
-    data_class_bounds: { max_sensitivity: "internal", min_integrity: "untrusted" },
-    issuance: "preissued",
-    issued_by: PRINCIPAL,
-    issued_at: new Date(T0.getTime() - 60_000).toISOString(),
-    expires_at: new Date(T0.getTime() + 3_600_000).toISOString(),
-    max_invocations: 10,
-    attenuation_parent: null,
-    revoked_at: null,
-  });
+  const grants = new GrantStore(TEST_ANCHOR);
+  grants.add(signed({
+      id: "grant-1",
+      principal: PRINCIPAL,
+      capability_selector: { capabilities: ["shell.run"] },
+      resource_scope: [{ kind: "path", prefix: "/work/project" }],
+      data_class_bounds: { max_sensitivity: "internal", min_integrity: "untrusted" },
+      issuance: "preissued",
+      issued_by: PRINCIPAL,
+      issued_at: new Date(T0.getTime() - 60_000).toISOString(),
+      expires_at: new Date(T0.getTime() + 3_600_000).toISOString(),
+      max_invocations: 10,
+      attenuation_parent: null,
+      revoked_at: null,
+  }));
   const profile = loadProviderProfile(SCRIPTED_PROFILE_FILE);
   const usage = { tokens_in: 10, tokens_out: 5, tokens_cached: 0 };
   const call = { id: "call-1", capability: "shell.run", arguments: { program: { slot: "cat" }, argv: ["notes.txt"], cwd: { slot: "project" } } };
