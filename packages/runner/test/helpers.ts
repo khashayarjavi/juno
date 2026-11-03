@@ -3,9 +3,9 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { TrajectoryEntry } from "../../contracts/src/index.js";
-import { GrantStore } from "../../enforcement/src/index.js";
+import { type CanonicalPaths, GrantStore, type PathResolver, RESOLVER_SCRIPT, readResolverOutput } from "../../enforcement/src/index.js";
 import { JournalWriter, readPayload, readTrajectory } from "../../journal/src/index.js";
-import { type Adapter, type CapabilityCall, CapabilityRegistry, WORKLOAD_EXECFILE, loadRegistryEntry } from "../../registry/src/index.js";
+import { type Adapter, type CapabilityCall, CapabilityRegistry, WORKLOAD_EXECFILE, executeOutbound, loadRegistryEntry } from "../../registry/src/index.js";
 import type { SourceRegistration } from "../src/admission.js";
 import { type ProviderProfile, SCRIPTED_PROFILE_FILE, loadProviderProfile } from "../src/profile.js";
 import { type ScriptStep, ScriptedProvider } from "../src/provider.js";
@@ -73,6 +73,20 @@ export const standInAdapter: Adapter = {
     args: ["-e", STAND_IN, standInRoot, String(call["program"]), String(call["cwd"]), ...(call["argv"] as readonly unknown[]).map(String)],
   }),
 };
+
+/**
+ * The resolver for unit tests (D-113): the same operator-fixed script the workload runs, run by this host's node over
+ * the stand-in's host directory standing for `/work`, so symlinks there are resolved for real.
+ */
+export function hostResolver(root: string): PathResolver {
+  return {
+    async resolve(paths: readonly string[]): Promise<CanonicalPaths> {
+      if (paths.length === 0) return new Map();
+      const result = await executeOutbound({ file: process.execPath, args: ["-e", RESOLVER_SCRIPT, "/work", root, ...paths] });
+      return readResolverOutput(paths, result.stdout.toString("utf8"));
+    },
+  };
+}
 
 /** The files every harness's `/work` starts with: what OPERATOR_CRITERION's verification scope holds. */
 export const WORK_FILES: Readonly<Record<string, string>> = { "/work/project/done.txt": "ok\n", "/work/project/notes.txt": "notes\n", "/work/project/protected/keep.txt": "keep\n" };
@@ -187,7 +201,7 @@ export function harness(adapter: Adapter = standInAdapter): Harness {
     now,
     runner: (steps, options = {}) => {
       const provider = new ScriptedProvider(options.profile ?? PROFILE, steps);
-      const runner = new Runner({ journal, registry, grants, providers: [provider], sources: [PROJECT_SOURCE], clock: () => now.value, ...options });
+      const runner = new Runner({ journal, registry, grants, providers: [provider], sources: [PROJECT_SOURCE], clock: () => now.value, resolver: hostResolver(join(dir, "work")), ...options });
       runners.push(runner);
       return { runner, provider };
     },

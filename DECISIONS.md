@@ -1137,3 +1137,24 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   - `packages/runner/test/resume.test.ts`: a rebuilt task is checked against the pins taken before the restart. This test found, and now guards, a bug where the rebuild lost the pinned file list;
   - `test/containers/registry.test.ts`: `sha256sum` runs in the workload, owned by root.
 - Reason: §3.4.4 ("At admission the runner records a content hash of every verification input and every protected path … A file the method reads that is in neither set is treated as an input … A hash that cannot be computed counts as changed"), §5.1, §2.6, D-097.
+
+## D-113 — C4: canonical scope; resolution in the workload; D-047's residual closed (Slice 1.5 Increment 1)
+- Date: 2026-11-03
+- Status: Accepted (implementation record of §2.7.1 "Data fields and scope" (v0.6 C4) and "Paths that do not exist yet" (v0.6.1 V6-2). Every rule below is the spec's text applied; where an implementation choice was needed it is the fail-closed one.)
+- Applies to: Slice 1.5 onward
+- Decision:
+  - **What is judged.** Step 4 judges each path-typed data value and each argv operand (by the D-037 reading) on its canonical form. A path in a map field still always fails (D-050). The raw path is absolute as given, or `cwd` + `/` + operand, with nothing collapsed. One function (`scopePaths`) lists the raw paths for both the caller's resolution and step 4, so they cannot judge different paths.
+  - **Where it is resolved.** Where the effect runs: an operator-fixed program, the workload image's own node (`/nodejs/bin/node`) running `RESOLVER_SCRIPT`, in a fresh workload container with the same isolation as every call. It is not in any capability's program enum, so the model cannot name it. It uses libc `realpath(3)` (`fs.realpathSync.native`), so `..` is resolved physically after a symlink, as the kernel does.
+  - **The boundary stays synchronous.** The runner asks the boundary for the paths a proposal names (`pathsToResolve`: reads exactly as `authorize` does, writes nothing), resolves them, and passes the answers in the task context. A path missing from the answers, or answered "cannot be resolved", is outside every scope, and the park records why (`unresolved`). The runner requires a resolver (`RunnerOptions.resolver`).
+  - **Paths that do not exist yet.** They resolve through the longest existing ancestor, whose canonical form must lie in the workload's `/work` view. The missing remainder must hold no `..` and no empty component (so a trailing `/` on a missing path is refused), and its first component must not exist as an entry `realpath` could not follow (a dangling symlink). `.` components are dropped, since the spec does not forbid them.
+  - **Cannot be resolved:** a symlink loop (`ELOOP`), a permission error, a canonical form outside `/work`, a remainder failing the conditions above, a resolver that did not run or whose output cannot be read.
+  - Unit tests resolve with the same script over the stand-in's host `/work`. The enforcement unit tests resolve lexically, as if the content held no symlinks (the old judgement), except the C4 cases, which supply canonical forms explicitly.
+- Closes D-047's accepted residual (a symlink in the work content reaching outside the scope).
+- Tests:
+  - `packages/enforcement/test/canonical.test.ts`: the script on a real host tree, covering existing paths, chains, escapes, `..` after a symlink, a loop, new paths, refused remainders and fail-closed answers;
+  - `packages/enforcement/test/enforcement.test.ts`, "§2.7.1 C4": no canonical form parks; a canonical form outside parks with the path judged; an unresolvable path parks with its reason; the pre-pass writes nothing;
+  - `test/containers/canonical.test.ts` (real workload):
+    - parks: a symlink leaving the scope, a symlink loop, and missing remainders with `..` or an empty component;
+    - proceeds: an in-scope chain, and a new path under an in-scope ancestor.
+  - `scopeViolations` now takes the canonical answers. The three direct calls in `enforcement.test.ts` pass them, with the same assertions.
+- Reason: §2.7.1 ("Scope is judged on the canonical form … with symlinks resolved against the volume the effect will touch. A path that cannot be resolved is outside scope"; "A missing path is resolved through its longest existing ancestor … never mere non-existence").

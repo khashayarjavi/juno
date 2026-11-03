@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { TrajectoryEntry } from "../../packages/contracts/src/index.js";
-import { GrantStore } from "../../packages/enforcement/src/index.js";
+import { GrantStore, WorkloadPathResolver } from "../../packages/enforcement/src/index.js";
 import { JournalWriter, readPayload, readTrajectory } from "../../packages/journal/src/index.js";
 import {
   type Adapter,
@@ -131,7 +131,8 @@ function runner(steps: readonly ScriptStep[], options: { registry?: CapabilityRe
   const grants = new GrantStore();
   for (const item of options.grants ?? [grant("grant-main")]) grants.add(item);
   const provider = new ScriptedProvider(profile, steps);
-  return { runner: new Runner({ journal, registry, grants, providers: [provider], sources: SOURCES, clock: () => clock.now }), provider };
+  const resolver = new WorkloadPathResolver({ composeFile, project, service: "workload" });
+  return { runner: new Runner({ journal, registry, grants, providers: [provider], sources: SOURCES, clock: () => clock.now, resolver }), provider };
 }
 
 const entries = (taskId: string): readonly TrajectoryEntry[] => readTrajectory(journalRoot, taskId);

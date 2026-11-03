@@ -3,7 +3,7 @@
 ## Current increment
 **Slice 1.5 — Increment 1: conform Slice 1 to v0.6** (`docs/plans/slice-1.5-build-plan.md`, Increment 1). Branch `claude/gallant-mccarthy-alppyu` (fast-forwarded to `main` c405996 after PR #30 merged). Spec v0.6.1 on `main`. No objection open.
 
-Status: **in progress.** Done: D3 (test names v0.6 §3.2), A4 (rejection limit, D-107), A5 (undeclared flag on a code-free program is a rejection, D-108), A2 (untrusted scope violation: remedy a grant, D-109), A3 (park sources, D-110), B1 (per-actor constants, D-111), B2 (hash-pinned verification inputs, D-112). Local `make verify: GREEN` on the B2 commit (759 unit, 52 container). Left: C4. Estimate: 3 sessions.
+Status: **in progress.** Done: D3 (test names v0.6 §3.2), A4 (rejection limit, D-107), A5 (undeclared flag on a code-free program is a rejection, D-108), A2 (untrusted scope violation: remedy a grant, D-109), A3 (park sources, D-110), B1 (per-actor constants, D-111), B2 (hash-pinned verification inputs, D-112), C4 (canonical scope, D-113). Local `make verify: GREEN` on the C4 commit (774 unit, 58 container). Estimate: 3 sessions.
 - **Order of work** (smallest and most isolated first; one commit each, `make verify` before each push):
   1. D3 (§3.2): already built and tested (`packages/contracts/test/grant.test.ts`); add the v0.6 § name to the test.
   2. A4 rejection limit (§2.7.1, D-102): runner counts consecutive rejections, unreadable turns included; resets on proceed, park, resume; `rejection_limit` park (overridable); admission field 1–10, default 3.

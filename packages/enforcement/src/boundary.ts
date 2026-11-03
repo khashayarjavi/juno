@@ -36,7 +36,7 @@ import { type ResolutionFailureCode, resolveReference } from "./binding.js";
 import { type DeliveryFailure, deliveryFailures } from "./delivery.js";
 import type { GrantRefusal, GrantStore } from "./grants.js";
 import { ArgumentSource, ProposalEnvelope, ProposedCall, type TaskContext } from "./proposal.js";
-import { type ScopeViolation, scopeViolations } from "./scope.js";
+import { type ScopeViolation, scopePaths, scopeViolations } from "./scope.js";
 
 /**
  * The enforcement boundary (spec §2.6–2.7, §3.2; build plan Increment 4;
@@ -526,6 +526,25 @@ export class EnforcementBoundary {
     this.#clock = options.clock ?? (() => new Date());
   }
 
+  /**
+   * The raw paths step 4 would judge for this proposal (§2.7.1 C4, D-113), for the caller to resolve where the effect
+   * will run before calling `authorize`. It reads exactly as `authorize` does, by the same `scopePaths`, and writes
+   * nothing: no entry, no binding record. A proposal that would not reach step 4 names no path.
+   */
+  pathsToResolve(context: TaskContext, input: unknown): string[] {
+    const envelope = ProposalEnvelope.safeParse(input);
+    const proposal = ProposedCall.safeParse(input);
+    if (!envelope.success || !proposal.success) return [];
+    const entry = this.#registry.entry(envelope.data.capability);
+    if (entry === undefined) return [];
+    const leaves = leavesOf(envelope.data.arguments);
+    const { records, failures } = this.#resolve(context, envelope.data.capability, leaves, synthesizedClass(context), false);
+    if (failures.length > 0) return [];
+    const valueOf = new Map<string, CallScalar>(records.map((item) => [item.argument, item.value]));
+    const call = callSchemaFor(entry.capability.interface).safeParse(assemble(proposal.data.arguments, valueOf));
+    return call.success ? [...new Set(scopePaths(entry, call.data).map((path) => path.raw))] : [];
+  }
+
   /** Judges one proposed call by a running task, records it, and returns the verdict. Nothing runs here. */
   authorize(context: TaskContext, input: unknown): Verdict {
     const { task } = context;
@@ -594,7 +613,8 @@ export class EnforcementBoundary {
     if (coverage.covering.length === 0) return park({ reason: "awaiting_grant", refused: coverage.refused });
 
     // Step 4.
-    const scoped = meetFloors.map((grant) => ({ grant, outside: scopeViolations(entry, parsedCall, grant) }));
+    const canonical = context.canonical ?? new Map();
+    const scoped = meetFloors.map((grant) => ({ grant, outside: scopeViolations(entry, parsedCall, grant, canonical) }));
     const inScope = scoped.filter((candidate) => candidate.outside.length === 0).map((candidate) => candidate.grant);
     if (inScope.length === 0) {
       const outside = [...new Set(scoped.flatMap((candidate) => candidate.outside.map((violation) => violation.argument)))].sort();
@@ -658,6 +678,7 @@ export class EnforcementBoundary {
     capability: string,
     leaves: readonly Leaf[],
     synthesized: DataClass,
+    journal = true,
   ): { records: ArgumentRecord[]; failures: UnresolvedArgument[] } {
     const { task, constants } = context;
     const root = this.#journal.root;
@@ -700,7 +721,7 @@ export class EnforcementBoundary {
         const base = { capability, argument, reference: source.reference };
         if (resolution.ok) {
           const candidates = resolution.candidates.length > 1 ? { binding_candidates: [...resolution.candidates] } : {};
-          const bindingEntry = this.#append(
+          const bindingEntry = !journal ? -1 : this.#append(
             task.id,
             { ...this.#draft("binding_resolution", join([synthesized, resolution.data_class])), ...candidates },
             { ...base, outcome: "resolved", bound_to: resolution.seq, value: resolution.value, candidates: [...resolution.candidates] },
@@ -713,7 +734,7 @@ export class EnforcementBoundary {
             origin: { class: "bound", reference: source.reference, bound_to: resolution.seq, binding_entry: bindingEntry },
           });
         } else {
-          this.#append(task.id, this.#draft("binding_resolution", synthesized), {
+          if (journal) this.#append(task.id, this.#draft("binding_resolution", synthesized), {
             ...base,
             outcome: "rejected",
             code: resolution.code,

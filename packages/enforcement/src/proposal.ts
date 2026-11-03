@@ -1,3 +1,4 @@
+import type { CanonicalPaths } from "./canonical.js";
 import { z } from "zod";
 import { CapabilityId, type DataClass, type Integrity, type NonEmpty, type Sensitivity, type Task } from "../../contracts/src/index.js";
 import type { CallScalar } from "../../registry/src/index.js";
@@ -69,4 +70,10 @@ export type TaskContext = {
   readonly task: Task;
   readonly constants: Readonly<Record<string, Constant>>;
   readonly synthesis: Synthesis;
+  /**
+   * The canonical form of each raw path the call names (§2.7.1 C4, D-113), resolved by the caller where the effect will
+   * run, for the paths `EnforcementBoundary.pathsToResolve` listed. Absent or incomplete: every path it lacks is outside
+   * every scope (fail-closed).
+   */
+  readonly canonical?: CanonicalPaths;
 };

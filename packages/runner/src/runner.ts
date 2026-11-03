@@ -28,6 +28,7 @@ import {
   EnforcementBoundary,
   type GrantStore,
   type ParkDetail,
+  type PathResolver,
   type RejectDetail,
   type TaskContext,
   type Verdict,
@@ -112,6 +113,8 @@ export type RunnerOptions = {
   readonly clock?: () => Date;
   /** Who verifies. Defaults to `juno.verifier`; a closure naming an executing actor is refused (§3.4.4). */
   readonly verifierIdentity?: string;
+  /** Resolves the paths a call names to their canonical forms where the effect will run (§2.7.1 C4, D-113). */
+  readonly resolver: PathResolver;
 };
 
 export class RunnerError extends Error {
@@ -313,6 +316,7 @@ export class Runner {
   readonly #clock: () => Date;
   readonly #verifier: string;
   readonly #boundary: EnforcementBoundary;
+  readonly #resolver: PathResolver;
   readonly #lock: RunnerLock;
   readonly #runs = new Map<string, TaskRun>();
   readonly #recordedQuarantines = new Set<string>();
@@ -329,6 +333,7 @@ export class Runner {
     this.#sources = options.sources;
     this.#clock = options.clock ?? (() => new Date());
     this.#verifier = options.verifierIdentity ?? VERIFIER_ACTOR;
+    this.#resolver = options.resolver;
     this.#lock = acquireRunnerLock(this.#journal.root, this.#clock);
     try {
       this.#reapplyQuarantines();
@@ -649,7 +654,7 @@ export class Runner {
         const clock = exhaustedAxes(this.#spentNow(run), run.task.budget, ["wall_clock_ms"]);
         if (clock.length > 0) return this.#budgetPark(run, clock, { turn_seq: turnSeq, not_acted_on: [call.id, ...rest] });
 
-        const verdict = this.#authorize(run, toProposal(call), turnClass.sensitivity, "executing");
+        const verdict = await this.#authorize(run, toProposal(call), turnClass.sensitivity, "executing");
         if (verdict.outcome === "park") {
           // §8.2 (A2): a scope violation caused by an untrusted value is cleared only by a grant, never by a plain resume.
           const grantOnly = verdict.detail.reason === "scope_violation" && verdict.detail.untrusted.length > 0;
@@ -707,7 +712,7 @@ export class Runner {
     for (const [field, value] of Object.entries(criterion.command.arguments)) if (Array.isArray(value) && value.length === 0) args[field] = [];
     this.#append(run.task.id, "note", this.#runnerClass(run), { type: "verification", phase: "start", method: run.task.verification, claimed_at_turn: turnSeq });
 
-    const verdict = this.#authorize(run, { capability: criterion.command.capability, arguments: args }, run.task.sensitivity_floor, "verifier");
+    const verdict = await this.#authorize(run, { capability: criterion.command.capability, arguments: args }, run.task.sensitivity_floor, "verifier");
     if (verdict.outcome === "park") {
       return this.#park(run, verdict.detail.reason, this.#entryClass(run.task.id, verdict.call_seq), { call_seq: verdict.call_seq, phase: "verification", detail: verdict.detail, sources: this.#parkSources(run, verdict.call_seq, verdict.detail) });
     }
@@ -780,7 +785,7 @@ export class Runner {
       if (index === null) args[field] = source;
       else ((args[field] ??= []) as unknown[])[index] = source;
     }
-    const verdict = this.#authorize(run, { capability: PROTECTED_LISTING.capability, arguments: args }, run.task.sensitivity_floor, "verifier");
+    const verdict = await this.#authorize(run, { capability: PROTECTED_LISTING.capability, arguments: args }, run.task.sensitivity_floor, "verifier");
     if (verdict.outcome === "park") {
       return { ok: false, outcome: this.#park(run, verdict.detail.reason, this.#entryClass(run.task.id, verdict.call_seq), { call_seq: verdict.call_seq, phase: `protected_${phase}`, detail: verdict.detail, sources: this.#parkSources(run, verdict.call_seq, verdict.detail) }) };
     }
@@ -824,7 +829,7 @@ export class Runner {
         .map((slot) => ({ class: "constant", slot: slot.slot }));
       for (let index = start; index < Math.min(files.length, start + PIN_HASH_BATCH); index += 1) argv.push({ class: "constant", slot: pinFileSlot(index) });
       const args = { program: { class: "constant", slot: "criterion.pin.program" }, argv, cwd: { class: "constant", slot: "criterion.pin.cwd" } };
-      const verdict = this.#authorize(run, { capability: PROTECTED_LISTING.capability, arguments: args }, run.task.sensitivity_floor, "verifier");
+      const verdict = await this.#authorize(run, { capability: PROTECTED_LISTING.capability, arguments: args }, run.task.sensitivity_floor, "verifier");
       if (verdict.outcome === "park") {
         return { ok: false, outcome: this.#park(run, verdict.detail.reason, this.#entryClass(run.task.id, verdict.call_seq), { call_seq: verdict.call_seq, phase: `pin_${phase}`, detail: verdict.detail, sources: this.#parkSources(run, verdict.call_seq, verdict.detail) }) };
       }
@@ -877,12 +882,15 @@ export class Runner {
    * Judges one call through the boundary. Only the constants fixed for `actor` are resolvable (§2.6, v0.6 B1): the
    * executing model naming a verifier constant is an unresolved reference, a rejection (§2.7.1).
    */
-  #authorize(run: TaskRun, proposal: unknown, sensitivity: Sensitivity, actor: ConstantActor): Verdict {
+  async #authorize(run: TaskRun, proposal: unknown, sensitivity: Sensitivity, actor: ConstantActor): Promise<Verdict> {
     const constants: Record<string, AdmittedConstant> = Object.fromEntries(Object.entries(run.admission.constants).filter(([, constant]) => constant.actors.includes(actor)));
     if (actor === "verifier" && run.pinFiles !== null) {
       for (const [index, path] of run.pinFiles.files.entries()) constants[pinFileSlot(index)] = { value: path, data_class: run.pinFiles.data_class, actors: ["verifier"] };
     }
-    const context: TaskContext = { task: run.task, constants, synthesis: { sensitivity } };
+    const base: TaskContext = { task: run.task, constants, synthesis: { sensitivity } };
+    // §2.7.1 C4 (D-113): the paths the call names are resolved where the effect will run, then the boundary judges them.
+    const canonical = await this.#resolver.resolve(this.#boundary.pathsToResolve(base, proposal));
+    const context: TaskContext = { ...base, canonical };
     const verdict = this.#boundary.authorize(context, proposal);
     this.#recordQuarantines();
     return verdict;

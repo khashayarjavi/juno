@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { parseAtBoundary } from "../../packages/contracts/src/index.js";
-import { GrantStore } from "../../packages/enforcement/src/index.js";
+import { GrantStore, WorkloadPathResolver } from "../../packages/enforcement/src/index.js";
 import { JournalWriter, readPayload, readTrajectory, verifyTrajectory } from "../../packages/journal/src/index.js";
 import { blobFile, entriesFile, headFile } from "../../packages/journal/src/layout.js";
 import { CapabilityRegistry, WorkloadExecFileAdapter } from "../../packages/registry/src/index.js";
@@ -157,6 +157,7 @@ beforeAll(async () => {
     grants,
     providers: [provider],
     sources: [{ id: "project", selector: { kind: "path", prefix: "/work/project" }, data_class: { sensitivity: "internal", integrity: "untrusted" } }],
+    resolver: new WorkloadPathResolver({ composeFile, project, service: "workload" }),
   });
   const admission = runner.admit({
     id: "task-host",
