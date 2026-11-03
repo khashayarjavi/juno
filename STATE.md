@@ -129,7 +129,7 @@ Status: **Slice 1.2 complete. Part 1 (PR #19), the interface fix (PR #20), Part 
 ## Merges recorded (CLAUDE.md §7 step 6)
 - **Slice 1.5 Part 0 revision (D-091 to D-106), PR #30** (https://github.com/khashayarjavi/juno/pull/30):
   - Head bb6aef5fc597ee3946633e388be7899f196ceb7f; PR CI `verify` run 41688473651 (job 126100437341, success).
-  - Merged as merge commit c4059961616b10d2013e87562acacdafad5ec2ce, pinned to the head SHA. CI `verify` on `main` for the merge commit: run 41688851640 (event `push`), read below.
+  - Merged as merge commit c4059961616b10d2013e87562acacdafad5ec2ce, pinned to the head SHA. CI `verify` on `main` for the merge commit: run 41688851640 (event `push`, job 126101743836), success.
   - Reviewer verdict: round 4 (D-106) MERGE on bb6aef5, after the PR description (not a commit) was corrected; all six checks PASS. Rounds 1 to 3 DO NOT MERGE, each fixed (D-101, D-104).
 - **Spec v0.6.1 (operator's change), PR #27** (https://github.com/khashayarjavi/juno/pull/27), merged by the agent on the operator's ruling (D-100):
   - Head fcb1a6076dadc803be945d026f7c438f69d7e5e7; PR CI `verify` run 41673760530 (success).
