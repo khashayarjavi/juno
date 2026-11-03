@@ -12,6 +12,7 @@ Status: **plan written and reviewed; STOP for the director.** Plan: `docs/plans/
   - confirm D-089 matches what you authorised (the instruction is not in the repo);
   - CLAUDE.md §7 LOOP step 1 still names `spec/slice-1-build-plan.md`, not `docs/plans/slice-1.5-build-plan.md`. It was left as it is, because the operator said "change nothing else";
   - the Increment 1 review must check that the B1 test change has its own D-number and makes the test stricter.
+- **CI `verify`:** run 41579569741 on 632735b (the reviewed head) succeeded; run 41579784946 on 799a059 (that head plus a STATE-only record) succeeded, `make verify: GREEN`, 51 of 51 container tests. Local runs here were RED only on Docker Hub's 429 (see "make verify").
 - **Merge gate (D-090): STOP before step 6c.** The plan PR is not merged while an objection is open (§7 step 6a) or while PR #27 is unmerged. It is marked ready for the director.
 
 ## Previous increment
