@@ -37,6 +37,8 @@ import type { CapabilityRegistry, InvocationResult, RegistryEntry } from "../../
 import {
   type AdmissionResult,
   type AdmittedTask,
+  type ConstantActor,
+  ConstantActors,
   CriterionStatement,
   DEFAULT_REJECTION_LIMIT,
   RESERVED_ID_PREFIX,
@@ -180,7 +182,18 @@ const AdmissionRecord = z.object({
   outcome: z.literal("admitted"),
   admitted_at: z.iso.datetime(),
   task: TaskSchema,
-  constants: z.record(z.string(), z.strictObject({ value: z.union([z.string(), z.number(), z.boolean()]), data_class: DataClassSchema })),
+  // A journal written before v0.6 records no actors: a criterion slot was the verifier's, every other constant the
+  // executing actor's (§2.6 B1, D-111). Recorded actors are read as written.
+  constants: z
+    .record(z.string(), z.strictObject({ value: z.union([z.string(), z.number(), z.boolean()]), data_class: DataClassSchema, actors: ConstantActors.optional() }))
+    .transform((constants) =>
+      Object.fromEntries(
+        Object.entries(constants).map(([slot, constant]) => [
+          slot,
+          { ...constant, actors: constant.actors ?? (slot.startsWith(VERIFIER_SLOT_PREFIX) ? (["verifier"] as const) : (["executing"] as const)) },
+        ]),
+      ),
+    ),
   criterion: CriterionStatement.nullable(),
   provider: z.string(),
   provider_profile: ProviderProfile,
@@ -620,7 +633,7 @@ export class Runner {
         const clock = exhaustedAxes(this.#spentNow(run), run.task.budget, ["wall_clock_ms"]);
         if (clock.length > 0) return this.#budgetPark(run, clock, { turn_seq: turnSeq, not_acted_on: [call.id, ...rest] });
 
-        const verdict = this.#authorize(run, toProposal(call), turnClass.sensitivity);
+        const verdict = this.#authorize(run, toProposal(call), turnClass.sensitivity, "executing");
         if (verdict.outcome === "park") {
           // §8.2 (A2): a scope violation caused by an untrusted value is cleared only by a grant, never by a plain resume.
           const grantOnly = verdict.detail.reason === "scope_violation" && verdict.detail.untrusted.length > 0;
@@ -678,7 +691,7 @@ export class Runner {
     for (const [field, value] of Object.entries(criterion.command.arguments)) if (Array.isArray(value) && value.length === 0) args[field] = [];
     this.#append(run.task.id, "note", this.#runnerClass(run), { type: "verification", phase: "start", method: run.task.verification, claimed_at_turn: turnSeq });
 
-    const verdict = this.#authorize(run, { capability: criterion.command.capability, arguments: args }, run.task.sensitivity_floor);
+    const verdict = this.#authorize(run, { capability: criterion.command.capability, arguments: args }, run.task.sensitivity_floor, "verifier");
     if (verdict.outcome === "park") {
       return this.#park(run, verdict.detail.reason, this.#entryClass(run.task.id, verdict.call_seq), { call_seq: verdict.call_seq, phase: "verification", detail: verdict.detail, sources: this.#parkSources(run, verdict.call_seq, verdict.detail) });
     }
@@ -744,7 +757,7 @@ export class Runner {
       if (index === null) args[field] = source;
       else ((args[field] ??= []) as unknown[])[index] = source;
     }
-    const verdict = this.#authorize(run, { capability: PROTECTED_LISTING.capability, arguments: args }, run.task.sensitivity_floor);
+    const verdict = this.#authorize(run, { capability: PROTECTED_LISTING.capability, arguments: args }, run.task.sensitivity_floor, "verifier");
     if (verdict.outcome === "park") {
       return { ok: false, outcome: this.#park(run, verdict.detail.reason, this.#entryClass(run.task.id, verdict.call_seq), { call_seq: verdict.call_seq, phase: `protected_${phase}`, detail: verdict.detail, sources: this.#parkSources(run, verdict.call_seq, verdict.detail) }) };
     }
@@ -794,8 +807,13 @@ export class Runner {
     this.#append(task.id, "note", this.#runnerClass(run), { type: "closure", closure });
   }
 
-  #authorize(run: TaskRun, proposal: unknown, sensitivity: Sensitivity): Verdict {
-    const context: TaskContext = { task: run.task, constants: run.admission.constants, synthesis: { sensitivity } };
+  /**
+   * Judges one call through the boundary. Only the constants fixed for `actor` are resolvable (§2.6, v0.6 B1): the
+   * executing model naming a verifier constant is an unresolved reference, a rejection (§2.7.1).
+   */
+  #authorize(run: TaskRun, proposal: unknown, sensitivity: Sensitivity, actor: ConstantActor): Verdict {
+    const constants = Object.fromEntries(Object.entries(run.admission.constants).filter(([, constant]) => constant.actors.includes(actor)));
+    const context: TaskContext = { task: run.task, constants, synthesis: { sensitivity } };
     const verdict = this.#boundary.authorize(context, proposal);
     this.#recordQuarantines();
     return verdict;
@@ -1203,8 +1221,10 @@ type Constants = AdmittedTask["constants"];
 
 /** The constant slots offered to the executing model: the operator's, never the verifier's (D-075). */
 export function offeredConstants(constants: Constants): string[] {
-  return Object.keys(constants)
-    .filter((slot) => !slot.startsWith(VERIFIER_SLOT_PREFIX))
+  // Only constants fixed for the executing actor (§2.6, v0.6 B1); a criterion slot never is (D-075, D-111).
+  return Object.entries(constants)
+    .filter(([slot, constant]) => constant.actors.includes("executing") && !slot.startsWith(VERIFIER_SLOT_PREFIX))
+    .map(([slot]) => slot)
     .sort();
 }
 

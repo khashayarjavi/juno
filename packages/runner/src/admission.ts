@@ -64,6 +64,14 @@ export const CriterionStatement = z.strictObject({
 });
 export type CriterionStatement = z.infer<typeof CriterionStatement>;
 
+/** §2.6 (v0.6 B1): who may name a constant. `verifier` is the actor that checks the criterion (§3.4.4). */
+export const CONSTANT_ACTORS = ["executing", "verifier"] as const;
+export type ConstantActor = (typeof CONSTANT_ACTORS)[number];
+export const ConstantActors = z
+  .array(z.enum(CONSTANT_ACTORS))
+  .min(1)
+  .refine((actors) => new Set(actors).size === actors.length, "each actor appears once");
+
 /** §2.7.1 (A4): the rejection limit's default, and the range admission accepts (v0.6.1). */
 export const DEFAULT_REJECTION_LIMIT = 3;
 export const RejectionLimit = z.int().min(1).max(10);
@@ -89,7 +97,17 @@ export const AdmissionRequest = z.strictObject({
   parent: Ref.nullable(),
   requires_live_steer: z.boolean().optional(),
   /** Literals the operator fixes now, each a `constant` slot of `operator` integrity (§2.6). */
-  constants: z.record(SlotName, z.strictObject({ value: Scalar, sensitivity: Sensitivity.optional() })).default({}),
+  constants: z
+    .record(
+      SlotName,
+      z.strictObject({
+        value: Scalar,
+        sensitivity: Sensitivity.optional(),
+        /** §2.6 (v0.6 B1): the actors the constant is fixed for. The executing actor by default; both only when the operator says so. */
+        actors: ConstantActors.default(["executing"]),
+      }),
+    )
+    .default({}),
   /** §2.7.1 (A4, v0.6.1): consecutive rejections that park `rejection_limit`; set per task between 1 and 10, default 3. */
   rejection_limit: RejectionLimit.default(DEFAULT_REJECTION_LIMIT),
 });
@@ -106,9 +124,12 @@ export type SourceRegistration = z.infer<typeof SourceRegistration>;
 /** One failed admission check: the §5.4 check number (or the rule it extends) and why. */
 export type AdmissionFailure = { readonly check: string; readonly message: string };
 
+export type AdmittedConstant = { readonly value: string | number | boolean; readonly data_class: DataClass; readonly actors: readonly ConstantActor[] };
+
 export type AdmittedTask = {
   readonly task: Task;
-  readonly constants: Readonly<Record<string, { readonly value: string | number | boolean; readonly data_class: DataClass }>>;
+  /** Every constant admission fixed, each for the actors that may name it (§2.6, v0.6 B1). */
+  readonly constants: Readonly<Record<string, AdmittedConstant>>;
   readonly criterion: CriterionStatement | null;
   readonly provider: ProviderProfile;
   /** The registered sources the task reads, with their declared classes. */
@@ -352,12 +373,12 @@ export function admit(input: unknown, env: AdmissionEnvironment): AdmissionResul
     requires_live_steer: requiresLiveSteer,
     trajectory: request.id,
   });
-  const constants: Record<string, { value: string | number | boolean; data_class: DataClass }> = {};
+  const constants: Record<string, AdmittedConstant> = {};
   for (const [slot, constant] of Object.entries(request.constants)) {
-    constants[slot] = { value: constant.value, data_class: { sensitivity: constant.sensitivity ?? floor, integrity: "operator" } };
+    constants[slot] = { value: constant.value, data_class: { sensitivity: constant.sensitivity ?? floor, integrity: "operator" }, actors: [...constant.actors] };
   }
   if (criterion !== null) {
-    for (const { slot, value } of [...criterionSlots(criterion), ...protectedSlots(criterion)]) constants[slot] = { value, data_class: { sensitivity: floor, integrity: criterionIntegrity } };
+    for (const { slot, value } of [...criterionSlots(criterion), ...protectedSlots(criterion)]) constants[slot] = { value, data_class: { sensitivity: floor, integrity: criterionIntegrity }, actors: ["verifier"] };
   }
   return { admitted: true, admission: { task, constants, criterion, provider, sources, warnings, rejection_limit: request.rejection_limit } };
 }

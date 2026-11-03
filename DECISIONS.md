@@ -1070,3 +1070,22 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
     - a value with no established integrity (an unresolved reference, or a value stating no provenance) is listed as `untrusted` with that reason.
   - Each context item now keeps the `seq` of the note that recorded it, also on rebuild.
 - Reason: §11.1 ("for every value that caused the park, the journal entry it came from … for a synthesized value … the untrusted entries in the model's context since the last operator input, as possible sources"). Proven by `packages/runner/test/park-sources.test.ts`. There is no approval interface yet (CLAUDE.md rule 9); this is the park record only.
+
+## D-111 — B1: constants are fixed per actor; the Slice 1.2 test that pinned the old behaviour is replaced by a stricter one (Slice 1.5 Increment 1)
+- Date: 2026-11-03
+- Status: Accepted (implementation record of §2.6 v0.6 B1; the test change follows the specification's change)
+- Applies to: Slice 1.5 onward
+- Decision:
+  - The admission request's constants take `actors`, a non-empty list without repeats drawn from `executing` and `verifier`; the default is `["executing"]`. The operator fixes a value for both actors only by listing both.
+  - Every slot admission fixes from the criterion (its command, arguments, protected-path listing) is fixed for `verifier` only.
+  - The runner passes the enforcement boundary only the constants fixed for the calling actor. The model's calls are `executing`; the criterion check and the protected-path listings are `verifier`. A slot of another actor is unknown to the boundary, so naming one is an unresolved reference (`unknown_slot`), a rejection (§2.7.1) that counts toward the rejection limit (D-107). Step 3 still runs first, so a verifier slot named in an instruction field cannot turn a park into a rejection (§2.7.1 D5).
+  - The executing model is offered only constants fixed for `executing` (D-075 unchanged otherwise).
+  - A journal written before v0.6 records no actors: a `criterion.` slot reads as `verifier`, every other constant as `executing`, which is the fail-closed reading of what Slice 1 meant.
+- **Test change** (the build plan requires it to have its own D-number and to be stricter): `packages/runner/test/runner.test.ts`, "still resolves a verifier slot the model names (objection for spec v0.6)", asserted that the model's call naming `criterion.program`, `criterion.argv.0` and `criterion.cwd` proceeded as an operator constant. Under v0.6 that is the defect B1 fixes. It is replaced by "rejects a verifier slot the model names as an unresolved reference", which asserts:
+  - the model's call is rejected `unresolved_argument`, with `unknown_slot` for each of the three arguments;
+  - the model is told so;
+  - nothing it proposed runs;
+  - the verifier's own call still resolves the same slots and proceeds.
+
+  The old test was also weaker than its name: once the model's call was rejected, its lookup matched the verifier's call. The new test separates the two. Two tests are added: a value fixed for both actors resolves for both, and one fixed for the verifier only is neither offered to nor resolvable by the model; admission refuses an empty, repeated or unknown actor.
+- Reason: §2.6 ("A `constant` source resolves only in calls made by the actor it was fixed for … naming one is an unresolved reference"); CLAUDE.md §2 rule 5.

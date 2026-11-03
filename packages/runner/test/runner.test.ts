@@ -562,20 +562,56 @@ describe("Slice 1.2: what the executing model is offered (D-075), continued", ()
     expect(JSON.stringify(provider.requests[0]?.tools)).not.toContain("criterion.");
   });
 
-  // Documents the objection for spec v0.6 recorded in STATE.md (D-075): a slot fixed for the verifier is not offered, but
-  // the boundary still resolves it when the model names one, as an operator constant. Slice 1.2 does not change the
-  // boundary; this test pins today's behaviour so a spec change to it is visible.
-  it("still resolves a verifier slot the model names (objection for spec v0.6)", async () => {
-    const { runner } = h.runner([turn([shellRun([{ slot: "criterion.argv.0" }], { slot: "criterion.program" }, { slot: "criterion.cwd" })]), turn()]);
+  // proves §2.6 (v0.6 B1; replaces the Slice 1.2 test that pinned the old behaviour, D-111): a constant resolves only for
+  // the actor it was fixed for, so the executing model naming the verifier's slots is an unresolved-reference rejection:
+  // nothing it proposed runs, and the verifier still resolves the same slots when it checks the criterion
+  it("rejects a verifier slot the model names as an unresolved reference", async () => {
+    const { runner, provider } = h.runner([turn([shellRun([{ slot: "criterion.argv.0" }], { slot: "criterion.program" }, { slot: "criterion.cwd" })]), turn()]);
     admitted(runner, withCriterion);
     await runner.run("task-1");
-    const call = h
+    const calls = h
       .entries()
       .filter((entry) => entry.kind === "capability_call")
-      .map((entry) => ({ entry, body: h.payload(entry) }))
-      .find(({ body }) => JSON.stringify(body["arguments"]).includes("criterion.program"));
-    expect(call?.entry.argument_provenance).toContainEqual({ argument: "program", class: "constant", integrity: "operator" });
-    expect((call?.body["verdict"] as { outcome: string }).outcome).toBe("proceed");
+      .map((entry) => ({ entry, body: h.payload(entry) }));
+    const verificationStart = h.entries().find((entry) => entry.kind === "note" && h.payload(entry)["type"] === "verification")?.seq ?? Infinity;
+    const modelCalls = calls.filter(({ entry }) => entry.seq < verificationStart && !JSON.stringify(h.payload(entry)).includes("--time-style"));
+    expect(modelCalls).toHaveLength(1);
+    const [model] = modelCalls;
+    expect(model?.body["verdict"]).toMatchObject({ outcome: "reject", reason: "unresolved_argument" });
+    const unresolved = (model?.body["unresolved"] as { argument: string; code: string }[]).map((item) => [item.argument, item.code]);
+    expect(unresolved).toEqual(expect.arrayContaining([["program", "unknown_slot"], ["argv[0]", "unknown_slot"], ["cwd", "unknown_slot"]]));
+    expect(provider.requests[1]?.context.at(-1)?.content).toMatchObject({ outcome: "rejected", reason: "unresolved_argument" });
+    // The verifier's own call names the same slots and resolves them, as constants of the criterion's integrity.
+    const verifier = calls.find(({ entry }) => entry.seq > verificationStart);
+    expect(verifier?.entry.argument_provenance).toContainEqual({ argument: "program", class: "constant", integrity: "operator" });
+    expect((verifier?.body["verdict"] as { outcome: string }).outcome).toBe("proceed");
+  });
+
+  // proves §2.6 (v0.6 B1): the operator may fix the same value for both actors, explicitly; it then resolves for both
+  it("resolves a constant the operator fixed for both actors for each of them", async () => {
+    const both = { ...withCriterion, constants: { ...withCriterion.constants, shared: { value: "done.txt", actors: ["executing", "verifier"] } } };
+    const { runner, provider } = h.runner([turn([shellRun([{ slot: "shared" }])]), turn()]);
+    admitted(runner, both);
+    expect((await runner.run("task-1")).state).toBe("verified");
+    expect(h.entries().filter((entry) => entry.kind === "capability_call").map((entry) => (h.payload(entry)["verdict"] as { outcome: string }).outcome)).not.toContain("reject");
+    expect(JSON.stringify(provider.requests[0]?.context)).toContain("shared");
+    // A constant fixed for the verifier only is never offered to the executing model, nor resolvable by it.
+    const verifierOnly = { ...withCriterion, constants: { ...withCriterion.constants, secret: { value: "done.txt", actors: ["verifier"] } } };
+    h.cleanup();
+    h = harness();
+    const second = h.runner([turn([shellRun([{ slot: "secret" }])]), turn()]);
+    admitted(second.runner, verifierOnly);
+    await second.runner.run("task-1");
+    expect(JSON.stringify(second.provider.requests[0]?.context)).not.toContain("secret");
+    expect(h.payload(h.entries().filter((entry) => entry.kind === "capability_call")[1] as TrajectoryEntry)["verdict"]).toMatchObject({ outcome: "reject", reason: "unresolved_argument" });
+  });
+
+  // proves §2.6 (v0.6 B1): admission refuses an empty or repeated actor list
+  it("refuses a constant fixed for no actor, or for one actor twice", () => {
+    const { runner } = h.runner([]);
+    for (const [index, actors] of [[], ["executing", "executing"], ["model"]].entries()) {
+      expect(runner.admit(request({ id: `task-${String(index)}`, constants: { x: { value: "a", actors } } })).admitted, JSON.stringify(actors)).toBe(false);
+    }
   });
 });
 

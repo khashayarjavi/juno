@@ -41,9 +41,10 @@ describe("§5.4 admission checks", () => {
       requires_live_steer: false,
     });
     // The criterion's literals are constants with the criterion's integrity (§2.6).
-    expect(result.admission.constants["criterion.program"]).toEqual({ value: CAT, data_class: { sensitivity: "internal", integrity: "operator" } });
+    // ... fixed for the verifier only (§2.6, v0.6 B1).
+    expect(result.admission.constants["criterion.program"]).toEqual({ value: CAT, data_class: { sensitivity: "internal", integrity: "operator" }, actors: ["verifier"] });
     expect(result.admission.constants["criterion.argv.0"]?.value).toBe("done.txt");
-    expect(result.admission.constants["cat"]).toEqual({ value: CAT, data_class: { sensitivity: "internal", integrity: "operator" } });
+    expect(result.admission.constants["cat"]).toEqual({ value: CAT, data_class: { sensitivity: "internal", integrity: "operator" }, actors: ["executing"] });
   });
 
   // proves §5.4 check 1 / §5.1: no objective, no task
