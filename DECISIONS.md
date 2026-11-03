@@ -1052,3 +1052,21 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   - **Cleared:** a plain resume is refused, and the task is left unchanged. A resume succeeds only when the task's grants after the resume include a usable grant for the parked capability (valid, unexpired, unrevoked, with invocations left) whose path scope covers **every** out-of-scope path the park recorded, untrusted or not. That is the more restrictive reading of "issue or widen a Grant, then resume". The parked call is not replayed: the model is told it parked and retries it, and the retry is judged again.
   - **Old journals:** a park recorded before v0.6 has no `remedy`. Its recorded `overridable` is honoured fail-closed: a park recorded `overridable: false` is never resumed unless its remedy is `grant`.
 - Reason: §8.2 ("Override is not offered. The remedy is to issue or widen a Grant (§3.2), then resume"), §6.2. Proven by `packages/runner/test/scope-override.test.ts`.
+
+## D-110 — A3: what a park records as the source of each value that caused it (Slice 1.5 Increment 1)
+- Date: 2026-11-03
+- Status: Accepted (implementation record of §11.1 A3 and V6-8; where the text leaves a choice, the reading that lists more is taken, as an autopilot ruling under CLAUDE.md §7 step 3; §11.1 is outside §2, §3.2 and §4.3)
+- Applies to: Slice 1.5 onward
+- Decision: every park the enforcement boundary produces (in the turn loop, at verification, and for the protected-path listing) records `sources`: one item per value that caused it, each with its argument, provenance class, integrity and source:
+  - **Which values caused it:**
+    - `integrity_floor`: every value below its floor or below a candidate grant's raised floor;
+    - `scope_violation`: every out-of-scope value, over every candidate grant;
+    - `sensitivity_ceiling`: every argument above the ceiling that was exceeded (the capability's own when the aggregate exceeds it, else the lowest candidate grant's). When none is above it, the composing context raised the class, so every argument is listed;
+    - parks no value causes (`awaiting_grant`, `adapter_quarantined`, and the runner's own parks) list none.
+  - **The source:**
+    - `bound`: the entry it was bound to, and the `binding_resolution` entry that recorded the binding;
+    - `constant`: the admission entry and the slot;
+    - `synthesized`: `possible_sources`, the untrusted entries in the model's context since the last context item of `operator` integrity. For each, it names the entry the content came from (the `capability_result` for a tool result, else the context note) and the context note itself. The model's own turns are not listed: they are what it composed. No contents are compared (invariant 7);
+    - a value with no established integrity (an unresolved reference, or a value stating no provenance) is listed as `untrusted` with that reason.
+  - Each context item now keeps the `seq` of the note that recorded it, also on rebuild.
+- Reason: §11.1 ("for every value that caused the park, the journal entry it came from … for a synthesized value … the untrusted entries in the model's context since the last operator input, as possible sources"). Proven by `packages/runner/test/park-sources.test.ts`. There is no approval interface yet (CLAUDE.md rule 9); this is the park record only.

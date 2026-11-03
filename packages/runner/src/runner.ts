@@ -14,6 +14,7 @@ import {
   TaskState as TaskStateSchema,
   closureSchemaFor,
   compareIntegrity,
+  compareSensitivity,
   join,
   maxSensitivity,
   minIntegrity,
@@ -110,7 +111,8 @@ export class RunnerError extends Error {
   override readonly name = "RunnerError";
 }
 
-type Contextual = { readonly item: ContextItem; readonly data_class: DataClass };
+/** A context item, its class, and the `seq` of the journal note that recorded it (§11.1 "possible sources"). */
+type Contextual = { readonly item: ContextItem; readonly data_class: DataClass; readonly seq: number };
 
 type TaskRun = {
   task: Task;
@@ -626,7 +628,7 @@ export class Runner {
             run,
             verdict.detail.reason,
             this.#entryClass(run.task.id, verdict.call_seq),
-            { call_seq: verdict.call_seq, tool_call: call.id, capability: call.capability, not_acted_on: rest, detail: verdict.detail },
+            { call_seq: verdict.call_seq, tool_call: call.id, capability: call.capability, not_acted_on: rest, detail: verdict.detail, sources: this.#parkSources(run, verdict.call_seq, verdict.detail) },
             grantOnly ? "grant" : null,
           );
         }
@@ -678,7 +680,7 @@ export class Runner {
 
     const verdict = this.#authorize(run, { capability: criterion.command.capability, arguments: args }, run.task.sensitivity_floor);
     if (verdict.outcome === "park") {
-      return this.#park(run, verdict.detail.reason, this.#entryClass(run.task.id, verdict.call_seq), { call_seq: verdict.call_seq, phase: "verification", detail: verdict.detail });
+      return this.#park(run, verdict.detail.reason, this.#entryClass(run.task.id, verdict.call_seq), { call_seq: verdict.call_seq, phase: "verification", detail: verdict.detail, sources: this.#parkSources(run, verdict.call_seq, verdict.detail) });
     }
     let result: "pass" | "fail" | "inconclusive" = "inconclusive";
     let resultSeq: number | null = null;
@@ -744,7 +746,7 @@ export class Runner {
     }
     const verdict = this.#authorize(run, { capability: PROTECTED_LISTING.capability, arguments: args }, run.task.sensitivity_floor);
     if (verdict.outcome === "park") {
-      return { ok: false, outcome: this.#park(run, verdict.detail.reason, this.#entryClass(run.task.id, verdict.call_seq), { call_seq: verdict.call_seq, phase: `protected_${phase}`, detail: verdict.detail }) };
+      return { ok: false, outcome: this.#park(run, verdict.detail.reason, this.#entryClass(run.task.id, verdict.call_seq), { call_seq: verdict.call_seq, phase: `protected_${phase}`, detail: verdict.detail, sources: this.#parkSources(run, verdict.call_seq, verdict.detail) }) };
     }
     if (verdict.outcome === "reject") return { ok: false, outcome: this.#fail(run, "protected_listing_rejected") };
     const performed = await this.#perform(run, verdict.authorization);
@@ -990,8 +992,8 @@ export class Runner {
 
   /** Adds an item to the task's context and journals it, so a rebuilt task sends exactly the same context (D-066). */
   #pushContext(run: TaskRun, item: ContextItem, dataClass: DataClass): void {
-    run.context.push({ item, data_class: dataClass });
-    this.#append(run.task.id, "note", join([dataClass, this.#runnerClass(run)]), { type: "context", item, data_class: dataClass });
+    const seq = this.#append(run.task.id, "note", join([dataClass, this.#runnerClass(run)]), { type: "context", item, data_class: dataClass });
+    run.context.push({ item, data_class: dataClass, seq });
   }
 
   /** The park entry the task is parked on, with the call it stopped at. */
@@ -1009,6 +1011,42 @@ export class Runner {
       capability: payload.capability ?? null,
       outside: [...new Set((payload.detail?.grants ?? []).flatMap((item) => item.outside.map((violation) => violation.path)))],
     };
+  }
+
+  /**
+   * §11.1 (v0.6 A3, v0.6.1 V6-8): for every value that caused a boundary park, its provenance class, its integrity, and
+   * where it came from (D-110). A `bound` value names the entry it was bound to; a `constant` names the admission entry
+   * and its slot; a `synthesized` value cannot be traced without comparing contents (invariant 7), so it lists the
+   * untrusted entries in the model's context since the last operator input as possible sources.
+   */
+  #parkSources(run: TaskRun, callSeq: number, detail: ParkDetail): Record<string, unknown>[] {
+    const call = CallRecord.parse(this.#payloadOf(this.#entryAt(run.task.id, callSeq).payload_ref));
+    const causing = causingArguments(detail, call.arguments);
+    const admissionSeq = readTrajectory(this.#journal.root, run.task.id)[0]?.seq ?? null;
+    const lastOperator = run.context.findLastIndex((entry) => entry.data_class.integrity === "operator");
+    const possible = run.context
+      .slice(lastOperator + 1)
+      // Content the model read, not its own turns: those are what it composed, including the value being traced.
+      .filter((entry) => entry.data_class.integrity === "untrusted" && entry.item.role !== "assistant")
+      .map((entry) => ({ entry: sourceSeqOf(entry), context_entry: entry.seq, role: entry.item.role }));
+    return causing.map((argument) => {
+      const record = call.arguments.find((item) => item.argument === argument);
+      const unresolved = call.unresolved.find((item) => item.argument === argument);
+      if (record === undefined) {
+        // No established value: an unresolved reference (judged untrusted, D-048) or a value with no provenance (D-054).
+        return { argument, class: unresolved?.class ?? "none", integrity: "untrusted", source: { kind: unresolved === undefined ? "no_provenance" : "unresolved" } };
+      }
+      const base = { argument, class: record.class, integrity: record.integrity };
+      if (record.origin.class === "bound") return { ...base, source: { kind: "entry", entry: record.origin.bound_to, binding_entry: record.origin.binding_entry } };
+      if (record.origin.class === "constant") return { ...base, source: { kind: "admission", entry: admissionSeq, slot: record.origin.slot } };
+      return { ...base, source: { kind: "possible_sources", since_operator_input: lastOperator < 0 ? null : (run.context[lastOperator]?.seq ?? null), entries: possible } };
+    });
+  }
+
+  #entryAt(taskId: string, seq: number): TrajectoryEntry {
+    const entry = readTrajectory(this.#journal.root, taskId).find((candidate) => candidate.seq === seq);
+    if (entry === undefined) throw new RunnerError(`task ${taskId} has no entry ${String(seq)}`);
+    return entry;
   }
 
   /** The parked out-of-scope paths no usable grant among `grants` covers for the parked capability (§8.2, D-109). */
@@ -1092,7 +1130,7 @@ export class Runner {
         for (const grant of body.removed_grants ?? []) if (grants.includes(grant)) grants.splice(grants.indexOf(grant), 1);
       } else if (body.type === "state" && body.to !== undefined) state = TaskStateSchema.parse(body.to);
       else if (body.type === "sensitivity_floor" && body.to !== undefined) floor = SensitivitySchema.parse(body.to);
-      else if (body.type === "context" && body.item !== undefined && body.data_class !== undefined) run.context.push({ item: body.item, data_class: body.data_class });
+      else if (body.type === "context" && body.item !== undefined && body.data_class !== undefined) run.context.push({ item: body.item, data_class: body.data_class, seq: entry.seq });
     }
     run.task = TaskSchema.parse({ ...record.task, state, runtime_substate: state === "running" ? "active" : null, sensitivity_floor: floor, grants });
     this.#runs.set(id, run);
@@ -1242,4 +1280,55 @@ export function hideValues<T>(message: T, values: readonly string[]): T {
 
 function rejection(toolCall: string, callSeq: number, detail: RejectDetail): Record<string, unknown> {
   return { tool_call: toolCall, call_seq: callSeq, outcome: "rejected", ...detail };
+}
+
+/** What `#parkSources` reads from a `capability_call` entry the boundary wrote. Unknown fields are ignored. */
+const CallRecord = z.object({
+  arguments: z.array(
+    z.object({
+      argument: z.string(),
+      class: z.string(),
+      integrity: z.string(),
+      sensitivity: z.string(),
+      origin: z.discriminatedUnion("class", [
+        z.object({ class: z.literal("bound"), bound_to: z.number(), binding_entry: z.number() }),
+        z.object({ class: z.literal("constant"), slot: z.string() }),
+        z.object({ class: z.literal("synthesized") }),
+      ]),
+    }),
+  ),
+  unresolved: z.array(z.object({ argument: z.string(), class: z.string() })),
+});
+
+/**
+ * The arguments that caused a boundary park (§11.1, D-110): the values below a floor; the out-of-scope values; the
+ * values above the ceiling that was exceeded (every argument when none is above it, since the composing context then
+ * raised the class). Parks that no value caused (`awaiting_grant`, `adapter_quarantined`) name none.
+ */
+function causingArguments(detail: ParkDetail, args: readonly { readonly argument: string; readonly sensitivity: string }[]): string[] {
+  const unique = (items: readonly string[]): string[] => [...new Set(items)];
+  switch (detail.reason) {
+    case "integrity_floor":
+      return unique([...detail.violations.map((item) => item.argument), ...detail.grants.flatMap((item) => item.violations.map((violation) => violation.argument))]);
+    case "scope_violation":
+      return unique(detail.grants.flatMap((item) => item.outside.map((violation) => violation.argument)));
+    case "sensitivity_ceiling": {
+      const ceilings = compareSensitivity(detail.aggregate, detail.ceiling) > 0 ? [detail.ceiling] : detail.grants.map((item) => item.max_sensitivity);
+      const lowest = ceilings.reduce<Sensitivity | null>((low, item) => (low === null || compareSensitivity(item, low) < 0 ? item : low), null);
+      const above = args.filter((item) => lowest !== null && compareSensitivity(SensitivitySchema.parse(item.sensitivity), lowest) > 0).map((item) => item.argument);
+      return unique(above.length > 0 ? above : args.map((item) => item.argument));
+    }
+    default:
+      return [];
+  }
+}
+
+/** The entry a context item's content came from: the result or turn it carries, else the context note itself. */
+function sourceSeqOf(entry: Contextual): number {
+  const content = entry.item.content;
+  if (typeof content === "object" && content !== null) {
+    const record = content as Record<string, unknown>;
+    for (const key of ["result_seq", "turn_seq"]) if (typeof record[key] === "number") return record[key];
+  }
+  return entry.seq;
 }
