@@ -1195,3 +1195,22 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   A signed grant is honoured after a restart: `packages/runner/test/resume.test.ts`, whose stores are rebuilt with the same anchor.
 - Not yet built (rest of Increment 2): loading the trust anchor from a file the runner cannot write; `juno grant sign` and `juno grant verify`; the anchored journal head; refusing selectors that name JUNO's own storage.
 - Reason: §3.2 ("`signature` … Mandatory (v0.6, C1). Operator signature over every other field"; "The boundary verifies the signature at lookup; a grant with a missing or invalid signature does not exist").
+
+## D-116 — C1 (part): the trust anchor is loaded only from a file the runner cannot write (Slice 1.5 Increment 2)
+- Date: 2026-11-03
+- Status: Accepted (implementation record of §3.2 v0.6 C1 and the plan's Increment 2 item 2)
+- Applies to: Slice 1.5 onward
+- Decision:
+  - `loadTrustAnchor(path)` (`packages/runner/src/trust.ts`) refuses an anchor when this process can write the file, or the directory holding it (which would let it replace the file). It also refuses an anchor it cannot read, or one that is not an Ed25519 public key in PEM.
+  - The test is the operating system's own access check for the running user (`access(2)`, `W_OK`). So a runner running as root is always refused, which is correct: root can write anything.
+  - The grant store takes the loaded anchor (D-115).
+  - Wiring it into the runner's start-up configuration comes with the operator's real key (the Windows steps); the runner's `main.ts` is still the Increment 2 (Slice 1) start-up stub and holds no grants.
+- Tests:
+  - `packages/runner/test/trust.test.ts`: an anchor the test user can write is refused, and so is a missing one.
+  - `test/containers/trust.test.ts`: in the runner image, as uid 1000 under the runner service's own seal:
+    - a root-owned, read-only anchor in a root-owned directory loads as an Ed25519 key;
+    - an anchor file the runner owns is refused;
+    - so is a read-only file in a directory the runner owns.
+
+    The cases are laid out as root in a throwaway container from the same image. CI's host user is not root, so the host never changes owners itself.
+- Reason: §3.2 ("The operator's signing key lives outside every container and outside any state the runner can write"); the plan's Increment 2 ("the runner refuses to start if it can write the anchor file or its directory").
