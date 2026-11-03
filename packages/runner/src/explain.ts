@@ -53,7 +53,7 @@ function describe(entry: TrajectoryEntry, body: Record<string, unknown>): string
       return `${head} result of call #${show(body["call_seq"])} from ${entry.actor}: exit ${show(body["exit_code"] ?? body["error"])}, output ${show(body["stdout"])}`;
     case "park": {
       const detail = body["detail"] === undefined ? "" : `; detail ${show(body["detail"])}`;
-      return `${head} PARKED ${show(body["reason"])} (${body["overridable"] === false ? "not overridable" : "overridable"})${body["call_seq"] === undefined ? "" : ` at call #${show(body["call_seq"])}`}${detail}`;
+      return `${head} PARKED ${show(body["reason"])} (${body["overridable"] === false ? (body["remedy"] === "grant" ? "not overridable; remedy: a grant covering the value" : "not overridable") : "overridable"})${body["call_seq"] === undefined ? "" : ` at call #${show(body["call_seq"])}`}${detail}`;
     }
     case "resume":
       return `${head} RESUMED from park #${show(body["resumed_park_seq"])} (${show(body["parked_reason"])}); grants added ${show(body["added_grants"])}, removed ${show(body["removed_grants"] ?? [])}; grant status ${show(body["grants"])}`;

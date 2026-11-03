@@ -18,6 +18,7 @@ import {
   maxSensitivity,
   minIntegrity,
   parseAtBoundary,
+  pathWithin,
   raiseSensitivityFloor,
 } from "../../contracts/src/index.js";
 import {
@@ -147,7 +148,30 @@ const Replayed = z.object({
   removed_grants: z.array(z.string()).optional(),
 });
 
-const ParkRecord = z.object({ reason: z.string(), tool_call: z.string().optional() }).transform((park) => ({ ...park, reason: park.reason as ParkReason }));
+const ParkRecord = z
+  .object({
+    reason: z.string(),
+    tool_call: z.string().optional(),
+    overridable: z.boolean().optional(),
+    remedy: z.string().optional(),
+    capability: z.string().optional(),
+    detail: z.object({ grants: z.array(z.object({ outside: z.array(z.object({ path: z.string() })) })).optional() }).optional(),
+  })
+  .transform((park) => ({ ...park, reason: park.reason as ParkReason }));
+
+/** The park as resume reads it (§6.3, §8.2). */
+type LastPark = {
+  readonly seq: number;
+  readonly reason: ParkReason;
+  readonly tool_call: string | null;
+  /** As recorded; `true` for a journal written before v0.6 that did not record it and whose reason is overridable. */
+  readonly overridable: boolean;
+  /** §8.2 (A2): `grant` when the park is cleared only by a grant covering the out-of-scope values, never by a plain resume. */
+  readonly remedy: string | null;
+  readonly capability: string | null;
+  /** The out-of-scope paths of a `scope_violation`, over every candidate grant. */
+  readonly outside: readonly string[];
+};
 
 const AdmissionRecord = z.object({
   type: z.literal("admission"),
@@ -423,7 +447,7 @@ export class Runner {
     // TTL first (§6.4): an expired task fails whatever it is parked on, a non-overridable park included.
     if (this.#ttlExpired(run)) return this.#fail(run, "ttl_expired");
     const park = this.#lastPark(run);
-    if (park !== null && NON_OVERRIDABLE.has(park.reason)) {
+    if (park !== null && !park.overridable && park.remedy !== "grant") {
       throw new RunnerError(`task ${id} is parked ${park.reason}, which is not overridable (§8.3); it is never resumed. Remedy the cause and start a new task`);
     }
 
@@ -441,6 +465,16 @@ export class Runner {
     const strays = removed.filter((grantId) => !run.task.grants.includes(grantId) || added.includes(grantId));
     if (strays.length > 0) throw new RunnerError(`grants to remove must be on the task and not also added: ${strays.join(", ")}`);
     const grants = [...run.task.grants, ...added.filter((grantId) => !run.task.grants.includes(grantId))].filter((grantId) => !removed.includes(grantId));
+    if (park !== null && !park.overridable && park.remedy === "grant") {
+      // §8.2 (A2): no plain resume. The task must now hold a usable grant for the capability whose scope covers every
+      // out-of-scope path the park recorded (D-109).
+      const uncovered = this.#uncoveredByGrants(run, grants, park);
+      if (uncovered.length > 0) {
+        throw new RunnerError(
+          `task ${id} is parked scope_violation on an untrusted value, which is not overridden (§8.2): issue or widen a grant covering ${uncovered.join(", ")} and add it on resume`,
+        );
+      }
+    }
     run.task = TaskSchema.parse({ ...run.task, grants });
 
     const now = this.#clock();
@@ -586,12 +620,15 @@ export class Runner {
 
         const verdict = this.#authorize(run, toProposal(call), turnClass.sensitivity);
         if (verdict.outcome === "park") {
-          return this.#park(run, verdict.detail.reason, this.#entryClass(run.task.id, verdict.call_seq), {
-            call_seq: verdict.call_seq,
-            tool_call: call.id,
-            not_acted_on: rest,
-            detail: verdict.detail,
-          });
+          // §8.2 (A2): a scope violation caused by an untrusted value is cleared only by a grant, never by a plain resume.
+          const grantOnly = verdict.detail.reason === "scope_violation" && verdict.detail.untrusted.length > 0;
+          return this.#park(
+            run,
+            verdict.detail.reason,
+            this.#entryClass(run.task.id, verdict.call_seq),
+            { call_seq: verdict.call_seq, tool_call: call.id, capability: call.capability, not_acted_on: rest, detail: verdict.detail },
+            grantOnly ? "grant" : null,
+          );
         }
         if (verdict.outcome === "reject") {
           // The rejection's text can name an instruction field's allowed values (for example a registry message listing
@@ -830,10 +867,13 @@ export class Runner {
     return this.#park(run, "budget_exceeded", this.#runnerClass(run), { axes, spent: this.#spentNow(run), budget: run.task.budget, ...extra });
   }
 
-  #park(run: TaskRun, reason: ParkReason, dataClass: DataClass, detail: Record<string, unknown>): RunOutcome {
+  #park(run: TaskRun, reason: ParkReason, dataClass: DataClass, detail: Record<string, unknown>, remedy: "grant" | null = null): RunOutcome {
     this.#stopClock(run);
     const entryClass = join([dataClass, this.#runnerClass(run)]);
-    this.#append(run.task.id, "park", entryClass, { reason, overridable: !NON_OVERRIDABLE.has(reason), from: run.task.state, ...detail, spent: this.#spentNow(run) });
+    // §8.2 (A2): a park whose only remedy is a grant is not overridden; §8.3: some reasons never are.
+    const overridable = !NON_OVERRIDABLE.has(reason) && remedy === null;
+    const rules = remedy === null ? { overridable } : { overridable, remedy };
+    this.#append(run.task.id, "park", entryClass, { reason, ...rules, from: run.task.state, ...detail, spent: this.#spentNow(run) });
     run.task = TaskSchema.parse({ ...run.task, state: "parked", runtime_substate: null });
     // §2.7.1: the rejection count resets when a call parks (and on any park: the task stops either way).
     run.rejections = [];
@@ -955,11 +995,27 @@ export class Runner {
   }
 
   /** The park entry the task is parked on, with the call it stopped at. */
-  #lastPark(run: TaskRun): { seq: number; reason: ParkReason; tool_call: string | null } | null {
+  #lastPark(run: TaskRun): LastPark | null {
     const entry = readTrajectory(this.#journal.root, run.task.id).findLast((candidate) => candidate.kind === "park");
     if (entry === undefined) return null;
     const payload = ParkRecord.parse(this.#payloadOf(entry.payload_ref));
-    return { seq: entry.seq, reason: payload.reason, tool_call: payload.tool_call ?? null };
+    return {
+      seq: entry.seq,
+      reason: payload.reason,
+      tool_call: payload.tool_call ?? null,
+      // Fail-closed: a park recorded as not overridable stays so, whatever its reason (§8.2, §8.3).
+      overridable: payload.overridable !== false && !NON_OVERRIDABLE.has(payload.reason),
+      remedy: payload.remedy ?? null,
+      capability: payload.capability ?? null,
+      outside: [...new Set((payload.detail?.grants ?? []).flatMap((item) => item.outside.map((violation) => violation.path)))],
+    };
+  }
+
+  /** The parked out-of-scope paths no usable grant among `grants` covers for the parked capability (§8.2, D-109). */
+  #uncoveredByGrants(run: TaskRun, grants: readonly string[], park: LastPark): string[] {
+    if (park.capability === null || park.outside.length === 0) return ["the parked values (the park does not name them)"];
+    const covering = this.#grants.coverage({ principal: run.task.principal, grants }, park.capability, this.#clock()).covering;
+    return park.outside.filter((path) => !covering.some((grant) => grant.resource_scope.some((selector) => selector.kind === "path" && pathWithin(path, selector.prefix))));
   }
 
   #payloadOf(ref: string): unknown {

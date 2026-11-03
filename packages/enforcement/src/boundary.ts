@@ -110,7 +110,16 @@ export type ParkDetail =
       readonly grants: readonly GrantFloorViolations[];
     }
   | { readonly reason: "awaiting_grant"; readonly refused: readonly GrantRefusal[] }
-  | { readonly reason: "scope_violation"; readonly grants: readonly { readonly grant: string; readonly outside: readonly ScopeViolation[] }[] }
+  | {
+      readonly reason: "scope_violation";
+      readonly grants: readonly { readonly grant: string; readonly outside: readonly ScopeViolation[] }[];
+      /**
+       * §8.2 (v0.6, A2): the out-of-scope arguments whose value is `untrusted` (or has no established integrity, §1.5).
+       * For a relative argv operand the call's `cwd` is part of the value, so the lower of the two counts (D-109). When
+       * any is listed, the park is not overridden: the remedy is a grant.
+       */
+      readonly untrusted: readonly string[];
+    }
   | {
       readonly reason: "sensitivity_ceiling";
       readonly aggregate: Sensitivity;
@@ -440,6 +449,21 @@ function judgeUnparsed(
   return { values: judgedValues, violations };
 }
 
+/**
+ * §8.2 (A2): the integrity of what put an out-of-scope value where it is (D-109). A value with no established integrity
+ * is `untrusted` (§1.5). An argv operand is read against the call's `cwd` (§2.7.1 D4), so a relative one takes the lower
+ * of its own integrity and `cwd`'s.
+ */
+function causingIntegrity(entry: RegistryEntry, call: CapabilityCall, argument: string, integrityOf: ReadonlyMap<string, Integrity>): Integrity {
+  const own = integrityOf.get(argument) ?? "untrusted";
+  const prefix = `${entry.argv_field}[`;
+  if (!argument.startsWith(prefix)) return own;
+  const element = (call[entry.argv_field] as readonly unknown[])[Number(argument.slice(prefix.length, -1))];
+  if (typeof element === "string" && element.startsWith("/")) return own;
+  const cwd = integrityOf.get(entry.cwd_field) ?? "untrusted";
+  return compareIntegrity(cwd, own) < 0 ? cwd : own;
+}
+
 /** §2.3.1 rule 6 (A5): the first undeclared flag of a parsed call whose program's surface is code-free everywhere, or `null`. */
 function undeclaredFlagOf(entry: RegistryEntry, call: CapabilityCall): number | null {
   const program = String(call[entry.program_field]);
@@ -573,7 +597,9 @@ export class EnforcementBoundary {
     const scoped = meetFloors.map((grant) => ({ grant, outside: scopeViolations(entry, parsedCall, grant) }));
     const inScope = scoped.filter((candidate) => candidate.outside.length === 0).map((candidate) => candidate.grant);
     if (inScope.length === 0) {
-      return park({ reason: "scope_violation", grants: scoped.map(({ grant, outside }) => ({ grant: grant.id, outside })) });
+      const outside = [...new Set(scoped.flatMap((candidate) => candidate.outside.map((violation) => violation.argument)))].sort();
+      const untrusted = outside.filter((argument) => causingIntegrity(entry, parsedCall, argument, integrityOf) === "untrusted");
+      return park({ reason: "scope_violation", grants: scoped.map(({ grant, outside: values }) => ({ grant: grant.id, outside: values })), untrusted });
     }
 
     // Step 5: the capability's ceiling, then each remaining candidate's lower ceiling.
