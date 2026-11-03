@@ -34,7 +34,11 @@ Status: **in progress.** Done: D3 (test names v0.6 §3.2), A4 (rejection limit, 
   - **Bounds:** at most 2,000 hashed files and 10,000 entries; beyond that the task fails (it never skips).
   - **Replaces D-067's listing comparison.**
   - **Test infrastructure:** the unit tests' stand-in adapter must emulate `ls` (escape style) and `sha256sum -z` over a host directory, or unit tests use a fixed pin fixture. The acceptance, container, resume and runner tests that read `protected_listing` notes change accordingly; record each in a D-number.
-- **C4 (after B2):** canonical scope; resolution runs in the workload with an operator-fixed resolver (for example `realpath -e`/`-m`, to be verified in the image), boundary-only. A not-yet-existing path resolves through its longest existing ancestor (§2.7.1 v0.6.1). Container tests.
+- **C4 design (2026-11-03, being built):** the boundary keeps a synchronous `authorize`. It gains a side-effect-free pre-pass, `scopePaths`, listing the raw path of every path-typed data value and argv operand (cwd + "/" + operand, `..` not collapsed). Step 4 uses the same function. The runner resolves those paths with a `PathResolver` and passes the canonical forms in the task context; a path missing from them is unresolvable, so it is outside scope (fail-closed).
+  - The production resolver runs an operator-fixed node script in the workload (the image's own node, not in the shell.run enum).
+  - The algorithm is the longest existing ancestor via `realpath`. A missing remainder holding `..` or an empty component is unresolvable, and so is a dangling symlink. A symlink loop or a permission error is unresolvable too.
+  - The unit tests use the same script against the stand-in's host `/work`.
+  - Container tests cover symlinks in the real workload.
 - **Gate record for the plan:** see "Merges recorded" (PR #30).
 
 ## Previous increment
