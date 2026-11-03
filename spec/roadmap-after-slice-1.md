@@ -16,7 +16,7 @@ JUNO's own agent loop is one way in. Two more ways in reuse the same enforcement
 | B — gateway | An MCP proxy: every tool call from any MCP client passes JUNO's grant checks and is journaled | No steer, no context ownership |
 | C — hook | Claude Code pre-tool-use / post-tool-use hooks call JUNO, which answers allow / deny / park and journals the result | No steer, no context ownership |
 
-The `steer_capability` table (§7.8) gains two rows, `gateway` and `hook`, both `none`. Acceptance: a Claude Code session is denied a write outside its grant, and the denial appears in the journal.
+The `steer_capability` table (§7.8) gains two rows, `gateway` and `hook`, both `none` — now in spec v0.6. **Acceptance and the rules for these modes are in spec v0.6 §4.3**, which supersedes the draft acceptance that stood here.
 
 **What this means for Slice 1:** keep enforcement and journaling callable from code paths other than the runner's turn loop. Don't weld them to it.
 
