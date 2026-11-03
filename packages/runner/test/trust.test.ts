@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { ResourceSelector } from "../../contracts/src/index.js";
 import { TrustAnchorError, loadTrustAnchor } from "../src/trust.js";
 
 /**
@@ -31,5 +32,18 @@ describe("§3.2 C1: the trust anchor must be read-only to the runner", () => {
   // proves D-116 fail-closed: a missing anchor is refused (its directory is writable here, which is refused first)
   it("refuses a missing anchor", () => {
     expect(() => loadTrustAnchor(join(dir, "missing.pub"))).toThrow(TrustAnchorError);
+  });
+});
+
+describe("§3.2: no selector may name JUNO's own storage (D-116)", () => {
+  // proves §3.2 "No selector may name journal storage": a grant selector can name only the capability namespace, so the
+  // journal, the checkpoint store, the trust anchor and the configuration, which all live outside it, can never be named
+  it.each([["/journal"], ["/var/lib/juno/journal"], ["/etc/juno/operator.pub"], ["/var/lib/juno/checkpoints"], ["/work/../journal"]])("rejects a grant selector naming %s", (prefix) => {
+    expect(ResourceSelector.safeParse({ kind: "path", prefix }).success).toBe(false);
+  });
+
+  // proves §3.2 / D-116: an anchor inside the capability namespace, where a grant could name it, is refused
+  it("refuses a trust anchor inside the capability namespace", () => {
+    expect(() => loadTrustAnchor("/work/operator.pub")).toThrow(/capability namespace/);
   });
 });

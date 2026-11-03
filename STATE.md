@@ -3,7 +3,7 @@
 ## Current increment
 **Slice 1.5 — Increment 2: signed grants and an anchored journal head (C1)** (`docs/plans/slice-1.5-build-plan.md`, Increment 2). Branch `claude/gallant-mccarthy-alppyu` (fast-forwarded to `main` 1432cc3). Spec v0.6.1. No objection open.
 
-Status: **in progress.** Done: grant signatures (D-115); the trust anchor (D-116). Local `make verify: GREEN` (785 unit, 61 container). Estimate: 2 sessions.
+Status: **in progress.** Done: grant signatures (D-115); the trust anchor (D-116); selectors cannot name JUNO storage (tests, D-116). Local `make verify: GREEN` (785 unit, 61 container). Estimate: 2 sessions.
 - **Order of work:**
   1. Grant signatures: Ed25519 over the canonical form of every other field, with `node:crypto` (no new package). Verified at lookup; a missing or invalid signature means the grant does not exist (`signature_invalid` recorded).
   2. The trust anchor: the operator's public key, in a location the runner cannot write; the runner refuses to start otherwise.

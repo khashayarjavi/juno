@@ -1,5 +1,6 @@
 import { accessSync, constants, readFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { WORK_NAMESPACE, pathsOverlap } from "../../contracts/src/index.js";
 import { type TrustAnchor, trustAnchorFromPem } from "../../enforcement/src/index.js";
 
 /**
@@ -27,6 +28,8 @@ function writable(path: string): boolean {
 
 /** Loads the trust anchor from `path`, refusing one this process could write or replace. */
 export function loadTrustAnchor(path: string): TrustAnchor {
+  // §3.2: no selector may name JUNO's own storage; every selector lies in the capability namespace, so the anchor never may.
+  if (pathsOverlap(path, WORK_NAMESPACE)) throw new TrustAnchorError(`the trust anchor ${path} lies in the capability namespace ${WORK_NAMESPACE}, which grants can name (§3.2)`);
   for (const target of [path, dirname(path)]) {
     if (writable(target)) {
       throw new TrustAnchorError(`the trust anchor ${path} is not protected: this process can write ${target}; it must be read-only to the runner (§3.2)`);
