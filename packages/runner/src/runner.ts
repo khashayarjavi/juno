@@ -36,7 +36,9 @@ import {
   type AdmissionResult,
   type AdmittedTask,
   CriterionStatement,
+  DEFAULT_REJECTION_LIMIT,
   RESERVED_ID_PREFIX,
+  RejectionLimit,
   type SourceRegistration,
   admit,
   PROTECTED_LISTING,
@@ -80,7 +82,7 @@ export const REGISTRY_RECORD = `${RESERVED_ID_PREFIX}registry`;
 export const RUNNER_RECORD = `${RESERVED_ID_PREFIX}runner`;
 
 /** Parks the boundary produces and the runner adds (§6.2). */
-export type ParkReason = ParkDetail["reason"] | "budget_exceeded" | "routing_unavailable";
+export type ParkReason = ParkDetail["reason"] | "budget_exceeded" | "routing_unavailable" | "rejection_limit";
 
 /** §8.3: a park is not overridable when the operator cannot observe the consequence of proceeding. */
 export const NON_OVERRIDABLE: ReadonlySet<ParkReason> = new Set<ParkReason>(["integrity_floor", "adapter_quarantined"]);
@@ -122,6 +124,12 @@ type TaskRun = {
   /** Every actor that took part in executing the task; none may verify it (§3.4.4, invariant 3). */
   readonly executingActors: Set<string>;
   turns: number;
+  /**
+   * The consecutive rejections since the count last reset (§2.7.1, A4): each a rejected call's `call_seq`, or the
+   * `turn_seq` of a turn the runner could not read, which counts as one rejection (D-102). Reset when a call proceeds,
+   * when the task parks, and on resume.
+   */
+  rejections: { readonly kind: "call" | "unreadable_turn"; readonly seq: number }[];
 };
 
 const QuarantineRecord = z.strictObject({ type: z.literal("quarantine"), capability: z.string(), adapter: z.string(), observation: z.string() });
@@ -152,6 +160,8 @@ const AdmissionRecord = z.object({
   provider_profile: ProviderProfile,
   sources: z.array(z.strictObject({ id: z.string(), selector: ResourceSelector, data_class: DataClassSchema })),
   warnings: z.array(z.string()),
+  // A journal written before v0.6 has no limit recorded; it gets the default (§2.7.1).
+  rejection_limit: RejectionLimit.default(DEFAULT_REJECTION_LIMIT),
 });
 
 const RunnerRecordEntry = z.discriminatedUnion("type", [
@@ -338,6 +348,7 @@ export class Runner {
       provider_profile: admission.provider,
       sources: admission.sources,
       warnings: admission.warnings,
+      rejection_limit: admission.rejection_limit,
     });
     this.#runs.set(task.id, {
       task,
@@ -350,6 +361,7 @@ export class Runner {
       context: [],
       executingActors: new Set([RUNNER_ACTOR, ENFORCEMENT_ACTOR]),
       turns: 0,
+      rejections: [],
     });
     result = { admitted: true, admission };
     return result;
@@ -461,6 +473,8 @@ export class Runner {
     }
     run.task = TaskSchema.parse({ ...run.task, state: "running", runtime_substate: "active" });
     run.runningSince = this.#clock().getTime();
+    // §2.7.1: the rejection count resets on resume.
+    run.rejections = [];
     if (park !== null && park.tool_call !== null) {
       this.#pushContext(run, { role: "tool", content: { tool_call: park.tool_call, outcome: "parked", reason: park.reason, park_seq: park.seq, resumed: true } }, this.#runnerClass(run));
     }
@@ -552,6 +566,9 @@ export class Runner {
       );
       if (!parsed.success) {
         this.#pushContext(run, { role: "user", content: { turn_seq: turnSeq, error: "the runner could not read that turn", detail: parsed.error.message } }, turnClass);
+        // A turn the runner cannot read counts as one rejection and never resets the count (§2.7.1, D-102).
+        run.rejections.push({ kind: "unreadable_turn", seq: turnSeq });
+        if (run.rejections.length >= run.admission.rejection_limit) return this.#rejectionPark(run, turnClass, { turn_seq: turnSeq, not_acted_on: [] });
         continue;
       }
       const response = parsed.data;
@@ -581,8 +598,14 @@ export class Runner {
           // the program enum); the model is shown it with those values hidden (D-075). The journal keeps the full detail.
           const shown = hideValues(rejection(call.id, verdict.call_seq, verdict.detail), this.#instructionValues(run));
           this.#pushContext(run, { role: "tool", content: shown }, this.#entryClass(run.task.id, verdict.call_seq));
+          run.rejections.push({ kind: "call", seq: verdict.call_seq });
+          if (run.rejections.length >= run.admission.rejection_limit) {
+            return this.#rejectionPark(run, this.#entryClass(run.task.id, verdict.call_seq), { call_seq: verdict.call_seq, tool_call: call.id, not_acted_on: rest });
+          }
           continue;
         }
+        // §2.7.1: the rejection count resets when a call proceeds.
+        run.rejections = [];
         const { seq, dataClass, payload } = await this.#perform(run, verdict.authorization);
         for (const actor of [verdict.authorization.adapter]) run.executingActors.add(actor);
         this.#pushContext(run, { role: "tool", content: { tool_call: call.id, call_seq: verdict.call_seq, result_seq: seq, ...payload } }, dataClass);
@@ -798,6 +821,11 @@ export class Runner {
     this.#append(run.task.id, "note", this.#runnerClass(run), { type: "sensitivity_floor", from, to, cause_seq: causeSeq });
   }
 
+  /** §2.7.1 (A4): the limit's worth of consecutive rejections parks `rejection_limit` (overridable, §6.2), naming each one. */
+  #rejectionPark(run: TaskRun, dataClass: DataClass, extra: Record<string, unknown>): RunOutcome {
+    return this.#park(run, "rejection_limit", dataClass, { limit: run.admission.rejection_limit, rejections: [...run.rejections], ...extra });
+  }
+
   #budgetPark(run: TaskRun, axes: readonly BudgetAxis[], extra: Record<string, unknown> = {}): RunOutcome {
     return this.#park(run, "budget_exceeded", this.#runnerClass(run), { axes, spent: this.#spentNow(run), budget: run.task.budget, ...extra });
   }
@@ -807,6 +835,8 @@ export class Runner {
     const entryClass = join([dataClass, this.#runnerClass(run)]);
     this.#append(run.task.id, "park", entryClass, { reason, overridable: !NON_OVERRIDABLE.has(reason), from: run.task.state, ...detail, spent: this.#spentNow(run) });
     run.task = TaskSchema.parse({ ...run.task, state: "parked", runtime_substate: null });
+    // §2.7.1: the rejection count resets when a call parks (and on any park: the task stops either way).
+    run.rejections = [];
     return this.#outcome(run, reason);
   }
 
@@ -968,6 +998,7 @@ export class Runner {
       provider: record.provider_profile,
       sources: record.sources,
       warnings: record.warnings,
+      rejection_limit: record.rejection_limit,
     };
     const run: TaskRun = {
       task: record.task,
@@ -980,6 +1011,7 @@ export class Runner {
       context: [],
       executingActors: new Set([RUNNER_ACTOR, ENFORCEMENT_ACTOR]),
       turns: 0,
+      rejections: [],
     };
     let state: TaskState = "admitted";
     let floor = record.task.sensitivity_floor;

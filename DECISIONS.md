@@ -1014,3 +1014,14 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
 - Applies to: PR #30 only
 - Decision: one fourth review round. If it says MERGE and CI `verify` on the exact head has passed, the agent merges PR #30 pinned to that head and starts Increment 1. If it says DO NOT MERGE, the agent stops and reports.
 - Reason: the operator's instruction.
+
+## D-107 — How the rejection limit is recorded and counted (Slice 1.5 Increment 1, A4)
+- Date: 2026-11-03
+- Status: Accepted (implementation record; each point follows from §2.7.1 v0.6.1 and D-102, or is the more restrictive reading)
+- Applies to: Slice 1.5 Increment 1 onward
+- Decision:
+  - **Where the limit lives.** The admission request takes `rejection_limit` (an integer 1 to 10, default 3; anything else fails admission's schema check). The journalled admission note records it, so a rebuilt task uses the same limit. A journal written before v0.6 has no such field and gets the default, 3. The `Task` object (§3.1) is unchanged.
+  - **What counts.** Each rejected call the executing model proposed, one by one, including several in one turn; and each turn the runner cannot read, as one (D-102). A call the verifier makes during verification is not the model's and never counts.
+  - **What resets.** A call that proceeds; any park (the task stops, and §2.7.1 says a park resets); resume. An unreadable turn never resets.
+  - **The park.** `rejection_limit`, overridable (§6.2). The park entry names the limit and each counted rejection in order (`{kind: "call" | "unreadable_turn", seq}`); for a rejected call it also names the call and lists the turn's calls not acted on, as other parks do.
+- Reason: §2.7.1, §6.2, D-102. Proven by `packages/runner/test/rejection-limit.test.ts`.

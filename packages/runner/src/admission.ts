@@ -64,6 +64,10 @@ export const CriterionStatement = z.strictObject({
 });
 export type CriterionStatement = z.infer<typeof CriterionStatement>;
 
+/** §2.7.1 (A4): the rejection limit's default, and the range admission accepts (v0.6.1). */
+export const DEFAULT_REJECTION_LIMIT = 3;
+export const RejectionLimit = z.int().min(1).max(10);
+
 export const AdmissionRequest = z.strictObject({
   id: Ref,
   principal: Ref,
@@ -86,6 +90,8 @@ export const AdmissionRequest = z.strictObject({
   requires_live_steer: z.boolean().optional(),
   /** Literals the operator fixes now, each a `constant` slot of `operator` integrity (§2.6). */
   constants: z.record(SlotName, z.strictObject({ value: Scalar, sensitivity: Sensitivity.optional() })).default({}),
+  /** §2.7.1 (A4, v0.6.1): consecutive rejections that park `rejection_limit`; set per task between 1 and 10, default 3. */
+  rejection_limit: RejectionLimit.default(DEFAULT_REJECTION_LIMIT),
 });
 export type AdmissionRequest = z.input<typeof AdmissionRequest>;
 
@@ -108,6 +114,8 @@ export type AdmittedTask = {
   /** The registered sources the task reads, with their declared classes. */
   readonly sources: readonly { readonly id: string; readonly selector: ResourceSelector; readonly data_class: DataClass }[];
   readonly warnings: readonly string[];
+  /** §2.7.1 (A4): consecutive rejections that park `rejection_limit`. */
+  readonly rejection_limit: number;
 };
 
 export type AdmissionResult =
@@ -351,5 +359,5 @@ export function admit(input: unknown, env: AdmissionEnvironment): AdmissionResul
   if (criterion !== null) {
     for (const { slot, value } of [...criterionSlots(criterion), ...protectedSlots(criterion)]) constants[slot] = { value, data_class: { sensitivity: floor, integrity: criterionIntegrity } };
   }
-  return { admitted: true, admission: { task, constants, criterion, provider, sources, warnings } };
+  return { admitted: true, admission: { task, constants, criterion, provider, sources, warnings, rejection_limit: request.rejection_limit } };
 }
