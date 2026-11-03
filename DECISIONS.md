@@ -869,3 +869,69 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   - **The plan PR is not merged while either holds:** (a) an objection to the spec is open in STATE.md (CLAUDE.md §7 step 6a requires none; the operator's instruction requires the plan's ambiguities to be listed there unresolved); (b) PR #27 is unmerged, since the plan cites v0.6 sections that `main` would not yet contain. The gate is run up to the merge (review, CI on the pinned head), the PR is marked ready, and the session stops.
   - **PR #26's STATE record** (the PR #25 merge, Slice 1.3 complete) is merged into this branch so STATE.md starts from it. PR #26 then carries nothing this PR lacks; closing it is the operator's call.
 - Reason: CLAUDE.md §1 forbids reconstructing the spec; §7 step 6a and the operator's "do not resolve them" together leave no merge path while objections are open.
+
+## D-091 — V6-1 to V6-10 are resolved by spec v0.6.1 (operator ruling; Slice 1.5)
+- Date: 2026-11-03
+- Status: Accepted (operator ruling). Takes effect in the build once v0.6.1 is on `main` (D-096).
+- Applies to: Slice 1.5
+- Decision: the ten objections the plan raised against v0.6 are resolved by the sections of spec v0.6.1 marked "v0.6.1" (branch `spec-v0.6`, commit 4267e04c5fd09fe1f2db6a45295d15e6622a1fbc; §0.0 lists them). They are removed from STATE.md's open objections:
+  - V6-1 → §3.4.4 "What is pinned": the criterion declares outputs (never pinned) and verification inputs (pinned by hash, or as absent); a file the method reads in neither set is an input.
+  - V6-2 → §2.7.1 "Paths that do not exist yet": resolved through the longest existing ancestor; mere non-existence is never "cannot be resolved".
+  - V6-3 → §4.3 "Park in B and C": a park always denies, never defers.
+  - V6-4 → §3.4.1 "Who signs, and what counts as off-host": a separate journal key held by the runner signs anchors; the protection is the off-host append-only copy; in tests, an append-only container stands in.
+  - V6-5 → §2.3.2 "Reading a shell command string": a fixed word grammar; the program maps to the enum only through an operator-authored name map; `PATH` is never consulted.
+  - V6-6 → §4.3 "A session is a Task": tool calls (as turns) and wall-clock are enforced; tokens and currency are `unmetered`, accepted by the operator at admission.
+  - V6-7 → §4.3 "Sensitivity in B and C": a read above the session provider's declared clearance parks before it runs; earlier permitted reads do not affect later calls.
+  - V6-8 → §11.1: for a synthesized value, the park lists the untrusted entries in context since the last operator input as "possible sources".
+  - V6-9 → §2.7.1 "The count resets": on a proceeding call, a park, and resume; settable 1 to 10 at admission, default 3; per session in B and C. V6-9's other question (does a turn the runner cannot read count?) follows from §2.7.1's text: a rejection is "an unresolved reference in a `data` field, a malformed call, an unregistered capability, an undeclared flag", and an unreadable turn is not a call, so it is not a rejection: it neither counts nor resets the count. It is already bounded by the turn budget (each retry costs a turn, D-087).
+  - V6-10 → §2.3.2 "Effect per program": `side_effect` is declared per enum member; registration review rejects a member declared lower than what it can do.
+- Reason: the operator's instruction of 2026-11-03, checked line by line against 4267e04.
+
+## D-092 — Real-program tests run only in cloud sessions, never vendored (operator ruling; Slice 1.5)
+- Date: 2026-11-03
+- Status: Accepted (operator ruling; the plan's operator decision 1, option (b))
+- Applies to: Slice 1.5, Increments 4 to 6
+- Decision: tests that run the real Claude Code CLI run only in cloud sessions, which already have it installed, through a separate make target (`make mediated-e2e`, run the way `make smoke` is). `@anthropic-ai/claude-code` is never added to the lockfile or copied into the repository or an image. CI's `make verify` runs the protocol-level tests only. Each PR whose done-when includes a real-binary run records that run (CLI version, date, result) in its description and in STATE.md.
+- Reason: the operator's instruction. It also keeps the open-source core free of a package whose licence is "SEE LICENSE IN README.md".
+
+## D-093 — The operator signing key lives in the Windows OS keychain; tests use a generated key (operator ruling; Slice 1.5)
+- Date: 2026-11-03
+- Status: Accepted (operator ruling; the plan's operator decision 2)
+- Applies to: Slice 1.5, Increment 2 onward
+- Decision: the operator's grant-signing private key is held in the Windows OS keychain on the operator's machine (§3.2 allows "an OS keychain or a hardware key"). Tests generate a throwaway key per run in a temporary directory outside the work volume and the journal; no key, private or public, is committed. The exact Windows mechanism is chosen at the start of Increment 2 from its current documentation (rule 13) and recorded as a D-number.
+- Residual, stated plainly: a keychain entry the operator's Windows user can unlock can be used by any program running as that user. The plan's earlier recommendation (a hardware key) is superseded by this ruling.
+- Reason: the operator's instruction.
+
+## D-094 — Journal anchors go to a public GitHub repository, `juno-anchors` (operator ruling; conflicts with §3.4.1, see V61-1)
+- Date: 2026-11-03
+- Status: Recorded. **Not applied to the real destination** while V61-1 is open; tests are unaffected.
+- Applies to: Slice 1.5, Increment 2 onward
+- Decision: the real anchor destination is a GitHub repository `juno-anchors` owned by the operator, public. Tests use the append-only stand-in container §3.4.1 (v0.6.1) describes.
+- Conflict: §3.4.1 (v0.6.1) says "for v1, an append-only **private** git repository whose push credential cannot force-push or delete". GitHub's plans page (read 2026-11-03, https://docs.github.com/en/get-started/learning-about-github/githubs-plans) lists "Protected branches" under GitHub Pro's "Advanced tools and insights in private repositories", so on GitHub Free a private repository cannot stop its push credential from force-pushing. The ruling and the spec cannot both hold on a Free account. CLAUDE.md §2 rules 1 and 2: the spec text governs until the operator changes it, so this is open objection V61-1, not an autopilot ruling.
+- Reason: the operator's instruction; the conflict found while recording it.
+
+## D-095 — C2 (secret detection) is deferred to Slice 2 (operator ruling)
+- Date: 2026-11-03
+- Status: Accepted (operator ruling; matches spec v0.6.1 §0.0, "C2 (secret detection) is deferred to Slice 2, where JUNO routes model calls again")
+- Applies to: Slice 1.5
+- Decision: C2 (§1.4) is not part of Slice 1.5 and is not scaffolded.
+- Reason: the operator's instruction.
+
+## D-096 — PR #27 was closed unmerged; v0.6.1 is not on `main`; STOP (autopilot record and ruling)
+- Date: 2026-11-03
+- Status: Accepted (autopilot ruling; CLAUDE.md §7 STOP "the only way forward is editing spec/")
+- Applies to: Slice 1.5
+- Finding: the operator's instruction says "Spec v0.6.1 is on main". It is not. On GitHub, PR #28 (the plan) was merged at 2026-11-03T15:57:33Z, and PR #27 (spec v0.6.1, head 4267e04) was **closed without merging** at 15:57:46Z. `main` (5ee1594) carries `spec/core-semantic-model.md` **v0.5.1**. `git merge-tree` shows PR #27 still merges into `main` without conflict.
+- Decision:
+  - **Where v0.6.1 is read from:** `spec/core-semantic-model.md` at 4267e04 (branch `spec-v0.6`), read in the sections marked "v0.6.1" and their surroundings. Nothing reconstructed (CLAUDE.md §1).
+  - **The plan update is a new PR** (PR #28 is merged and cannot carry new work). It is **not merged, and no increment starts, until v0.6.1 is on `main`**: the plan cites sections `main` would not contain (D-090 (b), unchanged), and CLAUDE.md §1 makes the file on `main` the specification.
+  - **The agent does not reopen or merge PR #27.** That would change `spec/` on `main`, which CLAUDE.md §2 rule 6 and §7 NEVER forbid the agent. It is the operator's action.
+  - **The review is not run on this head.** The gate cannot complete while v0.6.1 is off `main` and V61-1 is open, and the review must be against the head that will merge; it runs then.
+- Reason: CLAUDE.md §1, §2 rule 6, §7 (NEVER edit spec/; STOP when the only way forward is editing spec/).
+
+## D-097 — Planned reading of §3.4.4 "a file the method reads that is in neither set" (autopilot ruling; Slice 1.5 Increment 1)
+- Date: 2026-11-03
+- Status: Accepted (autopilot ruling: the more restrictive reading, CLAUDE.md §7 step 3; §3.4.4 is outside §2, §3.2 and §4.3)
+- Applies to: Slice 1.5 Increment 1 (B2)
+- Decision: JUNO cannot observe which files a verification command reads. So every file in the criterion's verification scope that is not a declared output is treated as a verification input: existing files are pinned by content hash, and the scope's listing is pinned, so a file the task creates that is not a declared output makes `verified` impossible ("an input that does not exist at admission is pinned as absent", §3.4.4). This catches "the agent added a test file that passes".
+- Reason: §3.4.4 (v0.6.1): "A file the method reads that is in neither set is treated as an input"; the restrictive reading fails closed (D8).

@@ -1,8 +1,8 @@
 # JUNO — Slice 1.5 Build Plan
 
-**Implements:** Core Semantic Model **v0.6** — §0.0's changes A1–A5, B1–B2, C1, C4, D1–D6, E1–E3, and §4.3's Slice 1.5 acceptance.
-**Read from:** `spec/core-semantic-model.md` at the head of the operator's PR #27 (`spec-v0.6`, commit `51a395a`), read in full on 2026-11-03 (D-090).
-**Status:** Part 0 — for the director's review. **No increment starts until the director has reviewed this plan** (D-089).
+**Implements:** Core Semantic Model **v0.6.1** — §0.0's changes A1–A5, B1–B2, C1, C4, D1–D6, E1–E3, the ten v0.6.1 clarifications, and §4.3's Slice 1.5 acceptance. C2 is deferred to Slice 2 (D-095).
+**Read from:** `spec/core-semantic-model.md` at commit `4267e04` (branch `spec-v0.6`, the operator's PR #27), the v0.6 text read in full on 2026-11-03 (D-090) and the v0.6.1 sections re-read on 2026-11-03 (D-096).
+**Status:** Part 0, revised to the operator's rulings of 2026-11-03 (D-091 to D-095). **No increment starts until v0.6.1 is on `main`** (D-096): PR #27 was closed without merging, so `main` still carries v0.5.1.
 **Built by:** the coding agent in autopilot (CLAUDE.md §7), one increment per pull request, each through the §7 gate.
 
 ---
@@ -24,6 +24,8 @@ CLAUDE.md rule 13: nothing below is taken from memory. Each source was fetched o
 | Source | URL | Version / date | Hash |
 |---|---|---|---|
 | Spec v0.6 | PR #27, `spec/core-semantic-model.md` | v0.6, approved 2026-11-03 | commit `51a395a` |
+| Spec v0.6.1 | PR #27 (closed unmerged), `spec/core-semantic-model.md` | v0.6.1, 2026-11-03 | commit `4267e04` |
+| GitHub plans | https://docs.github.com/en/get-started/learning-about-github/githubs-plans | read 2026-11-03 | protected branches in private repositories are a GitHub Pro feature (V61-1) |
 | Claude Code hooks reference | https://code.claude.com/docs/en/hooks.md | page undated; mentions features up to v2.1.304 | `524960c086d43f6e` |
 | Claude Code headless (`-p`) | https://code.claude.com/docs/en/headless.md | undated | `208eeb28afce5a43` |
 | Claude Code MCP | https://code.claude.com/docs/en/mcp.md | undated | `4b3c2237229b4546` |
@@ -47,7 +49,7 @@ CLAUDE.md rule 13: nothing below is taken from memory. Each source was fetched o
 2. **Fail-closed is opt-in:** `"onFailure": "block"` on a `command` or `http` hook, **Claude Code v2.1.295 or later**. Exit code 2 always blocks.
 3. **Exec form:** a `command` hook with `args` is spawned directly, "with no shell involved". JUNO's hook uses exec form only (CLAUDE.md rule 8).
 4. **PreToolUse decisions:** `allow`, `deny`, `ask`, `defer`; precedence `deny` > `defer` > `ask` > `allow`. `permissionDecisionReason` on `deny` is shown to the model. "Deny and ask rules are still evaluated regardless of what the hook returns." Exit 0 with no output is "no decision": "staying silent doesn't approve it".
-5. **`defer` is narrow.** It is honoured "only in non-interactive mode with the `-p` flag. In interactive sessions it logs a warning and ignores the hook result." And: "`defer` only works when Claude makes a single tool call in the turn. If Claude makes several tool calls at once, `defer` is ignored with a warning and **the tool proceeds through the normal permission flow**." The hook's input says neither whether the session is interactive nor how many calls the turn holds. See objection V6-3.
+5. **`defer` is narrow.** It is honoured "only in non-interactive mode with the `-p` flag. In interactive sessions it logs a warning and ignores the hook result." And: "`defer` only works when Claude makes a single tool call in the turn. If Claude makes several tool calls at once, `defer` is ignored with a warning and **the tool proceeds through the normal permission flow**." The hook's input says neither whether the session is interactive nor how many calls the turn holds. **Ruled by §4.3 (v0.6.1, V6-3): in hook and gateway modes a park always denies; `defer` is never used.**
 6. **PostToolUse cannot block** ("the tool has already run"). It receives `tool_input` and `tool_response`; JUNO uses it only to journal the result.
 7. **Subagents fire the same hooks**, with `agent_id` and `agent_type` in the input.
 8. **Not mediated:** files the user `@`-mentions are inserted with no tool call and no PreToolUse ("including hooks matching `Read`"); `disableAllHooks` (including `--settings '{"disableAllHooks": true}'` on one run) turns hooks off; managed settings with `allowManagedHooksOnly` can force hooks. These fall under §4.3's "not protected" row for mode C.
@@ -82,7 +84,9 @@ juno-hook  (tiny client, exits 2 on any          │ execFile(program, argv), st
 JUNO boundary service (enforcement, grants, journal writer, checkpoints)
 
 Outside every container, every grant scope and everything the boundary can write:
-  operator signing key (hardware key or OS keychain), and the public key JUNO trusts.
+  operator signing key (Windows OS keychain, D-093), and the public key JUNO trusts.
+Held by the runner, outside every mount and selector: the journal key, which signs anchors only (§3.4.1, v0.6.1).
+Off the host: the anchor destination (append-only; in tests, a separate append-only container, §3.4.1).
 ```
 
 - **One boundary, one journal.** Modes B and C call the same `packages/enforcement` boundary and `packages/journal` writer as mode A. Slice 1 kept them callable from outside the turn loop (roadmap note), so no fork is needed.
@@ -95,7 +99,7 @@ Outside every container, every grant scope and everything the boundary can write
 
 Six increments, dependency-ordered. Each is its own pull request through the CLAUDE.md §7 gate. **Do not start an increment until the previous one is merged.** Every test names the section it proves (CLAUDE.md rule 7). Estimates are in Pro-plan sessions and include the review rounds.
 
-The open objections (§6, and STATE.md "Open objections to the spec") each name the increment they block. An increment does not start while an objection that blocks it is open, unless the director has ruled.
+The ten objections the first draft raised (V6-1 to V6-10) are resolved by v0.6.1 (D-091; §6 below says where). One objection is open, V61-1 (§6): it blocks only the setup of the real anchor destination, not any increment's code or tests. An increment does not start while an objection that blocks it is open, unless the director has ruled.
 
 ---
 
@@ -107,29 +111,29 @@ The open objections (§6, and STATE.md "Open objections to the spec") each name 
 
 **Builds:**
 1. **Per-actor constants (B1).** Admission fixes each constant for a named actor: `executing` or `verifier`. The criterion's command, its arguments and its protected-path listing become verifier constants. A `constant` source resolves only in calls by the actor it was fixed for; naming a verifier constant from the executing model is an unresolved reference (a rejection, §2.7.1). The operator may fix the same value for both actors, explicitly, at admission.
-2. **Hash-pinned verification inputs (B2).** At admission the runner records a content hash of every verification input and every protected path (a directory is hashed as its listing plus each file's hash). At closure it recomputes them; any difference, or a hash that cannot be computed, makes `verified` impossible: the task fails with the changed paths recorded. This replaces D-067's listing comparison. Hashing runs in the workload with an operator-fixed, verifier-only program (for example `sha256sum`, a non-interpreter, added to the image like `cat` and `ls`), never offered to the executing model. **Blocked by objection V6-1** (which files count as "read by the verification method").
-3. **Rejection limit (A4).** Three consecutive rejections park `rejection_limit` (overridable). Adjustable per task at admission. **Objection V6-9** (what resets the count, and the adjustment's bounds).
+2. **Hash-pinned verification inputs (B2).** At admission the runner records a content hash of every verification input and every protected path (a directory is hashed as its listing plus each file's hash). At closure it recomputes them; any difference, or a hash that cannot be computed, makes `verified` impossible: the task fails with the changed paths recorded. This replaces D-067's listing comparison. Hashing runs in the workload with an operator-fixed, verifier-only program (for example `sha256sum`, a non-interpreter, added to the image like `cat` and `ls`), never offered to the executing model. **What is pinned (§3.4.4, v0.6.1):** the criterion declares **outputs** (never pinned) and **verification inputs** (pinned by hash, or as absent if they do not exist at admission). Because JUNO cannot see what a command reads, every other file in the verification scope is treated as an input, and the scope's listing is pinned, so a file the task creates that is not a declared output makes `verified` impossible (D-097). Every §18 fixture's criterion declares its outputs; if that reading makes a §18 test impossible, the increment STOPs (CLAUDE.md §7).
+3. **Rejection limit (A4).** Three consecutive rejections park `rejection_limit` (overridable). **§2.7.1 (v0.6.1):** the count resets when a call proceeds, when a call parks, and on resume; it may be set per task at admission from 1 to 10 (default 3); admission refuses any other value. A turn the runner cannot read is not a call, so it is not a rejection: it neither counts nor resets (D-091).
 4. **A5's rejection rule.** On a program whose surface marks every position code-free and which is not on §2.3's list, an undeclared flag is a `malformed_call` rejection, not a promotion. `cat -c cat` and `ls -c …` (two of Slice 1.3's four benign parks) then become recoverable rejections. A program with any code-bearing position, or on the list, still promotes every element and parks `integrity_floor`.
 5. **A2's no-override rule.** A `scope_violation` caused by an `untrusted` value records `overridable: false` and `remedy: "grant"`. Resuming it requires that the task now holds a grant covering the parked value; a plain resume is refused. Mixed values: if any out-of-scope value is `untrusted`, the rule applies.
-6. **A3's source entry in park records.** Each park records, for every value that caused it, its provenance class, its integrity, and the journal entry or entries it came from. **Objection V6-8** (what "the entry it came from" means for a synthesized value without inspecting content).
-7. **Canonical scope (C4).** Every path operand is resolved, symlinks included, against the volume the effect will touch, before step 4: the resolution runs in the workload (an operator-fixed resolver program, verifier/boundary-only) and the boundary judges the canonical path. A path that cannot be resolved is outside scope. Closes D-047's accepted residual. **Objection V6-2** (a path that does not exist yet).
+6. **A3's source entry in park records.** Each park records, for every value that caused it, its provenance class, its integrity, and its source: for a `bound` value, the referenced entry; **for a `synthesized` value (§11.1, v0.6.1)**, the untrusted entries in the model's context since the last operator input, listed as "possible sources". No content is compared (invariant 7).
+7. **Canonical scope (C4).** Every path operand is resolved, symlinks included, against the volume the effect will touch, before step 4: the resolution runs in the workload (an operator-fixed resolver program, verifier/boundary-only) and the boundary judges the canonical path. A path that cannot be resolved is outside scope. **A path that does not exist yet (§2.7.1, v0.6.1)** is resolved through its longest existing ancestor: the ancestor is canonicalized and must lie in scope; the missing remainder must contain no `..`, no symlink and no empty component. Closes D-047's accepted residual.
 8. **D1–D6 conformance.** D3: attenuation also refuses a child whose `max_invocations` exceeds its parent's, or is unbounded under a bounded parent. The rest (D1, D2, D4, D5, D6) were built as D-036/37, D-055/063, D-046/47, D-048/52/54 and D-080; each gets a test or comment naming its v0.6 section.
 
 **Tests (each names the § it proves):**
 - §2.6 B1: the executing model naming `criterion.program` (or any verifier constant) is an unresolved-reference rejection; nothing runs. The Slice 1.2 test that pinned the old behaviour (`packages/runner/test/runner.test.ts`, verifier slots resolvable) is changed to assert this — the specification changed; recorded as a D-number, not a weakened test.
 - §2.6 B1: a value the operator fixed for both actors resolves for both.
 - §3.4.4 B2: a protected file rewritten with the same size and modification time makes `verified` impossible (Slice 1's listing comparison would have passed it) — the failure records the path.
-- §3.4.4 B2: an unchanged pin set closes `verified`; a pin that cannot be computed counts as changed.
-- §2.7.1 A4: three consecutive rejections park `rejection_limit`; two rejections then a proceeding call do not; the limit set at admission is honoured.
+- §3.4.4 B2: an unchanged pin set closes `verified`; a pin that cannot be computed counts as changed; a declared output the task creates or changes does not prevent `verified`; a verification input absent at admission that the task creates, or any new file that is not a declared output, makes `verified` impossible.
+- §2.7.1 A4: three consecutive rejections park `rejection_limit`; two rejections then a proceeding call do not; a park and a resume each reset the count; a limit of 1 and of 10 is honoured, and 0 or 11 is refused at admission; an unreadable turn neither counts nor resets.
 - §2.3.1 rule 6 A5: `cat -c x` is a `malformed_call` rejection; `cat -c x` on a surface that has any code-bearing position still parks `integrity_floor`; a listed interpreter with an undeclared flag still parks.
 - §8.2 A2: an untrusted out-of-scope value parks `scope_violation` with `overridable: false`; plain resume is refused; resume after a covering grant is added succeeds; an operator-integrity out-of-scope value stays overridable.
-- §11.1 A3: the park record names the source entry for a bound value, and the V6-8 ruling's set for a synthesized one.
-- §2.7.1 C4: a symlink inside the scope pointing outside it parks `scope_violation`; a symlink chain that stays inside proceeds; an unresolvable path parks. Container test, real workload.
+- §11.1 A3: the park record names the referenced entry for a bound value, and the untrusted entries since the last operator input as "possible sources" for a synthesized one.
+- §2.7.1 C4: a symlink inside the scope pointing outside it parks `scope_violation`; a symlink chain that stays inside proceeds; a symlink loop parks; a new file whose longest existing ancestor is in scope proceeds; a missing remainder with `..` or an empty component parks. Container test, real workload.
 - §3.2 D3: a child grant with a larger or unbounded `max_invocations` is refused.
 - Regression: all five §18 acceptance tests still pass; tests 2 and 3 together (D-057).
 
 **Done when:** every test above is green in `make verify` and in CI; STATE.md lists which §0.0 rows are now built; no objection blocking Increment 1 is open.
-**Depends on:** Slice 1 as merged. **Estimate:** 3 sessions.
+**Depends on:** Slice 1 as merged, and v0.6.1 on `main` (D-096). **Estimate:** 3 sessions.
 **Optional, operator-authorised only:** re-run Slice 1.3's six ordinary tasks on Groq's free tier (USD 0, D-072/D-073) to measure what A5 does to the benign-park rate. Not part of acceptance.
 
 ---
@@ -142,9 +146,9 @@ The open objections (§6, and STATE.md "Open objections to the spec") each name 
 
 **Builds:**
 1. **Grant signatures.** The `signature` field becomes mandatory: an Ed25519 signature over the canonical form of every other field (the journal's existing canonical JSON). Verification uses Node's built-in `node:crypto` (no new package). The boundary verifies at lookup; a grant with a missing or invalid signature **does not exist** — the call sees no covering grant.
-2. **Where the keys live.** The operator's private key lives in a hardware key or the OS keychain, never in the repository, a container, the journal, or any directory the runner can write. JUNO holds only the operator's **public** key (the trust anchor), in a location the runner cannot write; the runner refuses to start if it can write the anchor file or its directory. The exact signing mechanism (for example OpenSSH's `ssh-keygen -Y sign` through an agent, which supports hardware keys, or a keychain-backed signer) is chosen at the start of the increment from its current documentation and recorded as a D-number. **Operator decision 2 (§7).**
+2. **Where the keys live.** The operator's private key lives in the **Windows OS keychain** on the operator's machine (D-093), never in the repository, a container, the journal, or any directory the runner can write. JUNO holds only the operator's **public** key (the trust anchor), in a location the runner cannot write; the runner refuses to start if it can write the anchor file or its directory. The exact Windows signing mechanism is chosen at the start of the increment from its current documentation (rule 13) and recorded as a D-number. Tests generate a throwaway key per run (D-093).
 3. **Operator CLI:** `juno grant sign` (operator-side, uses the key), `juno grant verify`. The runner and every mediated mode only ever verify.
-4. **Anchored head.** The journal head hash is signed with the operator key and copied to a destination the host cannot rewrite. `juno journal check` compares the chain with the latest anchor: a rewrite of anything at or before the anchored head is reported, naming the first entry that differs. The anchoring interval is recorded in the journal. **Objection V6-4** (who signs at intervals, given the key is outside the runner, and what "off the host" means for the tests).
+4. **Anchored head (§3.4.1, v0.6.1).** At a recorded interval the runner signs the journal head hash with a separate **journal key** it holds (never the operator key, which never enters the runner) and copies it to an append-only destination off the host. The signature only says which runner wrote the anchor; the protection is the copy. `juno journal check` compares the chain with the latest anchor: a rewrite of anything at or before the anchored head is reported, naming the first entry that differs. **In tests** the destination is a separate container exposing an append-only interface over its own volume. **For real use** it is the operator's GitHub repository `juno-anchors` (D-094), pushed with a credential that cannot force-push or delete; whether it is public or private is open objection V61-1. Anchors hold only hashes, sequence numbers, times and signatures — no task content.
 5. Journal storage, the checkpoint store (Increment 3), the trust anchor and JUNO's configuration are all outside every name a selector can reach; grant creation rejects a selector that names any of them (§3.2 "No selector may name journal storage").
 
 **Tests:**
@@ -153,9 +157,10 @@ The open objections (§6, and STATE.md "Open objections to the spec") each name 
 - §3.2 C1: the runner refuses to start when its trust anchor is writable by it (container test: the verifier runs as a uid that does not own the read-only anchor).
 - §3.2 C1: no test key, private or public, is committed; test keys are generated per run in a temporary directory outside the work volume and the journal.
 - §3.4.1 C1: rewriting an entry and recomputing every hash after it passes the chain check but fails the anchor check; an entry appended after the anchor is not reported as a rewrite.
+- §3.4.1 C1: the stand-in destination refuses to overwrite or delete an anchor already written; an anchor signed with a stolen journal key cannot replace an earlier one; no code path gives the runner the operator key.
 - §3.2, §3.4.1: a grant selector naming the journal, the checkpoint store or the trust anchor is rejected at creation.
 
-**Done when:** the tests above are green; every grant in the repository's fixtures is signed by a per-run test key; STATE.md says how the operator generates their key and signs a grant.
+**Done when:** the tests above are green; every grant in the repository's fixtures is signed by a per-run test key; STATE.md gives the operator click-by-click Windows steps to create the keychain key, sign a grant, and (once V61-1 is ruled) create `juno-anchors` and its push credential. **That is the first point that needs the operator's hands; the increment's code and tests do not wait for it.**
 **Depends on:** Increment 1. **Estimate:** 2 sessions.
 
 ---
@@ -184,7 +189,7 @@ The open objections (§6, and STATE.md "Open objections to the spec") each name 
 - Regression: §18 tests 1–5; tests 2 and 3 together.
 
 **Done when:** the tests above are green; the registry has exactly one new capability (`fs.file.write`); STATE.md lists, per side-effect class, what untrusted content can and cannot choose.
-**Depends on:** Increments 1 (canonical scope) and 2 (signed grants carry `enumerated_targets`). **Blocked by objection V6-2** for writes to new files. **Estimate:** 2 sessions.
+**Depends on:** Increments 1 (canonical scope, including new paths, §2.7.1 v0.6.1) and 2 (signed grants carry `enumerated_targets`). **Estimate:** 2 sessions.
 
 ---
 
@@ -197,13 +202,13 @@ The open objections (§6, and STATE.md "Open objections to the spec") each name 
 **Builds:**
 1. **Re-read the hooks reference first** and record differences from §1.1 in DECISIONS.md.
 2. **`juno hook install`** writes the hook into the settings file the operator names, and **refuses** (§4.3 "refused at setup") unless all hold: exec form (`command` plus `args`, no shell); `onFailure: "block"`; an explicit `timeout`; matcher `*` on PreToolUse, PostToolUse and PostToolUseFailure; `claude --version` (run by `execFile`) at least 2.1.295. It reports, and does not hide, what it cannot control: `disableAllHooks`, `@`-mentions, harness actions without a tool call.
-3. **The session record.** The operator admits a mediated session: its grants, the program enum for Bash (every member must pass the interpreter test), the exact command strings and values the operator lists as constants, budgets and TTL. **Objection V6-6** (what record a mediated session is, and which budget axes apply when JUNO sees no tokens).
+3. **The session is a Task (§4.3, v0.6.1).** Each Claude Code `session_id` is admitted as a Task: principal, objective "operator session via claude-code", attendance, `ttl`, grants, the program enum and name map for Bash, the exact command strings and values listed as constants, and the session's provider with its declared sensitivity clearance. No criterion, so it closes only `accepted`. Tool calls (counted as turns) and wall-clock are enforced; token and currency axes are recorded `unmetered`, and admission refuses unless the operator accepts that the harness's own limits govern them.
 4. **Capability definitions for Claude Code's tools,** operator-authored (§2.5), never derived from the tool schema: `Read`, `Glob`, `Grep` (`read`); `Write`, `Edit` (`write`; `file_path` target, content payload); `Bash` (mapped to `shell.run` through §2.3.2); `WebFetch` (`external`; the URL is a target). A tool with no definition is a rejection (`unknown_capability`), so it is denied; three in a row park `rejection_limit`.
-5. **Bash under §2.3.2.** The command string is parsed by a deliberately small grammar: a constant command string the operator listed is accepted as written; otherwise any shell syntax, or a program outside the enum, parks `integrity_floor`, and the remaining words become `argv` judged as untrusted data. **Objection V6-5** (which syntax counts, and how a bare program name maps to the enum's absolute paths). **Objection V6-10** (a program's side-effect class versus its capability's).
-6. **Provenance (§4.3):** every model-written value is `untrusted`; operator-listed values are `constant` at `operator` integrity; tool results journaled by PostToolUse are `untrusted` and raise the session's `sensitivity_floor`. **Objection V6-7** (what a raised floor means when JUNO does not route the harness's model).
+5. **Bash under §2.3.2 (v0.6.1).** A constant command string the operator listed is accepted as written. Otherwise the string is split into words without a shell, exactly by §2.3.2's grammar: spaces or tabs separate words; single-quoted words are literal; double-quoted words may not contain `$`, `` ` ``, `\`, `!`; outside single quotes any of `|` `&` `;` `<` `>` `(` `)` `$` `` ` `` `\` `{` `}` or a newline, an unquoted `*` `?` `[` `]`, a leading `~`, a leading `NAME=value`, or a first word that is a shell keyword or builtin parks `integrity_floor`. The first word maps to an enum member **only through the operator-authored name map** (`cat` → `/usr/bin/cat`); `PATH` is never consulted; a name not in the map parks. The remaining words become `argv`, judged as untrusted data. **Each enum member declares its own `side_effect`** (`cat` read, `rm` write in a reversible workspace and irreversible elsewhere); the call takes its member's effect, and registration review rejects a member declared lower than what it can do.
+6. **Provenance and sensitivity (§4.3, v0.6.1):** every model-written value is `untrusted`; operator-listed values are `constant` at `operator` integrity; tool results journaled by PostToolUse are `untrusted`. JUNO does not route the harness's model, so it gates the **read**: a call that would read a source classified above the session provider's declared clearance parks before it runs; an earlier permitted read does not affect later calls.
 7. **Decisions back to Claude Code.**
    - Proceed: no decision (exit 0, empty), so Claude Code's own permission rules still apply; JUNO may answer `allow` only where the session is configured to make JUNO the sole authority. Recorded as a D-number.
-   - Park: `deny` with the park reason in `permissionDecisionReason`, the park journaled, and the remedy (a grant) applying to the model's retry. Never `ask` (§4.3). Never `defer` until V6-3 is ruled (§1.1 item 5: an ignored `defer` lets the call proceed).
+   - Park: `deny` with the park reason in `permissionDecisionReason`, the park journaled, and the remedy (a grant) applying to the model's retry. Never `ask`, never `defer` (§4.3, v0.6.1).
    - Rejection: `deny` with the reason.
    - Any doubt in the client (service unreachable, timeout, malformed answer): exit 2.
 8. **Results:** PostToolUse and PostToolUseFailure journal the result against the call JUNO authorized. A call whose result never arrived is recorded as such, and the session's next call is denied until the gap is recorded — so a missing result cannot be silent.
@@ -214,14 +219,17 @@ The open objections (§6, and STATE.md "Open objections to the spec") each name 
 - §4.3 fail-closed: the hook client exits 2 when the service is down, when it times out, and when it gets an answer it cannot parse — each blocks the call (protocol-level test in `make verify`; real-binary test below).
 - §4.3 refused at setup: `juno hook install` refuses a configuration without `onFailure: "block"`, in shell form, or on a Claude Code older than 2.1.295.
 - §4.3 park mapping: a park answers `deny` with the reason and journals the park; no code path answers `ask` or `defer` (asserted over every decision the client can emit).
-- §2.3.2: `cat notes.txt` (enum member) proceeds with `cat` at floor `untrusted`; `cat notes.txt; curl x`, `$(…)`, `` `…` ``, `|`, `&&`, `>`, a glob, and `sh -c …` each park `integrity_floor`; an operator-listed exact command proceeds as written.
+- §2.3.2: `cat notes.txt` (in the name map) proceeds with `cat` at floor `untrusted`; `cat notes.txt; curl x`, `$(…)`, `` `…` ``, `|`, `&&`, `>`, an unquoted glob, `~/x`, `FOO=1 cat x`, `eval …`, `cd x`, a newline, a backslash, and `sh -c …` each park `integrity_floor`; `cat 'a b'` and `cat "a b"` proceed with one operand; `cat "$HOME"` parks; a bare name not in the map parks even when it is on the harness's `PATH`; an operator-listed exact command proceeds as written.
+- §2.3.2: `rm x` takes `rm`'s declared effect, not `shell.run`'s; registration review rejects an enum member whose declared effect is lower than what it can do.
+- §4.3 session: admission refuses a session without the operator's acceptance of `unmetered` token and currency axes; the session closes only `accepted`; the rejection count is per session.
+- §4.3 sensitivity: a read of a source above the provider's clearance parks and is denied before it runs; a later call after a permitted read is unaffected.
 - §2.2.2 mediated: a `Write` inside a checkpointed scope proceeds; outside the grant it parks `scope_violation` and is denied; `WebFetch` to an untrusted URL not enumerated parks `integrity_floor`.
 - §7.8 E2: a hook session's `steer_capability` is `none`.
 - §4.3: a Claude Code subagent's tool call is mediated the same way (input with `agent_id`).
 - **End to end, real Claude Code binary, no paid usage** (§5): §4.3 acceptance tests 1 and 2, and test 4's mode-C case.
 
-**Done when:** the tests above are green, including the real-binary end-to-end run in the place the operator chooses (operator decision 1, §7); STATE.md says, in plain words, what mode C does not protect (§4.3's table).
-**Depends on:** Increments 1–3. **Blocked by objections V6-3, V6-5, V6-6, V6-7, V6-10.** **Estimate:** 3 sessions.
+**Done when:** the tests above are green in CI, and the real-binary end-to-end run (`make mediated-e2e`, D-092) is green in a cloud session and recorded in the PR; STATE.md says, in plain words, what mode C does not protect (§4.3's table).
+**Depends on:** Increments 1–3. **Estimate:** 3 sessions.
 
 ---
 
@@ -236,7 +244,7 @@ The open objections (§6, and STATE.md "Open objections to the spec") each name 
 2. **`juno-gateway`:** a stdio MCP server to the client and an MCP client to one operator-configured upstream server, launched by `execFile(program, argv)`. Upstream credentials stay in the gateway's environment; the model never sees them (§3.2).
 3. **Capability definitions per upstream tool,** operator-authored (§2.5). `tools/list` returns only defined tools; a call to any other tool is a rejection. Tool descriptions pass through unchanged and unprotected (§4.3 mode B row).
 4. **Each `tools/call`:** the arguments are judged by the boundary (every value `untrusted`; operator-listed values `constant`); proceed forwards it; park or reject returns a tool result with `isError: true` and the reason (MCP has no defer), journaled; the remedy applies to the retry.
-5. **Responses** are journaled as `untrusted` and raise the session's `sensitivity_floor`.
+5. **Responses** are journaled as `untrusted`. A call that would read a source classified above the session provider's declared clearance parks before it is forwarded (§4.3, v0.6.1). The session is a Task, as in Increment 4.
 6. **`input_required` (multi round-trip) results are refused** in Slice 1.5: the gateway returns an error to the client and journals it. Supporting them needs a design for the retried input's provenance, which v0.6 does not give. Recorded as a D-number (restrictive reading).
 7. **Test MCP server** (JUNO-authored, test-only, in `test/`): `files.read` (`read`), and `message.send(to: target, body: payload)` (`external`), which records what it would have sent and sends nothing.
 
@@ -247,10 +255,10 @@ The open objections (§6, and STATE.md "Open objections to the spec") each name 
 - §7.8 E2: a gateway session's `steer_capability` is `none`.
 - §2.5: an upstream tool with no operator definition is not listed and a call to it is rejected.
 - MRTR: an `input_required` answer is refused and journaled.
-- **End to end:** a scripted MCP client (in `make verify`) and the real Claude Code binary with the scripted model (§5) — §4.3 acceptance test 3.
+- **End to end:** a scripted MCP client (in `make verify`) and the real Claude Code binary with the scripted model (`make mediated-e2e`, cloud session only, D-092) — §4.3 acceptance test 3.
 
 **Done when:** the tests above are green; STATE.md says what mode B does not protect.
-**Depends on:** Increments 1–3; reuses Increment 4's session record and scripted model. **Blocked by objections V6-6, V6-7.** **Estimate:** 2 sessions.
+**Depends on:** Increments 1–4; reuses Increment 4's session record and scripted model. **Estimate:** 2 sessions.
 
 ---
 
@@ -267,10 +275,10 @@ The open objections (§6, and STATE.md "Open objections to the spec") each name 
 
 Each test also reads the journal back and answers "why did this happen?" from it alone (§3.4.5), and checks the chain against the latest anchor (§3.4.1).
 
-**Done when:** all four pass in one `make verify` run (or in the operator-chosen end-to-end target, §7), together with §18 tests 1–5; the PR description states, for each, how it ran and that no paid model was called; STATE.md records Slice 1.5 complete.
+**Done when:** the protocol-level and mode-A parts of all four pass in one CI `make verify` run together with §18 tests 1–5, and the real-binary parts pass in one `make mediated-e2e` run in a cloud session (D-092); the PR description states, for each, how it ran and that no paid model was called; STATE.md records Slice 1.5 complete.
 **Depends on:** Increments 1–5. **Estimate:** 1–2 sessions.
 
-**Total estimate:** 13–14 sessions, plus whatever the objections' rulings add.
+**Total estimate:** 13–14 sessions. The v0.6.1 rulings add tests (grammar, new paths, pins) but remove the uncertainty the objections carried; the estimate is unchanged.
 
 ---
 
@@ -278,11 +286,11 @@ Each test also reads the journal back and answers "why did this happen?" from it
 
 No acceptance test needs a real model. The injection in tests 2 and 3 is scripted, so the tests prove the boundary, not a model's behaviour (as §18 test 2 did with the scripted provider, D-002).
 
-**The scripted model for Claude Code.** Claude Code is run in `-p` mode with `ANTHROPIC_BASE_URL` pointing at a JUNO test server on the local machine that speaks the Anthropic Messages API and returns pre-written turns (for example: "call `Write` on `/etc/x`"). `ANTHROPIC_API_KEY` is a random value generated per run (not a key; nothing accepts it), `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, and a fresh configuration directory so the operator's login is never read. The run happens in a container whose only network is the scripted server, so no request can reach a paid endpoint even by mistake. Increment 4 builds the scripted server from the current Messages API reference, read then (rule 13), and records every request Claude Code makes; **if Claude Code cannot run against it, Increment 4 stops and reports**, because protocol-level tests alone do not prove "a Claude Code session".
+**The scripted model for Claude Code.** Claude Code is run in `-p` mode with `ANTHROPIC_BASE_URL` pointing at a JUNO test server on the local machine that speaks the Anthropic Messages API and returns pre-written turns (for example: "call `Write` on `/etc/x`"). `ANTHROPIC_API_KEY` is a random value generated per run (not a key; nothing accepts it), `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, and a fresh configuration directory so the operator's login is never read. The run happens in a container whose only network is the scripted server, so no request can reach a paid endpoint even by mistake. The Claude Code binary is the one installed in the cloud session; it is never added to the lockfile, the repository or an image (D-092), so in its container it is mounted read-only from the session's installation, and the test records its version. Increment 4 builds the scripted server from the current Messages API reference, read then (rule 13), and records every request Claude Code makes; **if Claude Code cannot run against it, Increment 4 stops and reports**, because protocol-level tests alone do not prove "a Claude Code session".
 
 | Test | How it runs | Paid usage | Where |
 |---|---|---|---|
-| §4.3 test 1 | Real Claude Code + scripted model + JUNO hook; scripted turn writes outside the grant; asserts the deny, the journal's park entry, and that the file does not exist | None | CI, or the cloud session (operator decision 1) |
+| §4.3 test 1 | Real Claude Code + scripted model + JUNO hook; scripted turn writes outside the grant; asserts the deny, the journal's park entry, and that the file does not exist | None | `make mediated-e2e`, cloud session only (D-092) |
 | §4.3 test 2 | Mode C: scripted turn 1 reads a planted file, turn 2 runs a Bash command with `;` and `sh -c`; asserts `integrity_floor`, deny, nothing ran. Mode A: §18 test 2 with the scripted provider | None | as above; mode A in `make verify` |
 | §4.3 test 3 | Mode B: JUNO's test MCP server behind `juno-gateway`, driven by a scripted MCP client in `make verify` and by real Claude Code + scripted model; `message.send` to a planted recipient parks; the server records nothing sent | None | `make verify`; real binary as above |
 | §4.3 test 4 | Grants signed with a per-run test key; a tampered grant, a grant signed by another key, and an unsigned grant are each not honoured — in mode A (container test) and mode C (real binary) | None | `make verify`; real binary as above |
@@ -290,52 +298,59 @@ No acceptance test needs a real model. The injection in tests 2 and 3 is scripte
 
 ## 5. What needs the operator's own machine
 
-- **For acceptance: nothing.** Every test above runs in CI or in the cloud session.
-- **Once, for real use (Increment 2):** generating the operator's signing key in a hardware key or the OS keychain, and signing one grant with `juno grant sign`. CI cannot hold a keychain or a hardware key, so it uses throwaway per-run keys; the real-key path is proven only on the operator's machine. Increment 2 writes the exact commands into STATE.md.
+- **For acceptance: nothing.** Every test above runs in CI or in a cloud session.
+- **Now, before Increment 1:** put spec v0.6.1 on `main` (reopen and merge PR #27; D-096), and rule V61-1 (public or private `juno-anchors`).
+- **Once, for real use (Increment 2):** creating the operator's signing key in the Windows OS keychain (D-093) and signing one grant with `juno grant sign`; creating `juno-anchors` and a push credential that cannot force-push or delete (D-094). CI cannot hold a keychain, so it uses throwaway per-run keys and the stand-in anchor container; the real-key path is proven only on the operator's machine. Increment 2 writes click-by-click Windows steps into STATE.md.
 - **Optional, not acceptance:** one interactive Claude Code session on the operator's machine with the hook installed, to see an interactive `deny` in the terminal. It uses the operator's own Claude Code plan (no extra money); the automated tests use `-p` mode only, because the interactive terminal cannot be driven by a test.
 
 ---
 
-## 6. Objections to v0.6 raised by this plan
+## 6. Objections
 
-Written into STATE.md "Open objections to the spec", unresolved, as the operator instructed. Each names the increment it blocks. Short form:
+### 6.1 V6-1 to V6-10 — resolved by v0.6.1 (D-091)
+
+| ID | Question, short | Resolved in (v0.6.1) |
+|---|---|---|
+| V6-1 | Which files are verification inputs | §3.4.4 "What is pinned" (outputs vs inputs; D-097 for files in neither set) |
+| V6-2 | A path that does not exist yet | §2.7.1 "Paths that do not exist yet" |
+| V6-3 | `defer` that Claude Code may ignore | §4.3 "Park in B and C": always deny |
+| V6-4 | Who signs the anchor; what is off-host | §3.4.1 "Who signs, and what counts as off-host" |
+| V6-5 | Which shell syntax parks; program names | §2.3.2 "Reading a shell command string" |
+| V6-6 | What record a mediated session is | §4.3 "A session is a Task" |
+| V6-7 | A raised floor JUNO cannot route around | §4.3 "Sensitivity in B and C" |
+| V6-8 | Source entry for a synthesized value | §11.1, "possible sources" |
+| V6-9 | Rejection count reset and range | §2.7.1 "The count resets"; an unreadable turn is not a rejection (D-091) |
+| V6-10 | A program's effect vs its capability's | §2.3.2 "Effect per program" |
+
+### 6.2 Open
 
 | ID | § | Question | Blocks |
 |---|---|---|---|
-| V6-1 | §3.4.4 B2 | Which files are "every file the verification method reads"? Read literally it includes the task's own output, which does not exist at admission ("a hash that cannot be computed counts as changed"), so no criterion that checks what the task made could ever close `verified`. | Inc 1 |
-| V6-2 | §2.7.1 C4 | "A path that cannot be resolved is outside scope": a file that does not exist yet cannot be resolved, so read literally no capability can create a file. | Inc 1, 3 |
-| V6-3 | §4.3 | "Where the protocol can defer and resume a call, a park defers it": Claude Code ignores `defer` (and lets the call proceed) in interactive sessions and when a turn has several tool calls, and the hook cannot tell either at the time it answers. | Inc 4 |
-| V6-4 | §3.4.1 C1 | The head is "signed with the operator key at intervals", but the key is outside anything the runner can use or write. Who signs, and what counts as "off the host" in a test? | Inc 2 |
-| V6-5 | §2.3.2 | Which Bash syntax counts as shell syntax (quoting, escapes, `$VAR`, `~`, comments, `VAR=x cmd`, newlines), and how a bare program name maps to the enum's absolute paths when the harness, not JUNO, resolves it. | Inc 4 |
-| V6-6 | §4.3, §5.4 | What record a hook or gateway session is: an admitted Task with objective, criterion, four budget axes and TTL? JUNO sees no tokens or currency in modes B and C. | Inc 4, 5 |
-| V6-7 | §4.3, §10.3 | A mediated session's `sensitivity_floor` rises with reads, but JUNO does not route the harness's model. Does reaching `confidential` deny every later call (`routing_unavailable`)? | Inc 4, 5 |
-| V6-8 | §11.1 A3 | "The journal entry it came from" for a synthesized value: invariant 7 forbids finding it by comparing content. Is the producing turn plus every untrusted entry in its context acceptable? | Inc 1 |
-| V6-9 | §2.7.1 A4 | What resets "three consecutive rejections", whether unreadable provider turns count, and what bounds the per-task adjustment (could it be set high enough to disable the limit)? | Inc 1 |
-| V6-10 | §2.1, §2.3.2 | `side_effect` belongs to a capability, but in hook mode the operator's Bash enum could hold `cp` or `rm` under `shell.run`, which is `read`. Must every enum member's effect fit its capability's class? | Inc 4 |
+| V61-1 | §3.4.1 | The operator ruled `juno-anchors` **public** (D-094); §3.4.1 (v0.6.1) says "an append-only **private** git repository whose push credential cannot force-push or delete". On GitHub Free a private repository cannot have protected branches (GitHub's plans page), so a private repo's push credential can force-push. Options: (a) amend §3.4.1 to allow a public repository (anchors hold only hashes, times and signatures); (b) keep private and upgrade the account to GitHub Pro. | The real anchor destination only (Increment 2's operator setup); no code or test |
 
 ---
 
-## 7. Operator decisions this plan needs (not spec questions)
+## 7. Operator decisions — ruled 2026-11-03
 
-1. **Where the real-binary tests run.** (a) In CI: add `@anthropic-ai/claude-code` to the lockfile. Its licence is "SEE LICENSE IN README.md", not an open-source licence, which matters if the repository is later published (D4). (b) In the cloud session only, as `make mediated-e2e`, the way `make smoke` runs (the session already has Claude Code 2.1.317); CI then runs the protocol-level tests only. Recommended: (b), so the open-source core never depends on a proprietary package; the PR for Increments 4–6 records the run.
-2. **The signing mechanism** for the operator key (Increment 2): a hardware key through an SSH agent, or the OS keychain. Recommended: a hardware key, because a keychain the operator's user can unlock can also be used by any process running as that user.
-3. **The anchor destination** for the journal head (Increment 2), once V6-4 is ruled: for example a private repository, or a file the operator copies off the machine.
-4. **PR #26** (the Slice 1.3 STATE record) is merged into this plan's branch (D-090); closing it is the operator's call.
-
----
+1. **Where the real-binary tests run:** cloud sessions only, never vendored (D-092).
+2. **The signing mechanism:** the Windows OS keychain; tests use a generated key (D-093).
+3. **The anchor destination:** the operator's GitHub repository `juno-anchors`, public (D-094) — pending V61-1, because §3.4.1 says private.
+4. **PR #26** was merged on 2026-11-03.
+5. **C2:** deferred to Slice 2 (D-095).
 
 ## 8. Not in Slice 1.5
 
-- **C2, secret detection at context assembly (§1.4),** is a v0.6 change the operator's increment list does not include. It is not scheduled here; the director should say whether it joins Increment 1 or waits.
+- **C2, secret detection at context assembly (§1.4):** deferred to Slice 2 (D-095; v0.6.1 §0.0).
 - **C3** (erasure by key destruction) is built with the hosted product (§3.4.5).
 - Steer, Override as an object, the decision queue, the approval interface, the console, resource locking, estate budgets, the Surface contract, plugins, multiple providers in one task, concurrent tasks, delegation, memory, compaction, planning, retrieval (CLAUDE.md rule 9).
 - §0.0's deferred items: standing tasks and per-period budgets, the GUI-action class, A2A peers, payment-mandate grant fields, the delegation provenance test.
 - MCP Streamable HTTP transport (stdio only in Slice 1.5), MCP multi round-trip requests (refused), and more than one upstream server per gateway.
-- Claude Code's interactive-mode `defer` path, and any harness other than Claude Code for mode C.
+- `defer` in any mode (§4.3, v0.6.1), and any harness other than Claude Code for mode C.
 
 ## 9. Risks
 
 - **The scripted model may not satisfy Claude Code.** If Claude Code needs endpoints or behaviour the scripted server cannot provide offline, tests 1, 2 and 4 (mode C) cannot run without paid usage. Increment 4 stops and reports rather than calling a paid model.
 - **Claude Code's hook behaviour can change between releases.** Each mediated increment re-reads the reference; `juno hook install` pins a minimum version; the end-to-end test records the version it ran against.
 - **Hashing large workspaces** (B2 pins, Increment 3 checkpoints) may be slow; both are bounded per task at admission, and exceeding the bound refuses admission rather than skipping the check.
-- **The rulings may move work between increments.** V6-1 and V6-2 in particular could make a restrictive reading conflict with a §18 acceptance test — a CLAUDE.md §7 STOP — which is why they are raised before Increment 1.
+- **D-097 may conflict with a §18 fixture.** If a §18 task creates a file its criterion cannot declare as an output, the restrictive reading would make that test impossible — a CLAUDE.md §7 STOP. Increment 1 checks every fixture first.
+- **The spec is not on `main` yet** (D-096). Nothing in this plan starts until it is.
