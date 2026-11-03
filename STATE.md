@@ -3,11 +3,16 @@
 ## Current increment
 **Slice 1.5 — Part 0: the build plan** (authorised by the operator, 2026-11-03, D-089). The specification is **spec v0.6** (operator PR #27, branch `spec-v0.6`, commit 51a395a; not yet merged to `main`, D-090). Branch `claude/determined-carson-5d6slg`. Part 0 only: write `docs/plans/slice-1.5-build-plan.md` and take it through the CLAUDE.md §7 gate as one PR, then STOP for the director's review. **Increment 1 does not start until the director has reviewed the plan.**
 
-Status: **plan written** (`docs/plans/slice-1.5-build-plan.md`); CLAUDE.md edited as the operator instructed (D-089); ten objections to v0.6 recorded below, unresolved. PR, review and gate next.
+Status: **plan written and reviewed; STOP for the director.** Plan: `docs/plans/slice-1.5-build-plan.md`. CLAUDE.md was edited as the operator instructed (D-089). Ten objections to v0.6 are recorded below, unresolved. The PR is reviewed and marked ready; it is not merged (D-090).
 - **The plan, in one line each:** (1) conform Slice 1 to v0.6 (B1, B2, A4, A5, A2, A3, C4); (2) signed grants and an anchored journal head (C1); (3) effects under untrusted influence, checkpoints, one write capability (A1); (4) hook mode for Claude Code, fail-closed (§4.3 mode C); (5) gateway mode for MCP (§4.3 mode B); (6) §4.3's four acceptance tests end to end. Estimate 13 to 14 sessions.
 - **No acceptance test needs paid usage:** the real Claude Code binary runs in `-p` mode against a JUNO scripted model server on the local machine (`ANTHROPIC_BASE_URL`), in a container with no other network. Nothing needs the operator's machine for acceptance; the real signing key is set up there once (Increment 2).
 - **Sources read on 2026-11-03** (URLs and hashes in the plan, §1): Claude Code hooks reference (CLI 2.1.317 in this session); MCP specification, current revision 2026-07-28.
-- **Merge gate (D-090):** the plan PR is not merged while an objection is open (§7 step 6a) or while PR #27 is unmerged. Expected end of this session: reviewed, CI green on the pinned head, marked ready, not merged.
+- **PR #28** (https://github.com/khashayarjavi/juno/pull/28), head 632735b1007770d9ff47eee89bcbde7e9ee7004f before this STATE record.
+- **Review round 1 (fresh subagent, the review prompt verbatim), on 632735b: DO NOT MERGE, for gate conditions only.** All six checks PASS: no tests due or touched, the lint rule intact, nothing out of scope, D-089/D-090 and V6-1 to V6-10 recorded, the container seal unchanged. It re-checked the plan's quotes of v0.6 against PR #27 (51a395a), and they match. The reasons given: ten objections are open, PR #27 is unmerged, and CI was still running. No FAIL to fix, so no second round (it could only repeat these). Notes for the director:
+  - confirm D-089 matches what you authorised (the instruction is not in the repo);
+  - CLAUDE.md §7 LOOP step 1 still names `spec/slice-1-build-plan.md`, not `docs/plans/slice-1.5-build-plan.md`. It was left as it is, because the operator said "change nothing else";
+  - the Increment 1 review must check that the B1 test change has its own D-number and makes the test stricter.
+- **Merge gate (D-090): STOP before step 6c.** The plan PR is not merged while an objection is open (§7 step 6a) or while PR #27 is unmerged. It is marked ready for the director.
 
 ## Previous increment
 **Slice 1.3 — remaining benign parks** (authorised by the operator, 2026-11-02; not a roadmap item; no spec change). `packages/enforcement` changes only in one test's timeout (D-086). Branch `claude/slice-1-3-benign-parks-ezx1q2`. Each part is its own PR through the CLAUDE.md §7 gate:
