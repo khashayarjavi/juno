@@ -883,7 +883,7 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   - V6-6 → §4.3 "A session is a Task": tool calls (as turns) and wall-clock are enforced; tokens and currency are `unmetered`, accepted by the operator at admission.
   - V6-7 → §4.3 "Sensitivity in B and C": a read above the session provider's declared clearance parks before it runs; earlier permitted reads do not affect later calls.
   - V6-8 → §11.1: for a synthesized value, the park lists the untrusted entries in context since the last operator input as "possible sources".
-  - V6-9 → §2.7.1 "The count resets": on a proceeding call, a park, and resume; settable 1 to 10 at admission, default 3; per session in B and C. V6-9's other question (does a turn the runner cannot read count?) follows from §2.7.1's text: a rejection is "an unresolved reference in a `data` field, a malformed call, an unregistered capability, an undeclared flag", and an unreadable turn is not a call, so it is not a rejection: it neither counts nor resets the count. It is already bounded by the turn budget (each retry costs a turn, D-087).
+  - V6-9 → §2.7.1 "The count resets": on a proceeding call, a park, and resume; settable 1 to 10 at admission, default 3; per session in B and C. V6-9's other question (does a turn the runner cannot read count?) is **not** answered by v0.6.1 and is not part of this ruling: it is open objection V61-2 (D-101).
   - V6-10 → §2.3.2 "Effect per program": `side_effect` is declared per enum member; registration review rejects a member declared lower than what it can do.
 - Reason: the operator's instruction of 2026-11-03, checked line by line against 4267e04.
 
@@ -907,7 +907,7 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
 - Status: Recorded. Applies as written from D-098 (V61-1 ruled (a) public; §3.4.1 amended at fcb1a60). Tests are unaffected.
 - Applies to: Slice 1.5, Increment 2 onward
 - Decision: the real anchor destination is a GitHub repository `juno-anchors` owned by the operator, public. Tests use the append-only stand-in container §3.4.1 (v0.6.1) describes.
-- Conflict: §3.4.1 (v0.6.1) says "for v1, an append-only **private** git repository whose push credential cannot force-push or delete". GitHub's plans page (read 2026-11-03, https://docs.github.com/en/get-started/learning-about-github/githubs-plans) lists "Protected branches" under GitHub Pro's "Advanced tools and insights in private repositories", so on GitHub Free a private repository cannot stop its push credential from force-pushing. The ruling and the spec cannot both hold on a Free account. CLAUDE.md §2 rules 1 and 2: the spec text governs until the operator changes it, so this is open objection V61-1, not an autopilot ruling.
+- Conflict (history; resolved by D-098): §3.4.1 (v0.6.1 at 4267e04) said "for v1, an append-only **private** git repository whose push credential cannot force-push or delete". GitHub's plans page (read 2026-11-03, https://docs.github.com/en/get-started/learning-about-github/githubs-plans) lists "Protected branches" under GitHub Pro's "Advanced tools and insights in private repositories", so on GitHub Free a private repository cannot stop its push credential from force-pushing. The ruling and the spec cannot both hold on a Free account. CLAUDE.md §2 rules 1 and 2: the spec text governs until the operator changes it, so this is open objection V61-1, not an autopilot ruling.
 - Reason: the operator's instruction; the conflict found while recording it.
 
 ## D-095 — C2 (secret detection) is deferred to Slice 2 (operator ruling)
@@ -961,3 +961,16 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
 - After the merge, CI `verify` on `main` for 603284c: run 41686229757 (event `push`), success.
 - Effect: D-096 and D-099's STOP is lifted. D-091 and D-098 take effect.
 - Reason: the operator's instruction. The agent offered this route only as an explicit operator ruling, because the action changes `spec/` on `main`.
+
+## D-101 — Open objection V61-2: does a turn the runner cannot read count toward the rejection limit? STOP (autopilot record)
+- Date: 2026-11-03
+- Status: Open objection (not ruled). STOP: a new ambiguity touching §2 (the operator's Slice 1.5 instruction), and PR #30's second review round ended DO NOT MERGE (CLAUDE.md §7 STOP).
+- Applies to: Slice 1.5 Increment 1 (A4) and Increments 4 to 5 (the per-session count)
+- Finding (PR #30 review round 2): D-091 as first written said "an unreadable turn is not a call, so it is not a rejection: it neither counts nor resets the count", and filed that under an operator ruling. The operator did not rule it, and §2.7.1 (v0.6.1, line 447) does not decide it: it defines a rejection as "an unresolved reference in a `data` field, **a malformed call**, an unregistered capability, an undeclared flag", and says only what resets the count. The runner today records a provider refusal (`tool_use_failed`, `output_parse_failed`), non-object arguments and too many calls as a "malformed turn" (`packages/runner/src/groq.ts`, `packages/runner/src/provider.ts`); some of these are plausibly "a malformed call". A4's purpose ("one visible interruption instead of a silent budget burn") points at exactly this case: Slice 1.2's s18-4b run 1 ended `budget_exceeded` after 8 refused turns.
+- Correction: D-091's V6-9 bullet now says the question is open; the plan's Increment 1 item 3 and test, and §6, say the same.
+- Options for the operator:
+  - **(a) recommended, the more restrictive reading:** a turn the runner cannot read counts as one rejection and never resets the count. Eight refused turns then park `rejection_limit` at the third, visibly.
+  - (b) it neither counts nor resets (the first draft's reading).
+  - (c) amend §2.7.1 to say which.
+- Why not an autopilot ruling: CLAUDE.md §7 step 3 would take (a), but the operator's Slice 1.5 instruction says to STOP on any new spec ambiguity touching §2, §3.2 or §4.3, and §2.7.1 is in §2.
+- Reason: CLAUDE.md §2 rule 2, §7 step 3 and STOP; the operator's Slice 1.5 instruction.
