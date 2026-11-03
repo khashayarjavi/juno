@@ -11,7 +11,7 @@ Status: **STOP (D-096). The plan is revised; it is not reviewed or merged, and I
   - V6-1 to V6-10 removed from "Open objections", each mapped to its v0.6.1 section (D-091). V6-9's unanswered part (does an unreadable turn count?) follows from §2.7.1's own definition of a rejection: it is not a call, so no.
   - The plan revised to v0.6.1: every "blocked by V6-n" replaced with the ruled behaviour and tests for it; keychain, cloud-only real-binary runs (`make mediated-e2e`), the journal key, the stand-in anchor container, C2 deferred.
 - **New open objection: V61-1** (§3.4.1; public vs private `juno-anchors`). It blocks only the real anchor setup in Increment 2, not code or tests.
-- **Review and gate: not run (D-096).** PR #28 is merged, so the revision is a new PR. The gate cannot complete while v0.6.1 is off `main` and V61-1 is open, and the review must run on the head that will merge.
+- **Review and gate: not run (D-096).** PR #28 is merged, so the revision is a new PR: **PR #29** (https://github.com/khashayarjavi/juno/pull/29, draft), head 773b1f4 before this STATE record. The gate cannot complete while v0.6.1 is off `main` and V61-1 is open, and the review must run on the head that will merge.
 - **Resume here:** once PR #27 is merged, (1) re-read `spec/core-semantic-model.md` on `main` and confirm it is 4267e04's text; (2) take this PR through §7 (review with P2 verbatim, CI on the pinned head, merge); (3) start Increment 1.
 
 ## Previous increment
