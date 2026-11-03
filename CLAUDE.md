@@ -11,7 +11,7 @@ The operator (Alireza) **does not read code**. Your work is accepted only throug
 In this order, every session:
 
 1. `STATE.md` — which increment is current and what is left in it.
-2. `spec/core-semantic-model.md` — **the specification** (v0.5.1). Read the sections the current increment cites, plus §0 and §18.
+2. `spec/core-semantic-model.md` — **the specification** (v0.6; its §0.0 lists what changed from v0.5.1). Read the sections the current increment cites, plus §0 and §18.
 3. `spec/slice-1-build-plan.md` — the increment's scope, tests and done-when.
 4. `DECISIONS.md` — decisions already made during the build.
 
