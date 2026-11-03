@@ -10,7 +10,7 @@ Status: **STOP (D-099, as D-096). Spec v0.6.1 is still not on `main`, so the pla
   - D-098: V61-1 ruled (a) public; §3.4.1 at fcb1a60 checked (a two-line change over 4267e04); D-094 now applies as written. No objection to the spec is open.
   - D-099: this STOP, and the move to a new branch.
   - The plan updated: reads from fcb1a60; V61-1 moved to resolved; the anchor destination is the public `juno-anchors`, history protected against force-push and deletion, push credential scoped to it alone.
-- **PR:** the revision is now on a new draft PR from `claude/gallant-mccarthy-alppyu` (see the PR list; it supersedes PR #29, https://github.com/khashayarjavi/juno/pull/29, whose branch this session cannot push). Review and gate not run (D-096): they run on the head that will merge, once v0.6.1 is on `main`.
+- **PR:** **PR #30** (https://github.com/khashayarjavi/juno/pull/30, draft), head 4cb2c93 before this STATE record; it supersedes PR #29 ( https://github.com/khashayarjavi/juno/pull/29, whose branch this session cannot push). Review and gate not run (D-096): they run on the head that will merge, once v0.6.1 is on `main`.
 - **Operator: the one step that unblocks everything (Windows, any browser):**
   1. Open https://github.com/khashayarjavi/juno/pull/27 while signed in as `khashayarjavi`.
   2. Scroll to the bottom of the "Conversation" tab. You should see a green box "This branch has no conflicts with the base branch".
