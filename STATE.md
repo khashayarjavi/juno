@@ -3,16 +3,24 @@
 ## Current increment
 **Slice 1.5 — Part 0 revision: the build plan brought to spec v0.6.1 and the operator's rulings of 2026-11-03** (D-091 to D-095, D-098). Branch `claude/gallant-mccarthy-alppyu`, **PR #30** (https://github.com/khashayarjavi/juno/pull/30; supersedes PR #29). Plan: `docs/plans/slice-1.5-build-plan.md`.
 
-Status: **V61-2 ruled (a) by the operator (D-102). Spec v0.6.1 is on `main`. The plan PR (#30) is not merged; the operator allowed a third review round (D-103). Increment 1 has not started.**
+Status: **STOP (D-104). Spec v0.6.1 is on `main`. PR #30 (the plan) is not merged: review round 3, the one D-103 allowed, ended DO NOT MERGE. Its three findings are fixed or raised: two copying errors corrected to the spec's words, and one new §2.3.2 gap, open objection V61-3. Increment 1 has not started.**
 - **PR #27 merged by the agent on the operator's explicit ruling (D-100):** merge commit 603284c, pinned to head fcb1a60; PR CI run 41673760530 success. `spec/` on `main` is identical to fcb1a60 and reads Version 0.6.1. The STOP of D-096/D-099 is lifted.
 - `main` merged into this branch (eee8523) so later increments build on v0.6.1.
-- V6-1 to V6-10 resolved by D-091, V61-1 by D-098. V61-2 by D-102. No objection is open.
+- V6-1 to V6-10 resolved by D-091, V61-1 by D-098. V61-2 by D-102. **Open: V61-3** (§2.3.2, D-104; below).
 - CI on `main` for 603284c: run 41686229757 (push), success.
 - **Review round 1 on 700731f (fresh subagent, P2 verbatim): DO NOT MERGE.** All six checks PASS (no tests due or touched; lint rule intact; nothing out of scope; D-091 to D-100 recorded; container seal untouched; spec on `main` identical to fcb1a60). FAIL-level findings, all stale wording: (A) the PR description still said STOP; (B) STATE "Remaining" and "For the operator" still asked the operator to merge PR #27 and rule V61-1; (C) the plan's header, §5 and §9 still said the spec was not on `main`; (D) CI not finished. A to C fixed in be989a0; D is read at the gate. Notes for the director: confirm D-100; CLAUDE.md §1 and §7 step 1 still name the Slice 1 plan.
 - **Review round 2 on be989a0 (fresh subagent, P2 verbatim): DO NOT MERGE.** Checks 1, 2, 3, 4 and 6 PASS; the plan's quotes of v0.6.1 match `main`. **Check 5 FAIL:** D-091 said, under an operator ruling, that a turn the runner cannot read neither counts toward nor resets the rejection limit. The operator never ruled that, §2.7.1 does not decide it ("a malformed call" is a rejection), and it is the less restrictive reading. **Fixed on the branch:** D-091 corrected; open objection V61-2 recorded (D-101); the plan's Increment 1 item 3, its test and §6 say the question is open. Smaller notes, also fixed: the "Resolved" line wording, D-094's conflict marked as history, the "make verify" section. Not fixed (Increment 1 work): D-097 does not define "verification scope"; Increment 1 must define it in the same D-number.
-- **Why STOP (two reasons):** (1) the operator's Slice 1.5 instruction: STOP on any new spec ambiguity touching §2, §3.2 or §4.3; §2.7.1 is in §2. (2) CLAUDE.md §7: two review rounds ended DO NOT MERGE. No third round is run without the operator.
+- *(Superseded by D-102 and D-103.)* Round 2 stopped the work: a §2 ambiguity (V61-2) and two DO NOT MERGE rounds.
 - **Operator ruling (2026-11-03): V61-2 (a)** — recorded as D-102; D-091, the plan's Increment 1 item 3, its test and §6 updated.
-- **Next, after the ruling:** record it, update the plan, one more review (with the operator's leave), CI on the pinned head, SHA-pinned merge; then Increment 1.
+- **Review round 3 on 5e2a06c (D-103; fresh subagent, P2 verbatim): DO NOT MERGE.** Checks 1, 2, 3, 4 and 6 PASS. Check 5 FAIL on three items (D-104):
+  - (a) the plan parked a shell keyword only as the **first** word; §2.3.2 says any word. Fixed to the spec's words, with tests `cat x eval` and `cat x .`;
+  - (b) the plan had dropped §4.3's "tool results raise the session's `sensitivity_floor`". Restored word for word;
+  - (c) **V61-3, open:** §2.3.2's grammar does not say what an unquoted `#` does. A shell treats `#y` as a comment, so `cat x #y` would be judged as `cat` with two operands while only `cat x` runs. D-091's V6-5 bullet corrected.
+  CI `verify` on 5e2a06c (run 41687548140) was still running when the reviewer read it. I did not read its result.
+- **Operator: two decisions.**
+  1. **V61-3:** reply "V61-3: (a)", "(b)" or "(c)" (options under "Open objections"). I recommend **(a)**.
+  2. **A fourth review of PR #30:** D-103 allowed one third round only. Say whether I may run a fourth round and merge on MERGE plus green CI. Every finding so far has been about the plan's documents; no code, test, lint rule or container has changed.
+- **Next, after both:** record the ruling, update the plan, review round 4, CI on the pinned head, SHA-pinned merge; then Increment 1.
 
 ## Previous increment
 **Slice 1.5 — Part 0 revision, STOP of 2026-11-03 (D-099).** PR #27 was still unmerged when this session started, so it stopped (PR #30 head 42f286c, CI runs 41675990794 and 41676016930 success). Lifted by D-100.
@@ -247,7 +255,7 @@ Local, 2026-11-03 on this branch (documents only since `main`): **RED on this ho
 The four items recorded during Slice 1.2 are each answered in v0.6 (§0.0): untrusted arguments to write, external and irreversible capabilities by A1 (§2.2.2); verifier slots addressable by the executing model by B1 (§2.6); provenance and the source entry in an approval by A3 (§11.1); no override of an untrusted `scope_violation` by A2 (§8.2). They are built in Slice 1.5 Increments 1 and 3. The original text is in git history (STATE.md before this commit).
 
 ## Open objections to the spec
-None.
+- **V61-3 (§2.3.2, D-104) — what does an unquoted `#` do in a shell command string?** §2.3.2's grammar for reading a Bash command in hook and gateway modes lists the shell syntax that parks, but not `#`. A shell treats an unquoted word starting with `#` as a comment: `cat x #y` runs `cat x`, while JUNO would judge `cat` with operands `x` and `#y`. So what JUNO judges would not be what runs. **Options:** (a) **recommended**, any `#` outside single quotes parks `integrity_floor` as shell syntax (it also parks harmless cases such as `cat "a#b"`); (b) only an unquoted word that begins with `#` parks (exactly where a shell starts a comment); (c) amend §2.3.2. Blocks Increment 4 only.
 
 **Resolved:** V61-2 (§2.7.1, does an unreadable turn count toward the rejection limit) — operator ruled (a), D-102: it counts as one rejection and never resets the count. V61-1 (§3.4.1, public or private anchor repository) — operator ruled (a) public, D-098; §3.4.1 at fcb1a60. V6-1 to V6-10 by spec v0.6.1 (operator ruling D-091; in effect, v0.6.1 is on `main` since 603284c, D-100): V6-1 §3.4.4 "What is pinned"; V6-2 §2.7.1 "Paths that do not exist yet"; V6-3 §4.3 "Park in B and C" (always deny); V6-4 §3.4.1 "Who signs, and what counts as off-host"; V6-5 §2.3.2 "Reading a shell command string"; V6-6 §4.3 "A session is a Task"; V6-7 §4.3 "Sensitivity in B and C"; V6-8 §11.1 "possible sources"; V6-9 §2.7.1 "The count resets" (an unreadable turn counts as one rejection, D-102); V6-10 §2.3.2 "Effect per program". Full text: DECISIONS.md D-091 and D-098, and the spec at fcb1a60.
 

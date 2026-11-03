@@ -879,7 +879,7 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   - V6-2 → §2.7.1 "Paths that do not exist yet": resolved through the longest existing ancestor; mere non-existence is never "cannot be resolved".
   - V6-3 → §4.3 "Park in B and C": a park always denies, never defers.
   - V6-4 → §3.4.1 "Who signs, and what counts as off-host": a separate journal key held by the runner signs anchors; the protection is the off-host append-only copy; in tests, an append-only container stands in.
-  - V6-5 → §2.3.2 "Reading a shell command string": a fixed word grammar; the program maps to the enum only through an operator-authored name map; `PATH` is never consulted.
+  - V6-5 → §2.3.2 "Reading a shell command string": a fixed word grammar; the program maps to the enum only through an operator-authored name map; `PATH` is never consulted. V6-5's sub-question about `#` comments is **not** answered by v0.6.1 and is not part of this ruling: it is open objection V61-3 (D-104).
   - V6-6 → §4.3 "A session is a Task": tool calls (as turns) and wall-clock are enforced; tokens and currency are `unmetered`, accepted by the operator at admission.
   - V6-7 → §4.3 "Sensitivity in B and C": a read above the session provider's declared clearance parks before it runs; earlier permitted reads do not affect later calls.
   - V6-8 → §11.1: for a synthesized value, the park lists the untrusted entries in context since the last operator input as "possible sources".
@@ -988,3 +988,15 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
 - Applies to: PR #30 only
 - Decision: after two review rounds ended DO NOT MERGE (CLAUDE.md §7 STOP), the operator allowed one third round. If it says MERGE and CI `verify` on the exact head has passed, the agent merges PR #30 pinned to that head and starts Increment 1. If it says DO NOT MERGE, the agent stops and reports.
 - Reason: the operator's instruction. Round 2's only FAIL was V61-2, which the operator has now ruled (D-102).
+
+## D-104 — PR #30 review round 3: DO NOT MERGE; plan corrected to the spec's words; open objection V61-3 (`#` in a shell command string); STOP (autopilot record)
+- Date: 2026-11-03
+- Status: Open objection V61-3 (not ruled). STOP: D-103 allowed one third round, which ended DO NOT MERGE; and V61-3 is a new ambiguity touching §2 (the operator's Slice 1.5 instruction).
+- Applies to: PR #30; Slice 1.5 Increments 4 and 5
+- Review round 3 on 5e2a06c (fresh subagent, P2 verbatim): checks 1, 2, 3, 4 and 6 PASS; check 5 FAIL on three items, each checked by the agent against the spec on `main`:
+  - (a) The plan said "a **first** word that is a shell keyword or builtin parks"; §2.3.2 says "a word". A copying error that loosened the rule. **Fixed:** the plan now uses the spec's words (any position) and tests `cat x eval` and `cat x .`.
+  - (b) The plan had dropped §4.3's "Server responses (B) and tool results (C) are `untrusted` content and raise the session's `sensitivity_floor` like any read (§1.2)". **Fixed:** restored word for word in Increments 4 and 5, next to the V6-7 clearance gate. Both sentences are the spec's; what the raised floor then governs, beyond being recorded, is settled in Increment 4 from the spec text, or stopped on (it is §4.3).
+  - (c) **V61-3, open.** §2.3.2's grammar does not mention `#`. A shell treats an unquoted word beginning with `#` as a comment, so `cat x #y` would be judged as `argv ["x", "#y"]` while the shell runs `cat x`. D-091 had filed V6-5 (which asked about `#` comments) as fully resolved; corrected.
+- Options for V61-3: **(a) recommended, the more restrictive reading:** any `#` outside single quotes parks `integrity_floor` as shell syntax (it also parks harmless cases such as `cat "a#b"`); (b) only an unquoted word beginning with `#` parks (exactly where a shell starts a comment); (c) amend §2.3.2.
+- Noted by the reviewer, not FAIL, for Increments 4 and 5 to settle from the spec text with D-numbers, or to stop on: which park reason the clearance gate uses (§4.3 names none); whether "a leading `~`" means the start of the string or of any word; D-097's "verification scope" (Increment 1).
+- Reason: CLAUDE.md §2 rule 2, §7 STOP; D-103; the operator's Slice 1.5 instruction.
