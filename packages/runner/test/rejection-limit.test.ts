@@ -152,3 +152,23 @@ describe("§2.7.1 A4 with D-102: a turn the runner cannot read", () => {
     expect(h.entries().filter((entry) => entry.kind === "capability_call")).toHaveLength(1);
   });
 });
+
+describe("§2.3.1 rule 6 (v0.6, A5) in the turn loop", () => {
+  // proves §2.3.1 rule 6: `cat -c cat` (a Slice 1.3 benign park) is now a rejection the model recovers from
+  it("lets the model recover from an undeclared flag on cat", async () => {
+    const { runner, provider } = h.runner([turn([shellRun(["-c", "cat"])]), turn([shellRun(["notes.txt"])]), turn([])]);
+    admitted(runner);
+    expect((await runner.run("task-1")).state).toBe("complete_unverified");
+    expect(parks()).toEqual([]);
+    expect(results()).toBe(1);
+    expect(provider.requests[1]?.context.at(-1)?.content).toMatchObject({ outcome: "rejected", reason: "malformed_call" });
+  });
+
+  // proves §2.3.1 rule 6 with §2.7.1 A4: such rejections count toward the limit, so a model repeating them parks visibly
+  it("parks rejection_limit when the model repeats it", async () => {
+    const { runner } = h.runner([turn([shellRun(["-c", "cat"])]), turn([shellRun(["-c", "cat"])]), turn([shellRun(["ls", "-c", "touch done.txt"])]), turn([])]);
+    admitted(runner);
+    expect((await runner.run("task-1")).reason).toBe("rejection_limit");
+    expect(results()).toBe(0);
+  });
+});

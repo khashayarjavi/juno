@@ -25,7 +25,7 @@ describe("argv positions are read per call against the declared surface (§2.3 r
   // proves §2.3 rule 2: an argv with only declared non-code positions stays data
   it("keeps every element data when no declared position executes code", () => {
     const roles = argvRoles(TOOL, toolSurface, ["-q", "show", "--verbose", "file.txt"]);
-    expect(roles).toEqual({ elements: [0, 1, 2, 3].map((index) => ({ index, role: "data" })), failClosed: false });
+    expect(roles).toEqual({ elements: [0, 1, 2, 3].map((index) => ({ index, role: "data" })), failClosed: false, undeclaredFlag: null });
   });
 
   // proves §2.3 rule 2: a code-bearing flag and everything after it are promoted, wherever the flag sits
@@ -72,6 +72,7 @@ describe("argv positions are read per call against the declared surface (§2.3 r
     expect(argvRoles(TOOL, undefined, ["file"])).toEqual({
       elements: [{ index: 0, role: "instruction", reason: "no_declared_surface", at: null }],
       failClosed: true,
+      undeclaredFlag: null,
     });
     expect(argvRoles("/usr/bin/other", toolSurface, ["file"])).toMatchObject({ failClosed: true, elements: [{ reason: "surface_names_another_program" }] });
   });
@@ -91,17 +92,27 @@ describe("argv positions are read per call against the declared surface (§2.3 r
     });
   });
 
-  // proves D-037: a declared `--` ends option parsing, so later tokens are operands; an undeclared `--` is an uncovered flag
+  // proves D-037 and §2.3.1 rules 1, 5 and 6: a declared `--` ends option parsing, so later tokens are operands; an
+  // undeclared `--` is an undeclared flag: on a surface with a code-bearing position it promotes every element (rule 5),
+  // and on a surface that is code-free everywhere it makes the call a rejection instead (rule 6, v0.6 A5)
   it("reads tokens after a declared -- as operands", () => {
     expect(instructionIndices(argvRoles(TOOL, toolSurface, ["--", "--hook", "run", "-Z"]))).toEqual([]);
+    const noEndWithCode: FlagSurface = {
+      program: TOOL,
+      positions: [
+        { position: { kind: "flag", flag: "--hook" }, executes_code: true },
+        { position: { kind: "operand" }, executes_code: false },
+      ],
+    };
+    expect(argvRoles(TOOL, noEndWithCode, ["--", "file"])).toMatchObject({ failClosed: true, undeclaredFlag: null, elements: [{ reason: "uncovered_flag", at: 0 }, {}] });
     const noEnd: FlagSurface = { program: TOOL, positions: [{ position: { kind: "operand" }, executes_code: false }] };
-    expect(argvRoles(TOOL, noEnd, ["--", "file"]).failClosed).toBe(true);
+    expect(argvRoles(TOOL, noEnd, ["--", "file"])).toEqual({ elements: [{ index: 0, role: "data" }, { index: 1, role: "data" }], failClosed: false, undeclaredFlag: 0 });
   });
 
   // proves D-037: `-` alone is an operand, and an empty argv has no elements to promote
   it("treats - alone as an operand and an empty argv as nothing", () => {
-    expect(argvRoles(TOOL, toolSurface, ["-"])).toEqual({ elements: [{ index: 0, role: "data" }], failClosed: false });
-    expect(argvRoles(TOOL, toolSurface, [])).toEqual({ elements: [], failClosed: false });
+    expect(argvRoles(TOOL, toolSurface, ["-"])).toEqual({ elements: [{ index: 0, role: "data" }], failClosed: false, undeclaredFlag: null });
+    expect(argvRoles(TOOL, toolSurface, [])).toEqual({ elements: [], failClosed: false, undeclaredFlag: null });
   });
 
   // proves §2.3 rule 2 and D-036 for any argv (property): every element gets a role; promotion is all or a suffix;
@@ -172,5 +183,53 @@ describe("the same argv reading classes elements for the scope check (D-047)", (
         expect(roles.failClosed).toBe(argv.some((element, index) => kinds[index] === "flag" && element === "-Z"));
       }),
     );
+  });
+});
+
+describe("§2.3.1 rule 6 (v0.6, A5): an undeclared flag on a code-free program is a rejection, not a promotion", () => {
+  /** A program not on the §2.3 list whose declared surface marks every position code-free. */
+  const codeFree: FlagSurface = {
+    program: TOOL,
+    positions: [
+      { position: { kind: "flag", flag: "-q" }, executes_code: false },
+      { position: { kind: "operand" }, executes_code: false },
+    ],
+  };
+
+  // proves §2.3.1 rule 6: every element stays data, and the first undeclared flag is named for the boundary to reject
+  it.each([
+    ["an undeclared flag", ["-q", "-Z", "file"], 1],
+    ["a short-flag cluster", ["-qZ", "file"], 0],
+    ["a value attached to a flag", ["-q=2", "file"], 0],
+    ["two undeclared flags", ["file", "-c", "-Z"], 1],
+  ])("names %s and promotes nothing", (_name, argv, at) => {
+    expect(argvRoles(TOOL, codeFree, argv)).toEqual({ elements: argv.map((_e, index) => ({ index, role: "data" })), failClosed: false, undeclaredFlag: at });
+  });
+
+  // proves §2.3.1 rules 5 and 6: an undeclared operand anywhere still promotes every element, so a park is never turned
+  // into a retryable rejection (§2.7.1 D5)
+  it("still promotes every element when an operand is also undeclared", () => {
+    const flagsOnly: FlagSurface = { program: TOOL, positions: [{ position: { kind: "flag", flag: "-q" }, executes_code: false }] };
+    expect(argvRoles(TOOL, flagsOnly, ["-Z", "file"])).toMatchObject({ failClosed: true, undeclaredFlag: null, elements: [{ reason: "uncovered_flag", at: 0 }, { reason: "uncovered_flag", at: 0 }] });
+  });
+
+  // proves §2.3.1 rule 5: on a surface with any code-bearing position, an undeclared flag still promotes every element
+  it("still promotes every element when the surface has a code-bearing position", () => {
+    expect(argvRoles(TOOL, toolSurface, ["-Z", "file"])).toMatchObject({ failClosed: true, undeclaredFlag: null });
+  });
+
+  // proves §2.3.1 rules 5 and 6: a program on the §2.3 list is never read as code-free, whatever its surface claims
+  it("never treats a listed interpreter as code-free", () => {
+    const python = "/usr/bin/python3";
+    const honest: FlagSurface = {
+      program: python,
+      positions: [
+        { position: { kind: "flag", flag: "-c" }, executes_code: true },
+        { position: { kind: "operand" }, executes_code: true },
+      ],
+    };
+    expect(argvRoles(python, honest, ["-Z", "x"])).toMatchObject({ failClosed: true, undeclaredFlag: null });
+    const lying: FlagSurface = { program: python, positions: [{ position: { kind: "operand" }, executes_code: false }] };
+    expect(argvRoles(python, lying, ["-Z", "x"])).toMatchObject({ failClosed: true, undeclaredFlag: null, elements: [{ reason: "known_interpreter_without_code_position" }, {}] });
   });
 });

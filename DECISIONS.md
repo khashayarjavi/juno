@@ -1025,3 +1025,18 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   - **What resets.** A call that proceeds; any park (the task stops, and §2.7.1 says a park resets); resume. An unreadable turn never resets.
   - **The park.** `rejection_limit`, overridable (§6.2). The park entry names the limit and each counted rejection in order (`{kind: "call" | "unreadable_turn", seq}`); for a rejected call it also names the call and lists the turn's calls not acted on, as other parks do.
 - Reason: §2.7.1, §6.2, D-102. Proven by `packages/runner/test/rejection-limit.test.ts`.
+
+## D-108 — A5: an undeclared flag on a code-free program is a rejection; the tests that pinned v0.5.1's promotion changed (Slice 1.5 Increment 1)
+- Date: 2026-11-03
+- Status: Accepted (implementation record of §2.3.1 rule 6, v0.6 A5; the test changes follow a specification change, not a weakening)
+- Applies to: Slice 1.5 Increment 1 onward
+- Decision:
+  - `argvRoles` (`packages/contracts/src/promotion.ts`) reads the whole argv. When every undeclared element is a flag, the program's surface marks every position code-free, and the program is not on the §2.3 list, every element stays `data` and the first undeclared flag is named (`undeclaredFlag`). Otherwise anything undeclared promotes every element, as before (rule 5). An undeclared operand anywhere still promotes, so a park is never turned into a retryable rejection (§2.7.1 D5).
+  - The enforcement boundary rejects such a call as `malformed_call`, after step 3 has passed and with the other rejections, before the grant check. Nothing runs and no grant is charged. The rejection counts toward the rejection limit (§2.7.1, D-107).
+  - An undeclared `--` is an undeclared flag like any other.
+- **Tests changed because the specification changed** (v0.5.1/D-036: an undeclared cat flag promoted every element; v0.6 §2.3.1 rule 6: it is a rejection). Each keeps or strengthens what it proved:
+  - `packages/registry/test/promotion.test.ts`, "parks cat %j with every element promoted" → "names cat %j's undeclared flag for rejection and promotes nothing": now asserts no promotion, the floors pass, and the flag is named for rejection (plus `-c cat`). Rule 5 on a listed interpreter is kept by a new case, sh with an undeclared flag still promotes every element.
+  - `packages/contracts/test/promotion.test.ts`, "reads tokens after a declared --": the undeclared `--` case now asserts both readings, promotion on a surface with a code-bearing position and rejection on a code-free one. Three exact-shape assertions gain `undeclaredFlag: null`.
+  - `packages/enforcement/test/enforcement.test.ts`: three tests used an undeclared cat flag only to obtain promoted argv (D-038 step 3, D-046 raised floor, D-048 broken cwd reference). They now obtain it from a variant cat surface with no operand position, so an operand promotes every element (rule 5), and assert the same parks. The D-051 test ("never lets an undeclared flag carry a path past scope") now asserts the call is rejected, nothing is charged, and with an undeclared operand present it still parks.
+  - New tests: `packages/contracts/test/promotion.test.ts` (rule 6 block), `packages/enforcement/test/enforcement.test.ts` ("§2.3.1 rule 6": `cat -c x` rejected and journalled; a synthesized program still parks; a code-bearing surface still parks; a listed interpreter still parks), `packages/runner/test/rejection-limit.test.ts` (the model recovers; repeats park `rejection_limit`).
+- Reason: §2.3.1 rules 5 and 6, §2.7.1. CLAUDE.md §2 rule 5: no test was weakened; each changed assertion follows the specification's change and is recorded here.

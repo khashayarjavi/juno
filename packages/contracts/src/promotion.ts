@@ -39,6 +39,12 @@ export type ArgvRoles = {
   readonly elements: readonly ArgvElementRole[];
   /** True when every element was promoted because the surface does not cover the call. */
   readonly failClosed: boolean;
+  /**
+   * §2.3.1 rule 6 (v0.6, A5): the index of the first flag the surface does not declare, when the program's surface marks
+   * every position code-free and the program is not on the §2.3 list. Such a call is a rejection (`malformed_call`), not
+   * a promotion: its elements stay `data`, and the enforcement boundary rejects it. `null` otherwise.
+   */
+  readonly undeclaredFlag: number | null;
 };
 
 const OPTIONS_END = "--";
@@ -106,14 +112,20 @@ export function argvTokenKinds(program: string, surface: FlagSurface | undefined
  *   - Any other token is a declared subcommand if one has that name, else an operand.
  *   - The first element whose declared position executes code is promoted
  *     together with every element after it.
- *   - Anything undeclared, anywhere in the argv, promotes every element.
+ *   - Anything undeclared, anywhere in the argv, promotes every element
+ *     (§2.3.1 rule 5) — except as rule 6 says below.
  *   - So does a surface for a listed interpreter that declares no code-bearing
  *     position, because the list says it runs code (D-018).
+ *   - §2.3.1 rule 6 (v0.6, A5): on a program whose surface marks every position
+ *     code-free and which is not on the §2.3 list, undeclared flags (and no
+ *     undeclared operand) leave every element `data` and name the first such
+ *     flag in `undeclaredFlag`; the call is then rejected, not promoted.
  */
 export function argvRoles(program: string, surface: FlagSurface | undefined, argv: readonly string[]): ArgvRoles {
   const all = (reason: PromotionReason, at: number | null): ArgvRoles => ({
     elements: argv.map((_element, index) => ({ index, role: "instruction", reason, at })),
     failClosed: true,
+    undeclaredFlag: null,
   });
   if (surface === undefined) return all("no_declared_surface", null);
   if (surface.program !== program) return all("surface_names_another_program", null);
@@ -121,11 +133,25 @@ export function argvRoles(program: string, surface: FlagSurface | undefined, arg
     return all("known_interpreter_without_code_position", null);
   }
 
+  const tokens = readTokens(surface, argv);
+  const firstUndeclared = tokens.findIndex((token) => token.executesCode === undefined);
+  if (firstUndeclared >= 0) {
+    // §2.3.1 rule 6 (A5): when every undeclared element is a flag, and the surface marks every position code-free on a
+    // program not on the §2.3 list, the call is rejected instead. An undeclared operand anywhere still promotes every
+    // element (rule 5): a park is never turned into a retryable rejection (§2.7.1, D5).
+    const onlyFlags = tokens.every((token) => token.executesCode !== undefined || token.kind === "flag");
+    const codeFree = !surface.positions.some((entry) => entry.executes_code) && !KNOWN_INTERPRETERS.has(programBaseName(program));
+    if (onlyFlags && codeFree) {
+      return { elements: argv.map((_element, index) => ({ index, role: "data" })), failClosed: false, undeclaredFlag: firstUndeclared };
+    }
+    const first = tokens[firstUndeclared];
+    return all(first?.kind === "flag" ? "uncovered_flag" : "uncovered_operand", firstUndeclared);
+  }
+
   let codeFrom: number | undefined;
-  for (const [index, token] of readTokens(surface, argv).entries()) {
-    if (token.executesCode === undefined) return all(token.kind === "flag" ? "uncovered_flag" : "uncovered_operand", index);
-    // Keep reading after the first code-bearing element: an undeclared element anywhere still promotes all.
-    if (token.executesCode && codeFrom === undefined) codeFrom = index;
+  for (const [index, token] of tokens.entries()) {
+    // An element in a code-bearing position, and every element after it, carries code.
+    if (token.executesCode === true && codeFrom === undefined) codeFrom = index;
   }
 
   return {
@@ -135,5 +161,6 @@ export function argvRoles(program: string, surface: FlagSurface | undefined, arg
         : { index, role: "data" },
     ),
     failClosed: false,
+    undeclaredFlag: null,
   };
 }

@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { BoundaryError, type FlagSurface, type Integrity } from "../../contracts/src/index.js";
+import { BoundaryError, type FlagSurface, type Integrity, argvRoles } from "../../contracts/src/index.js";
 import {
   CapabilityRegistry,
   PROMOTED_ARGV_FLOOR,
@@ -197,14 +197,26 @@ describe("the shipped shell.run under per-call promotion (§2.2, §2.3 rule 2, D
     },
   );
 
-  // proves D-036 fail-closed on a non-interpreter too: a flag cat's surface does not declare promotes every element
-  it.each([[["--bogus", "/work/a"]], [["-nA", "/work/a"]], [["/work/a", "--number=1"]], [["-file-starting-with-dash"]]])(
-    "parks cat %j with every element promoted",
-    (argv) => {
-      const verdict = checkInstructionFloors(shipped(), call(CAT, argv), provenance(argv));
-      expect(violated(verdict)).toEqual(argv.map((_e, index) => `argv[${String(index)}]`));
-    },
-  );
+  // proves §2.3.1 rule 6 (v0.6 A5; replaces D-036's promotion here, D-108): cat's surface is code-free everywhere and cat
+  // is not on the §2.3 list, so a flag it does not declare promotes nothing; the call is named for rejection instead
+  // (the enforcement boundary rejects it as malformed_call: packages/enforcement/test/enforcement.test.ts, "§2.3.1 rule 6")
+  it.each<[string[], number]>([
+    [["--bogus", "/work/a"], 0],
+    [["-nA", "/work/a"], 0],
+    [["/work/a", "--number=1"], 1],
+    [["-file-starting-with-dash"], 0],
+    [["-c", "cat"], 0],
+  ])("names cat %j's undeclared flag for rejection and promotes nothing", (argv, at) => {
+    expect(checkInstructionFloors(shipped(), call(CAT, argv), provenance(argv))).toEqual({ outcome: "proceed" });
+    expect(instructionValues(shipped(), call(CAT, argv)).map((value) => value.argument)).toEqual(["program"]);
+    expect(argvRoles(CAT, shipped().program_surfaces.find((surface) => surface.program === CAT), argv)).toMatchObject({ failClosed: false, undeclaredFlag: at });
+  });
+
+  // proves §2.3.1 rule 5 still holds for the forced sh entry: an undeclared flag on a listed interpreter promotes every element
+  it("still promotes every element of sh on a flag its surface does not declare", () => {
+    const argv = ["-Z", "/work/a"];
+    expect(violated(checkInstructionFloors(forcedSh(), call(SH, argv), provenance(argv)))).toEqual(["argv[0]", "argv[1]"]);
+  });
 
   // proves §2.2 for any cat call using only declared flags and plain operands (property): nothing is promoted
   it("promotes nothing in any cat call made of declared flags and plain operands (property)", () => {

@@ -142,6 +142,26 @@ function setUp(adapter: Adapter = workloadAdapter()): void {
   boundary = new EnforcementBoundary({ registry, grants, journal, clock: () => now });
 }
 
+/**
+ * shell.run with cat's surface declaring no operand, so any operand is undeclared and promotes every element
+ * (§2.3.1 rule 5). Since v0.6 an undeclared *flag* on cat is a rejection (rule 6, A5), so tests that need promoted argv
+ * on a non-interpreter use this surface (D-108).
+ */
+function setUpOperandless(adapter: Adapter = workloadAdapter()): void {
+  const entry = loadRegistryEntry(SHELL_RUN_FILE);
+  const operandless = {
+    ...entry,
+    program_surfaces: entry.program_surfaces.map((surface) =>
+      surface.program === CAT ? { ...surface, positions: surface.positions.filter((item) => item.position.kind !== "operand") } : surface,
+    ),
+  };
+  registry = new CapabilityRegistry();
+  const registered = registry.register(operandless, [adapter]);
+  expect(registered.registered).toBe(true);
+  grants = new GrantStore();
+  boundary = new EnforcementBoundary({ registry, grants, journal, clock: () => now });
+}
+
 /** Appends a prior entry to a task's trajectory, as the runner would after a capability result. */
 function seed(payload: unknown, dataClass: DataClass = INTERNAL_UNTRUSTED, taskId = TASK_ID): TrajectoryEntry {
   return journal.append(
@@ -202,16 +222,19 @@ describe("§2.7 step 3: instruction values below their floor park integrity_floo
     expect(() => boundary.authorize(context({ task: task({ context_ownership: "owned" }) }), proposal(constant("cat"), []))).toThrow(EnforcementError);
   });
 
-  // proves D-038 / §2.3 rule 2: step 3 is checkInstructionFloors, so argv elements promoted under the declared surface park too
-  it("parks argv promoted under the program's surface (an undeclared cat flag promotes every element, D-037)", () => {
-    const verdict = boundary.authorize(context(), proposal(constant("cat"), [synthesized("-Z"), synthesized("notes.txt")]));
+  // proves D-038 / §2.3 rule 2 / §2.3.1 rule 5: step 3 is checkInstructionFloors, so argv elements promoted under the
+  // declared surface park too (an undeclared operand promotes every element, D-037; D-108 for the surface used)
+  it("parks argv promoted under the program's surface (an undeclared operand promotes every element, D-037)", () => {
+    setUpOperandless();
+    grants.add(grant());
+    const verdict = boundary.authorize(context(), proposal(constant("cat"), [synthesized("-n"), synthesized("notes.txt")]));
     expect(verdict).toMatchObject({
       outcome: "park",
       detail: {
         reason: "integrity_floor",
         violations: [
-          { argument: "argv[0]", floor: "operator", integrity: "untrusted", source: { kind: "promoted_argv", reason: "uncovered_flag", at: 0 } },
-          { argument: "argv[1]", floor: "operator", integrity: "untrusted", source: { kind: "promoted_argv", reason: "uncovered_flag", at: 0 } },
+          { argument: "argv[0]", floor: "operator", integrity: "untrusted", source: { kind: "promoted_argv", reason: "uncovered_operand", at: 1 } },
+          { argument: "argv[1]", floor: "operator", integrity: "untrusted", source: { kind: "promoted_argv", reason: "uncovered_operand", at: 1 } },
         ],
       },
     });
@@ -648,8 +671,9 @@ describe("D-046 (O-3 ruling): a grant's data_class_bounds tighten steps 3 and 5"
 
   // proves D-046: a raised floor also applies to argv promoted under §2.3 rule 2 (already at operator, so the grant cannot lower it)
   it("keeps promoted argv at the operator floor whatever the grant allows", () => {
+    setUpOperandless();
     useGrants(bounds("untrusted"));
-    expect(parkReason(boundary.authorize(context(), proposal(constant("cat"), [synthesized("-Z")])))).toBe("integrity_floor");
+    expect(parkReason(boundary.authorize(context(), proposal(constant("cat"), [synthesized("notes.txt")])))).toBe("integrity_floor");
   });
 
   // proves D-046 / D-045: candidates are looked up before step 3, but awaiting_grant is decided only after it passes
@@ -846,7 +870,8 @@ describe("D-048: integrity is judged before a resolution failure can mask it (§
 
   // proves D-048: the rest of the call is still read when a data reference is broken, so promoted argv below its floor parks
   it("still reads the argv when the cwd reference is broken", () => {
-    const verdict = boundary.authorize(context(), proposal(constant("cat"), [synthesized("-Z")], bound(BROKEN)));
+    setUpOperandless();
+    const verdict = boundary.authorize(context(), proposal(constant("cat"), [synthesized("notes.txt")], bound(BROKEN)));
     expect(verdict).toMatchObject({
       outcome: "park",
       detail: { reason: "integrity_floor", violations: [{ argument: "argv[0]", floor: "operator", integrity: "untrusted", source: { kind: "promoted_argv" } }] },
@@ -908,11 +933,16 @@ describe("D-050 and D-051: scope edge cases", () => {
     expect(scopeViolations(entry, call({}), scope)).toEqual([]);
   });
 
-  // records D-051 / D-037: a flag absent from the declared surface skips the scope check only because it promotes the whole argv to instruction
+  // records D-051 / D-037 with §2.3.1 rules 5 and 6: a flag absent from the declared surface is never scope-checked, so it
+  // may never run: on cat (code-free everywhere) the call is rejected (v0.6 A5, D-108); on a surface with an undeclared
+  // operand too, every element is promoted and parks
   it("never lets an undeclared flag carry a path past scope with untrusted provenance", () => {
     const verdict = boundary.authorize(context(), proposal(constant("cat"), [synthesized("--x=/etc/passwd")]));
-    expect(verdict).toMatchObject({ outcome: "park", detail: { reason: "integrity_floor", violations: [{ argument: "argv[0]", source: { kind: "promoted_argv", reason: "uncovered_flag" } }] } });
+    expect(verdict).toMatchObject({ outcome: "reject", detail: { reason: "malformed_call" } });
     expect(scopeViolations(loadRegistryEntry(SHELL_RUN_FILE), { program: CAT, argv: ["--x=/etc/passwd"], cwd: "/work" }, Grant.parse(grant()))).toEqual([]);
+    expect(grants.invocations("grant-1")).toBe(0);
+    setUpOperandless();
+    expect(parkReason(boundary.authorize(context(), proposal(constant("cat"), [synthesized("--x=/etc/passwd"), synthesized("/etc/passwd")])))).toBe("integrity_floor");
   });
 });
 
@@ -1181,5 +1211,70 @@ describe("D-053 (operator ruling): the adapter's planned command is copied exact
     });
     expect(reads).toEqual({ file: 1, args: 1 });
     expect(grants.invocations("grant-1")).toBe(0);
+  });
+});
+
+describe("§2.3.1 rule 6 (v0.6, A5): an undeclared flag on a code-free program is a rejection", () => {
+  /** A test-only registry serving `forced` as if review had accepted it (as §18 test 4b does, D-067). */
+  const serveForced = (forced: RegistryEntry): void => {
+    class ForcedRegistry extends CapabilityRegistry {
+      override entry(id: string): RegistryEntry | undefined {
+        return id === forced.capability.id ? forced : super.entry(id);
+      }
+      override capability(id: string): RegistryEntry["capability"] | undefined {
+        return id === forced.capability.id ? forced.capability : super.capability(id);
+      }
+    }
+    registry = new ForcedRegistry();
+    expect(registry.register(loadRegistryEntry(SHELL_RUN_FILE), [workloadAdapter()]).registered).toBe(true);
+    boundary = new EnforcementBoundary({ registry, grants, journal, clock: () => now });
+  };
+
+  // proves §2.3.1 rule 6 / §2.7.1 A4: `cat -c x` is a malformed_call rejection: nothing runs, no grant is charged, and it is journalled
+  it("rejects cat -c x as malformed_call, running nothing", () => {
+    const verdict = boundary.authorize(context(), proposal(constant("cat"), [synthesized("-c"), synthesized("x")]));
+    expect(verdict).toMatchObject({ outcome: "reject", detail: { reason: "malformed_call", message: expect.stringContaining("argv[0]") } });
+    expect(entryAt(verdict.call_seq).kind).toBe("capability_call");
+    expect(payloadOf(entryAt(verdict.call_seq))).toMatchObject({ verdict: { outcome: "reject", reason: "malformed_call" } });
+    expect(grants.invocations("grant-1")).toBe(0);
+  });
+
+  // proves §2.3.1 rule 6 with §2.7.1 D5: a rejection never outranks an instruction value below its floor: a synthesized program still parks
+  it("still parks a synthesized program, whatever flag follows it", () => {
+    expect(parkReason(boundary.authorize(context(), proposal(synthesized(CAT), [synthesized("-c"), synthesized("x")])))).toBe("integrity_floor");
+  });
+
+  // proves §2.3.1 rule 5: on a surface with any code-bearing position, the same undeclared flag promotes every element and parks
+  it("parks cat -c x when cat's surface has a code-bearing position", () => {
+    const entry = loadRegistryEntry(SHELL_RUN_FILE);
+    serveForced(
+      RegistryEntry.parse({
+        ...entry,
+        program_surfaces: entry.program_surfaces.map((surface) =>
+          surface.program === CAT ? { ...surface, positions: [...surface.positions, { position: { kind: "flag", flag: "--hook" }, executes_code: true }] } : surface,
+        ),
+      }),
+    );
+    const verdict = boundary.authorize(context(), proposal(constant("cat"), [synthesized("-c"), synthesized("x")]));
+    expect(verdict).toMatchObject({ outcome: "park", detail: { reason: "integrity_floor", violations: [{ argument: "argv[0]", source: { reason: "uncovered_flag" } }, { argument: "argv[1]" }] } });
+  });
+
+  // proves §2.3.1 rules 5 and 6: a listed interpreter with an undeclared flag still parks (it is never read as code-free)
+  it("parks a listed interpreter with an undeclared flag", () => {
+    const entry = loadRegistryEntry(SHELL_RUN_FILE);
+    const program = entry.capability.interface["program"];
+    if (program?.type.kind !== "enum") throw new Error("program is not an enum");
+    serveForced(
+      RegistryEntry.parse({
+        ...entry,
+        capability: { ...entry.capability, interface: { ...entry.capability.interface, program: { ...program, type: { kind: "enum", values: [...program.type.values, "/bin/sh"] } } } },
+        program_surfaces: [
+          ...entry.program_surfaces,
+          { program: "/bin/sh", positions: [{ position: { kind: "flag", flag: "-c" }, executes_code: true }, { position: { kind: "operand" }, executes_code: false }] },
+        ],
+      }),
+    );
+    const verdict = boundary.authorize(context(), proposal(constant("sh"), [synthesized("-Z"), synthesized("x")]));
+    expect(verdict).toMatchObject({ outcome: "park", detail: { reason: "integrity_floor" } });
   });
 });

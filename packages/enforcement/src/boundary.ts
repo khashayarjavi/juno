@@ -440,6 +440,14 @@ function judgeUnparsed(
   return { values: judgedValues, violations };
 }
 
+/** §2.3.1 rule 6 (A5): the first undeclared flag of a parsed call whose program's surface is code-free everywhere, or `null`. */
+function undeclaredFlagOf(entry: RegistryEntry, call: CapabilityCall): number | null {
+  const program = String(call[entry.program_field]);
+  const argv = (call[entry.argv_field] as readonly unknown[]).map(String);
+  const surface = entry.program_surfaces.find((candidate) => candidate.program === program);
+  return argvRoles(program, surface, argv).undeclaredFlag;
+}
+
 /**
  * D-053: reads an adapter's planned invocation exactly once (`file` once,
  * `args` once, each element once) into a frozen copy of plain strings. An
@@ -549,6 +557,12 @@ export class EnforcementBoundary {
     if (failures.length > 0) return reject({ reason: "unresolved_argument", failures });
     if (!proposal.success) return reject({ reason: "malformed_call", message: `not a capability call proposal: ${proposal.error.message}` });
     if (!floors.parsed.ok) return reject({ reason: "malformed_call", message: floors.parsed.message });
+    // §2.3.1 rule 6 (v0.6, A5): an undeclared flag on a program whose surface is code-free everywhere, and which is not
+    // on the §2.3 list, is a rejection. Step 3 has passed, so no instruction value is below its floor.
+    const undeclared = undeclaredFlagOf(entry, floors.parsed.call);
+    if (undeclared !== null) {
+      return reject({ reason: "malformed_call", message: `${entry.argv_field}[${String(undeclared)}] is a flag the program's declared surface does not list (§2.3.1 rule 6)` });
+    }
     // One frozen copy of the inspected call: the adapter plans from it, and the Authorization carries it (D-053).
     const parsedCall = frozenCall(floors.parsed.call);
 
