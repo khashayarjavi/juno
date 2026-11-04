@@ -17,6 +17,8 @@ rm -rf "$RUNNER_HOME/juno"
 cp -a "$repo" "$RUNNER_HOME/juno"
 rm -rf "$RUNNER_HOME/juno/dist" "$RUNNER_HOME/juno/build"
 chown -R "$RUNNER_USER:$RUNNER_USER" "$RUNNER_HOME/juno"
+# No ACL from the checkout reaches the build context (see setup-root.sh step 2).
+if command -v setfacl >/dev/null 2>&1; then setfacl -R -b -k "$RUNNER_HOME/juno"; fi
 
 # Pass the outbound proxy through when the machine has one (cloud sessions), with a CA bundle the user can read.
 pass=()
