@@ -3,7 +3,7 @@
 
 COMPOSE := docker compose -f containers/docker-compose.yml
 
-.PHONY: verify typecheck lint test test-watch build stage containers smoke clean
+.PHONY: verify verify-rootless typecheck lint test test-watch build stage containers smoke clean
 
 verify:
 	$(MAKE) typecheck
@@ -45,6 +45,16 @@ stage:
 	mkdir -p build/stage
 	cp package.json package-lock.json build/stage/
 	cd build/stage && npm ci --omit=dev --ignore-scripts --no-audit --no-fund --prefer-offline
+
+# The same container suite as the runner's unprivileged user under the rootless runtime (DECISIONS.md D-130,
+# D-131). Run it through scripts/rootless/run-verify.sh, never as root. The first step proves the user and the
+# runtime are what D-130 requires, including cgroup v2 with systemd, without which rootless Docker ignores the
+# D-025 limits; only then do the seal tests run.
+verify-rootless:
+	@if [ "$$(id -u)" = 0 ]; then echo "verify-rootless: refusing to run as root"; exit 1; fi
+	npx vitest run --config vitest.rootless.config.ts
+	$(MAKE) containers
+	@echo "make verify-rootless: GREEN"
 
 containers: build stage
 	$(COMPOSE) --profile anchors build
