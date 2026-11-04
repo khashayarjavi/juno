@@ -50,7 +50,7 @@ fi
 echo "setup-root: 1. packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -q >/dev/null
-apt-get install -y -q uidmap dbus-user-session iproute2 >/dev/null
+apt-get install -y -q uidmap dbus-user-session iproute2 acl >/dev/null
 
 echo "setup-root: 2. user $RUNNER_USER"
 if ! id "$RUNNER_USER" >/dev/null 2>&1; then
@@ -62,6 +62,11 @@ grep -q "^$RUNNER_USER:" /etc/subuid || usermod --add-subuids 300000-365535 "$RU
 grep -q "^$RUNNER_USER:" /etc/subgid || usermod --add-subgids 300000-365535 "$RUNNER_USER"
 RUNNER_UID="$(id -u "$RUNNER_USER")"
 RUNNER_HOME="$(getent passwd "$RUNNER_USER" | cut -d: -f6)"
+# A default ACL inherited from /home (GitHub's runner image has one) names a uid the rootless user namespace does not
+# map; every directory the daemon creates would inherit it, and copying a mount point into a new volume then fails
+# with EINVAL. The runner's home gets no ACL at all.
+getfacl -p /home "$RUNNER_HOME" 2>/dev/null | grep -E '^(# file|default:|user:[^:])' | sed 's/^/setup-root:    acl before: /' || true
+setfacl -R -b -k "$RUNNER_HOME"
 
 echo "setup-root: 3. Docker $DOCKER_VERSION rootless binaries in $BIN"
 download="$(mktemp -d)"
