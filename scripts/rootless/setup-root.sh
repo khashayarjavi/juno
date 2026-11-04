@@ -143,6 +143,10 @@ UNIT
   [ -S "/run/user/$RUNNER_UID/bus" ] || { echo "setup-root: the user's systemd manager did not start" >&2; diagnose; exit 1; }
   controllers="/sys/fs/cgroup/user.slice/user-$RUNNER_UID.slice/user@$RUNNER_UID.service/cgroup.controllers"
   echo "setup-root:    delegated to the user: $(cat "$controllers")"
+  # The user's manager can inherit another user's XDG_RUNTIME_DIR or HOME from global environment files (GitHub's
+  # runner image sets them in /etc/environment); the rootless daemon then refuses to start. Give the manager its own.
+  grep -E '^(XDG_RUNTIME_DIR|HOME)=' /etc/environment 2>/dev/null | sed 's/^/setup-root:    global environment: /' || true
+  as_runner systemctl --user set-environment "XDG_RUNTIME_DIR=/run/user/$RUNNER_UID" "HOME=$RUNNER_HOME"
   if ! as_runner "$BIN/dockerd-rootless-setuptool.sh" install; then
     journalctl _UID="$RUNNER_UID" --no-pager -n 80 || true
     diagnose
