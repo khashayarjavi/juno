@@ -14,17 +14,41 @@ import { AbsolutePath, Capability, FlagSurface, parseAtBoundary } from "../../co
 export const RegistryEntry = z
   .strictObject({
     capability: Capability,
-    /** The interface field naming the program to run: a scalar `instruction` enum (§2.2, §2.3). */
-    program_field: z.string(),
+    /** The interface field naming the program to run: a scalar `instruction` enum (§2.2, §2.3). Absent on a typed entry (D-134). */
+    program_field: z.string().optional(),
     /** The interface field holding the program's argv: a `data` list of strings, read per call against the surfaces (D-036, D-038). */
-    argv_field: z.string(),
+    argv_field: z.string().optional(),
     /** The interface field holding the working directory: a scalar `data` path. Relative argv operands are read against it (D-047). */
-    cwd_field: z.string(),
+    cwd_field: z.string().optional(),
     /** The declared flag surface of each program in that enum (DECISIONS.md D-018). */
-    program_surfaces: z.array(FlagSurface),
+    program_surfaces: z.array(FlagSurface).default([]),
   })
   .superRefine((entry, ctx) => {
-    const field = entry.capability.interface[entry.program_field];
+    const named = [entry.program_field, entry.argv_field, entry.cwd_field].filter((field) => field !== undefined).length;
+    if (named === 0) {
+      // A typed entry (D-134): no program is chosen per call, so no field may be an instruction and no surface applies.
+      for (const [name, field] of Object.entries(entry.capability.interface)) {
+        if (field.role === "instruction") {
+          ctx.addIssue({
+            code: "custom",
+            path: ["capability", "interface", name, "role"],
+            message: "a capability with no program field has data fields only (DECISIONS.md D-134)",
+          });
+        }
+      }
+      if (entry.program_surfaces.length > 0) {
+        ctx.addIssue({ code: "custom", path: ["program_surfaces"], message: "a capability with no program field declares no program surface" });
+      }
+      return;
+    }
+    if (named !== 3) {
+      ctx.addIssue({ code: "custom", path: ["program_field"], message: "program_field, argv_field and cwd_field are named together or not at all (D-134)" });
+      return;
+    }
+    const programField = entry.program_field ?? "";
+    const argvField = entry.argv_field ?? "";
+    const cwdField = entry.cwd_field ?? "";
+    const field = entry.capability.interface[programField];
     if (field === undefined) {
       ctx.addIssue({ code: "custom", path: ["program_field"], message: "must name a field of the capability interface" });
       return;
@@ -40,18 +64,18 @@ export const RegistryEntry = z
       if (!AbsolutePath.safeParse(program).success) {
         ctx.addIssue({
           code: "custom",
-          path: ["capability", "interface", entry.program_field, "type", "values", index],
+          path: ["capability", "interface", programField, "type", "values", index],
           message: "a program must be named by its absolute, normalised path, so no search path decides what runs",
         });
       }
     });
-    const argv = entry.capability.interface[entry.argv_field];
+    const argv = entry.capability.interface[argvField];
     if (argv === undefined) {
       ctx.addIssue({ code: "custom", path: ["argv_field"], message: "must name a field of the capability interface" });
     } else if (argv.role !== "data" || argv.type.kind !== "list" || argv.type.items.kind !== "string") {
       ctx.addIssue({ code: "custom", path: ["argv_field"], message: "the argv field must be a data list of strings (spec §2.2, §2.3 rule 2)" });
     }
-    const cwd = entry.capability.interface[entry.cwd_field];
+    const cwd = entry.capability.interface[cwdField];
     if (cwd === undefined) {
       ctx.addIssue({ code: "custom", path: ["cwd_field"], message: "must name a field of the capability interface" });
     } else if (cwd.role !== "data" || cwd.type.kind !== "path") {
@@ -65,11 +89,20 @@ export const RegistryEntry = z
       seen.add(surface.program);
     });
   });
-export type RegistryEntry = z.infer<typeof RegistryEntry>;
+export type RegistryEntry = z.output<typeof RegistryEntry>;
 
-/** The values of an entry's program enum. */
+/** The program, argv and cwd fields of a program entry; `null` for a typed entry, which runs no chosen program (D-134). */
+export type ProgramShape = { readonly program: string; readonly argv: string; readonly cwd: string };
+
+export function programShape(entry: RegistryEntry): ProgramShape | null {
+  const { program_field: program, argv_field: argv, cwd_field: cwd } = entry;
+  return program === undefined || argv === undefined || cwd === undefined ? null : { program, argv, cwd };
+}
+
+/** The values of an entry's program enum; none for a typed entry. */
 export function programsOf(entry: RegistryEntry): readonly string[] {
-  const type = entry.capability.interface[entry.program_field]?.type;
+  const shape = programShape(entry);
+  const type = shape === null ? undefined : entry.capability.interface[shape.program]?.type;
   return type?.kind === "enum" ? type.values : [];
 }
 

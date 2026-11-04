@@ -22,7 +22,7 @@ import {
   selectorWithin,
 } from "../../contracts/src/index.js";
 import { type GrantStore, operandPath, scopePaths } from "../../enforcement/src/index.js";
-import { type CapabilityRegistry, type RegistryEntry, callSchemaFor } from "../../registry/src/index.js";
+import { type CapabilityRegistry, type RegistryEntry, callSchemaFor, programShape } from "../../registry/src/index.js";
 import { PIN_HASH_FLAGS, PIN_HASH_PROGRAM, PIN_LISTING_FLAGS, pinRoots, within } from "./pins.js";
 import type { ProviderProfile } from "./profile.js";
 
@@ -200,7 +200,8 @@ export const PROTECTED_LISTING = { capability: "shell.run", program: "/usr/bin/l
  * first turn (fail-closed); a file the task is to create belongs in `outputs`.
  */
 export function verificationScope(statement: CriterionStatement, entry: RegistryEntry | undefined): string[] {
-  const cwd = entry === undefined ? undefined : statement.command.arguments[entry.cwd_field];
+  const cwdField = entry === undefined ? undefined : programShape(entry)?.cwd;
+  const cwd = cwdField === undefined ? undefined : statement.command.arguments[cwdField];
   const named: string[] = [];
   if (entry !== undefined) {
     const call = callSchemaFor(entry.capability.interface).safeParse(statement.command.arguments);
@@ -323,7 +324,8 @@ export function admit(input: unknown, env: AdmissionEnvironment): AdmissionResul
       });
       if (licensed && !listable) fail("D-112", `verification scope ${root} lies within no grant for ${PROTECTED_LISTING.capability}, so the verifier could not pin it`);
     }
-    const programs = listing?.capability.interface[listing.program_field]?.type;
+    const programField = listing === undefined ? undefined : programShape(listing)?.program;
+    const programs = programField === undefined ? undefined : listing?.capability.interface[programField]?.type;
     for (const program of [PROTECTED_LISTING.program, PROTECTED_LISTING.hash_program]) {
       if (licensed && (programs?.kind !== "enum" || !programs.values.includes(program))) {
         fail("D-112", `${PROTECTED_LISTING.capability} with ${program} must be registered to pin verification inputs`);

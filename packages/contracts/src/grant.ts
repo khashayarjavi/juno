@@ -82,6 +82,17 @@ export const ISSUANCES = ["interactive", "preissued"] as const;
 export const Issuance = z.enum(ISSUANCES);
 export type Issuance = z.infer<typeof Issuance>;
 
+/**
+ * One exact value an `untrusted` target field may take for an `external` or `irreversible` effect (§3.2
+ * `enumerated_targets`, §2.2.2). It names the target field it is for, and counts for that field only; the value is
+ * compared exactly, as the call carries it, and must still lie inside `resource_scope` (DECISIONS.md D-133).
+ */
+export const EnumeratedTarget = z.strictObject({
+  field: z.string().regex(/^[a-z_][a-z0-9_]*$/, "must name an interface field"),
+  value: z.union([z.string().min(1).max(4096), z.number(), z.boolean()]),
+});
+export type EnumeratedTarget = z.infer<typeof EnumeratedTarget>;
+
 export const Grant = z
   .strictObject({
     id: Ref,
@@ -89,6 +100,11 @@ export const Grant = z
     capability_selector: CapabilitySelector,
     resource_scope: ResourceScope,
     data_class_bounds: DataClassBounds,
+    /**
+     * §3.2 `list | null`: absent and `null` both mean none. Not defaulted, so a grant signed without the field keeps
+     * its canonical bytes (D-133).
+     */
+    enumerated_targets: z.array(EnumeratedTarget).max(256).nullable().optional(),
     /** When the grant was created, not what it permits (§3.2). */
     issuance: Issuance,
     issued_by: Ref,

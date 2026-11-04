@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BoundaryError, Capability, InterfaceField, parseAtBoundary } from "../src/index.js";
+import { BoundaryError, Capability, InterfaceField, isTargetField, parseAtBoundary } from "../src/index.js";
 
 /** `shell.run(program: enum, argv: list<string>, cwd: path)` as §2.2 illustrates it. */
 const shellRun = {
@@ -113,5 +113,41 @@ describe("Capability (§2.1)", () => {
       const bad = { ...shellRun, interface: { ...shellRun.interface, program: { type: { kind: "enum", values } } } };
       expect(Capability.safeParse(bad).success).toBe(false);
     }
+  });
+});
+
+describe("target and payload fields (§2.2.2, v0.6 A1; D-132)", () => {
+  // proves §2.2.2 "Undeclared → target": a data field with no declared effect parses as a target
+  it("parses an undeclared data field as a target", () => {
+    expect(InterfaceField.parse({ type: { kind: "path" }, role: "data" }).data_effect).toBe("target");
+    expect(InterfaceField.parse({ type: { kind: "list", items: { kind: "string" } }, role: "data" }).data_effect).toBe("target");
+    expect(isTargetField(InterfaceField.parse({ type: { kind: "string" }, role: "data" }))).toBe(true);
+  });
+
+  // proves §2.2.2: only an explicit declaration makes a data field a payload
+  it("parses a data field as a payload only when payload is declared", () => {
+    const payload = InterfaceField.parse({ type: { kind: "string" }, role: "data", data_effect: "payload" });
+    expect(payload.data_effect).toBe("payload");
+    expect(isTargetField(payload)).toBe(false);
+    expect(InterfaceField.parse({ type: { kind: "string" }, role: "data", data_effect: "target" }).data_effect).toBe("target");
+  });
+
+  // proves §2.2.2 (fail closed): an invalid effect is rejected, not defaulted; an instruction field declares none
+  it.each([null, "", "Payload", "content", 1])("rejects the invalid effect %j", (data_effect) => {
+    expect(InterfaceField.safeParse({ type: { kind: "string" }, role: "data", data_effect }).success).toBe(false);
+  });
+
+  // proves D-132: an instruction field is governed by integrity, not by the effect table, so it cannot declare an effect
+  it("refuses an effect on an instruction field, declared or defaulted", () => {
+    expect(InterfaceField.safeParse({ type: { kind: "string" }, role: "instruction", data_effect: "payload" }).success).toBe(false);
+    expect(InterfaceField.safeParse({ type: { kind: "string" }, data_effect: "target" }).success).toBe(false);
+    expect(InterfaceField.parse({ type: { kind: "string" } }).data_effect).toBeUndefined();
+  });
+
+  // proves §2.2.2 on shell.run as §2.2 illustrates it: argv and cwd, undeclared, are targets
+  it("reads shell.run's argv and cwd as targets", () => {
+    const parsed = Capability.parse(shellRun);
+    expect(parsed.interface["argv"]?.data_effect).toBe("target");
+    expect(parsed.interface["cwd"]?.data_effect).toBe("target");
   });
 });

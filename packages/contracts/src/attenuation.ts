@@ -16,7 +16,7 @@ import { compareIntegrity, compareSensitivity } from "./lattice.js";
  * delegation (D-006); this module only decides whether a child is valid.
  *
  * Dimensions that describe authority: principal, capability set, resource
- * scope, the two data-class bounds, expiry, and invocation cap. `issuance`,
+ * scope, the two data-class bounds, expiry, invocation cap, and enumerated targets (D-133). `issuance`,
  * `issued_by`, `issued_at`, `id`, `attenuation_parent` and `revoked_at` are
  * metadata or runtime state, not authority (DECISIONS.md D-020).
  */
@@ -29,6 +29,7 @@ export const GRANT_DIMENSIONS = [
   "min_integrity",
   "expires_at",
   "max_invocations",
+  "enumerated_targets",
 ] as const;
 export type GrantDimension = (typeof GRANT_DIMENSIONS)[number];
 
@@ -73,6 +74,14 @@ function invocationRelation(parent: Grant, child: Grant): DimensionRelation {
   return fromOrder(child.max_invocations - parent.max_invocations);
 }
 
+/** An enumerated target names authority (§2.2.2): a child may enumerate only values its parent enumerates (D-133). */
+function enumeratedRelation(parent: Grant, child: Grant): DimensionRelation {
+  const key = (target: { field: string; value: unknown }): string => JSON.stringify([target.field, target.value]);
+  const parentKeys = new Set((parent.enumerated_targets ?? []).map(key));
+  const childKeys = new Set((child.enumerated_targets ?? []).map(key));
+  return fromSubset([...childKeys].every((k) => parentKeys.has(k)), [...parentKeys].every((k) => childKeys.has(k)));
+}
+
 /** The relation of `child` to `parent` on every authority dimension. */
 export function compareGrantDimensions(parent: Grant, child: Grant): Readonly<Record<GrantDimension, DimensionRelation>> {
   return {
@@ -92,6 +101,7 @@ export function compareGrantDimensions(parent: Grant, child: Grant): Readonly<Re
     // A later expiry permits more.
     expires_at: fromOrder(instant(child.expires_at) - instant(parent.expires_at)),
     max_invocations: invocationRelation(parent, child),
+    enumerated_targets: enumeratedRelation(parent, child),
   };
 }
 

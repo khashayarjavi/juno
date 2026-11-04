@@ -1,5 +1,5 @@
 import { type Grant, type ScalarFieldType, argvTokenKinds, pathWithin } from "../../contracts/src/index.js";
-import type { CapabilityCall, RegistryEntry } from "../../registry/src/index.js";
+import { type CapabilityCall, type RegistryEntry, programShape } from "../../registry/src/index.js";
 import type { CanonicalPaths } from "./canonical.js";
 
 /**
@@ -67,7 +67,9 @@ export function rawOperandPath(cwd: string, operand: string): string {
  * The one reading shared by the caller's resolution and step 4, so the two can never judge different paths.
  */
 export function scopePaths(entry: RegistryEntry, call: CapabilityCall): ScopePath[] {
-  const { capability, argv_field: argvField, cwd_field: cwdField, program_field: programField } = entry;
+  const { capability } = entry;
+  const shape = programShape(entry);
+  const argvField = shape?.argv;
   const paths: ScopePath[] = [];
   for (const [name, field] of Object.entries(capability.interface)) {
     if (field.role !== "data" || name === argvField) continue;
@@ -82,13 +84,15 @@ export function scopePaths(entry: RegistryEntry, call: CapabilityCall): ScopePat
       paths.push({ argument: name, value, raw: value });
     }
   }
-  const program = String(call[programField]);
-  const cwd = String(call[cwdField]);
-  const argv = (call[argvField] as readonly unknown[]).map(String);
+  // A typed entry (D-134) has no argv: its paths are its path-typed data fields alone.
+  if (shape === null) return paths;
+  const program = String(call[shape.program]);
+  const cwd = String(call[shape.cwd]);
+  const argv = (call[shape.argv] as readonly unknown[]).map(String);
   const surface = entry.program_surfaces.find((candidate) => candidate.program === program);
   argvTokenKinds(program, surface, argv).forEach((kind, index) => {
     const element = argv[index] ?? "";
-    if (kind === "operand") paths.push({ argument: `${argvField}[${String(index)}]`, value: element, raw: rawOperandPath(cwd, element) });
+    if (kind === "operand") paths.push({ argument: `${shape.argv}[${String(index)}]`, value: element, raw: rawOperandPath(cwd, element) });
   });
   return paths;
 }

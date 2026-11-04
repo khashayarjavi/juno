@@ -31,6 +31,7 @@ import {
   checkInstructionFloors,
   executeOutbound,
   instructionValues,
+  programShape,
 } from "../../registry/src/index.js";
 import { type ResolutionFailureCode, resolveReference } from "./binding.js";
 import { type DeliveryFailure, deliveryFailures } from "./delivery.js";
@@ -412,7 +413,7 @@ function judgeUnparsed(
   considered: (value: InstructionValue | FloorViolation) => boolean,
 ): Pick<StepThree, "values" | "violations"> {
   const { entry, args, leaves, valueOf } = input;
-  const { capability, argv_field: argvField } = entry;
+  const { capability } = entry;
   const values: InstructionValue[] = [];
   for (const [name, field] of Object.entries(capability.interface)) {
     if (field.role !== "instruction") continue;
@@ -420,8 +421,10 @@ function judgeUnparsed(
       if (leaf.field === name) values.push({ argument: leaf.argument, floor: capability.min_argument_integrity, source: { kind: "instruction_field" } });
     }
   }
-  const argv = leaves.filter((leaf) => leaf.field === argvField);
-  const raw = args[argvField];
+  // A typed entry (D-134) has no argv and no instruction field; nothing is promoted.
+  const argvField = programShape(entry)?.argv;
+  const argv = argvField === undefined ? [] : leaves.filter((leaf) => leaf.field === argvField);
+  const raw = argvField === undefined ? [] : args[argvField];
   const readable = Array.isArray(raw) && argv.length === raw.length && argv.every((leaf, index) => leaf.argument === `${argvField}[${String(index)}]`);
   if (readable) {
     const program = establishedProgram(input);
@@ -456,18 +459,22 @@ function judgeUnparsed(
  */
 function causingIntegrity(entry: RegistryEntry, call: CapabilityCall, argument: string, integrityOf: ReadonlyMap<string, Integrity>): Integrity {
   const own = integrityOf.get(argument) ?? "untrusted";
-  const prefix = `${entry.argv_field}[`;
+  const shape = programShape(entry);
+  if (shape === null) return own;
+  const prefix = `${shape.argv}[`;
   if (!argument.startsWith(prefix)) return own;
-  const element = (call[entry.argv_field] as readonly unknown[])[Number(argument.slice(prefix.length, -1))];
+  const element = (call[shape.argv] as readonly unknown[])[Number(argument.slice(prefix.length, -1))];
   if (typeof element === "string" && element.startsWith("/")) return own;
-  const cwd = integrityOf.get(entry.cwd_field) ?? "untrusted";
+  const cwd = integrityOf.get(shape.cwd) ?? "untrusted";
   return compareIntegrity(cwd, own) < 0 ? cwd : own;
 }
 
 /** §2.3.1 rule 6 (A5): the first undeclared flag of a parsed call whose program's surface is code-free everywhere, or `null`. */
 function undeclaredFlagOf(entry: RegistryEntry, call: CapabilityCall): number | null {
-  const program = String(call[entry.program_field]);
-  const argv = (call[entry.argv_field] as readonly unknown[]).map(String);
+  const shape = programShape(entry);
+  if (shape === null) return null;
+  const program = String(call[shape.program]);
+  const argv = (call[shape.argv] as readonly unknown[]).map(String);
   const surface = entry.program_surfaces.find((candidate) => candidate.program === program);
   return argvRoles(program, surface, argv).undeclaredFlag;
 }
@@ -604,7 +611,7 @@ export class EnforcementBoundary {
     // on the §2.3 list, is a rejection. Step 3 has passed, so no instruction value is below its floor.
     const undeclared = undeclaredFlagOf(entry, floors.parsed.call);
     if (undeclared !== null) {
-      return reject({ reason: "malformed_call", message: `${entry.argv_field}[${String(undeclared)}] is a flag the program's declared surface does not list (§2.3.1 rule 6)` });
+      return reject({ reason: "malformed_call", message: `${programShape(entry)?.argv ?? "argv"}[${String(undeclared)}] is a flag the program's declared surface does not list (§2.3.1 rule 6)` });
     }
     // One frozen copy of the inspected call: the adapter plans from it, and the Authorization carries it (D-053).
     const parsedCall = frozenCall(floors.parsed.call);

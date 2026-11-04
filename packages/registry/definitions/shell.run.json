@@ -3,8 +3,8 @@
     "id": "shell.run",
     "interface": {
       "program": { "type": { "kind": "enum", "values": ["/usr/bin/cat", "/usr/bin/ls", "/usr/bin/sha256sum"] }, "role": "instruction" },
-      "argv": { "type": { "kind": "list", "items": { "kind": "string" } }, "role": "data" },
-      "cwd": { "type": { "kind": "path" }, "role": "data" }
+      "argv": { "type": { "kind": "list", "items": { "kind": "string" } }, "role": "data", "data_effect": "target" },
+      "cwd": { "type": { "kind": "path" }, "role": "data", "data_effect": "target" }
     },
     "providers": ["workload.execfile"],
     "side_effect": "read",

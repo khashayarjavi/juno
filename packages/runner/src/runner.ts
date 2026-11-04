@@ -35,7 +35,7 @@ import {
 } from "../../enforcement/src/index.js";
 import { type EntryDraft, JournalIntegrityError, type JournalWriter, anchorOf, canonicalJson, contentAddress, readPayload, readTrajectory, taskDigest, verifyTrajectory } from "../../journal/src/index.js";
 import { AnchorExistsError, type AnchorSink, type JournalKey, sameKey } from "../../journal/src/index.js";
-import type { CapabilityRegistry, InvocationResult, RegistryEntry } from "../../registry/src/index.js";
+import { type CapabilityRegistry, type InvocationResult, type RegistryEntry, programShape } from "../../registry/src/index.js";
 import {
   type AdmissionResult,
   type AdmittedConstant,
@@ -282,9 +282,9 @@ export function describeCriterion(criterion: CriterionStatement, entry: Registry
   ];
   for (const [field, value] of Object.entries(criterion.command.arguments)) {
     if (fields[field]?.role !== "data") continue;
-    if (field === entry?.argv_field && Array.isArray(value)) {
+    if (entry !== undefined && field === programShape(entry)?.argv && Array.isArray(value)) {
       words.push(value.length === 0 ? "The check is given no arguments." : `The check is given ${value.length === 1 ? "the argument" : "the arguments"} ${value.map(quote).join(", ")}.`);
-    } else if (field === entry?.cwd_field) {
+    } else if (entry !== undefined && field === programShape(entry)?.cwd) {
       words.push(`It runs in the folder ${quote(value)}.`);
     } else {
       words.push(`It is also given the value ${quote(value)}.`);
