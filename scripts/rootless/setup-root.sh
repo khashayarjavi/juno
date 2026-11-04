@@ -145,8 +145,12 @@ UNIT
   echo "setup-root:    delegated to the user: $(cat "$controllers")"
   # The user's manager can inherit another user's XDG_RUNTIME_DIR or HOME from global environment files (GitHub's
   # runner image sets them in /etc/environment); the rootless daemon then refuses to start. Give the manager its own.
-  grep -E '^(XDG_RUNTIME_DIR|HOME)=' /etc/environment 2>/dev/null | sed 's/^/setup-root:    global environment: /' || true
-  as_runner systemctl --user set-environment "XDG_RUNTIME_DIR=/run/user/$RUNNER_UID" "HOME=$RUNNER_HOME"
+  sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' /etc/environment 2>/dev/null | tr '\n' ' ' | sed 's/^/setup-root:    names in \/etc\/environment: /' || true
+  echo
+  as_runner systemctl --user set-environment "XDG_RUNTIME_DIR=/run/user/$RUNNER_UID" "HOME=$RUNNER_HOME" \
+    "XDG_CONFIG_HOME=$RUNNER_HOME/.config" "XDG_DATA_HOME=$RUNNER_HOME/.local/share" \
+    "XDG_CACHE_HOME=$RUNNER_HOME/.cache" "XDG_STATE_HOME=$RUNNER_HOME/.local/state"
+  as_runner systemctl --user unset-environment DOCKER_HOST DOCKER_CONFIG DOCKER_CONTEXT
   if ! as_runner "$BIN/dockerd-rootless-setuptool.sh" install; then
     journalctl _UID="$RUNNER_UID" --no-pager -n 80 || true
     diagnose
