@@ -1,30 +1,96 @@
 # STATE
 
 ## Current increment
-**Slice 1.5 — Increment 2: signed grants and an anchored journal head (C1)** (`docs/plans/slice-1.5-build-plan.md`, Increment 2). Branch `claude/gallant-mccarthy-alppyu` (fast-forwarded to `main` 1432cc3). Spec v0.6.1. No objection open.
+**Slice 1.5 — Increment 2: signed grants and an anchored journal head (C1)** (`docs/plans/slice-1.5-build-plan.md`, Increment 2). Branch `claude/vigilant-cori-79kdx3`, the only branch this session may push. It carries PR #32's commits unchanged (from `claude/gallant-mccarthy-alppyu`, head 443c9e6), so the record continues in a new PR from it; PR #32 is superseded. Spec v0.6.1. No objection open.
 
-Status: **in progress.** Done: grant signatures (D-115); the trust anchor (D-116); selectors cannot name JUNO storage (tests, D-116); `juno grant sign/verify` (D-117). Left: anchored journal head; the Windows key source and operator steps. Local `make verify: GREEN` (794 unit, 61 container). Local `make verify: GREEN` (785 unit, 61 container). Estimate: 2 sessions.
-- **Order of work:**
-  1. Grant signatures: Ed25519 over the canonical form of every other field, with `node:crypto` (no new package). Verified at lookup; a missing or invalid signature means the grant does not exist (`signature_invalid` recorded).
-  2. The trust anchor: the operator's public key, in a location the runner cannot write; the runner refuses to start otherwise.
-  3. Test keys generated per run, never committed; every fixture grant signed by a per-run test key.
-  4. `juno grant sign` and `juno grant verify` (operator CLI).
-  5. The anchored journal head: a separate journal key; an append-only stand-in container for tests; `juno journal check`.
-  6. Selectors may not name the journal, the checkpoint store, the trust anchor or the configuration.
-- **Anchored head: design for the next session (not built).**
-  - **Journal key:** a separate Ed25519 key the runner holds (never the operator's), generated at first start into a runner-only file outside `/work` and the journal.
-  - **Anchor record:** `{task, seq, head_hash, at, interval_ms, signature}`, signed with the journal key. Anchors hold no task content.
-  - **When:** the runner appends an anchor per task at a recorded interval, and always at park and at close, to a destination interface `AnchorSink` with `append(anchor)` and `list(task)`. The interval is recorded in the journal (§3.4.1).
-  - **Test sink:** a separate container with its own volume, exposing append-only operations (append; refuse overwrite and delete). The runner reaches it only through those operations (`docker compose run` of an `anchors` service, no network).
-  - **`juno journal check <task>`:** verifies the chain, then compares every anchor's `seq` and `head_hash` with the chain. The first differing entry is reported as a rewrite; entries after the latest anchor are not a rewrite.
-  - **Tests (plan):**
-    - a rewritten entry with every later hash recomputed passes the chain check but fails the anchor check;
-    - an append after the anchor is not reported;
-    - the sink refuses overwrite and delete;
-    - an anchor signed with a stolen journal key cannot replace an earlier one;
-    - no code path gives the runner the operator key (a static test: no runner module imports `signGrant` or reads a private key).
-  - **Real destination:** the operator's public GitHub repository `juno-anchors` (D-094, D-098), added with the operator's steps.
-- **First point needing the operator's hands** (the code does not wait for it): Windows keychain key, signing a grant, and creating `juno-anchors`. The Windows signing mechanism is chosen from current documentation at the start of this increment (rule 13) and recorded as a D-number; click-by-click steps go into STATE.md then.
+Status: **built; going through the §7 gate.** Every item of the plan's Increment 2 is built and tested:
+- grant signatures (D-115, now in SSHSIG form, D-124);
+- the trust anchor (D-116);
+- selectors cannot name JUNO storage (D-116);
+- `juno grant sign/verify` (D-117, D-124);
+- the anchored journal head and `juno journal check` (D-122, D-123);
+- the Windows signing mechanism (D-124).
+
+Local `make verify: GREEN` before the D-124 commit (818 unit, 68 container); re-run before the PR.
+- **Operator rulings of 2026-11-04, recorded:**
+  - D-118: D-100 confirmed.
+  - D-119: D-109 stands.
+  - D-120: D-112 hardening, built. Resolver paths now follow a `--`. A container test plants `-c` and `--help` in the scope; the pins are computed and the task closes verified.
+  - D-121: Increment 3 must close the gap between resolving a path and writing to it.
+- **Autopilot rulings this session:** D-123 (four readings of §3.4.1, each the restrictive one).
+- **Done-when check:**
+  - the plan's tests are green;
+  - every fixture grant is signed by a per-run test key (D-115);
+  - the operator's steps are below.
+
+### Operator steps (Windows) — the first point that needs your hands
+Nothing in the increment's code or tests waits for these: CI and the cloud sessions use throwaway keys and the stand-in anchor container. These steps set up real use. Do them in order. Each part ends with a check that tells you it worked. Commands go in **PowerShell**: press the Windows key, type `PowerShell`, and press Enter. When a step says *as administrator*, right-click "Windows PowerShell" and choose **Run as administrator** instead.
+
+**Part A — prerequisites (once).**
+1. Check that the OpenSSH client is present. In PowerShell, type `Get-Command ssh-keygen` and press Enter. If you see a path ending in `ssh-keygen.exe`, continue. If you see an error, open **Settings → System → Optional features → View features** (on Windows 10: **Settings → Apps → Optional features → Add a feature**), search for **OpenSSH Client**, tick it, and click **Install**.
+2. Check that Git and Node.js 22 are installed: `git --version` and `node --version` should print versions, and node's should start with `v22`. If not, install Git for Windows from https://git-scm.com/download/win and Node.js 22 LTS from https://nodejs.org, accepting the defaults.
+3. Get JUNO's command once this increment is merged:
+   ```
+   git clone https://github.com/khashayarjavi/juno.git $env:USERPROFILE\juno
+   cd $env:USERPROFILE\juno
+   npm ci
+   npx tsc -p tsconfig.build.json
+   ```
+
+**Part B — your grant-signing key, kept by Windows (the OS keychain, D-093, D-124).**
+1. *As administrator*, turn on the key agent (it is off by default):
+   ```
+   Get-Service ssh-agent | Set-Service -StartupType Automatic
+   Start-Service ssh-agent
+   Get-Service ssh-agent
+   ```
+   Check: the last line says **Running**. Close the administrator window.
+2. In a normal PowerShell window, create the key:
+   ```
+   ssh-keygen -t ed25519 -C "juno-grant-signing" -f $env:USERPROFILE\.ssh\juno_grant
+   ```
+   When asked for a passphrase, type a strong one twice (it does not echo).
+3. Hand the key to the agent: `ssh-add $env:USERPROFILE\.ssh\juno_grant`, then type the passphrase. Check: `ssh-add -l` lists a line ending in `juno-grant-signing (ED25519)`.
+4. Back up the private key file `C:\Users\<you>\.ssh\juno_grant` (the one **without** `.pub`) to somewhere off this computer that you control, for example a USB stick kept safe or your password manager's file attachment. Then delete it from the computer: `Remove-Item $env:USERPROFILE\.ssh\juno_grant`. From now on Windows' agent holds the key; Microsoft documents that it cannot be read back out.
+5. **Keep** `juno_grant.pub`. It is your public key, the trust anchor JUNO checks every grant against. It is not secret.
+
+**Part C — sign a grant, and check it.**
+1. In `$env:USERPROFILE\juno`:
+   ```
+   node dist\runner\src\juno.js grant sign --ssh-key $env:USERPROFILE\.ssh\juno_grant.pub docs\examples\grant.example.json --out $env:USERPROFILE\signed-grant.json
+   ```
+   Check: it prints `signed grant written to ...`. If it asks for nothing and fails with "agent", repeat Part B step 3.
+2. ```
+   node dist\runner\src\juno.js grant verify --anchor $env:USERPROFILE\.ssh\juno_grant.pub $env:USERPROFILE\signed-grant.json
+   ```
+   Check: it prints `valid`.
+3. Optional check that forgery fails: open `signed-grant.json` in Notepad, change `"max_invocations": 10` to `11`, save, and run step 2 again. It must print `invalid`.
+4. Paste the single line inside `juno_grant.pub` (it starts with `ssh-ed25519`) into your next message to the agent, so a later session can configure it as the trust anchor. It is public; do not paste anything else.
+
+**Part D — the public anchor repository `juno-anchors` (D-094, D-098; §3.4.1).**
+1. On https://github.com, click **+** (top right) → **New repository**. Repository name: `juno-anchors`. Choose **Public**. Tick **Add a README file**. Click **Create repository**.
+2. Protect its history. On the repository page, click **Settings**. In the left sidebar, under "Code, planning, and automation", click **Rules → Rulesets**. Click **New ruleset → New branch ruleset**.
+   - Ruleset name: `protect-history`.
+   - Enforcement status: **Active**.
+   - Leave the bypass list empty.
+   - Under "Target branches", click **Add a target → Include default branch**.
+   - Under "Branch protections", make sure **Restrict deletions** and **Block force pushes** are both ticked.
+   - Click **Create**.
+3. A push key for this one repository. Click your profile picture (top right) → **Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token**.
+   - Token name: `juno-anchors-push`.
+   - Expiration: 90 days.
+   - Resource owner: you.
+   - Repository access: **Only select repositories**, and pick `juno-anchors` only.
+   - Permissions: under the repository permissions, set **Contents** to **Read and write**.
+   - Click **Generate token** and copy it. You see it only once.
+4. Clone it and check the protection:
+   ```
+   git clone https://github.com/khashayarjavi/juno-anchors.git C:\JUNO\anchors-clone
+   cd C:\JUNO\anchors-clone
+   git push origin --delete main
+   ```
+   When Git asks you to sign in, use your GitHub username, and the token from step 3 as the password; Git for Windows remembers it. Check: the delete is **rejected** (the message mentions a rule or ruleset). That proves history cannot be deleted. Do not try anything else on this repository; the runner will add one small file per anchor.
+5. Tell the agent: "Parts A–D done", plus the `.pub` line. Never paste the token, the private key or the passphrase anywhere.
 
 ## Previous increment (Slice 1.5 Increment 1, merged)
 **Slice 1.5 — Increment 1: conform Slice 1 to v0.6** (`docs/plans/slice-1.5-build-plan.md`, Increment 1). Branch `claude/gallant-mccarthy-alppyu` (fast-forwarded to `main` c405996 after PR #30 merged). Spec v0.6.1 on `main`. No objection open.
@@ -282,14 +348,15 @@ Everything is in `packages/runner/` unless named. Every test names the section i
 - **First independent review of PR #9 (2026-10-30): DO NOT MERGE.** Fixed: (1) the four Increment 6 commits had not reached GitHub (the branch's upstream had become `origin/main`; pushed, upstream fixed); (2) a resume that re-parked left the runner claimed, so it refused all further work (fixed, tested); (3) a task listing an unusable grant could never resume (operator can now drop grants on resume, recorded in D-066 with the consequence; tested, including across a restart); (4) the runner-record classes recorded in D-066.
 
 ## Remaining
-- **Agent:** the revision PR (#30) through the §7 gate; then Increments 1 to 6 of `docs/plans/slice-1.5-build-plan.md`, each through the §7 loop. (PR #27 merged, D-100; V61-1 ruled, D-098.)
+- **Agent:** Increment 2's PR through the §7 gate; then Increments 3 to 6 of `docs/plans/slice-1.5-build-plan.md`, each through the §7 loop.
+- **Operator:** the Windows steps above (Increment 2, "Operator steps"). The code does not wait for them.
 
 ## make verify
 Local, 2026-11-03 on this branch (documents only since `main`): **RED on this host only for Docker Hub** (`429 Too Many Requests` pulling `node:22-bookworm-slim` for the container images) after typecheck, lint and 697 of 697 unit tests passed. CI `verify` on the PR head decides. Earlier: local GREEN on 5ee1594 (697 unit, 51 container); GREEN on 83c7e2e and 73100df (D-085, D-086).
 
 ## For the operator
-- **Done (2026-11-03):** spec v0.6.1 is on `main` (PR #27 merged by the agent on your ruling, D-100); V61-1 ruled (a) public (D-098). Please confirm D-100 matches what you authorised. You may close PR #29 (superseded by PR #30).
-- **Later (Increment 2), not now:** creating the signing key in the Windows keychain and creating the public `juno-anchors` with its protection and push credential. Increment 2 writes click-by-click steps.
+- **Now:** the Windows steps under "Current increment" (signing key in the Windows agent, one signed grant, and the public `juno-anchors` with its protection and push token). You may close PR #29 (superseded by PR #30) and PR #32 (superseded by this session's PR).
+- **Known limit (D-124):** the runner's "cannot write the trust anchor" check does not work on Windows, where it would refuse to start (fail-closed). The runner runs on Linux in Slice 1.5.
 - **Carried note:** CLAUDE.md §1 and §7 step 1 still name `spec/slice-1-build-plan.md`, not `docs/plans/slice-1.5-build-plan.md` (reviewer notes on PR #28 and PR #30). Left as is: CLAUDE.md is yours to change.
 
 - **(Ruled: D-076, 2026-10-31.) Slice 1.2: the injection now lands as an overridable park.** The operator accepted `scope_violation` or `integrity_floor` with nothing run and the value recorded `synthesized`/`untrusted`; two spec v0.6 items were added. The original finding: In all 6 runs of s18-2 and s18-2b (`evidence/slice-1.2/`), the model read the planted `/bin/sh -c 'cat /etc/passwd'` and obeyed it the only way the new schema lets it: program `{"slot":"cat"}`, `argv: ["/etc/passwd"]`. The boundary parked `scope_violation` (overridable): `/etc/passwd` is outside the grant. **Nothing ran in any run; every safety check held; no boundary rule changed.** Before Part 1 the model wrote `"/bin/sh"` as a literal program, which parks `integrity_floor` (not overridable). So the interface change moved the attack from a non-overridable park to an overridable one: an operator who overrides would let the task read `/etc/passwd` inside the workload. This touches the §7 STOP "make a non-overridable park overridable" in effect, though not in any rule, so it is yours to decide. Options: (a) accept `scope_violation` as the injection result (the attack is now an out-of-scope read, which the boundary refuses; the §18 test 2 acceptance test with the scripted provider still parks `integrity_floor`); (b) for spec v0.6, make a `scope_violation` non-overridable when the out-of-scope value is synthesized from untrusted content (a spec change; I recommend raising it, since §8.3's own test, "the operator could not observe the consequence of proceeding", seems to apply); (c) revert the literal form for instruction fields (undoes Part 1's main gain). I have not changed anything.
