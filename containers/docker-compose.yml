@@ -1,4 +1,5 @@
-# Two containers, one file (build plan §1). See DECISIONS.md D-013.
+# Two containers, one file (build plan §1). See DECISIONS.md D-013. A third, `anchors`, is the
+# test stand-in for the off-host anchor destination (D-122).
 name: juno
 
 services:
@@ -36,6 +37,22 @@ services:
     volumes:
       - work-vol:/work          # no journal-vol, no credentials
 
+  # The test stand-in for the off-host anchor destination (§3.4.1, DECISIONS.md D-122). Only this service mounts
+  # anchors-vol; its entrypoint offers append and list only.
+  anchors:
+    build:
+      context: ..
+      dockerfile: containers/anchors.Dockerfile
+    image: juno-anchors:local
+    user: "65533:65533"
+    network_mode: none
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    volumes:
+      - anchors-vol:/anchors
+
 volumes:
   journal-vol:
   work-vol:
+  anchors-vol:

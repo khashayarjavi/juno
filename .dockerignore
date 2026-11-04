@@ -2,3 +2,5 @@
 *
 !dist/
 !build/stage/
+# The anchor store script is copied as source: it is plain JavaScript, not built (D-122).
+!containers/anchor-store.js

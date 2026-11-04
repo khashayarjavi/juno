@@ -14,3 +14,18 @@ export { type BlobRead } from "./blobs.js";
 export { JournalLocationError, journalRoot } from "./layout.js";
 export { type EntryDraft, JournalIntegrityError, JournalWriter, type JournalWriterOptions } from "./writer.js";
 export { readPayload, readTrajectory, verifyTrajectory } from "./read.js";
+export {
+  Anchor,
+  type AnchorCheck,
+  type AnchorFailure,
+  AnchorFields,
+  TaskDigest,
+  anchorOf,
+  anchorPath,
+  anchorSignatureValid,
+  checkAnchors,
+  encodeAnchor,
+  journalPublicKeyFromPem,
+  signAnchor,
+  taskDigest,
+} from "./anchor.js";
