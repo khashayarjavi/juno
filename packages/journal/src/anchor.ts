@@ -86,8 +86,8 @@ export function journalPublicKeyFromPem(pem: string): KeyObject {
 export type AnchorCheck =
   | {
       readonly ok: true;
-      /** The latest anchored seq, or `null` when the task has no anchor. */
-      readonly anchored_seq: number | null;
+      /** The latest anchored seq. */
+      readonly anchored_seq: number;
       /** Entries after the latest anchor: appended since, not a rewrite, and not yet protected. */
       readonly unanchored: number;
       readonly anchors: number;
@@ -106,7 +106,12 @@ export type AnchorFailure =
    */
   | { readonly code: "rewritten"; readonly anchor_seq: number; readonly after_seq: number; readonly first_changed_at_or_before: number }
   /** The chain is shorter than an anchor: entries at or before the anchored head were removed. */
-  | { readonly code: "truncated"; readonly anchor_seq: number; readonly chain_length: number };
+  | { readonly code: "truncated"; readonly anchor_seq: number; readonly chain_length: number }
+  /**
+   * No anchor was found for the task: nothing confirms its history (a wrong anchor directory, a task never anchored,
+   * or a destination that lost them). Fail-closed: the check cannot pass on no evidence (D-126).
+   */
+  | { readonly code: "no_anchor"; readonly chain_length: number };
 
 /**
  * Compares a task's chain with every anchor stored for it (§3.4.1). The chain is checked first; then every anchor must
@@ -127,6 +132,7 @@ export function checkAnchors(taskId: string, chain: ChainVerdict, stored: readon
   }
   anchors.sort((a, b) => a.seq - b.seq);
   const entries: readonly TrajectoryEntry[] = chain.entries;
+  if (anchors.length === 0) return { ok: false, failure: { code: "no_anchor", chain_length: entries.length } };
   let matched = -1;
   for (const anchor of anchors) {
     const entry = entries[anchor.seq];
@@ -134,6 +140,6 @@ export function checkAnchors(taskId: string, chain: ChainVerdict, stored: readon
     if (entryHash(entry) !== anchor.head) return { ok: false, failure: { code: "rewritten", anchor_seq: anchor.seq, after_seq: matched, first_changed_at_or_before: anchor.seq } };
     matched = anchor.seq;
   }
-  const latest = anchors.at(-1)?.seq ?? null;
-  return { ok: true, anchored_seq: latest, unanchored: entries.length - 1 - (latest ?? -1), anchors: anchors.length };
+  const latest = matched;
+  return { ok: true, anchored_seq: latest, unanchored: entries.length - 1 - latest, anchors: anchors.length };
 }

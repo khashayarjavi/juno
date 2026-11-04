@@ -3,7 +3,7 @@
 ## Current increment
 **Slice 1.5 — Increment 2: signed grants and an anchored journal head (C1)** (`docs/plans/slice-1.5-build-plan.md`, Increment 2). Branch `claude/vigilant-cori-79kdx3`, the only branch this session may push. It carries PR #32's commits unchanged (from `claude/gallant-mccarthy-alppyu`, head 443c9e6), so the record continues in a new PR from it; PR #32 is superseded. Spec v0.6.1. No objection open.
 
-Status: **built; going through the §7 gate.** Every item of the plan's Increment 2 is built and tested:
+Status: **STOPPED at the §7 gate (D-126): two review rounds ended DO NOT MERGE. Every finding is fixed; the merge needs your word for a third review round.** PR #33. Every item of the plan's Increment 2 is built and tested:
 - grant signatures (D-115, now in SSHSIG form, D-124);
 - the trust anchor (D-116);
 - selectors cannot name JUNO storage (D-116);
@@ -11,13 +11,19 @@ Status: **built; going through the §7 gate.** Every item of the plan's Incremen
 - the anchored journal head and `juno journal check` (D-122, D-123);
 - the Windows signing mechanism (D-124).
 
-Local `make verify: GREEN` (828 unit, 69 container) after the round 1 fixes.
+Local `make verify: GREEN` (829 unit, 69 container) after the round 2 fix.
 - **Review round 1 (head 495b931; fresh subagent, P2 verbatim): DO NOT MERGE.** CI on 495b931 passed (run 41771539413). Checks 2, 3, 4 and 6 PASS. Fixed (D-125):
   - the plan's "no test key is committed" test was missing (now `test/lint/no-keys.test.ts`);
   - admission and resume accepted an unsigned grant (it could never run a call, but §3.2 says it does not exist);
   - the runner's own start-up did not yet load the trust anchor.
 
-  Review round 2 next.
+- **Review round 2 (head 809714e; fresh subagent, P2 verbatim): DO NOT MERGE.** CI on 809714e passed (run 41773133614). Checks 1, 2, 3, 4 and 6 PASS. One FAIL, fixed (D-126): `juno journal check` said ok when it found no anchor for a task (fail-open). Also fixed, from the reviewer's notes: the restart test now exercises the runner's own path. Two residuals are recorded in D-126, not changed.
+- **STOP, for you:** CLAUDE.md §7 allows two review rounds; both ended DO NOT MERGE, and both rounds' findings are fixed. Your options:
+  - (a) allow a third review round (as D-103 and D-106 did); if it says MERGE, the agent merges through the gate and continues to Increment 3;
+  - (b) merge PR #33 yourself;
+  - (c) say what else to change.
+
+  Nothing else can proceed meanwhile: Increment 3 may not start until Increment 2 is merged (plan §3). Your Windows steps below do not depend on the merge, except Part A step 3 (building `juno` from `main`). You can build from this branch instead: `git checkout claude/vigilant-cori-79kdx3` after cloning.
 - **Operator rulings of 2026-11-04, recorded:**
   - D-118: D-100 confirmed.
   - D-119: D-109 stands.

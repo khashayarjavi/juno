@@ -167,4 +167,12 @@ describe("§3.4.1 C1: the anchored head", () => {
     copyFileSync(headFile(journalRoot(journalOf("other", ["a"])), TASK), headFile(journalRoot(root), TASK));
     expect(checkAnchors(TASK, verifyTrajectory(root, TASK), anchors, journalKey.publicKey)).toMatchObject({ ok: false, failure: { code: "chain_broken" } });
   });
+
+  // proves §3.4.1 with D-126: a task with no anchor at all fails the check, so a wrong folder or a never-anchored task
+  // cannot pass on no evidence
+  it("fails when no anchor is found", () => {
+    const root = journalOf("journal", ["a", "b", "c"]);
+    expect(checkAnchors(TASK, verifyTrajectory(root, TASK), [], journalKey.publicKey)).toEqual({ ok: false, failure: { code: "no_anchor", chain_length: 3 } });
+    expect(checkAnchors("never-ran", verifyTrajectory(root, "never-ran"), [], journalKey.publicKey)).toEqual({ ok: false, failure: { code: "no_anchor", chain_length: 0 } });
+  });
 });

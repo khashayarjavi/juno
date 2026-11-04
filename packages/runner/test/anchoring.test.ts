@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { TEST_ANCHOR, TEST_OPERATOR_KEY } from "../../enforcement/test/test-keys.js";
-import { JournalKeyError, anchorPath, checkAnchors, loadOrCreateJournalKey, taskDigest, verifyTrajectory } from "../../journal/src/index.js";
+import { AnchorExistsError, JournalKeyError, anchorPath, checkAnchors, loadOrCreateJournalKey, taskDigest, verifyTrajectory } from "../../journal/src/index.js";
 import type { CliIo } from "../src/grant-cli.js";
 import { runJournalCli } from "../src/journal-cli.js";
 import { RUNNER_RECORD, type Runner } from "../src/runner.js";
@@ -107,18 +107,37 @@ describe("§3.4.1 C1: the runner anchors journal heads", () => {
     }
   });
 
-  // proves §3.4.1: an anchor already at the destination for the same seq and head counts as taken (a restart)
-  it("accepts an anchor already stored for the same head, and refuses to replace one for another head", async () => {
-    const sink = new MemoryAnchorSink();
-    const { runner } = h.runner([turn([])], { anchoring: { ...h.anchoring, sink } });
+  // proves §3.4.1 (D-122): when the destination already holds the anchor for this seq (stored before a restart), the
+  // runner counts it as taken only if it names the same head
+  it("counts an anchor already stored for the same head as taken, and fails on one for another head", async () => {
+    // A destination that, for the first anchor, says it already holds one: the anchor itself (same head), or a forged one.
+    const preStored = (forge: boolean): MemoryAnchorSink => {
+      const sink = new MemoryAnchorSink();
+      const append = sink.append.bind(sink);
+      let first = true;
+      sink.append = async (anchor) => {
+        if (first) {
+          first = false;
+          await append(forge ? { ...anchor, head: `sha256:${"0".repeat(64)}` } : anchor);
+          throw new AnchorExistsError("an anchor at this seq already exists");
+        }
+        return append(anchor);
+      };
+      return sink;
+    };
+    const same = preStored(false);
+    const { runner } = h.runner([turn([])], { anchoring: { ...h.anchoring, sink: same } });
     admitted(runner);
-    await runner.run("task-1");
-    const stored = [...sink.stored.values()];
-    expect(stored.length).toBeGreaterThan(0);
-    const first = stored[0];
-    if (first === undefined) throw new Error("no anchor");
-    await expect(sink.append({ ...first, head: `sha256:${"0".repeat(64)}` })).rejects.toThrow(/already exists/);
-    expect(sink.stored.get(anchorPath(first.task, first.seq))).toEqual(first);
+    expect((await runner.run("task-1")).state).toBe("complete_unverified");
+    expect(notes("anchor_failed")).toEqual([]);
+
+    h.cleanup();
+    h = harness();
+    const forged = preStored(true);
+    const second = h.runner([turn([])], { anchoring: { ...h.anchoring, sink: forged } });
+    admitted(second.runner);
+    expect(await second.runner.run("task-1")).toEqual({ task_id: "task-1", state: "failed", reason: "anchor_unavailable" });
+    expect(notes("anchor_failed")[0]?.["reason"]).toMatch(/holds a different anchor/);
   });
 });
 
@@ -172,6 +191,10 @@ describe("juno journal check (§3.4.1, D-122)", () => {
     const good = io({ "/keys/journal.pub.pem": pem });
     expect(runJournalCli(args, good)).toBe(0);
     expect(JSON.parse(good.output.join(""))).toMatchObject({ ok: true, unanchored: 0 });
+    // A wrong anchors folder finds no anchor: the check fails, it never passes on no evidence (D-126).
+    const empty = io({ "/keys/journal.pub.pem": pem });
+    expect(runJournalCli(["check", "--journal", h.journal.root, "--anchors", join(h.dir, "no-such-folder"), "--key", "/keys/journal.pub.pem", "task-1"], empty)).toBe(1);
+    expect(JSON.parse(empty.output.join(""))).toMatchObject({ ok: false, failure: { code: "no_anchor" } });
 
     // A wholesale rewrite: the same task's chain rebuilt with one payload changed and every hash recomputed.
     const entriesPath = join(h.journal.root, "tasks", taskDigest("task-1"), "entries.jsonl");

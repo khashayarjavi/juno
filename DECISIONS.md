@@ -1376,3 +1376,21 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   - `test/containers/trust.test.ts`: the runner image's real start-up starts with a protected anchor, and with a writable file or directory exits 1 with "not protected" and never reports ready;
   - `test/lint/no-keys.test.ts`.
 - Reason: §3.2 C1; the plan's Increment 2 tests ("the runner refuses to start when its trust anchor is writable by it"; "no test key, private or public, is committed"); review round 1 of PR #33.
+
+## D-126 — PR #33 review round 2 fix: `juno journal check` fails when it finds no anchor; STOP after two review rounds (autopilot record)
+- Date: 2026-11-04
+- Status: Accepted for the fix (autopilot ruling, the restrictive reading). The merge waits for the operator: CLAUDE.md §7 STOP, because two review rounds ended DO NOT MERGE.
+- Applies to: Slice 1.5 onward; amends D-122 and D-123
+- Decision:
+  - **No anchor means the check fails.** `checkAnchors` returns `no_anchor` (exit 1 from `juno journal check`) when no anchor is stored for the task, whether or not its chain has entries. Before, it returned ok with `anchored_seq: null`. So a mistyped `--anchors` folder, a task never anchored, or a destination that lost its anchors passed the operator's tamper check on no evidence: a fail-open reading of a case §3.4.1 does not define. `anchored_seq` is now always the latest matching anchor's seq.
+  - **The restart path is now proven by the runner itself.** The test "counts an anchor already stored for the same head as taken, and fails on one for another head" (`packages/runner/test/anchoring.test.ts`) uses a destination that answers the runner's first append with `AnchorExistsError`:
+    - when the stored anchor names the same head, the task runs on with no `anchor_failed`;
+    - when it names another head, the task fails `anchor_unavailable` with the reason journalled.
+
+    This replaces a test of the same name that exercised only the in-memory store, as the round 2 reviewer noted.
+- **Residuals noted by the round 2 reviewer, not changed (each is recorded here so it is not silent):**
+  - `GitAnchorSink` refuses an existing anchor by looking in the local clone. After a crash between `git commit` and `git push`, a restarted runner counts that anchor as stored before it is pushed; the next successful push carries it.
+  - Resume does not compare the chain with the stored anchors before continuing. A same-length rewrite is still caught when the next anchor collides with a different stored head (`anchor_unavailable`), and by `juno journal check`. The specification requires neither.
+- Tests: `packages/journal/test/anchor.test.ts` ("fails when no anchor is found": a chain with entries and an empty one); `packages/runner/test/anchoring.test.ts` (the CLI with a wrong anchors folder exits 1 with `no_anchor`; the restart test above).
+- **STOP (CLAUDE.md §7: "two review rounds still end DO NOT MERGE").** Round 1 on 495b931 found three FAILs, fixed in D-125. Round 2 on 809714e found one FAIL, fixed here. A third round needs the operator's word, as D-103 and D-106 did.
+- Reason: §3.4.1; CLAUDE.md §7 step 3 (fail-closed) and its STOP list.
