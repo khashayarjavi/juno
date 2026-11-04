@@ -1,7 +1,7 @@
 # STATE
 
 ## Current increment
-**Slice 1.5 — Increment 2: signed grants and an anchored journal head (C1)** (`docs/plans/slice-1.5-build-plan.md`, Increment 2). Branch `claude/compassionate-noether-9s2sf2`, the only branch this session may push. It carries PR #33's commits unchanged (from `claude/vigilant-cori-79kdx3`, head 5db6306), so the record continues in a new PR from it; PR #33 is superseded. Spec v0.6.1. No objection to the spec open.
+**Slice 1.5 — Increment 2: signed grants and an anchored journal head (C1)** (`docs/plans/slice-1.5-build-plan.md`, Increment 2). Branch `claude/compassionate-noether-9s2sf2`, the only branch this session may push. It carries PR #33's commits unchanged (from `claude/vigilant-cori-79kdx3`, head 5db6306), so the record continues in PR #34 (draft) from it; PR #33 is superseded. Spec v0.6.1. No objection to the spec open.
 
 Status: **STOPPED (D-129): your ruling 3 (real use under WSL2) conflicts with §3.2 as the key is held today. Your instruction for that case was "STOP and report instead", so nothing was merged.** Increment 2's code and tests are unchanged since round 2 and still complete; local `make verify` was GREEN on 5db6306 (829 unit, 69 container).
 - **Your rulings of 2026-11-04 (second set), recorded:**
