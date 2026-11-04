@@ -1,6 +1,35 @@
 # STATE
 
 ## Current increment
+**Slice 1.5 — Increment 3: effects under untrusted influence** (`docs/plans/slice-1.5-build-plan.md`, Increment 3; spec §2.2.2 A1, §2.7.1 "Effects", §3.2 `enumerated_targets`, §2.4; D-121). Branch `claude/vigilant-heisenberg-uko6on`, restarted from `main` d7e7ec3 after PR #35 merged. Spec v0.6.1. No objection open.
+
+Status: **design written (below); building.** Not done.
+
+### Increment 3 design (2026-11-04; each choice to be recorded as a D-number when built)
+- **Target and payload (§2.2.2).** An interface field gets `data_effect: "target" | "payload"`, meaningful for `data` fields only. An undeclared `data` field parses as `target` (fail-closed). Declaring it on an `instruction` field is refused. `shell.run`'s `argv` and `cwd` are declared `target`.
+- **`enumerated_targets` on Grant (§3.2).** An optional list of `{ field, value }`: an exact scalar value for one named target field.
+  - Absent means none. It is not given a default, so grants signed before this increment keep their canonical bytes and their signatures.
+  - Restrictive reading: an enumerated value counts only for the field it names, and it still has to be inside `resource_scope`.
+- **Step 4 effects (§2.7.1 "Effects").** After the scope check, each in-scope candidate is judged by §2.2.2's table. "Untrusted" means `untrusted` or unestablished integrity, the same reading as D-109/D-119.
+  - `read`: nothing changes.
+  - `write`: an untrusted target is permitted only when its canonical path lies in one of the task's reversible workspaces (checkpointed); otherwise the call is judged as `irreversible`.
+  - `external` and `irreversible`: an untrusted target must be enumerated by that grant for that field.
+  - When no candidate is left, the call parks `integrity_floor` (not overridable, §8.3), with the offending targets listed. Payloads are judged only by step 5.
+- **Reversible workspaces (§2.2.2).** The operator declares them at admission: Task `reversible_workspaces`, a list of path prefixes, default empty, each inside one of the task's grant scopes.
+  - The runner checkpoints each one before the task's first turn (so before its first effect), into a content-addressed checkpoint store outside every mount and selector, and journals a `checkpoint` record: the manifest of paths, types, modes, sha256 and symlink targets.
+  - The content is read in the workload by an operator-fixed node script that never follows a symlink.
+  - Bounds: 2,000 entries and 8 MiB. A larger workspace fails the task, never skips.
+  - A scope with no checkpoint is not reversible.
+  - `juno checkpoint restore <task> <checkpoint>` is the operator action. It writes the manifest back in a one-off workload container (removing what the manifest lacks), re-lists the scope, compares it with the manifest, and journals the restore and its result.
+- **Registry: typed entries.** `program_field`, `argv_field` and `cwd_field` become all-or-none. An entry without them is a typed capability, which may have no `instruction` field (restrictive), so it has no promotion and no flag surface. Scope paths are its `path`-typed data fields.
+- **`fs.file.write(path: data/target path, content: data/payload string)`, `side_effect: write`.** Its adapter runs `node /opt/juno/fs-write.mjs -- <path> <content>` in a fresh workload container, with the path and the content as separate argv elements. Content is limited to 65,536 bytes; above that the adapter refuses and the call is rejected `malformed_call`.
+  - **D-121:** the writer walks the path from `/work` one component at a time through `/proc/self/fd/<dirfd>/<name>` with `O_NOFOLLOW | O_DIRECTORY`, so no symlink in any component is ever followed, whatever the boundary saw.
+  - It creates missing directories with `mkdir` on the same fd-relative path and opens the file with `O_NOFOLLOW | O_CREAT | O_TRUNC`.
+  - On refusal it exits non-zero with the reason on stderr, and the runner journals it in the `capability_result`.
+  - Test: a resolver wrapper swaps a component for a symlink after the real resolution and before the boundary's verdict and the write. The write must fail, nothing outside the scope may change, and the journal records why.
+- **Test-only `external` and `irreversible` capabilities** (unit tests only, not in the registry) prove the table and `enumerated_targets`.
+
+## Previous increment (Slice 1.5 Increment 2, merged as PR #35)
 **Slice 1.5 — Increment 2: signed grants and an anchored journal head (C1)** (`docs/plans/slice-1.5-build-plan.md`, Increment 2). Branch `claude/vigilant-heisenberg-uko6on`, the only branch this session may push. It carries PR #34's commits unchanged (from `claude/compassionate-noether-9s2sf2`, head 889c5be, which carried PR #33's), so the record continues in a new PR from it; PR #34 is superseded. Spec v0.6.1. No objection to the spec open.
 
 Status: **D-129's STOP is lifted by your ruling (e) (D-130). The WSL2 plan section (§2a) and Part E below are written to it; the rootless proof is built (D-131); review round 3 is next.** Increment 2's own code is unchanged since PR #33's round 2.
@@ -430,6 +459,15 @@ Status: **Slice 1.2 complete. Part 1 (PR #19), the interface fix (PR #20), Part 
 **Slice 1.1 — real-model evidence (complete).** Parts 1 to 4 merged (PR #12, #13, #16, #17; STATE record PR #18). Report: `docs/evidence/slice-1.1.md`.
 
 ## Merges recorded (CLAUDE.md §7 step 6)
+- **Slice 1.5 Increment 2 (D-115 to D-131), PR #35** (https://github.com/khashayarjavi/juno/pull/35; supersedes #34 and #33):
+  - Head bd4db645e80de6ff17353bc1e5a19504ef52cbe4. PR CI run 41888014160 succeeded on that head: `verify` (job 126777586625) and `verify-rootless` (job 126777586197).
+  - Merged as merge commit d7e7ec38f35e3ff7c11f3c07d67f5c808d81f6e2, pinned to the head SHA. CI on `main` for the merge commit: run 41890482246 (event `push`), `verify` and `verify-rootless` both success.
+  - Reviewer verdict: round 3 (D-127) MERGE on bd4db64; all six checks PASS. Rounds 1 and 2 (PR #33) were DO NOT MERGE, fixed by D-125 and D-126.
+  - Reviewer notes, not defects:
+    - the trust-anchor check (`packages/runner/src/trust.ts`) covers the file and its own folder, not the folder above it or a symlink's target folder (residual to record);
+    - the comment in `scripts/rootless/setup-root.sh` says "no login shell", but the user is created with `/bin/bash`, password locked;
+    - the runner's `#anchor` returns false without a journal note when the journal fails verification (the task still fails closed);
+    - the §3.2 restart case is proven through `resume.test.ts`, which names §6.3.
 - **Slice 1.5 Increment 1 (D-107 to D-114), PR #31** (https://github.com/khashayarjavi/juno/pull/31):
   - Head ae5b38a0c2630210e72e3f88a25d6353c24558b9; PR CI `verify` run 41719481819 (job 126208141078, success).
   - Merged as merge commit 1432cc3dee9489c1225ea04e28dc399e9c122e3c, pinned to the head SHA. CI `verify` on `main` for the merge commit: run 41720351290 (event `push`, job 126211167933), success.
@@ -511,8 +549,8 @@ Everything is in `packages/runner/` unless named. Every test names the section i
 - **First independent review of PR #9 (2026-10-30): DO NOT MERGE.** Fixed: (1) the four Increment 6 commits had not reached GitHub (the branch's upstream had become `origin/main`; pushed, upstream fixed); (2) a resume that re-parked left the runner claimed, so it refused all further work (fixed, tested); (3) a task listing an unusable grant could never resume (operator can now drop grants on resume, recorded in D-066 with the consequence; tested, including across a restart); (4) the runner-record classes recorded in D-066.
 
 ## Remaining
-- **Agent:** Increment 2's PR through the §7 gate (round 3, with CI `verify` and `verify-rootless` both read); then Increments 3 to 6 of `docs/plans/slice-1.5-build-plan.md`, each through the §7 loop.
-- **Operator:** the Windows steps above (Increment 2, "Operator steps"). The code does not wait for them.
+- **Agent:** Increments 3 to 6 of `docs/plans/slice-1.5-build-plan.md`, each through the §7 loop.
+- **Operator:** the Windows steps (Increment 2, "Operator steps", Parts A–C, then Part E for WSL2). The code does not wait for them.
 
 ## make verify
 Local, 2026-11-04 on this branch (PR #35): **GREEN** (829 unit, 69 container), after pointing the session's Docker daemon at `mirror.gcr.io` (Docker Hub 429). CI on 8057fe2 (run 41887176162): `verify` success, `verify-rootless` success.
