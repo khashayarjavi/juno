@@ -6,7 +6,7 @@ import { runJournalCli } from "./journal-cli.js";
  * `grant sign` and `grant verify` (D-117) and `journal check` (D-122).
  */
 const [command, ...args] = process.argv.slice(2);
-if (command === "grant") process.exitCode = runGrantCli(args);
+if (command === "grant") process.exitCode = await runGrantCli(args);
 else if (command === "journal") process.exitCode = runJournalCli(args);
 else {
   process.stderr.write("usage: juno grant sign|verify ... | juno journal check ...\n");

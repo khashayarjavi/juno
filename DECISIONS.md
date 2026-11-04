@@ -1325,3 +1325,37 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   3. **"Naming the first entry that differs"** (the plan's wording, not the specification's). An anchor holds one entry's hash, so a rewrite can be located only to a range: after the latest anchor that still matches, and at or before the first that does not. The check reports exactly that range (`after_seq`, `first_changed_at_or_before`). Taking an anchor at every entry would locate it exactly; the specification asks for an interval.
   4. **A malformed or wrongly signed anchor fails the check.** It is not skipped. This is fail-closed: an attacker who can append junk can make the check fail, but cannot make it pass. That attacker can already stop JUNO, which §3.4.1 lists as the residual.
 - Reason: §3.4.1, §6.2; CLAUDE.md §7 step 3 (D8, fail-closed).
+
+## D-124 — C1 (part): the Windows signing mechanism is the OpenSSH agent; grant signatures are SSHSIG (Slice 1.5 Increment 2)
+- Date: 2026-11-04
+- Status: Accepted (the plan's Increment 2 item 2: "The exact Windows signing mechanism is chosen at the start of the increment from its current documentation (rule 13) and recorded as a D-number"; implements D-093's "Windows OS keychain")
+- Applies to: Slice 1.5 onward; amends D-115 (the signature's encoding) and D-117 (a second way to sign)
+- Sources read on 2026-11-04 (rule 13):
+  - Microsoft Learn, "Key-Based Authentication in OpenSSH for Windows" (ms.date 2025-10-03, updated 2026-04-21). It says: `ssh-keygen` defaults to Ed25519; "You can use `ssh-agent` to securely store your private keys within a Windows security context that's associated with your Windows account"; the `ssh-agent` service is disabled by default and is enabled with `Get-Service ssh-agent | Set-Service -StartupType Automatic` and `Start-Service ssh-agent`; "We recommend that you back up your private key to a secure location and then delete it from the local system *after* you add it to the `ssh-agent` service. The private key can't be retrieved from the agent".
+  - OpenBSD manual, ssh-keygen(1), `-Y sign`: "The key used for signing is specified using the -f option and may refer to either a private key, or a public key with the private half available via ssh-agent(1)"; `-O hashalg` takes "sha256" or "sha512", default "sha512"; `-n` sets the namespace.
+  - OpenSSH `PROTOCOL.sshsig` (openssh-portable master): the armoured and blob formats, and the signed data `"SSHSIG" || namespace || reserved || hash_algorithm || H(message)`.
+  - GitHub Docs: "Creating rulesets for a repository", "Available rules for rulesets" ("Restrict deletions", "Block force pushes"), and "Managing your personal access tokens" (fine-grained tokens, "Only select repositories", Contents read and write, HTTPS only). These are used for the operator's steps in STATE.md.
+- Decision:
+  - **The operator's key is an Ed25519 OpenSSH key held by the Windows `ssh-agent` service.** The agent keeps it in the operator's Windows security context. After a backup, the private key file is deleted, as Microsoft recommends, so the key exists on the machine only inside the agent. No container, repository, journal or runner-writable directory ever holds it.
+  - **Signing:** `juno grant sign --ssh-key <juno_grant.pub> <grant.json> [--out <file>]` runs `ssh-keygen -Y sign -n juno-grant -O hashalg=sha512 -f <pub> <file>` by `execFile`, over the grant's signing bytes, written to a file in a fresh temporary directory that is removed afterwards. `ssh-keygen` finds the private half in the agent. `--out` writes a new UTF-8 file, never replacing one, because Windows PowerShell 5.1's `>` writes UTF-16. A leading byte-order mark in the grant file is accepted. `--key <pem>` (D-117) stays for a key held as a file.
+  - **The signature's encoding (amends D-115).** `signature` is now an OpenSSH SSHSIG blob, in base64 (the armour's body), over the same bytes as before: the canonical JSON of every other field. Verification (`sshsigVerify`) accepts exactly one profile:
+    - version 1;
+    - the blob's public key equal to the trust anchor;
+    - namespace `juno-grant`;
+    - an empty reserved field (the restrictive reading: PROTOCOL.sshsig says to ignore it);
+    - `sha512`;
+    - an `ssh-ed25519` signature of 64 bytes that verifies.
+
+    Anything else does not verify, so the grant does not exist (`signature_invalid`). Tests sign the same profile in memory (`sshsigSign`); the interop tests show it is the format `ssh-keygen` makes and accepts.
+  - **The trust anchor** may be given as PEM, as before, or as the operator's OpenSSH `.pub` line (`trustAnchorFromPem` reads both); only Ed25519 is accepted.
+  - The grant contract's `signature` stays a string of at most 256 characters. An SSHSIG blob in this profile is 180 bytes, which is 240 base64 characters.
+- **The cloud host and CI.** The tests run the real `ssh-keygen`, `ssh-add` and `ssh-agent`. This cloud host had no OpenSSH client, so `scripts/session-start.sh` now installs `openssh-client` when `ssh-keygen` is missing (Ubuntu's package, 1:9.6p1). Whether CI's runner has it is shown by CI itself (rule 13); the workflow is unchanged.
+- **Known limit, for the operator (not built in Slice 1.5):** the runner's check that it cannot write its trust anchor (D-116) uses `access(2)`. On Windows, Node's `fs.access` does not consult ACLs, so it would always find the anchor's directory writable and refuse to start. That fails closed. Running the runner itself on Windows is not part of Slice 1.5, which runs it on Linux hosts (CI, cloud sessions, D-065).
+- Tests: `packages/enforcement/test/sshsig.test.ts` (real OpenSSH 9.6):
+  - a signature made by `ssh-keygen` verifies against the `.pub`, and fails on a changed message or another key;
+  - another namespace, or SHA-256, is refused even with the right key;
+  - a signature JUNO makes is accepted by `ssh-keygen -Y verify`;
+  - with the private key only in a real `ssh-agent` (its file deleted), `sshKeygenSign` through the agent gives a grant signature that `grantSignatureValid` accepts, and a changed field does not verify.
+
+  `packages/runner/test/grant-cli.test.ts`: `--ssh-key` with `--out`, a byte-order mark, bad `--out` usage, and the example grant `docs/examples/grant.example.json`. Every existing grant-signature test (D-115) passes unchanged on the new encoding.
+- Reason: §3.2 ("The operator's signing key lives outside every container and outside any state the runner can write — an OS keychain or a hardware key"); D-093.
