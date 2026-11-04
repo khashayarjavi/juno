@@ -47,7 +47,7 @@ stage:
 	cd build/stage && npm ci --omit=dev --ignore-scripts --no-audit --no-fund --prefer-offline
 
 containers: build stage
-	$(COMPOSE) build
+	$(COMPOSE) --profile anchors build
 	npx vitest run --config vitest.containers.config.ts
 
 # The evidence run against the real provider (DECISIONS.md D-072, D-073).

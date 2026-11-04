@@ -68,7 +68,7 @@ describe("build plan Increment 5 tests", () => {
     };
     expect(Closure.safeParse(forged).success).toBe(false);
     // The operator may still close it, at the weakest mode, and that closure records the criterion as derived.
-    expect(runner.accept("task-1", PRINCIPAL).state).toBe("accepted");
+    expect((await runner.accept("task-1", PRINCIPAL)).state).toBe("accepted");
     expect(notes(h.entries(), "closure", h.payload)[0]?.["closure"]).toMatchObject({ closure_mode: "accepted", criterion_integrity: "derived", verifier_identity: PRINCIPAL });
   });
 
@@ -258,10 +258,10 @@ describe("verification and closure (§3.4.4, §6.1)", () => {
   it("lets only the principal accept a complete_unverified task", async () => {
     const { runner } = h.runner([turn([])]);
     admitted(runner);
-    expect(() => runner.accept("task-1", PRINCIPAL)).toThrow(/complete_unverified/);
+    await expect(runner.accept("task-1", PRINCIPAL)).rejects.toThrow(/complete_unverified/);
     await runner.run("task-1");
-    expect(() => runner.accept("task-1", "someone-else")).toThrow(/principal/);
-    expect(runner.accept("task-1", PRINCIPAL).state).toBe("accepted");
+    await expect(runner.accept("task-1", "someone-else")).rejects.toThrow(/principal/);
+    expect((await runner.accept("task-1", PRINCIPAL)).state).toBe("accepted");
   });
 });
 

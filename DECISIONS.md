@@ -1267,3 +1267,61 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
 - Applies to: Slice 1.5 Increment 3 (`fs.file.write`) and every later write capability
 - Decision: recorded now; built in Increment 3. At the moment it acts, the writer refuses to follow a symlink in any component of the target path, whatever the boundary saw earlier. The mechanism is chosen in Increment 3, from what the workload image actually provides (rule 13), and recorded there. The test swaps a component for a symlink between the boundary's verdict and the write; the write must fail, nothing outside the scope may change, and the journal must record why.
 - Reason: the operator's ruling; §2.7.1 C4 judges the canonical path at authorization, and only the writer itself can close the time between that check and the effect.
+
+## D-122 — C1 (part): the anchored journal head (Slice 1.5 Increment 2)
+- Date: 2026-11-04
+- Status: Accepted (implementation record of §3.4.1 v0.6 C1 and v0.6.1 V6-4, and the plan's Increment 2 item 4; the readings that needed a choice are D-123)
+- Applies to: Slice 1.5 onward
+- Decision:
+  - **Anchor record** (`packages/journal/src/anchor.ts`): `{task, seq, head, at, signature}`. `task` is the SHA-256 of the task id, `head` the hash of entry `seq`, `at` the time it was taken. `signature` is Ed25519, base64, by the runner's journal key, over the canonical JSON of the other four fields. Nothing else is in it.
+  - **Journal key** (`loadOrCreateJournalKey`): an Ed25519 pair the runner creates on first start, in a directory it names. The directory must lie outside `/work` and outside the journal. It is mode 0700 and the private key 0600; the public half is written beside it as `journal-key.pub.pem`. The runner refuses to start when the journal key is the trust anchor's key (the operator's), so the operator key can never serve as it.
+  - **Destinations** (`AnchorSink`: `append`, `list`; `packages/journal/src/sinks.ts`). They share one layout, `<task digest>/<seq, 12 digits>.json`. An anchor at a task and seq already stored is refused (`AnchorExistsError`), never replaced. None has a delete.
+    - `ContainerAnchorSink`, the test stand-in §3.4.1 names: the `anchors` compose service. It has its own image (`containers/anchors.Dockerfile`), its own uid (65533) and its own volume (`anchors-vol`), no network, all capabilities dropped and a read-only root. Its fixed entrypoint `containers/anchor-store.mjs` offers only `append` (exclusive create, fsync) and `list`. It is in the compose profile `anchors`, so `docker compose up` does not start it; `make containers` builds it with `--profile anchors`.
+    - `GitAnchorSink`, the real destination (D-094, D-098): a local clone of the operator's public `juno-anchors`, outside `/work`. Per anchor: `git pull --ff-only`, one new file, one commit, `git push`, all by `execFile`. The credential is git's own; the runner never reads it.
+    - `readAnchorDirectory`, for the check: reads the layout from any directory (a clone of `juno-anchors`).
+  - **When the runner anchors.** It anchors both the task's record and the runner record (grant charges):
+    - at start, after recording `{type: "anchoring", interval_ms, journal_key}` (the key's SPKI SHA-256);
+    - before any turn once `interval_ms` has passed since the last anchor;
+    - when `run`, `resume` or `accept` returns (park or end).
+
+    Nothing new since the last anchor means nothing is sent. An `AnchorExistsError` counts as anchored only when the stored anchor names the same head (a restart).
+  - **`juno journal check --journal <dir> --anchors <dir> --key <journal-key.pub.pem> <task>`** (`packages/runner/src/journal-cli.ts`). It verifies the chain, then checks every stored anchor: well formed, for this task, signature valid, agreeing with the entry at its seq. Every anchor is checked, not only the latest, so a later anchor signed with a stolen key cannot hide an earlier one. It prints JSON; exit 0 when consistent, 1 when not, 2 on bad usage. Entries after the latest anchor are reported as `unanchored`, never as a rewrite.
+  - **The interval** is a runner option (`Anchoring.intervalMs`, a positive integer) and is recorded in every task's journal.
+- **Test changes:**
+  - `packages/runner/test/runner.test.ts`: `accept` is now asynchronous, because it anchors the closure. Four calls are awaited (`.rejects.toThrow` for the two refusals); every assertion is unchanged.
+  - Every test that builds a `Runner` passes `anchoring`: an in-memory append-only sink and a per-file journal key (`packages/runner/test/anchor-sink.ts`). `test/containers/runner.test.ts` uses the real container stand-in.
+  - `test/containers/isolation.test.ts` is unchanged. The `anchors` service is in a profile so that `docker compose up` still starts exactly the runner and the workload.
+- Tests:
+  - `packages/journal/test/anchor.test.ts`:
+    - a rewrite with every hash recomputed passes the chain check and fails the anchor check;
+    - the range of the first changed entry, between two anchors;
+    - an append after the anchor is not reported;
+    - a truncation;
+    - an anchor signed with a stolen journal key does not hide the earlier one, and cannot replace it at an append-only destination;
+    - an anchor by another key or for another task fails;
+    - an anchor holds no task id or content;
+    - a broken chain is reported first.
+  - `packages/runner/test/anchoring.test.ts`:
+    - the interval is recorded, and anchors are taken at start and stop (the runner record too);
+    - an anchor at each interval;
+    - a task whose head cannot be anchored does not start, and a running one stops;
+    - the operator's key is refused as the journal key;
+    - static: no runner module other than `grant-cli.ts` names `signGrant`, `createPrivateKey` or a private key;
+    - restart idempotence;
+    - the journal key's modes and location rules;
+    - `juno journal check` passes an anchored chain and fails a wholesale rewrite.
+  - `packages/journal/test/git-sink.test.ts`, against a local bare repository with `receive.denyNonFastForwards` and `receive.denyDeletes` (no network): it pushes and lists, refuses to replace, and the destination refuses a force-push and a branch deletion.
+  - `test/containers/anchors.test.ts` (real container): append and list; refuses to overwrite; has no delete; only `anchors` mounts `anchors-vol`, with no network, no capabilities and its own uid, and the workload cannot see `/anchors`.
+  - `test/containers/runner.test.ts`: the real task's head is anchored in the container at start and stop, and the chain agrees.
+- Reason: §3.4.1 ("The journal's head hash is therefore copied off the host at intervals, to an append-only destination the host cannot rewrite"; "Each anchor is signed with a separate journal key held by the runner"; "In tests, a separate container exposing an append-only interface and holding its own volume"; "The interval … is recorded in the journal").
+
+## D-123 — Anchored head: readings where §3.4.1 leaves a choice (autopilot ruling)
+- Date: 2026-11-04
+- Status: Accepted (autopilot ruling under CLAUDE.md §7 step 3: the more restrictive reading each time; §3.4.1 is outside §2, §3.2 and §4.3, so no STOP)
+- Applies to: Slice 1.5 onward
+- Decision:
+  1. **The task appears as a digest, not its id.** §3.4.1: "An anchor holds only a hash, a sequence number, a time and a signature, so publishing it reveals nothing." A task id is an operator-chosen string that may describe the work, so the anchor names the task by the SHA-256 of its id, the journal's own directory name for it.
+  2. **A head that cannot be anchored stops the task.** §6.2 has no park reason for this, and adding one would change the specification. The task instead fails, as other runner failures do, with `anchor_unavailable`, in two cases: it does not start when its first anchor fails, and it stops when an interval's anchor fails. The less restrictive reading would keep running with history no longer copied off the host. When a run stops (park or end), a failed anchor is journalled (`anchor_failed`) and the outcome is unchanged. `juno journal check` then reports the entries after the last anchor as not yet protected.
+  3. **"Naming the first entry that differs"** (the plan's wording, not the specification's). An anchor holds one entry's hash, so a rewrite can be located only to a range: after the latest anchor that still matches, and at or before the first that does not. The check reports exactly that range (`after_seq`, `first_changed_at_or_before`). Taking an anchor at every entry would locate it exactly; the specification asks for an interval.
+  4. **A malformed or wrongly signed anchor fails the check.** It is not skipped. This is fail-closed: an attacker who can append junk can make the check fail, but cannot make it pass. That attacker can already stop JUNO, which §3.4.1 lists as the residual.
+- Reason: §3.4.1, §6.2; CLAUDE.md §7 step 3 (D8, fail-closed).

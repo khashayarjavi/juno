@@ -9,7 +9,8 @@ import { type Adapter, type CapabilityCall, CapabilityRegistry, WORKLOAD_EXECFIL
 import type { SourceRegistration } from "../src/admission.js";
 import { type ProviderProfile, SCRIPTED_PROFILE_FILE, loadProviderProfile } from "../src/profile.js";
 import { type ScriptStep, ScriptedProvider } from "../src/provider.js";
-import { Runner, type RunnerOptions } from "../src/runner.js";
+import { type Anchoring, Runner, type RunnerOptions } from "../src/runner.js";
+import { MemoryAnchorSink, testAnchoring } from "./anchor-sink.js";
 import { TEST_ANCHOR, signed } from "../../enforcement/test/test-keys.js";
 
 export const SHELL_RUN_FILE = fileURLToPath(new URL("../../registry/definitions/shell.run.json", import.meta.url));
@@ -176,6 +177,9 @@ export type Harness = {
   registry: CapabilityRegistry;
   grants: GrantStore;
   now: { value: Date };
+  /** The harness's anchor destination and journal key, shared by every runner it makes (a restart keeps them, §3.4.1). */
+  anchors: MemoryAnchorSink;
+  anchoring: Anchoring;
   runner: (steps: readonly ScriptStep[], options?: Partial<RunnerOptions> & { profile?: ProviderProfile }) => { runner: Runner; provider: ScriptedProvider };
   entries: (taskId?: string) => readonly TrajectoryEntry[];
   payload: (entry: TrajectoryEntry) => Record<string, unknown>;
@@ -194,15 +198,19 @@ export function harness(adapter: Adapter = standInAdapter): Harness {
   grants.add(grant());
   const now = { value: new Date(Date.parse(T0) + 60 * 60 * 1000) };
   const runners: Runner[] = [];
+  const anchors = new MemoryAnchorSink();
+  const anchoring = testAnchoring({ sink: anchors });
   return {
     dir,
     journal,
     registry,
     grants,
     now,
+    anchors,
+    anchoring,
     runner: (steps, options = {}) => {
       const provider = new ScriptedProvider(options.profile ?? PROFILE, steps);
-      const runner = new Runner({ journal, registry, grants, providers: [provider], sources: [PROJECT_SOURCE], clock: () => now.value, resolver: hostResolver(join(dir, "work")), ...options });
+      const runner = new Runner({ journal, registry, grants, providers: [provider], sources: [PROJECT_SOURCE], clock: () => now.value, resolver: hostResolver(join(dir, "work")), anchoring, ...options });
       runners.push(runner);
       return { runner, provider };
     },

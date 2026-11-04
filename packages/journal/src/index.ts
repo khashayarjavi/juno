@@ -29,3 +29,15 @@ export {
   signAnchor,
   taskDigest,
 } from "./anchor.js";
+export {
+  AnchorExistsError,
+  type AnchorSink,
+  AnchorSinkError,
+  ContainerAnchorSink,
+  GitAnchorSink,
+  type JournalKey,
+  JournalKeyError,
+  loadOrCreateJournalKey,
+  readAnchorDirectory,
+  sameKey,
+} from "./sinks.js";

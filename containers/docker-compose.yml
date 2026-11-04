@@ -38,8 +38,10 @@ services:
       - work-vol:/work          # no journal-vol, no credentials
 
   # The test stand-in for the off-host anchor destination (§3.4.1, DECISIONS.md D-122). Only this service mounts
-  # anchors-vol; its entrypoint offers append and list only.
+  # anchors-vol; its entrypoint offers append and list only. In the `anchors` profile: it is a store reached by
+  # `docker compose run`, never a long-running service, so `docker compose up` leaves it alone.
   anchors:
+    profiles: ["anchors"]
     build:
       context: ..
       dockerfile: containers/anchors.Dockerfile

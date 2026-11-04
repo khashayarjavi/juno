@@ -12,6 +12,7 @@ import { SCRIPTED_PROFILE_FILE, loadProviderProfile } from "../../packages/runne
 import { ScriptedProvider } from "../../packages/runner/src/provider.js";
 import { Runner } from "../../packages/runner/src/runner.js";
 import { TEST_ANCHOR, signed } from "../../packages/enforcement/test/test-keys.js";
+import { testAnchoring } from "../../packages/runner/test/anchor-sink.js";
 
 // §2.7.1 "Data fields and scope" (v0.6 C4) and "Paths that do not exist yet" (v0.6.1 V6-2), D-113, against the real
 // workload: paths are resolved where the effect runs, by the resolver the runner uses, and the boundary judges the
@@ -96,6 +97,7 @@ beforeAll(async () => {
       ],
       sources: [{ id: "project", selector: { kind: "path", prefix: "/work/project" }, data_class: { sensitivity: "internal", integrity: "untrusted" } }],
       resolver: new WorkloadPathResolver({ composeFile, project, service: "workload" }),
+      anchoring: testAnchoring(),
     });
   const payload = (ref: string): Record<string, unknown> => {
     const blob = readPayload(journalRoot, ref);

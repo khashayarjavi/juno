@@ -16,6 +16,8 @@ import { parseRunnerConfig } from "../../packages/runner/src/config.js";
 import { SCRIPTED_PROFILE_FILE, loadProviderProfile } from "../../packages/runner/src/profile.js";
 import { ScriptedProvider } from "../../packages/runner/src/provider.js";
 import { Runner, type RunOutcome } from "../../packages/runner/src/runner.js";
+import { ContainerAnchorSink, checkAnchors, taskDigest } from "../../packages/journal/src/index.js";
+import { testJournalKey } from "../../packages/runner/test/anchor-sink.js";
 import { TEST_ANCHOR, signed } from "../../packages/enforcement/test/test-keys.js";
 
 // Increment 5 with DECISIONS.md D-065: the runner runs on the host, starts
@@ -118,9 +120,11 @@ let outcome: RunOutcome;
 let before: Map<string, string>;
 let probe: z.output<typeof WorkloadReport>;
 let runner: Runner;
+const anchorSink = new ContainerAnchorSink({ composeFile, project, service: "anchors" });
+const journalKey = testJournalKey();
 
 beforeAll(async () => {
-  await docker([...compose, "down", "--volumes", "--remove-orphans"]);
+  await docker([...compose, "--profile", "anchors", "down", "--volumes", "--remove-orphans"]);
   // The operator's work content, written as the workload user, outside the capability under test.
   const setup = 'const fs = require("node:fs"); fs.mkdirSync("/work/project"); fs.writeFileSync("/work/project/notes.txt", "hello\\n"); fs.writeFileSync("/work/project/done.txt", "ok\\n"); fs.mkdirSync("/work/project/protected"); fs.writeFileSync("/work/project/protected/keep.txt", "keep\\n");';
   await docker([...compose, "run", "--rm", "--no-deps", "-T", "workload", "-e", setup]);
@@ -159,6 +163,8 @@ beforeAll(async () => {
     providers: [provider],
     sources: [{ id: "project", selector: { kind: "path", prefix: "/work/project" }, data_class: { sensitivity: "internal", integrity: "untrusted" } }],
     resolver: new WorkloadPathResolver({ composeFile, project, service: "workload" }),
+    // The real append-only stand-in destination (§3.4.1, D-122), in its own container.
+    anchoring: { sink: anchorSink, journalKey, intervalMs: 3_600_000 },
   });
   const admission = runner.admit({
     id: "task-host",
@@ -192,7 +198,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   runner.close();
-  await docker([...compose, "down", "--volumes", "--remove-orphans"]);
+  await docker([...compose, "--profile", "anchors", "down", "--volumes", "--remove-orphans"]);
   rmSync(hostDir, { recursive: true, force: true });
 });
 
@@ -236,6 +242,15 @@ describe("a task run by the host runner against the real workload (build plan In
       return blob.status === "present" ? (JSON.parse(new TextDecoder().decode(blob.bytes)) as Record<string, unknown>) : {};
     }).filter((note) => note["type"] === "verification").at(-1);
     expect(verification).toMatchObject({ result: "pass", inputs: "unchanged", changed_paths: [] });
+  });
+});
+
+describe("the task's head is anchored in the separate append-only container (§3.4.1, D-122)", () => {
+  // proves §3.4.1: the real runner copied the head off its journal storage, and the chain agrees with every anchor
+  it("anchors the task's head at start and stop, and the chain agrees", async () => {
+    const anchors = await anchorSink.list(taskDigest("task-host"));
+    expect(anchors.length).toBe(2);
+    expect(checkAnchors("task-host", verifyTrajectory(journalRoot, "task-host"), anchors, journalKey.publicKey)).toMatchObject({ ok: true, unanchored: 0 });
   });
 });
 

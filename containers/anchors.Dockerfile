@@ -12,7 +12,7 @@ FROM gcr.io/distroless/nodejs22-debian12:nonroot@sha256:13593b7570658e8477de39e2
 COPY --from=stage --chown=65533:65533 --chmod=0700 /stage/ /
 # The store script, owned by root and read-only to the store's user (0555: BuildKit gives the created parent
 # directory the same mode, and a directory needs x to be entered).
-COPY --chmod=0555 containers/anchor-store.js /opt/juno/anchor-store.js
+COPY --chmod=0555 containers/anchor-store.mjs /opt/juno/anchor-store.mjs
 
 USER 65533:65533
-ENTRYPOINT ["/nodejs/bin/node", "/opt/juno/anchor-store.js"]
+ENTRYPOINT ["/nodejs/bin/node", "/opt/juno/anchor-store.mjs"]

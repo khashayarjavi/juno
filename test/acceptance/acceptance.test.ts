@@ -20,6 +20,7 @@ import { SCRIPTED_PROFILE_FILE, loadProviderProfile } from "../../packages/runne
 import { type ProviderRequest, type ScriptStep, ScriptedProvider } from "../../packages/runner/src/provider.js";
 import { Runner, RunnerError } from "../../packages/runner/src/runner.js";
 import { TEST_ANCHOR, signed } from "../../packages/enforcement/test/test-keys.js";
+import { testAnchoring } from "../../packages/runner/test/anchor-sink.js";
 
 // Increment 7: the five §18 acceptance tests, end to end. The runner runs on
 // the host (D-065) and every capability call runs in a fresh workload
@@ -133,7 +134,7 @@ function runner(steps: readonly ScriptStep[], options: { registry?: CapabilityRe
   for (const item of options.grants ?? [grant("grant-main")]) grants.add(item);
   const provider = new ScriptedProvider(profile, steps);
   const resolver = new WorkloadPathResolver({ composeFile, project, service: "workload" });
-  return { runner: new Runner({ journal, registry, grants, providers: [provider], sources: SOURCES, clock: () => clock.now, resolver }), provider };
+  return { runner: new Runner({ journal, registry, grants, providers: [provider], sources: SOURCES, clock: () => clock.now, resolver, anchoring: testAnchoring() }), provider };
 }
 
 const entries = (taskId: string): readonly TrajectoryEntry[] => readTrajectory(journalRoot, taskId);

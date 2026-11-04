@@ -51,6 +51,11 @@ export class GrantStore {
     this.#anchor = anchor;
   }
 
+  /** The operator's public key this store trusts (read-only; the runner uses it to refuse a journal key equal to it). */
+  get trustAnchor(): TrustAnchor {
+    return this.#anchor;
+  }
+
   /** Stores an operator-issued grant. The grant is a boundary input: it is parsed first. */
   add(input: unknown): Grant {
     const grant = parseAtBoundary("grant", Grant, input);

@@ -6,9 +6,10 @@
 //   list <task digest>                                    prints a JSON array of the task's anchors, in seq order
 //
 // There is no overwrite and no delete: a file is created exclusively and never opened for writing again.
-"use strict";
-const fs = require("node:fs");
-const path = require("node:path");
+import { Buffer } from "node:buffer";
+import fs from "node:fs";
+import path from "node:path";
+import process from "node:process";
 
 const ROOT = "/anchors";
 const TASK = /^[0-9a-f]{64}$/;
