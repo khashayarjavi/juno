@@ -62,13 +62,28 @@ async function load(dir: string): Promise<{ ok: boolean; type?: string; error?: 
   return JSON.parse(stdout) as { ok: boolean; type?: string; error?: string };
 }
 
+/** Starts the real runner (its image's own command) with the case's anchor configured; returns its exit and output. */
+async function start(dir: string): Promise<{ code: number; stdout: string; stderr: string }> {
+  try {
+    const { stdout, stderr } = await run("docker", [...compose, "run", "--rm", "--no-deps", "-e", "JUNO_TRUST_ANCHOR=/anchor/operator.pub", "-v", [dir, "/anchor"].join(":"), "runner"], { cwd: repoRoot });
+    return { code: 0, stdout, stderr };
+  } catch (error: unknown) {
+    const failed = error as { code?: number; stdout?: string; stderr?: string };
+    return { code: typeof failed.code === "number" ? failed.code : -1, stdout: failed.stdout ?? "", stderr: failed.stderr ?? "" };
+  }
+}
+
 const outcomes = new Map<string, { ok: boolean; type?: string; error?: string }>();
+const starts = new Map<string, { code: number; stdout: string; stderr: string }>();
 
 beforeAll(async () => {
   chmodSync(hostDir, 0o755);
   writeFileSync(join(hostDir, "source.pem"), pem);
   await asRoot(SETUP, JSON.stringify(CASES));
-  for (const { name } of CASES) outcomes.set(name, await load(join(hostDir, name)));
+  for (const { name } of CASES) {
+    outcomes.set(name, await load(join(hostDir, name)));
+    starts.set(name, await start(join(hostDir, name)));
+  }
 }, 300_000);
 
 afterAll(async () => {
@@ -87,5 +102,16 @@ describe("the trust anchor in the runner container (§3.2 C1, D-116)", () => {
   // proves §3.2 C1: the runner refuses an anchor it could write, or one in a directory where it could replace it
   it.each([["writable-file"], ["writable-dir"]])("refuses the %s anchor", (name) => {
     expect(outcomes.get(name)).toMatchObject({ ok: false, error: expect.stringContaining("not protected") });
+  });
+
+  // proves §3.2 C1 (D-125): the runner itself starts with a protected anchor and refuses to start with a writable one
+  it("starts the runner only when its anchor is protected", () => {
+    expect(starts.get("protected")).toMatchObject({ code: 0, stdout: expect.stringContaining("trust anchor: /anchor/operator.pub") });
+    for (const name of ["writable-file", "writable-dir"]) {
+      const outcome = starts.get(name);
+      expect(outcome?.code, name).toBe(1);
+      expect(outcome?.stderr, name).toContain("not protected");
+      expect(outcome?.stdout, name).not.toContain("ready");
+    }
   });
 });

@@ -8,7 +8,14 @@ describe("parseRunnerConfig", () => {
     expect(parseRunnerConfig({ JUNO_JOURNAL_DIR: "/journal", JUNO_WORK_DIR: "/work", OTHER: "x" })).toEqual({
       journalDir: "/journal",
       workDir: "/work",
+      trustAnchor: null,
     });
+  });
+
+  // proves §3.2 C1 (D-125): the trust anchor's path is read when given, and must be absolute
+  it("reads the trust anchor's path", () => {
+    expect(parseRunnerConfig({ JUNO_JOURNAL_DIR: "/journal", JUNO_WORK_DIR: "/work", JUNO_TRUST_ANCHOR: "/etc/juno/operator.pub" }).trustAnchor).toBe("/etc/juno/operator.pub");
+    expect(() => parseRunnerConfig({ JUNO_JOURNAL_DIR: "/journal", JUNO_WORK_DIR: "/work", JUNO_TRUST_ANCHOR: "operator.pub" })).toThrow();
   });
 
   // proves §0.2 D8 (fail closed): missing or empty settings stop the runner

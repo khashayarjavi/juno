@@ -1359,3 +1359,20 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
 
   `packages/runner/test/grant-cli.test.ts`: `--ssh-key` with `--out`, a byte-order mark, bad `--out` usage, and the example grant `docs/examples/grant.example.json`. Every existing grant-signature test (D-115) passes unchanged on the new encoding.
 - Reason: §3.2 ("The operator's signing key lives outside every container and outside any state the runner can write — an OS keychain or a hardware key"); D-093.
+
+## D-125 — PR #33 review round 1 fixes: unsigned grants at admission and resume; the runner's start loads the anchor; no key is committed (Slice 1.5 Increment 2)
+- Date: 2026-11-04
+- Status: Accepted (fixes of the round 1 review findings on PR #33; the restrictive reading each time)
+- Applies to: Slice 1.5 onward; amends D-115 and D-116
+- Decision:
+  - **A grant with a missing or invalid signature does not exist at admission or on resume either** (§3.2 C1: "a grant with a missing or invalid signature does not exist"). Before, admission and resume found it with `GrantStore.get`, which does not check the signature. So a task whose only grant was unsigned was admitted, although it could never run a call (every call goes through `coverage`, which verifies). Admission (check 3.2, and D-112's pin-reach check) and grants added on resume now look grants up through `GrantStore.signed`. A grant stored but not validly signed is refused as "has no valid operator signature, so it does not exist (§3.2)".
+  - **The runner's start-up loads the trust anchor** (amends D-116, which had deferred the wiring). `JUNO_TRUST_ANCHOR`, an absolute path, is read by `parseRunnerConfig`. `main.ts`, the runner image's own command, loads it with `loadTrustAnchor` before opening the journal, and exits 1 when it could write the anchor or its directory. When no anchor is configured, the runner holds no key to check grants against: no grant can exist for it, and its ready line says so ("trust anchor: none, so no grant can be honoured"). This keeps `docker compose up` (`test/containers/isolation.test.ts`, unchanged) working without committing any key.
+  - **No key is ever committed** (the plan's Increment 2 test, previously missing). `test/lint/no-keys.test.ts` scans every file git tracks for PEM keys of any kind, OpenSSH public keys, and key file names (`.pem`, `.key`, `.pub`, `.p12`, `.pfx`, `.jwk`, `id_*`, `juno_grant`, `journal-key`). Its self-test first shows it finds freshly generated keys in every form JUNO uses. An armoured SSH signature is not a key and is not flagged.
+- **Test changes:** `packages/runner/test/config.test.ts`, "parses a complete environment": the exact expected configuration gains `trustAnchor: null`. This is the same assertion over the new field, so it is stricter, not weaker.
+- New tests:
+  - `packages/runner/test/admission.test.ts`: an unsigned grant and a forged one (a field changed after signing) are each refused at admission (check 3.2);
+  - `packages/runner/test/resume.test.ts`: an unsigned grant cannot be added on resume;
+  - `packages/runner/test/config.test.ts`: the anchor's path is read, and a relative path is refused;
+  - `test/containers/trust.test.ts`: the runner image's real start-up starts with a protected anchor, and with a writable file or directory exits 1 with "not protected" and never reports ready;
+  - `test/lint/no-keys.test.ts`.
+- Reason: §3.2 C1; the plan's Increment 2 tests ("the runner refuses to start when its trust anchor is writable by it"; "no test key, private or public, is committed"); review round 1 of PR #33.

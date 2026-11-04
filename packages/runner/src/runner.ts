@@ -524,8 +524,13 @@ export class Runner {
     if (added.length > 0) {
       const env = { registry: this.#registry, grants: this.#grants, providers: this.#providers.map((p) => p.profile), sources: this.#sources, now: this.#clock() };
       const problems = added.flatMap((grantId) => {
-        const grant = this.#grants.get(grantId);
-        return grant === undefined ? [{ check: "3.2", message: `grant ${grantId} is not stored` }] : grantChecks(grant, run.task.principal, env, run.admission.sources);
+        const grant = this.#grants.signed(grantId);
+        if (grant === undefined) {
+          // §3.2 C1: an unsigned or forged grant does not exist (D-125).
+          const message = this.#grants.get(grantId) === undefined ? `grant ${grantId} is not stored` : `grant ${grantId} has no valid operator signature, so it does not exist (§3.2)`;
+          return [{ check: "3.2", message }];
+        }
+        return grantChecks(grant, run.task.principal, env, run.admission.sources);
       });
       if (problems.length > 0) throw new RunnerError(`the grants added on resume do not pass admission's grant rules: ${JSON.stringify(problems)}`);
     }

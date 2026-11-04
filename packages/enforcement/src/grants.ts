@@ -68,6 +68,15 @@ export class GrantStore {
     return this.#grants.get(id);
   }
 
+  /**
+   * A stored grant whose operator signature verifies against the trust anchor, or `undefined`. A grant with a missing
+   * or invalid signature does not exist (§3.2 C1), so admission and resume look grants up through this (D-125).
+   */
+  signed(id: string): Grant | undefined {
+    const grant = this.#grants.get(id);
+    return grant !== undefined && grantSignatureValid(grant, this.#anchor) ? grant : undefined;
+  }
+
   /** Revokes a grant from `at` on. Revoking twice keeps the first revocation. */
   revoke(id: string, at: Date): Grant {
     const grant = this.#grants.get(id);

@@ -11,7 +11,13 @@ Status: **built; going through the §7 gate.** Every item of the plan's Incremen
 - the anchored journal head and `juno journal check` (D-122, D-123);
 - the Windows signing mechanism (D-124).
 
-Local `make verify: GREEN` before the D-124 commit (818 unit, 68 container); re-run before the PR.
+Local `make verify: GREEN` (828 unit, 69 container) after the round 1 fixes.
+- **Review round 1 (head 495b931; fresh subagent, P2 verbatim): DO NOT MERGE.** CI on 495b931 passed (run 41771539413). Checks 2, 3, 4 and 6 PASS. Fixed (D-125):
+  - the plan's "no test key is committed" test was missing (now `test/lint/no-keys.test.ts`);
+  - admission and resume accepted an unsigned grant (it could never run a call, but §3.2 says it does not exist);
+  - the runner's own start-up did not yet load the trust anchor.
+
+  Review round 2 next.
 - **Operator rulings of 2026-11-04, recorded:**
   - D-118: D-100 confirmed.
   - D-119: D-109 stands.

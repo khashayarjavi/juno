@@ -276,6 +276,11 @@ describe("what resume will not do (§6.3, §8.3)", () => {
     expect((await runner.run("task-1")).reason).toBe("awaiting_grant");
     h.grants.add(grant({ id: "grant-wide", resource_scope: [{ kind: "path", prefix: "/work" }] }));
     await expect(runner.resume("task-1", { grants: ["grant-wide"] })).rejects.toThrow(/grant rules/);
+    // §3.2 C1 (D-125): an unsigned grant does not exist, so it cannot be added on resume either.
+    const { signature: _signature, ...unsigned } = grant({ id: "grant-unsigned" });
+    void _signature;
+    h.grants.add(unsigned);
+    await expect(runner.resume("task-1", { grants: ["grant-unsigned"] })).rejects.toThrow(/no valid operator signature/);
     expect((await runner.resume("task-1", { grants: ["grant-1"] })).state).toBe("complete_unverified");
     expect(ofKind("resume")).toEqual([expect.objectContaining({ added_grants: ["grant-1"], parked_reason: "awaiting_grant" })]);
     // The model is told the parked call was not run.
