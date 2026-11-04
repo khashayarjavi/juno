@@ -130,7 +130,7 @@ UNIT
   diagnose() {
     systemctl status "user@$RUNNER_UID.service" --no-pager || true
     journalctl -u "user@$RUNNER_UID.service" --no-pager -n 60 || true
-    journalctl --user-unit docker.service _UID="$RUNNER_UID" --no-pager -n 60 || true
+    journalctl _SYSTEMD_USER_UNIT=docker.service --no-pager -n 60 || true
   }
   trap 'rm -rf "$download"; diagnose' ERR
   # The drop-in is in place before the user's manager first starts, so the delegation applies to it.
@@ -143,7 +143,11 @@ UNIT
   [ -S "/run/user/$RUNNER_UID/bus" ] || { echo "setup-root: the user's systemd manager did not start" >&2; diagnose; exit 1; }
   controllers="/sys/fs/cgroup/user.slice/user-$RUNNER_UID.slice/user@$RUNNER_UID.service/cgroup.controllers"
   echo "setup-root:    delegated to the user: $(cat "$controllers")"
-  as_runner "$BIN/dockerd-rootless-setuptool.sh" install
+  if ! as_runner "$BIN/dockerd-rootless-setuptool.sh" install; then
+    journalctl _UID="$RUNNER_UID" --no-pager -n 80 || true
+    diagnose
+    exit 1
+  fi
   as_runner systemctl --user enable --now docker.service
 else
   echo "setup-root: 6. no systemd: starting the rootless daemon directly (cgroup limits will not be enforced)"
