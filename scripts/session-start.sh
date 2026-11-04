@@ -34,7 +34,16 @@ else
   echo "session-start: WARNING Docker still not responding. See /tmp/dockerd.log"
 fi
 
-# 2. npm dependencies (skipped until Increment 0 creates package-lock.json)
+# 2. OpenSSH client: the grant-signature tests run the real ssh-keygen and ssh-agent (DECISIONS.md D-124).
+if ! command -v ssh-keygen >/dev/null 2>&1; then
+  if apt-get install -y -q openssh-client >/dev/null 2>&1 || { apt-get update -q >/dev/null 2>&1 && apt-get install -y -q openssh-client >/dev/null 2>&1; }; then
+    echo "session-start: openssh-client installed"
+  else
+    echo "session-start: WARNING openssh-client could not be installed; the SSHSIG tests will fail"
+  fi
+fi
+
+# 3. npm dependencies (skipped until Increment 0 creates package-lock.json)
 if [ -f package-lock.json ]; then
   hashes=node_modules/.session-start.sha256
   if ! sha256sum --check --status "$hashes" 2>/dev/null; then

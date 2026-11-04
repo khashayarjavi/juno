@@ -1177,3 +1177,304 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   - a file the criterion reads outside its cwd is pinned and its change fails verification;
   - the verifier's untrusted scope violation records remedy `grant` and refuses a plain resume, and the resume is taken once the path resolves inside the grant.
 - Reason: §8.2, §3.4.4, §2.7.1; review round 1 of PR #31.
+
+## D-115 — C1 (part): grant signatures (Slice 1.5 Increment 2)
+- Date: 2026-11-03
+- Status: Accepted (implementation record of §3.2 v0.6 C1; the fail-closed choice wherever the text leaves one)
+- Applies to: Slice 1.5 onward
+- Decision:
+  - **The signature.** A grant's `signature` is an Ed25519 signature, base64, over the canonical JSON (the journal's canonical form) of every other field, `revoked_at` included. It uses Node's built-in `node:crypto`; no package was added.
+  - **Verification.** It happens at lookup, in the grant store, against the trust anchor (the operator's public key), which the store is given when it is created. A grant stated without a signature is read with an empty one, which never verifies. A missing, malformed or non-verifying signature means the grant does not exist at lookup: it is refused `signature_invalid`, so the call sees no covering grant and parks `awaiting_grant` with that reason recorded.
+  - **Order of refusals.** `revoked` is checked before the signature. A revocation recorded by the runner changes `revoked_at`, so the signature no longer verifies; the grant is then reported as what it is. Either way it is refused.
+  - **Test keys.** One Ed25519 pair per test file, generated in memory when the file loads (`packages/enforcement/test/test-keys.ts`). It is never written to disk and never committed: stricter than the plan's temporary directory. Every fixture grant in the repository is signed with it, and every test grant store trusts its public half.
+- Tests: `packages/enforcement/test/enforcement.test.ts`, "§3.2 C1":
+  - each of these is refused `signature_invalid`, recorded, with nothing charged: no signature; another key's signature; a field changed after signing; a cap removed after signing; a signature that is not base64;
+  - a signed grant is honoured;
+  - a revoked grant reports `revoked`.
+
+  A signed grant is honoured after a restart: `packages/runner/test/resume.test.ts`, whose stores are rebuilt with the same anchor.
+- Not yet built (rest of Increment 2): loading the trust anchor from a file the runner cannot write; `juno grant sign` and `juno grant verify`; the anchored journal head; refusing selectors that name JUNO's own storage.
+- Reason: §3.2 ("`signature` … Mandatory (v0.6, C1). Operator signature over every other field"; "The boundary verifies the signature at lookup; a grant with a missing or invalid signature does not exist").
+
+## D-116 — C1 (part): the trust anchor is loaded only from a file the runner cannot write (Slice 1.5 Increment 2)
+- Date: 2026-11-03
+- Status: Accepted (implementation record of §3.2 v0.6 C1 and the plan's Increment 2 item 2)
+- Applies to: Slice 1.5 onward
+- Decision:
+  - `loadTrustAnchor(path)` (`packages/runner/src/trust.ts`) refuses an anchor when this process can write the file, or the directory holding it (which would let it replace the file). It also refuses an anchor it cannot read, or one that is not an Ed25519 public key in PEM.
+  - The test is the operating system's own access check for the running user (`access(2)`, `W_OK`). So a runner running as root is always refused, which is correct: root can write anything.
+  - The grant store takes the loaded anchor (D-115).
+  - Wiring it into the runner's start-up configuration comes with the operator's real key (the Windows steps); the runner's `main.ts` is still the Increment 2 (Slice 1) start-up stub and holds no grants.
+- Tests:
+  - `packages/runner/test/trust.test.ts`: an anchor the test user can write is refused, and so is a missing one.
+  - `test/containers/trust.test.ts`: in the runner image, as uid 1000 under the runner service's own seal:
+    - a root-owned, read-only anchor in a root-owned directory loads as an Ed25519 key;
+    - an anchor file the runner owns is refused;
+    - so is a read-only file in a directory the runner owns.
+
+    The cases are laid out as root in a throwaway container from the same image. CI's host user is not root, so the host never changes owners itself.
+- Reason: §3.2 ("The operator's signing key lives outside every container and outside any state the runner can write"); the plan's Increment 2 ("the runner refuses to start if it can write the anchor file or its directory").
+
+## D-117 — C1 (part): `juno grant sign` and `juno grant verify` (Slice 1.5 Increment 2)
+- Date: 2026-11-03
+- Status: Accepted (implementation record of the plan's Increment 2 item 3)
+- Applies to: Slice 1.5 onward
+- Decision:
+  - The `juno` command (`node dist/runner/src/juno.js`) gains:
+    - `grant sign --key <private-key.pem> <grant.json>`, which prints the grant with its signature;
+    - `grant verify --anchor <public-key.pem> <grant.json>`, which prints `valid` (exit 0) or `invalid` (exit 1).
+  - The grant is parsed against the Grant contract before it is signed, so what is signed is exactly what lookup verifies. Any signature it already carries is replaced.
+  - Only Ed25519 keys are accepted. Signing is the operator's side only: the runner never calls it and never reads a private key.
+  - For now the key is a PEM file the operator names. Taking it from the Windows keychain (D-093) is chosen from current Windows documentation (rule 13) and wired in with the operator's set-up steps, as a later D-number.
+- Tests: `packages/runner/test/grant-cli.test.ts`, with keys generated in memory and files served from memory:
+  - sign, then verify against the operator's key (valid) and another key (invalid);
+  - a field changed after signing is invalid;
+  - a malformed grant, a non-Ed25519 key and bad usage are refused.
+- Reason: §3.2 C1; the plan's Increment 2 ("`juno grant sign` (operator-side, uses the key), `juno grant verify`. The runner and every mediated mode only ever verify").
+
+## D-118 — D-100 confirmed by the operator (operator ruling)
+- Date: 2026-11-04
+- Status: Accepted (operator ruling: "D-100 is confirmed by the operator.")
+- Applies to: the record of D-100 only
+- Decision: the agent's merge of PR #27 (spec v0.6.1, merge commit 603284c) on the operator's ruling is confirmed as what the operator authorised. Nothing else changes: CLAUDE.md §2 rule 6 and §7 NEVER ("edit spec/") stand for every other action.
+- Reason: the operator's instruction of 2026-11-04 (STATE.md had asked for this confirmation).
+
+## D-119 — D-109 stands: A2 applies to `untrusted` and unestablished integrity only (operator ruling)
+- Date: 2026-11-04
+- Status: Accepted (operator ruling: "D-109 stands: A2 applies to untrusted and unestablished integrity only; derived values remain overridable, because they carry no untrusted input.")
+- Applies to: Slice 1.5 onward (§8.2 A2, as built in D-109 and amended by D-114)
+- Decision: a `scope_violation` is non-overridable (remedy: a grant) only when an out-of-scope value is `untrusted` or has no established integrity. A `derived` (or higher) out-of-scope value leaves the park overridable. No code changes: this is what D-109 built.
+- Reason: the operator's ruling; a `derived` value carries no untrusted input.
+
+## D-120 — D-112 hardening: file names from the verification scope follow a `--` (operator ruling)
+- Date: 2026-11-04
+- Status: Accepted (operator ruling: "wherever the verifier or the runner passes file names found in the verification scope to a program, they follow a `--`, and a test plants a file named `-c` (and one named `--help`) in the scope and shows verification still computes its pins.")
+- Applies to: Slice 1.5 onward; amends D-112 and D-113
+- Decision:
+  - **Where file names reach a program**, and how each is now placed:
+    - the pin listing, `ls -l -a -R -n --time-style=full-iso --quoting-style=escape -- <roots>` (already so, D-112);
+    - the pin hashing, `sha256sum -z -- <files>` (already so, D-112);
+    - the path resolver (D-113), which receives every path a verifier call names, the pinned files included. It was `node -e SCRIPT /work /work <paths>`; it is now `node -e SCRIPT -- /work /work <paths>`. One function, `resolverArgs`, builds these arguments for the workload resolver and both unit-test resolvers, so they cannot differ. Node drops the `--`, so the script reads the same `process.argv`.
+  - Every name is also absolute (`/work/...`), so none starts with `-`; the `--` makes that a second, independent guarantee rather than the only one.
+- Tests:
+  - `test/containers/pin-option-names.test.ts` (real workload, real `ls`, `sha256sum` and resolver): files `-c` and `--help` are planted in the criterion's cwd and in a protected path. Each is pinned with a SHA-256, the unchanged task closes `verified`, and in every listing and hashing call each `/work/...` name follows the `--`.
+  - `packages/enforcement/test/canonical.test.ts`: the resolver's arguments put `--` before every path, and paths ending in `-c` and `--help` resolve to themselves.
+- Reason: the operator's ruling; fail-closed hardening of §3.4.4 ("A hash that cannot be computed counts as changed" must never be triggered by a file's name being read as an option).
+
+## D-121 — Increment 3 directive: no gap between resolving a path and writing to it (operator ruling)
+- Date: 2026-11-04
+- Status: Accepted (operator ruling: "Increment 3 must CLOSE the gap between resolving a path and writing to it: at the moment a write capability acts, it refuses to follow a symlink in any path component. Prove it with a test that swaps a component for a symlink after the boundary's check and before the write; the write must fail and journal why.")
+- Applies to: Slice 1.5 Increment 3 (`fs.file.write`) and every later write capability
+- Decision: recorded now; built in Increment 3. At the moment it acts, the writer refuses to follow a symlink in any component of the target path, whatever the boundary saw earlier. The mechanism is chosen in Increment 3, from what the workload image actually provides (rule 13), and recorded there. The test swaps a component for a symlink between the boundary's verdict and the write; the write must fail, nothing outside the scope may change, and the journal must record why.
+- Reason: the operator's ruling; §2.7.1 C4 judges the canonical path at authorization, and only the writer itself can close the time between that check and the effect.
+
+## D-122 — C1 (part): the anchored journal head (Slice 1.5 Increment 2)
+- Date: 2026-11-04
+- Status: Accepted (implementation record of §3.4.1 v0.6 C1 and v0.6.1 V6-4, and the plan's Increment 2 item 4; the readings that needed a choice are D-123)
+- Applies to: Slice 1.5 onward
+- Decision:
+  - **Anchor record** (`packages/journal/src/anchor.ts`): `{task, seq, head, at, signature}`. `task` is the SHA-256 of the task id, `head` the hash of entry `seq`, `at` the time it was taken. `signature` is Ed25519, base64, by the runner's journal key, over the canonical JSON of the other four fields. Nothing else is in it.
+  - **Journal key** (`loadOrCreateJournalKey`): an Ed25519 pair the runner creates on first start, in a directory it names. The directory must lie outside `/work` and outside the journal. It is mode 0700 and the private key 0600; the public half is written beside it as `journal-key.pub.pem`. The runner refuses to start when the journal key is the trust anchor's key (the operator's), so the operator key can never serve as it.
+  - **Destinations** (`AnchorSink`: `append`, `list`; `packages/journal/src/sinks.ts`). They share one layout, `<task digest>/<seq, 12 digits>.json`. An anchor at a task and seq already stored is refused (`AnchorExistsError`), never replaced. None has a delete.
+    - `ContainerAnchorSink`, the test stand-in §3.4.1 names: the `anchors` compose service. It has its own image (`containers/anchors.Dockerfile`), its own uid (65533) and its own volume (`anchors-vol`), no network, all capabilities dropped and a read-only root. Its fixed entrypoint `containers/anchor-store.mjs` offers only `append` (exclusive create, fsync) and `list`. It is in the compose profile `anchors`, so `docker compose up` does not start it; `make containers` builds it with `--profile anchors`.
+    - `GitAnchorSink`, the real destination (D-094, D-098): a local clone of the operator's public `juno-anchors`, outside `/work`. Per anchor: `git pull --ff-only`, one new file, one commit, `git push`, all by `execFile`. The credential is git's own; the runner never reads it.
+    - `readAnchorDirectory`, for the check: reads the layout from any directory (a clone of `juno-anchors`).
+  - **When the runner anchors.** It anchors both the task's record and the runner record (grant charges):
+    - at start, after recording `{type: "anchoring", interval_ms, journal_key}` (the key's SPKI SHA-256);
+    - before any turn once `interval_ms` has passed since the last anchor;
+    - when `run`, `resume` or `accept` returns (park or end).
+
+    Nothing new since the last anchor means nothing is sent. An `AnchorExistsError` counts as anchored only when the stored anchor names the same head (a restart).
+  - **`juno journal check --journal <dir> --anchors <dir> --key <journal-key.pub.pem> <task>`** (`packages/runner/src/journal-cli.ts`). It verifies the chain, then checks every stored anchor: well formed, for this task, signature valid, agreeing with the entry at its seq. Every anchor is checked, not only the latest, so a later anchor signed with a stolen key cannot hide an earlier one. It prints JSON; exit 0 when consistent, 1 when not, 2 on bad usage. Entries after the latest anchor are reported as `unanchored`, never as a rewrite.
+  - **The interval** is a runner option (`Anchoring.intervalMs`, a positive integer) and is recorded in every task's journal.
+- **Test changes:**
+  - `packages/runner/test/runner.test.ts`: `accept` is now asynchronous, because it anchors the closure. Four calls are awaited (`.rejects.toThrow` for the two refusals); every assertion is unchanged.
+  - Every test that builds a `Runner` passes `anchoring`: an in-memory append-only sink and a per-file journal key (`packages/runner/test/anchor-sink.ts`). `test/containers/runner.test.ts` uses the real container stand-in.
+  - `test/containers/isolation.test.ts` is unchanged. The `anchors` service is in a profile so that `docker compose up` still starts exactly the runner and the workload.
+- Tests:
+  - `packages/journal/test/anchor.test.ts`:
+    - a rewrite with every hash recomputed passes the chain check and fails the anchor check;
+    - the range of the first changed entry, between two anchors;
+    - an append after the anchor is not reported;
+    - a truncation;
+    - an anchor signed with a stolen journal key does not hide the earlier one, and cannot replace it at an append-only destination;
+    - an anchor by another key or for another task fails;
+    - an anchor holds no task id or content;
+    - a broken chain is reported first.
+  - `packages/runner/test/anchoring.test.ts`:
+    - the interval is recorded, and anchors are taken at start and stop (the runner record too);
+    - an anchor at each interval;
+    - a task whose head cannot be anchored does not start, and a running one stops;
+    - the operator's key is refused as the journal key;
+    - static: no runner module other than `grant-cli.ts` names `signGrant`, `createPrivateKey` or a private key;
+    - restart idempotence;
+    - the journal key's modes and location rules;
+    - `juno journal check` passes an anchored chain and fails a wholesale rewrite.
+  - `packages/journal/test/git-sink.test.ts`, against a local bare repository with `receive.denyNonFastForwards` and `receive.denyDeletes` (no network): it pushes and lists, refuses to replace, and the destination refuses a force-push and a branch deletion.
+  - `test/containers/anchors.test.ts` (real container): append and list; refuses to overwrite; has no delete; only `anchors` mounts `anchors-vol`, with no network, no capabilities and its own uid, and the workload cannot see `/anchors`.
+  - `test/containers/runner.test.ts`: the real task's head is anchored in the container at start and stop, and the chain agrees.
+- Reason: §3.4.1 ("The journal's head hash is therefore copied off the host at intervals, to an append-only destination the host cannot rewrite"; "Each anchor is signed with a separate journal key held by the runner"; "In tests, a separate container exposing an append-only interface and holding its own volume"; "The interval … is recorded in the journal").
+
+## D-123 — Anchored head: readings where §3.4.1 leaves a choice (autopilot ruling)
+- Date: 2026-11-04
+- Status: Accepted (autopilot ruling under CLAUDE.md §7 step 3: the more restrictive reading each time; §3.4.1 is outside §2, §3.2 and §4.3, so no STOP)
+- Applies to: Slice 1.5 onward
+- Decision:
+  1. **The task appears as a digest, not its id.** §3.4.1: "An anchor holds only a hash, a sequence number, a time and a signature, so publishing it reveals nothing." A task id is an operator-chosen string that may describe the work, so the anchor names the task by the SHA-256 of its id, the journal's own directory name for it.
+  2. **A head that cannot be anchored stops the task.** §6.2 has no park reason for this, and adding one would change the specification. The task instead fails, as other runner failures do, with `anchor_unavailable`, in two cases: it does not start when its first anchor fails, and it stops when an interval's anchor fails. The less restrictive reading would keep running with history no longer copied off the host. When a run stops (park or end), a failed anchor is journalled (`anchor_failed`) and the outcome is unchanged. `juno journal check` then reports the entries after the last anchor as not yet protected.
+  3. **"Naming the first entry that differs"** (the plan's wording, not the specification's). An anchor holds one entry's hash, so a rewrite can be located only to a range: after the latest anchor that still matches, and at or before the first that does not. The check reports exactly that range (`after_seq`, `first_changed_at_or_before`). Taking an anchor at every entry would locate it exactly; the specification asks for an interval.
+  4. **A malformed or wrongly signed anchor fails the check.** It is not skipped. This is fail-closed: an attacker who can append junk can make the check fail, but cannot make it pass. That attacker can already stop JUNO, which §3.4.1 lists as the residual.
+- Reason: §3.4.1, §6.2; CLAUDE.md §7 step 3 (D8, fail-closed).
+
+## D-124 — C1 (part): the Windows signing mechanism is the OpenSSH agent; grant signatures are SSHSIG (Slice 1.5 Increment 2)
+- Date: 2026-11-04
+- Status: Accepted (the plan's Increment 2 item 2: "The exact Windows signing mechanism is chosen at the start of the increment from its current documentation (rule 13) and recorded as a D-number"; implements D-093's "Windows OS keychain")
+- Applies to: Slice 1.5 onward; amends D-115 (the signature's encoding) and D-117 (a second way to sign)
+- Sources read on 2026-11-04 (rule 13):
+  - Microsoft Learn, "Key-Based Authentication in OpenSSH for Windows" (ms.date 2025-10-03, updated 2026-04-21). It says: `ssh-keygen` defaults to Ed25519; "You can use `ssh-agent` to securely store your private keys within a Windows security context that's associated with your Windows account"; the `ssh-agent` service is disabled by default and is enabled with `Get-Service ssh-agent | Set-Service -StartupType Automatic` and `Start-Service ssh-agent`; "We recommend that you back up your private key to a secure location and then delete it from the local system *after* you add it to the `ssh-agent` service. The private key can't be retrieved from the agent".
+  - OpenBSD manual, ssh-keygen(1), `-Y sign`: "The key used for signing is specified using the -f option and may refer to either a private key, or a public key with the private half available via ssh-agent(1)"; `-O hashalg` takes "sha256" or "sha512", default "sha512"; `-n` sets the namespace.
+  - OpenSSH `PROTOCOL.sshsig` (openssh-portable master): the armoured and blob formats, and the signed data `"SSHSIG" || namespace || reserved || hash_algorithm || H(message)`.
+  - GitHub Docs: "Creating rulesets for a repository", "Available rules for rulesets" ("Restrict deletions", "Block force pushes"), and "Managing your personal access tokens" (fine-grained tokens, "Only select repositories", Contents read and write, HTTPS only). These are used for the operator's steps in STATE.md.
+- Decision:
+  - **The operator's key is an Ed25519 OpenSSH key held by the Windows `ssh-agent` service.** The agent keeps it in the operator's Windows security context. After a backup, the private key file is deleted, as Microsoft recommends, so the key exists on the machine only inside the agent. No container, repository, journal or runner-writable directory ever holds it.
+  - **Signing:** `juno grant sign --ssh-key <juno_grant.pub> <grant.json> [--out <file>]` runs `ssh-keygen -Y sign -n juno-grant -O hashalg=sha512 -f <pub> <file>` by `execFile`, over the grant's signing bytes, written to a file in a fresh temporary directory that is removed afterwards. `ssh-keygen` finds the private half in the agent. `--out` writes a new UTF-8 file, never replacing one, because Windows PowerShell 5.1's `>` writes UTF-16. A leading byte-order mark in the grant file is accepted. `--key <pem>` (D-117) stays for a key held as a file.
+  - **The signature's encoding (amends D-115).** `signature` is now an OpenSSH SSHSIG blob, in base64 (the armour's body), over the same bytes as before: the canonical JSON of every other field. Verification (`sshsigVerify`) accepts exactly one profile:
+    - version 1;
+    - the blob's public key equal to the trust anchor;
+    - namespace `juno-grant`;
+    - an empty reserved field (the restrictive reading: PROTOCOL.sshsig says to ignore it);
+    - `sha512`;
+    - an `ssh-ed25519` signature of 64 bytes that verifies.
+
+    Anything else does not verify, so the grant does not exist (`signature_invalid`). Tests sign the same profile in memory (`sshsigSign`); the interop tests show it is the format `ssh-keygen` makes and accepts.
+  - **The trust anchor** may be given as PEM, as before, or as the operator's OpenSSH `.pub` line (`trustAnchorFromPem` reads both); only Ed25519 is accepted.
+  - The grant contract's `signature` stays a string of at most 256 characters. An SSHSIG blob in this profile is 180 bytes, which is 240 base64 characters.
+- **The cloud host and CI.** The tests run the real `ssh-keygen`, `ssh-add` and `ssh-agent`. This cloud host had no OpenSSH client, so `scripts/session-start.sh` now installs `openssh-client` when `ssh-keygen` is missing (Ubuntu's package, 1:9.6p1). Whether CI's runner has it is shown by CI itself (rule 13); the workflow is unchanged.
+- **Known limit, for the operator (not built in Slice 1.5):** the runner's check that it cannot write its trust anchor (D-116) uses `access(2)`. On Windows, Node's `fs.access` does not consult ACLs, so it would always find the anchor's directory writable and refuse to start. That fails closed. Running the runner itself on Windows is not part of Slice 1.5, which runs it on Linux hosts (CI, cloud sessions, D-065).
+- Tests: `packages/enforcement/test/sshsig.test.ts` (real OpenSSH 9.6):
+  - a signature made by `ssh-keygen` verifies against the `.pub`, and fails on a changed message or another key;
+  - another namespace, or SHA-256, is refused even with the right key;
+  - a signature JUNO makes is accepted by `ssh-keygen -Y verify`;
+  - with the private key only in a real `ssh-agent` (its file deleted), `sshKeygenSign` through the agent gives a grant signature that `grantSignatureValid` accepts, and a changed field does not verify.
+
+  `packages/runner/test/grant-cli.test.ts`: `--ssh-key` with `--out`, a byte-order mark, bad `--out` usage, and the example grant `docs/examples/grant.example.json`. Every existing grant-signature test (D-115) passes unchanged on the new encoding.
+- Reason: §3.2 ("The operator's signing key lives outside every container and outside any state the runner can write — an OS keychain or a hardware key"); D-093.
+
+## D-125 — PR #33 review round 1 fixes: unsigned grants at admission and resume; the runner's start loads the anchor; no key is committed (Slice 1.5 Increment 2)
+- Date: 2026-11-04
+- Status: Accepted (fixes of the round 1 review findings on PR #33; the restrictive reading each time)
+- Applies to: Slice 1.5 onward; amends D-115 and D-116
+- Decision:
+  - **A grant with a missing or invalid signature does not exist at admission or on resume either** (§3.2 C1: "a grant with a missing or invalid signature does not exist"). Before, admission and resume found it with `GrantStore.get`, which does not check the signature. So a task whose only grant was unsigned was admitted, although it could never run a call (every call goes through `coverage`, which verifies). Admission (check 3.2, and D-112's pin-reach check) and grants added on resume now look grants up through `GrantStore.signed`. A grant stored but not validly signed is refused as "has no valid operator signature, so it does not exist (§3.2)".
+  - **The runner's start-up loads the trust anchor** (amends D-116, which had deferred the wiring). `JUNO_TRUST_ANCHOR`, an absolute path, is read by `parseRunnerConfig`. `main.ts`, the runner image's own command, loads it with `loadTrustAnchor` before opening the journal, and exits 1 when it could write the anchor or its directory. When no anchor is configured, the runner holds no key to check grants against: no grant can exist for it, and its ready line says so ("trust anchor: none, so no grant can be honoured"). This keeps `docker compose up` (`test/containers/isolation.test.ts`, unchanged) working without committing any key.
+  - **No key is ever committed** (the plan's Increment 2 test, previously missing). `test/lint/no-keys.test.ts` scans every file git tracks for PEM keys of any kind, OpenSSH public keys, and key file names (`.pem`, `.key`, `.pub`, `.p12`, `.pfx`, `.jwk`, `id_*`, `juno_grant`, `journal-key`). Its self-test first shows it finds freshly generated keys in every form JUNO uses. An armoured SSH signature is not a key and is not flagged.
+- **Test changes:** `packages/runner/test/config.test.ts`, "parses a complete environment": the exact expected configuration gains `trustAnchor: null`. This is the same assertion over the new field, so it is stricter, not weaker.
+- New tests:
+  - `packages/runner/test/admission.test.ts`: an unsigned grant and a forged one (a field changed after signing) are each refused at admission (check 3.2);
+  - `packages/runner/test/resume.test.ts`: an unsigned grant cannot be added on resume;
+  - `packages/runner/test/config.test.ts`: the anchor's path is read, and a relative path is refused;
+  - `test/containers/trust.test.ts`: the runner image's real start-up starts with a protected anchor, and with a writable file or directory exits 1 with "not protected" and never reports ready;
+  - `test/lint/no-keys.test.ts`.
+- Reason: §3.2 C1; the plan's Increment 2 tests ("the runner refuses to start when its trust anchor is writable by it"; "no test key, private or public, is committed"); review round 1 of PR #33.
+
+## D-126 — PR #33 review round 2 fix: `juno journal check` fails when it finds no anchor; STOP after two review rounds (autopilot record)
+- Date: 2026-11-04
+- Status: Accepted for the fix (autopilot ruling, the restrictive reading). The merge waits for the operator: CLAUDE.md §7 STOP, because two review rounds ended DO NOT MERGE.
+- Applies to: Slice 1.5 onward; amends D-122 and D-123
+- Decision:
+  - **No anchor means the check fails.** `checkAnchors` returns `no_anchor` (exit 1 from `juno journal check`) when no anchor is stored for the task, whether or not its chain has entries. Before, it returned ok with `anchored_seq: null`. So a mistyped `--anchors` folder, a task never anchored, or a destination that lost its anchors passed the operator's tamper check on no evidence: a fail-open reading of a case §3.4.1 does not define. `anchored_seq` is now always the latest matching anchor's seq.
+  - **The restart path is now proven by the runner itself.** The test "counts an anchor already stored for the same head as taken, and fails on one for another head" (`packages/runner/test/anchoring.test.ts`) uses a destination that answers the runner's first append with `AnchorExistsError`:
+    - when the stored anchor names the same head, the task runs on with no `anchor_failed`;
+    - when it names another head, the task fails `anchor_unavailable` with the reason journalled.
+
+    This replaces a test of the same name that exercised only the in-memory store, as the round 2 reviewer noted.
+- **Residuals noted by the round 2 reviewer, not changed (each is recorded here so it is not silent):**
+  - `GitAnchorSink` refuses an existing anchor by looking in the local clone. After a crash between `git commit` and `git push`, a restarted runner counts that anchor as stored before it is pushed; the next successful push carries it.
+  - Resume does not compare the chain with the stored anchors before continuing. A same-length rewrite is still caught when the next anchor collides with a different stored head (`anchor_unavailable`), and by `juno journal check`. The specification requires neither.
+- Tests: `packages/journal/test/anchor.test.ts` ("fails when no anchor is found": a chain with entries and an empty one); `packages/runner/test/anchoring.test.ts` (the CLI with a wrong anchors folder exits 1 with `no_anchor`; the restart test above).
+- **STOP (CLAUDE.md §7: "two review rounds still end DO NOT MERGE").** Round 1 on 495b931 found three FAILs, fixed in D-125. Round 2 on 809714e found one FAIL, fixed here. A third round needs the operator's word, as D-103 and D-106 did.
+- Reason: §3.4.1; CLAUDE.md §7 step 3 (fail-closed) and its STOP list.
+
+## D-127 — A third review round for PR #33; CLAUDE.md §7 allows three rounds (operator ruling)
+- Date: 2026-11-04
+- Status: Accepted (operator ruling: "A third review round on PR #33 is authorised. Also amend CLAUDE.md §7 steps 5 and STOP from 'Max 2 rounds' / 'two review rounds' to 3 (operator change); change nothing else in CLAUDE.md.")
+- Applies to: PR #33's successor (it carries PR #33's commits; see D-129) and every later review under CLAUDE.md §7
+- Decision: CLAUDE.md §7 step 5 now reads "Max 3 rounds." and its STOP list "three review rounds still end DO NOT MERGE". No other line of CLAUDE.md changed. A third round on the Increment 2 PR is allowed; it has **not** been run in this session, because D-129's STOP came first (the operator's instruction orders ruling 3 before the merge).
+- Reason: the operator's instruction. D-103 and D-106 allowed extra rounds one PR at a time; this makes three the standing limit.
+
+## D-128 — Corrections to the operator's Windows steps in STATE.md (operator ruling)
+- Date: 2026-11-04
+- Status: Accepted (operator ruling)
+- Applies to: STATE.md, "Operator steps (Windows)"
+- Decision:
+  - **Part B step 4.** "Microsoft documents that it cannot be read back out" is replaced by: the agent never exports the key, but any program running as your Windows user can ask it to sign (D-093). The words "Microsoft documents that it" were dropped with it, because the new clause is not Microsoft's statement.
+  - **Part D is deferred** until a real runner on the operator's machine will use the token. Its destructive check (`git push origin --delete main`) is removed. The new check is non-destructive: the ruleset page shows **Active**, with **Restrict deletions** and **Block force pushes** ticked. The clone step that existed only for the destructive check is removed; the token step stays, with "do not store it anywhere" until the runner's setup says where it goes.
+  - The closing line now asks for "Parts A–C done" plus the `.pub` line; Part D is reported separately when done.
+- Reason: the operator's instruction. A check that tries to delete `main` would destroy history if the ruleset were missing or misconfigured, the exact case it is meant to detect.
+
+## D-129 — Real use under WSL2 conflicts with §3.2 as the key is held today; STOP (autopilot record)
+- Date: 2026-11-04
+- Status: **STOP for the operator** (the operator's instruction: "If this conflicts with spec §4.3 or §3.2, STOP and report instead"). Nothing about WSL2 was added to the Slice 1.5 plan.
+- Applies to: the operator's ruling 3 of 2026-11-04 (JUNO's runner, journal and workload containers in WSL2 on the operator's Windows machine; Claude Code's hooks call the runner there; grants signed by the Windows agent, D-093, D-124)
+- Sources read on 2026-11-04 (rule 13):
+  - Microsoft Learn, "Advanced settings configuration in WSL" (ms.date 2026-10-16): `wsl.conf` is "Stored in the `/etc` directory of the distribution" and configures, per distribution, "interoperability with the Windows system"; `[interop] enabled` "will determine whether WSL will support launching Windows processes" (default `true`). The `.wslconfig` table (Windows side) has no interop key.
+  - Microsoft Learn, "Working across file systems" (updated 2026-06-02): Windows tools run from WSL "Run as the active Windows user"; interop can be disabled for a session with `echo 0 > /proc/sys/fs/binfmt_misc/WSLInterop` "as root", and "Disabling interop will not persist between WSL sessions".
+  - Microsoft Learn, "Basic commands for WSL" (updated 2026-06-02): `wsl --distribution <Distribution Name> --user <User Name>` runs as any existing user, "(ie. root)".
+  - Microsoft Learn, "Intune settings" for WSL (ms.date 2026-10-30): the full list of Windows-side WSL policies. None controls interop.
+  - microsoft/WSL `localization/strings/en-US/Resources.resw`, `MessageWslUsage`: `--exec, -e`: "Execute the specified command without using the default Linux shell."
+- **The conflict, step by step (each step is documented above or already in this file):**
+  1. The runner drives Docker to start workload containers (D-065). Access to a rootful Docker daemon is equivalent to root in the distribution: a process that can start a container can mount the distribution's `/` into it.
+  2. Root in the distribution can edit `/etc/wsl.conf` and set `[interop] enabled=true`. The only switch for interop lives inside the distribution; Microsoft lists no Windows-side policy for it.
+  3. With interop on, a program in the distribution can launch Windows programs, which "Run as the active Windows user".
+  4. Any program running as the operator's Windows user can ask the Windows `ssh-agent` to sign (D-093, as corrected by D-128).
+  5. So the runner, or anything that takes over the runner or escapes a workload container to the distribution's root, can obtain a valid operator signature on a grant it wrote.
+- **What that contradicts:**
+  - §3.2 C1: the key must live "outside any state the runner can write", and the reason given is "Without this, any process on the host able to write the grant store could issue authority." Under step 5 the runner host can issue authority. Steps 2–3 also reach the agent's own key store, which is Windows-user state.
+  - §3.4.1's residual: "a compromised host can stop JUNO or withhold new entries. It can no longer fake past ones or fake permission." Under step 5 a compromised WSL2 host can fake permission.
+  - Disabling interop in `wsl.conf` does not remove the conflict, because step 2 undoes it from inside. The session-only switch in `/proc` is root's to flip back.
+- **§4.3 was checked too, and is not the blocker.** A hook can reach the runner fail-closed: Claude Code runs `wsl.exe` in exec form with `--exec` (no Linux shell) and `onFailure: "block"`. The plan would still need answers for Windows-path mapping, the Bash tool's programs, and the workspace's location, but each has a restrictive reading. The STOP is §3.2.
+- **Options for the operator (the agent picks none; each changes what D-093/D-124 or ruling 3 says):**
+  - (a) **A hardware key that needs a touch for every signature** (§3.2 names "a hardware key"; for example an OpenSSH `ed25519-sk` key on a FIDO2 security key). A program cannot sign without the operator's finger. This needs D-124's verifier extended to that signature type, and its Windows support checked against current documentation before anything is built.
+  - (b) **Sign in a separate Windows account** that never runs WSL or Claude Code. Interop launches programs only as "the active Windows user", so the agent serving the other account should be out of reach; that the Windows agent keeps each account's keys apart must be checked against current documentation before it is relied on. The operator switches account (or uses a second machine) to sign.
+  - (c) **Run the runner on a separate Linux machine** (as CI and cloud sessions do today), not on the Windows machine that holds the key. Hook mode then reaches it over the network, which the plan would have to design.
+  - (d) **Accept the residual.** This needs a spec change (§3.2 and §3.4.1), which only the operator can make; the agent cannot edit `spec/`.
+- **Not done because of this STOP:** the WSL2 plan section and its click-by-click setup; review round 3 of the Increment 2 PR (D-127); the merge of Increment 2; Increments 3–6. Increment 2's own code does not depend on WSL2, and its third review round can run as soon as the operator rules.
+- Reason: the operator's instruction for ruling 3; CLAUDE.md §2 rule 2 (do not pick the "obvious" reading where the spec is contradicted) and §7 step 3 (fail-closed).
+
+## D-130 — Real use under WSL2: rootless containers with Windows interop disabled; the operator's Windows account is a trust root (operator ruling; lifts D-129)
+- Date: 2026-11-04
+- Status: Accepted (operator ruling on D-129: option **(e)**, a fifth option the operator added)
+- Applies to: real use of JUNO in WSL2 on the operator's Windows machine (the runner, the journal, the workload containers and the anchor push); the Slice 1.5 plan's §2a; STATE.md Part E. Increment 2's code is unchanged by it.
+- Decision (the operator's words, each recorded as ruled):
+  - In WSL2 the container runtime runs **rootless** (Docker rootless mode or Podman, whichever current official documentation supports for WSL2), and the runner runs as an **unprivileged user with no sudo and no membership in any group that grants root**.
+  - `/etc/wsl.conf` disables interop: `[interop] enabled=false` and `appendWindowsPath=false`. Only root can change it, and nothing JUNO runs is root.
+  - Hook calls from Windows into WSL2 (`wsl.exe --exec`, `onFailure: "block"`) must still work; that disabling interop does not block this direction is to be verified from current documentation.
+  - **The operator's own Windows account is a trust root, like the signing key.** C1 protects against compromise of the runner, the workloads and co-resident services, not of the operator's account. This is the reading of §3.4.1's "host" (in "a compromised host can stop JUNO or withhold new entries. It can no longer fake past ones or fake permission"): the host is the WSL2 distribution and everything that runs in it; the operator's Windows account is not part of it.
+  - Residuals to state in STATE.md and the plan: a kernel or WSL escape; a compromised Windows account.
+  - Prove in the cloud what can be proven: the runner's user cannot write `/etc/wsl.conf` (or the equivalent), cannot use sudo, and is in no root-granting group, under the rootless runtime; the container seal tests (no network, non-root, no capabilities, D-025 limits) pass under the rootless runtime. If any limit cannot be enforced rootless, STOP and report which.
+- How each part was settled (sources read on 2026-11-04, rule 13; hashes are SHA-256 of the fetched text, first 16 hex digits):
+  - **Which runtime: Docker rootless mode.** Docker's "Rootless mode" pages (docs.docker.com/engine/security/rootless.md `ee470c4d18659ad6`, …/rootless/tips.md `e8b1b553acbfa3de`, …/rootless/troubleshoot.md `f6df8a91fd4cb55e`) give the requirements: `newuidmap`/`newgidmap` (package `uidmap`), at least 65,536 subordinate ids, the daemon as a per-user systemd service (`dockerd-rootless-setuptool.sh install`, package `docker-ce-rootless-extras`), and: "Limiting resources with cgroup-related `docker run` flags such as `--cpus`, `--memory`, `--pids-limit` is supported only when running with cgroup v2 and systemd"; "typically, only memory and pids controllers are delegated to non-root users by default", with a `Delegate=cpu cpuset io memory pids` drop-in for `user@.service` to delegate the rest; and on cgroup v1 the flags "are ignored". Microsoft's "Advanced settings configuration in WSL" (ms.date 2026-10-16, git commit 50342fc) gives the WSL2 side: `[boot] systemd=true` "Enables systemd as the init process for the distribution. Only supported on WSL 2", and `[automount] cgroups` "Selects the cgroup hierarchy to mount in WSL 2", default **`v2`**. **Neither vendor has a page that names "rootless Docker on WSL2"**; support follows from Docker's stated requirements and Microsoft's stated defaults together, and the operator's own machine proves it (Part E's last check runs the rootless suite there). Podman was not chosen: JUNO drives `docker` and `docker compose` already (D-034, D-065), and nothing found makes Podman's WSL2 story stronger.
+  - **`wsl.exe --exec` with interop disabled.** Microsoft's wording is directional: `[interop] enabled` "will determine whether WSL will support launching Windows processes"; the example file says false "will block the launch of Windows processes"; "Working across file systems" (updated 2026-06-02) calls disabling interop disabling "the ability to run Windows tools", and lists "Run Linux tools … from a Windows command line" as a separate direction. The WSL source confirms it (raw.githubusercontent.com/microsoft/WSL/master, `src/linux/init/init.cpp` and `config.cpp` read 2026-11-04): when Windows asks init to create a Linux process (`LxInitMessageCreateProcessUtilityVm`), init creates it whatever the setting; `InteropEnabled` only decides whether that process also gets an interop server (`InteropEnabled = … && Config.InteropEnabled; if (InteropEnabled) InteropServer.Create()`), and the distribution's channel for creating Windows processes is opened only `if (UtilIsUtilityVm() && Config.InteropEnabled)`. So the hook direction works and the reverse direction has no channel. Binaries started by `wsl` from Windows "Run as the WSL default user", so the hook names its user explicitly (`wsl.exe --user juno-runner --exec …`).
+  - **"Only root can change it".** `/etc/wsl.conf` is "Stored in the `/etc` directory of the distribution"; the session switch `/proc/sys/fs/binfmt_misc/WSLInterop` is written "as root". Both are root's; the runner's user is not root and cannot become root (below). Root inside the distribution remains reachable from Windows (`wsl --user root`), which is the operator's account: a trust root under this ruling.
+- Reason: the operator's ruling. It removes D-129's step 1 (the runner is no longer root-equivalent: it reaches only its own rootless daemon) and therefore step 2 (it cannot edit `/etc/wsl.conf`); with interop off at boot, step 3 has no channel. What remains is what the ruling names as residual.
+
+## D-131 — How D-130 is read where it leaves a choice, and how it is proven (autopilot rulings)
+- Date: 2026-11-04
+- Status: Accepted (autopilot rulings, CLAUDE.md §7 step 3: each the more restrictive reading)
+- Applies to: real use under WSL2 (STATE.md Part E; plan §2a); `make verify-rootless`, `scripts/rootless/`, `test/rootless/`, CI job `verify-rootless`
+- Decision:
+  - **"No membership in any group that grants root" is read as no supplementary group at all.** The user `juno-runner` has only its own primary group. Lists of root-granting groups (`sudo`, `admin`, `wheel`, `docker`, `lxd`, `disk`, `shadow`, …) are incomplete by nature; an empty list is not. The test checks both: no supplementary group, and none of the named ones.
+  - **Drive automount is off too** (`[automount] enabled=false`). With drives mounted under `/mnt`, a process in the distribution can read and write the operator's Windows files with the operator's Windows rights (for example a startup script), which would reach the signing agent without interop. Turning automount off closes that path; Windows can still reach the distribution's files through `\\wsl.localhost`. Where the workspace of a hook session lives is settled in Increment 4 (D-129 listed it as open); restrictive default: inside the distribution, and any Windows folder exposed to it is a single root-written `/etc/fstab` entry, not an automount.
+  - **`[user] default=juno-runner`**, and the hook names `--user juno-runner` anyway. A Windows-launched process never runs as a user with sudo by default.
+  - **The rootless daemon is the only daemon.** The rootful Docker service and socket are disabled on the operator's machine, and the test proves the runner's user cannot reach `/var/run/docker.sock` (access to a rootful daemon is root: D-065, D-129 step 1).
+  - **The D-025 limits must be enforced, not just accepted.** Rootless Docker silently ignores `--cpus`, `--memory` and `--pids-limit` without cgroup v2 and systemd. So the rootless suite first asserts `docker info` reports cgroup v2 with the `systemd` driver and that `cpu`, `memory` and `pids` are delegated to the user's systemd manager; only then do the seal tests run, and `limits.test.ts` still hits each limit. Increment 4, the first increment whose runner runs on the operator's machine, adds a start-up refusal when the runtime reports cgroup driver `none` (recorded in plan §2a).
+  - **Proof, where it can run.** `make verify-rootless` (refuses to run as root): the privilege and runtime tests in `test/rootless/runner-user.test.ts`, then the whole container suite (`make containers`: isolation, journal, limits, registry, runner, trust, anchors, canonical, pins and §18 acceptance) against the rootless daemon. `scripts/rootless/setup-root.sh` (CI and cloud sessions only; refuses inside WSL) installs Docker 29.9.2's static and rootless-extras binaries, root-owned in `/opt/juno-rootless/bin`, each archive checked against a SHA-256 pinned in the script (computed 2026-11-04 from download.docker.com, released 2026-10-20), creates `juno-runner`, writes the `/etc/wsl.conf` stand-in (root, 0644), delegates the controllers, and starts the daemon as a systemd user service with Docker's own setup tool. `scripts/rootless/run-verify.sh` runs the target as `juno-runner` on a copy of the repository. **CI job `verify-rootless` (ubuntu-24.04: systemd, cgroup v2)** runs both on every PR; the merge gate reads it with `verify`.
+  - **CI-image adjustments in `setup-root.sh`** (found on the first CI runs; none weakens a check):
+    - the delegation drop-in is written before the user's manager first starts, and the manager is not restarted;
+    - the manager is given its own `XDG_RUNTIME_DIR`, `HOME` and XDG directories, because GitHub's image sets the CI user's in `/etc/environment`;
+    - every ACL is removed from the runner's home and from the repository copy, because the image's `/home` carries a default ACL naming the CI user's uid, which no rootless namespace maps, and copying a mount point into a new volume then fails with EINVAL.
+
+    Result: CI run 41887176162 on 8057fe2 is GREEN, with 12 of 12 preflight tests and 69 of 69 container tests under rootless Docker, including every D-025 limit.
+  - **The operator's WSL2 uses Docker's own packages** (`docker-ce`, `docker-ce-rootless-extras`, whose deb ships the rootlesskit AppArmor profile), not the static archives: the documented primary path for Ubuntu. Same engine line; the difference is recorded here.
+  - **Increment 4 directive (recorded now, built there):** in hook mode Claude Code and every program a mediated `Bash` call starts run as the operator's Windows user, a trust root that can ask the agent to sign. So the operator-authored name map (§2.3.2) may not contain a program that can sign or start other programs (`ssh-keygen`, `ssh-add`, `ssh`, `ssh-agent`, `wsl`, `powershell`, `pwsh`, `cmd`, `git`, any interpreter), and registration review rejects one that does. §4.3's "not protected" rows for mode C (`@`-mentions, `disableAllHooks`, harness actions without a tool call) are, under D-130, inside the operator's trust root and are stated as residuals.
+- Reason: CLAUDE.md §7 step 3 (fail-closed) and rule 13. Each reading admits less than the alternatives, and none makes a §18 test impossible: the §18 tests and the whole container suite run unchanged under the rootless runtime.

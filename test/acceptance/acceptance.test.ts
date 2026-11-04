@@ -19,6 +19,8 @@ import { explainTask } from "../../packages/runner/src/explain.js";
 import { SCRIPTED_PROFILE_FILE, loadProviderProfile } from "../../packages/runner/src/profile.js";
 import { type ProviderRequest, type ScriptStep, ScriptedProvider } from "../../packages/runner/src/provider.js";
 import { Runner, RunnerError } from "../../packages/runner/src/runner.js";
+import { TEST_ANCHOR, signed } from "../../packages/enforcement/test/test-keys.js";
+import { testAnchoring } from "../../packages/runner/test/anchor-sink.js";
 
 // Increment 7: the five §18 acceptance tests, end to end. The runner runs on
 // the host (D-065) and every capability call runs in a fresh workload
@@ -71,7 +73,7 @@ const clock = { now: new Date() };
 const T0 = clock.now.getTime();
 
 function grant(id: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return {
+  return signed({
     id,
     principal: PRINCIPAL,
     capability_selector: { capabilities: ["shell.run"] },
@@ -85,7 +87,7 @@ function grant(id: string, overrides: Record<string, unknown> = {}): Record<stri
     attenuation_parent: null,
     revoked_at: null,
     ...overrides,
-  };
+  });
 }
 
 /** Every acceptance criterion names protected paths (D-025 Inc 7, D-057). */
@@ -128,11 +130,11 @@ function runner(steps: readonly ScriptStep[], options: { registry?: CapabilityRe
     const registered = registry.register(definition(), [workloadAdapter()]);
     if (!registered.registered) throw new Error(`shell.run did not register: ${JSON.stringify(registered.refusals)}`);
   }
-  const grants = new GrantStore();
+  const grants = new GrantStore(TEST_ANCHOR);
   for (const item of options.grants ?? [grant("grant-main")]) grants.add(item);
   const provider = new ScriptedProvider(profile, steps);
   const resolver = new WorkloadPathResolver({ composeFile, project, service: "workload" });
-  return { runner: new Runner({ journal, registry, grants, providers: [provider], sources: SOURCES, clock: () => clock.now, resolver }), provider };
+  return { runner: new Runner({ journal, registry, grants, providers: [provider], sources: SOURCES, clock: () => clock.now, resolver, anchoring: testAnchoring() }), provider };
 }
 
 const entries = (taskId: string): readonly TrajectoryEntry[] => readTrajectory(journalRoot, taskId);

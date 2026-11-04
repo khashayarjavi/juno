@@ -318,7 +318,7 @@ export function admit(input: unknown, env: AdmissionEnvironment): AdmissionResul
     for (const root of roots) {
       const selector = { kind: "path" as const, prefix: root };
       const listable = request.grants.some((id) => {
-        const grant = env.grants.get(id);
+        const grant = env.grants.signed(id);
         return grant !== undefined && grant.capability_selector.capabilities.includes(PROTECTED_LISTING.capability) && grant.resource_scope.some((scope) => selectorWithin(selector, scope));
       });
       if (licensed && !listable) fail("D-112", `verification scope ${root} lies within no grant for ${PROTECTED_LISTING.capability}, so the verifier could not pin it`);
@@ -372,9 +372,10 @@ export function admit(input: unknown, env: AdmissionEnvironment): AdmissionResul
   const scope = new Set<string>();
   if (criterion !== null) scope.add(criterion.command.capability);
   for (const id of request.grants) {
-    const grant = env.grants.get(id);
+    const grant = env.grants.signed(id);
     if (grant === undefined) {
-      fail("3.2", `grant ${id} is not stored`);
+      // §3.2 C1: a grant whose signature is missing or invalid does not exist (D-125).
+      fail("3.2", env.grants.get(id) === undefined ? `grant ${id} is not stored` : `grant ${id} has no valid operator signature, so it does not exist (§3.2)`);
       continue;
     }
     for (const capability of grant.capability_selector.capabilities) scope.add(capability);

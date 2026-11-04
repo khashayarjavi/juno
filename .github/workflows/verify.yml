@@ -42,3 +42,25 @@ jobs:
 
       - name: make verify
         run: make verify
+
+  # The same container suite as the runner's unprivileged user under rootless Docker, on cgroup v2 with systemd
+  # (DECISIONS.md D-130, D-131): the configuration the operator's WSL2 runs. A separate job, so `verify` stays the
+  # plain Docker run it has always been; the merge gate (CLAUDE.md §7 step 6b) reads both.
+  verify-rootless:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Set up the rootless runtime and the runner's user (as root)
+        run: sudo bash scripts/rootless/setup-root.sh
+
+      - name: make verify-rootless (as the runner's user)
+        run: sudo env JUNO_NODE_BIN="$(dirname "$(command -v node)")" bash scripts/rootless/run-verify.sh

@@ -27,6 +27,20 @@ const failedChecks = (input: unknown, overrides: Parameters<typeof env>[0] = {})
 };
 
 describe("§5.4 admission checks", () => {
+  // proves §3.2 C1 (D-125): a grant with a missing or forged signature does not exist, so admission refuses a task naming it
+  it("refuses a task whose grant is unsigned or forged", () => {
+    const { signature: _signature, ...unsigned } = grant({ id: "grant-unsigned" });
+    void _signature;
+    h.grants.add(unsigned);
+    h.grants.add({ ...grant({ id: "grant-forged" }), max_invocations: 99 });
+    for (const id of ["grant-unsigned", "grant-forged"]) {
+      const result = admit(request({ grants: [id] }), env());
+      expect(result.admitted, id).toBe(false);
+      if (result.admitted) continue;
+      expect(result.failures).toContainEqual(expect.objectContaining({ check: "3.2", message: `grant ${id} has no valid operator signature, so it does not exist (§3.2)` }));
+    }
+  });
+
   // proves §5.4 baseline: a complete request is admitted, with ownership and steer capability derived
   it("admits a complete request and derives what admission derives", () => {
     const result = admit(request({ criterion: OPERATOR_CRITERION, verification: "command_exit" }), env());

@@ -16,6 +16,9 @@ import { parseRunnerConfig } from "../../packages/runner/src/config.js";
 import { SCRIPTED_PROFILE_FILE, loadProviderProfile } from "../../packages/runner/src/profile.js";
 import { ScriptedProvider } from "../../packages/runner/src/provider.js";
 import { Runner, type RunOutcome } from "../../packages/runner/src/runner.js";
+import { ContainerAnchorSink, checkAnchors, taskDigest } from "../../packages/journal/src/index.js";
+import { testJournalKey } from "../../packages/runner/test/anchor-sink.js";
+import { TEST_ANCHOR, signed } from "../../packages/enforcement/test/test-keys.js";
 
 // Increment 5 with DECISIONS.md D-065: the runner runs on the host, starts
 // each workload container through the docker CLI, and keeps the journal in a
@@ -117,9 +120,11 @@ let outcome: RunOutcome;
 let before: Map<string, string>;
 let probe: z.output<typeof WorkloadReport>;
 let runner: Runner;
+const anchorSink = new ContainerAnchorSink({ composeFile, project, service: "anchors" });
+const journalKey = testJournalKey();
 
 beforeAll(async () => {
-  await docker([...compose, "down", "--volumes", "--remove-orphans"]);
+  await docker([...compose, "--profile", "anchors", "down", "--volumes", "--remove-orphans"]);
   // The operator's work content, written as the workload user, outside the capability under test.
   const setup = 'const fs = require("node:fs"); fs.mkdirSync("/work/project"); fs.writeFileSync("/work/project/notes.txt", "hello\\n"); fs.writeFileSync("/work/project/done.txt", "ok\\n"); fs.mkdirSync("/work/project/protected"); fs.writeFileSync("/work/project/protected/keep.txt", "keep\\n");';
   await docker([...compose, "run", "--rm", "--no-deps", "-T", "workload", "-e", setup]);
@@ -129,21 +134,21 @@ beforeAll(async () => {
   const registry = new CapabilityRegistry();
   const registered = registry.register(JSON.parse(readFileSync(definitionFile, "utf8")), [new WorkloadExecFileAdapter({ composeFile, project, service: "workload" })]);
   if (!registered.registered) throw new Error(`shell.run did not register: ${JSON.stringify(registered.refusals)}`);
-  const grants = new GrantStore();
-  grants.add({
-    id: "grant-1",
-    principal: PRINCIPAL,
-    capability_selector: { capabilities: ["shell.run"] },
-    resource_scope: [{ kind: "path", prefix: "/work/project" }],
-    data_class_bounds: { max_sensitivity: "internal", min_integrity: "untrusted" },
-    issuance: "preissued",
-    issued_by: PRINCIPAL,
-    issued_at: new Date(T0.getTime() - 60_000).toISOString(),
-    expires_at: new Date(T0.getTime() + 3_600_000).toISOString(),
-    max_invocations: 10,
-    attenuation_parent: null,
-    revoked_at: null,
-  });
+  const grants = new GrantStore(TEST_ANCHOR);
+  grants.add(signed({
+      id: "grant-1",
+      principal: PRINCIPAL,
+      capability_selector: { capabilities: ["shell.run"] },
+      resource_scope: [{ kind: "path", prefix: "/work/project" }],
+      data_class_bounds: { max_sensitivity: "internal", min_integrity: "untrusted" },
+      issuance: "preissued",
+      issued_by: PRINCIPAL,
+      issued_at: new Date(T0.getTime() - 60_000).toISOString(),
+      expires_at: new Date(T0.getTime() + 3_600_000).toISOString(),
+      max_invocations: 10,
+      attenuation_parent: null,
+      revoked_at: null,
+  }));
   const profile = loadProviderProfile(SCRIPTED_PROFILE_FILE);
   const usage = { tokens_in: 10, tokens_out: 5, tokens_cached: 0 };
   const call = { id: "call-1", capability: "shell.run", arguments: { program: { slot: "cat" }, argv: ["notes.txt"], cwd: { slot: "project" } } };
@@ -158,6 +163,8 @@ beforeAll(async () => {
     providers: [provider],
     sources: [{ id: "project", selector: { kind: "path", prefix: "/work/project" }, data_class: { sensitivity: "internal", integrity: "untrusted" } }],
     resolver: new WorkloadPathResolver({ composeFile, project, service: "workload" }),
+    // The real append-only stand-in destination (§3.4.1, D-122), in its own container.
+    anchoring: { sink: anchorSink, journalKey, intervalMs: 3_600_000 },
   });
   const admission = runner.admit({
     id: "task-host",
@@ -191,7 +198,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   runner.close();
-  await docker([...compose, "down", "--volumes", "--remove-orphans"]);
+  await docker([...compose, "--profile", "anchors", "down", "--volumes", "--remove-orphans"]);
   rmSync(hostDir, { recursive: true, force: true });
 });
 
@@ -235,6 +242,15 @@ describe("a task run by the host runner against the real workload (build plan In
       return blob.status === "present" ? (JSON.parse(new TextDecoder().decode(blob.bytes)) as Record<string, unknown>) : {};
     }).filter((note) => note["type"] === "verification").at(-1);
     expect(verification).toMatchObject({ result: "pass", inputs: "unchanged", changed_paths: [] });
+  });
+});
+
+describe("the task's head is anchored in the separate append-only container (§3.4.1, D-122)", () => {
+  // proves §3.4.1: the real runner copied the head off its journal storage, and the chain agrees with every anchor
+  it("anchors the task's head at start and stop, and the chain agrees", async () => {
+    const anchors = await anchorSink.list(taskDigest("task-host"));
+    expect(anchors.length).toBe(2);
+    expect(checkAnchors("task-host", verifyTrajectory(journalRoot, "task-host"), anchors, journalKey.publicKey)).toMatchObject({ ok: true, unanchored: 0 });
   });
 });
 

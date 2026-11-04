@@ -12,6 +12,8 @@ import { explainTask } from "../../packages/runner/src/explain.js";
 import { type GroqProvider } from "../../packages/runner/src/groq.js";
 import type { Provider } from "../../packages/runner/src/provider.js";
 import { Runner } from "../../packages/runner/src/runner.js";
+import { TEST_ANCHOR, signed } from "../../packages/enforcement/test/test-keys.js";
+import { testAnchoring } from "../../packages/runner/test/anchor-sink.js";
 
 // The `make smoke` harness (Slice 1.1; DECISIONS.md D-072, D-073). The runner
 // runs on the host (D-065) and every capability call runs in a fresh workload
@@ -75,7 +77,7 @@ export const SOURCES: readonly SourceRegistration[] = [
 ];
 
 export function grant(id: string, issuedAt: number, overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return {
+  return signed({
     id,
     principal: PRINCIPAL,
     capability_selector: { capabilities: ["shell.run"] },
@@ -89,7 +91,7 @@ export function grant(id: string, issuedAt: number, overrides: Record<string, un
     attenuation_parent: null,
     revoked_at: null,
     ...overrides,
-  };
+  });
 }
 
 /** Every criterion names protected paths (D-057). */
@@ -285,11 +287,11 @@ export async function runScenario(scenario: Scenario, index: number, groq: GroqP
     groq,
     journalRoot,
     runner: (options = {}) => {
-      const grants = new GrantStore();
+      const grants = new GrantStore(TEST_ANCHOR);
       for (const item of options.grants ?? [grant("grant-main", Date.now())]) grants.add(item);
       const provider = options.provider ?? groq;
       if (provider.profile !== groq.profile) throw new Error("a scenario's provider must serve the Groq profile");
-      const runner = new Runner({ resolver: new WorkloadPathResolver({ composeFile, project, service: "workload" }), journal, registry: options.registry ?? standardRegistry(), grants, providers: [provider], sources: SOURCES, clock: options.clock ?? (() => new Date()) });
+      const runner = new Runner({ resolver: new WorkloadPathResolver({ composeFile, project, service: "workload" }), journal, registry: options.registry ?? standardRegistry(), grants, providers: [provider], sources: SOURCES, clock: options.clock ?? (() => new Date()), anchoring: testAnchoring() });
       runners.push(runner);
       return runner;
     },

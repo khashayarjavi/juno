@@ -3,13 +3,15 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { TrajectoryEntry } from "../../contracts/src/index.js";
-import { type CanonicalPaths, GrantStore, type PathResolver, RESOLVER_SCRIPT, readResolverOutput } from "../../enforcement/src/index.js";
+import { type CanonicalPaths, GrantStore, type PathResolver, readResolverOutput, resolverArgs } from "../../enforcement/src/index.js";
 import { JournalWriter, readPayload, readTrajectory } from "../../journal/src/index.js";
 import { type Adapter, type CapabilityCall, CapabilityRegistry, WORKLOAD_EXECFILE, executeOutbound, loadRegistryEntry } from "../../registry/src/index.js";
 import type { SourceRegistration } from "../src/admission.js";
 import { type ProviderProfile, SCRIPTED_PROFILE_FILE, loadProviderProfile } from "../src/profile.js";
 import { type ScriptStep, ScriptedProvider } from "../src/provider.js";
-import { Runner, type RunnerOptions } from "../src/runner.js";
+import { type Anchoring, Runner, type RunnerOptions } from "../src/runner.js";
+import { MemoryAnchorSink, testAnchoring } from "./anchor-sink.js";
+import { TEST_ANCHOR, signed } from "../../enforcement/test/test-keys.js";
 
 export const SHELL_RUN_FILE = fileURLToPath(new URL("../../registry/definitions/shell.run.json", import.meta.url));
 export const CAT = "/usr/bin/cat";
@@ -82,7 +84,7 @@ export function hostResolver(root: string): PathResolver {
   return {
     async resolve(paths: readonly string[]): Promise<CanonicalPaths> {
       if (paths.length === 0) return new Map();
-      const result = await executeOutbound({ file: process.execPath, args: ["-e", RESOLVER_SCRIPT, "/work", root, ...paths] });
+      const result = await executeOutbound({ file: process.execPath, args: resolverArgs("/work", root, paths) });
       return readResolverOutput(paths, result.stdout.toString("utf8"));
     },
   };
@@ -107,7 +109,7 @@ export const PROJECT_SOURCE: SourceRegistration = {
 };
 
 export function grant(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return {
+  return signed({
     id: "grant-1",
     principal: PRINCIPAL,
     capability_selector: { capabilities: ["shell.run"] },
@@ -121,7 +123,7 @@ export function grant(overrides: Record<string, unknown> = {}): Record<string, u
     attenuation_parent: null,
     revoked_at: null,
     ...overrides,
-  };
+  });
 }
 
 export const OPERATOR_CRITERION = {
@@ -175,6 +177,9 @@ export type Harness = {
   registry: CapabilityRegistry;
   grants: GrantStore;
   now: { value: Date };
+  /** The harness's anchor destination and journal key, shared by every runner it makes (a restart keeps them, §3.4.1). */
+  anchors: MemoryAnchorSink;
+  anchoring: Anchoring;
   runner: (steps: readonly ScriptStep[], options?: Partial<RunnerOptions> & { profile?: ProviderProfile }) => { runner: Runner; provider: ScriptedProvider };
   entries: (taskId?: string) => readonly TrajectoryEntry[];
   payload: (entry: TrajectoryEntry) => Record<string, unknown>;
@@ -189,19 +194,23 @@ export function harness(adapter: Adapter = standInAdapter): Harness {
   const registry = new CapabilityRegistry();
   const registered = registry.register(loadRegistryEntry(SHELL_RUN_FILE), [adapter]);
   if (!registered.registered) throw new Error(`shell.run did not register: ${JSON.stringify(registered.refusals)}`);
-  const grants = new GrantStore();
+  const grants = new GrantStore(TEST_ANCHOR);
   grants.add(grant());
   const now = { value: new Date(Date.parse(T0) + 60 * 60 * 1000) };
   const runners: Runner[] = [];
+  const anchors = new MemoryAnchorSink();
+  const anchoring = testAnchoring({ sink: anchors });
   return {
     dir,
     journal,
     registry,
     grants,
     now,
+    anchors,
+    anchoring,
     runner: (steps, options = {}) => {
       const provider = new ScriptedProvider(options.profile ?? PROFILE, steps);
-      const runner = new Runner({ journal, registry, grants, providers: [provider], sources: [PROJECT_SOURCE], clock: () => now.value, resolver: hostResolver(join(dir, "work")), ...options });
+      const runner = new Runner({ journal, registry, grants, providers: [provider], sources: [PROJECT_SOURCE], clock: () => now.value, resolver: hostResolver(join(dir, "work")), anchoring, ...options });
       runners.push(runner);
       return { runner, provider };
     },

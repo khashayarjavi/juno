@@ -93,6 +93,43 @@ Off the host: the anchor destination (append-only; in tests, a separate append-o
 - **Who performs the effect.** In mode A the boundary performs it (`perform`). In modes B and C the harness or upstream server performs it after JUNO answers; JUNO cannot see or stop what happens between its answer and the effect (§4.3 "not protected", mode C).
 - **Fail-closed at every hop.** The hook client exits 2 when the service is unreachable, slow, or answers anything but a valid decision; `onFailure: "block"` covers a crash or timeout of the client itself; the gateway answers an error when the boundary cannot be reached. A hook installation without `onFailure: "block"`, or on a Claude Code older than 2.1.295, is refused at setup (§4.3 "Fail-closed ingress").
 
+
+### 2a. Real use under WSL2 (D-129, D-130, D-131)
+
+Everything above runs in CI and cloud sessions on throwaway keys. For real use, the runner, the journal and the workload containers run in **WSL2 on the operator's Windows machine**, and the grant-signing key stays in the Windows OpenSSH agent (D-093, D-124). D-129 stopped this because the runner was root-equivalent through Docker and root can switch WSL interop back on. The operator ruled option (e) (D-130):
+
+```
+Windows (the operator's account — a trust root, like the signing key)
+  ssh-agent: holds the grant-signing key; any program running as this account can ask it to sign
+  Claude Code ── PreToolUse/PostToolUse, exec form, onFailure: "block"
+       │  wsl.exe --user juno-runner --exec /usr/bin/node <juno-hook>   (Windows → Linux: works with interop off)
+       ▼
+WSL2 distribution (the "host" of §3.4.1)          /etc/wsl.conf (root-owned):
+  juno-runner  — no password, no sudo,               [boot] systemd=true
+     no supplementary group                          [interop] enabled=false, appendWindowsPath=false
+     ├─ JUNO runner, boundary, journal               [automount] enabled=false
+     └─ rootless Docker (its own daemon, its own     [user] default=juno-runner
+        user namespace; cgroup v2 + systemd;
+        cpu/memory/pids delegated)  ──► workload containers: no network, uid 65532, no capabilities, D-025 limits
+  rootful Docker: disabled.  Linux → Windows: no channel (interop off at boot; drives not mounted).
+Off the host: juno-anchors (public GitHub repository, history protected; D-094, D-098)
+```
+
+**What this protects (§3.2 C1, §3.4.1).** A compromised runner, a workload that escapes its container to the runner's user, or another service in the distribution cannot sign a grant: it is not root, so it cannot edit `/etc/wsl.conf` or flip the session switch; interop is off from boot, so no channel to start a Windows program exists (WSL source, D-130); drives are not mounted, so it cannot plant a file in the operator's Windows profile. It can still stop JUNO or withhold new entries (§3.4.1), and it cannot rewrite anchored history (the anchors are off the host).
+
+**What it does not protect — residuals (D-130):**
+1. **A kernel or WSL escape.** Anything that becomes root in the distribution's kernel, or escapes the WSL2 VM to Windows, is outside C1. This includes an escape from a rootless container to real root through a kernel bug, and an attack from the distribution on a Windows service reachable over WSL2's virtual network.
+2. **A compromised Windows account.** Any program running as the operator's Windows account can ask the agent to sign. That includes Claude Code itself and anything it runs outside JUNO's mediation (§4.3 mode C "not protected": `@`-mentions, `disableAllHooks`, harness actions with no tool call), and `wsl --user root`. Under D-130 the account is a trust root, so these are residuals, not defects; the name-map restriction below keeps JUNO's own mediated calls from reaching the agent.
+
+**Built and proven where (D-131):**
+- `make verify-rootless` (CI job `verify-rootless`, ubuntu-24.04 with systemd and cgroup v2): as `juno-runner` under the rootless daemon, `test/rootless/runner-user.test.ts` proves the user is not root, holds no supplementary group, cannot use sudo or su, cannot write, replace or remove `/etc/wsl.conf` (the stand-in) or `/etc`, cannot reach the rootful Docker socket, and that the runtime is cgroup v2 with the systemd driver and `cpu`, `memory`, `pids` delegated. Then the whole container suite runs under the rootless daemon, including the seal tests (no network, non-root, no capabilities) and `limits.test.ts`, which hits each D-025 limit.
+- Cloud sessions run the same suite on a VM with cgroup v1 and no systemd: there rootless Docker reports cgroup driver `none` and ignores the limits, so the preflight fails, by design. That machine cannot show the limits; CI and the operator's WSL2 can.
+- The operator's machine: STATE.md Part E ends by running `make verify-rootless` in WSL2 as `juno-runner`.
+
+**Directives for later increments (D-131):**
+- **Increment 4:** the runner refuses to start when the container runtime reports cgroup driver `none` (rootless without cgroup v2 and systemd), because its limits would be ignored. The hook is installed as `wsl.exe --user juno-runner --exec <absolute path>` with `args`, never through a shell. The Bash name map may not contain a program that can sign or start other programs (`ssh-keygen`, `ssh-add`, `ssh`, `ssh-agent`, `wsl`, `powershell`, `pwsh`, `cmd`, `git`, any interpreter); registration review rejects one. A hook session's workspace lives inside the distribution; exposing a Windows folder needs a single root-written `/etc/fstab` entry, never automount.
+- **Anchor push (Part D):** the scoped token lives in `juno-runner`'s own files, mode 0600, outside every grant scope and selector (§3.2).
+
 ---
 
 ## 3. Increments
@@ -300,7 +337,7 @@ No acceptance test needs a real model. The injection in tests 2 and 3 is scripte
 
 - **For acceptance: nothing.** Every test above runs in CI or in a cloud session.
 - **Before Increment 1: nothing.** Spec v0.6.1 is on `main` (D-100) and V61-1 is ruled (D-098).
-- **Once, for real use (Increment 2):** creating the operator's signing key in the Windows OS keychain (D-093) and signing one grant with `juno grant sign`; creating the public repository `juno-anchors`, protecting its history against force-push and deletion, and a push credential scoped to it alone (D-094, D-098; §3.4.1). CI cannot hold a keychain, so it uses throwaway per-run keys and the stand-in anchor container; the real-key path is proven only on the operator's machine. Increment 2 writes click-by-click Windows steps into STATE.md.
+- **Once, for real use (Increment 2):** setting up WSL2 for the runner as §2a describes (STATE.md Part E: rootless Docker, the unprivileged `juno-runner`, interop and automount off; D-130, D-131), and creating the operator's signing key in the Windows OS keychain (D-093) and signing one grant with `juno grant sign`; creating the public repository `juno-anchors`, protecting its history against force-push and deletion, and a push credential scoped to it alone (D-094, D-098; §3.4.1). CI cannot hold a keychain, so it uses throwaway per-run keys and the stand-in anchor container; the real-key path is proven only on the operator's machine. Increment 2 writes click-by-click Windows steps into STATE.md.
 - **Optional, not acceptance:** one interactive Claude Code session on the operator's machine with the hook installed, to see an interactive `deny` in the terminal. It uses the operator's own Claude Code plan (no extra money); the automated tests use `-p` mode only, because the interactive terminal cannot be driven by a test.
 
 ---
@@ -335,6 +372,7 @@ None. Resolved: V61-3 (§2.3.2) — the operator ruled (a) on 2026-11-03 (D-105)
 3. **The anchor destination:** the operator's GitHub repository `juno-anchors`, public (D-094); §3.4.1 now says public (V61-1 ruled (a), D-098).
 4. **PR #26** was merged on 2026-11-03.
 5. **C2:** deferred to Slice 2 (D-095).
+6. **Real use under WSL2** (ruled 2026-11-04): option (e), rootless containers with interop disabled; the operator's Windows account is a trust root (D-130; readings D-131; §2a).
 
 ## 8. Not in Slice 1.5
 

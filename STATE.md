@@ -1,6 +1,261 @@
 # STATE
 
 ## Current increment
+**Slice 1.5 — Increment 2: signed grants and an anchored journal head (C1)** (`docs/plans/slice-1.5-build-plan.md`, Increment 2). Branch `claude/vigilant-heisenberg-uko6on`, the only branch this session may push. It carries PR #34's commits unchanged (from `claude/compassionate-noether-9s2sf2`, head 889c5be, which carried PR #33's), so the record continues in a new PR from it; PR #34 is superseded. Spec v0.6.1. No objection to the spec open.
+
+Status: **D-129's STOP is lifted by your ruling (e) (D-130). The WSL2 plan section (§2a) and Part E below are written to it; the rootless proof is built (D-131); review round 3 is next.** Increment 2's own code is unchanged since PR #33's round 2.
+- **Your ruling on D-129, recorded as D-130:** option (e), rootless containers with Windows interop disabled; the runner as an unprivileged user with no sudo and no root-granting group; `/etc/wsl.conf` root-only; your Windows account is a trust root, like the signing key.
+- **What the sources say (read 2026-11-04; D-130 has quotes and hashes):**
+  - Docker's rootless docs: rootless limits (`--cpus`, `--memory`, `--pids-limit`) work only with **cgroup v2 and systemd**; otherwise they are silently ignored. CPU needs a `Delegate=` drop-in.
+  - Microsoft's WSL settings page: systemd is supported on WSL2 (`[boot] systemd=true`), and WSL2 mounts **cgroup v2 by default**. So WSL2 can meet Docker's conditions. No vendor page names "rootless Docker on WSL2" directly; Part E's last check proves it on your machine.
+  - **`wsl.exe --exec` still works with interop off.** Microsoft describes interop as launching Windows programs from Linux only. WSL's own source shows Windows-started Linux processes are created regardless, and the Linux-to-Windows channel is opened only when interop is on.
+- **Autopilot rulings (D-131), each the restrictive reading:**
+  - "no root-granting group" means **no supplementary group at all**;
+  - Windows **drive automount is off** too, or the runner could plant files in your Windows profile without interop;
+  - the rootful Docker service is disabled;
+  - the D-025 limits must be **enforced**, so the rootless suite first checks cgroup v2, the systemd driver, and cpu/memory/pids delegation;
+  - Increment 4 directives: the runner refuses to start when the cgroup driver is `none`; the Bash name map may not list a program that can sign or start programs (`ssh-keygen`, `ssh-add`, `wsl`, `powershell`, `git`, any interpreter, …).
+- **Residuals, stated (D-130; plan §2a):**
+  1. **A kernel or WSL escape:** root in the WSL2 kernel, an escape from the VM to Windows, or an attack from the distribution on a Windows network service.
+  2. **A compromised Windows account:** any program running as you can ask your agent to sign. That includes Claude Code itself and whatever it does outside JUNO's hook (`@`-mentions, `disableAllHooks`, harness actions with no tool call), and `wsl --user root`.
+- **Proof built (D-131):** `make verify-rootless`, run as the unprivileged user `juno-runner` under rootless Docker. `scripts/rootless/setup-root.sh` and `run-verify.sh` set it up and run it. CI job `verify-rootless` runs it on ubuntu-24.04 (systemd, cgroup v2).
+  - First, `test/rootless/runner-user.test.ts` checks that the user:
+    - is not root;
+    - is in no supplementary group;
+    - cannot use sudo or su;
+    - cannot write, replace or remove `/etc/wsl.conf` or write `/etc`;
+    - cannot reach the rootful Docker socket.
+
+    It also checks that the daemon is rootless, on cgroup v2 with the systemd driver, with cpu, memory and pids delegated.
+  - Then the whole container suite (69 tests, including the seal and D-025 limit tests) runs under the rootless daemon.
+- **Proof in this cloud session (2026-11-04):** see "Rootless runs" below.
+- **Review rounds 1 and 2 (PR #33), recorded earlier:**
+  - **Review round 1 (head 495b931; fresh subagent, P2 verbatim): DO NOT MERGE.** CI on 495b931 passed (run 41771539413). Checks 2, 3, 4 and 6 PASS. Fixed (D-125):
+    - the plan's "no test key is committed" test was missing (now `test/lint/no-keys.test.ts`);
+    - admission and resume accepted an unsigned grant (it could never run a call, but §3.2 says it does not exist);
+    - the runner's own start-up did not yet load the trust anchor.
+  - **Review round 2 (head 809714e; fresh subagent, P2 verbatim): DO NOT MERGE.** CI on 809714e passed (run 41773133614). Checks 1, 2, 3, 4 and 6 PASS. One FAIL, fixed (D-126): `juno journal check` said ok when it found no anchor for a task (fail-open). Also fixed, from the reviewer's notes: the restart test now exercises the runner's own path. Two residuals are recorded in D-126, not changed.
+- **Operator rulings of 2026-11-04, recorded:**
+  - D-118: D-100 confirmed.
+  - D-119: D-109 stands.
+  - D-120: D-112 hardening, built. Resolver paths now follow a `--`. A container test plants `-c` and `--help` in the scope; the pins are computed and the task closes verified.
+  - D-121: Increment 3 must close the gap between resolving a path and writing to it.
+  - D-127: three review rounds (CLAUDE.md §7).
+  - D-128: Windows steps corrected; Part D deferred.
+  - D-129: the STOP, now lifted by D-130.
+- **Autopilot rulings:** D-123 (four readings of §3.4.1); D-131 (readings of D-130).
+- **Done-when check:**
+  - the plan's tests are green;
+  - every fixture grant is signed by a per-run test key (D-115);
+  - the operator's steps are below, now including Part E.
+
+### Rootless runs (D-131)
+- **This cloud VM** (cgroup v1, no systemd), 2026-11-04: `scripts/rootless/setup-root.sh --preload-images`, then `run-verify.sh`. Result: **10 of 12** rootless preflight tests pass.
+  - **Pass:** not root; no supplementary group; no sudo; no su; `/etc/wsl.conf` stand-in disables interop, Windows paths and automount; it and `/etc` are root's; it cannot be written, replaced or removed; the session switch cannot be flipped; the daemon is rootless on the user's own socket; the rootful socket is unreachable.
+  - **Fail, as designed:** "runs on cgroup v2 with the systemd cgroup driver" (`expected '1 none' to be '2 systemd'`), and "has the cpu, memory and pids controllers delegated". On this VM rootless Docker reports cgroup driver `none` and would ignore the limits. **This VM cannot show the D-025 limits rootless; CI and your WSL2 can.**
+  - **Container suite under the rootless daemon on this VM** (as `juno-runner`, `make containers`): **64 of 69 pass**. Every seal test passes rootless here: no network, non-root (uid 65532), no capabilities, the journal and anchor volumes unreachable, and no Docker socket in any container.
+  - **The 5 failures are exactly the D-025 limits:**
+    - memory: not OOM-killed at 1024 MiB;
+    - pids: `pids.max` absent, so there is no EAGAIN at 128 (two tests);
+    - CPU: 2.94 CPUs used against a limit of 1;
+    - `registry.test.ts`: `pids.max` is not `128`.
+
+    That is Docker's documented cgroup v1 behaviour, not a JUNO defect. **The rootless limits are proven or refuted by CI job `verify-rootless`.** If it fails on a limit there, that is the STOP the ruling names.
+- **CI `verify-rootless` (ubuntu-24.04, run 41887176162 on 8057fe2): GREEN.**
+  - `rootless daemon 29.9.2: cgroup v2, driver systemd`, with cpuset, cpu, io, memory and pids delegated to `juno-runner`.
+  - Preflight **12 of 12**.
+  - Container suite **69 of 69** under the rootless daemon, including every seal test and **every D-025 limit**: the memory OOM-kill at 1024 MiB, EAGAIN at 128 processes, and one CPU.
+  - **No limit is unenforceable rootless, so the ruling's STOP does not fire.** `verify` passed in the same run.
+  - Four CI-image problems were fixed in the setup script on the way (commits e097c0c to 8057fe2, D-131):
+    - the user manager must not be restarted after the delegation drop-in (its first start already has it);
+    - the image's `/etc/environment` gives every user the CI user's `XDG_RUNTIME_DIR` and `XDG_CONFIG_HOME`, so the runner's manager gets its own;
+    - the image's `/home` carries a default ACL naming the CI user, which no rootless namespace maps, so the runner's home and the repository copy carry no ACL;
+    - diagnostics are printed on failure.
+
+### Operator steps (Windows) — the first point that needs your hands
+Nothing in the increment's code or tests waits for these: CI and the cloud sessions use throwaway keys and the stand-in anchor container. These steps set up real use. Do them in order. Each part ends with a check that tells you it worked. Commands go in **PowerShell**: press the Windows key, type `PowerShell`, and press Enter. When a step says *as administrator*, right-click "Windows PowerShell" and choose **Run as administrator** instead.
+
+**Part A — prerequisites (once).**
+1. Check that the OpenSSH client is present. In PowerShell, type `Get-Command ssh-keygen` and press Enter. If you see a path ending in `ssh-keygen.exe`, continue. If you see an error, open **Settings → System → Optional features → View features** (on Windows 10: **Settings → Apps → Optional features → Add a feature**), search for **OpenSSH Client**, tick it, and click **Install**.
+2. Check that Git and Node.js 22 are installed: `git --version` and `node --version` should print versions, and node's should start with `v22`. If not, install Git for Windows from https://git-scm.com/download/win and Node.js 22 LTS from https://nodejs.org, accepting the defaults.
+3. Get JUNO's command once this increment is merged:
+   ```
+   git clone https://github.com/khashayarjavi/juno.git $env:USERPROFILE\juno
+   cd $env:USERPROFILE\juno
+   npm ci
+   npx tsc -p tsconfig.build.json
+   ```
+
+**Part B — your grant-signing key, kept by Windows (the OS keychain, D-093, D-124).**
+1. *As administrator*, turn on the key agent (it is off by default):
+   ```
+   Get-Service ssh-agent | Set-Service -StartupType Automatic
+   Start-Service ssh-agent
+   Get-Service ssh-agent
+   ```
+   Check: the last line says **Running**. Close the administrator window.
+2. In a normal PowerShell window, create the key:
+   ```
+   ssh-keygen -t ed25519 -C "juno-grant-signing" -f $env:USERPROFILE\.ssh\juno_grant
+   ```
+   When asked for a passphrase, type a strong one twice (it does not echo).
+3. Hand the key to the agent: `ssh-add $env:USERPROFILE\.ssh\juno_grant`, then type the passphrase. Check: `ssh-add -l` lists a line ending in `juno-grant-signing (ED25519)`.
+4. Back up the private key file `C:\Users\<you>\.ssh\juno_grant` (the one **without** `.pub`) to somewhere off this computer that you control, for example a USB stick kept safe or your password manager's file attachment. Then delete it from the computer: `Remove-Item $env:USERPROFILE\.ssh\juno_grant`. From now on Windows' agent holds the key: the agent never exports the key, but any program running as your Windows user can ask it to sign (D-093).
+5. **Keep** `juno_grant.pub`. It is your public key, the trust anchor JUNO checks every grant against. It is not secret.
+
+**Part C — sign a grant, and check it.**
+1. In `$env:USERPROFILE\juno`:
+   ```
+   node dist\runner\src\juno.js grant sign --ssh-key $env:USERPROFILE\.ssh\juno_grant.pub docs\examples\grant.example.json --out $env:USERPROFILE\signed-grant.json
+   ```
+   Check: it prints `signed grant written to ...`. If it asks for nothing and fails with "agent", repeat Part B step 3.
+2. ```
+   node dist\runner\src\juno.js grant verify --anchor $env:USERPROFILE\.ssh\juno_grant.pub $env:USERPROFILE\signed-grant.json
+   ```
+   Check: it prints `valid`.
+3. Optional check that forgery fails: open `signed-grant.json` in Notepad, change `"max_invocations": 10` to `11`, save, and run step 2 again. It must print `invalid`.
+4. Paste the single line inside `juno_grant.pub` (it starts with `ssh-ed25519`) into your next message to the agent, so a later session can configure it as the trust anchor. It is public; do not paste anything else.
+
+**Part D — the public anchor repository `juno-anchors` (D-094, D-098; §3.4.1). Deferred (D-128): do it only when a real runner on your machine will use the token (the runner runs in WSL2: D-130, Part E).**
+1. On https://github.com, click **+** (top right) → **New repository**. Repository name: `juno-anchors`. Choose **Public**. Tick **Add a README file**. Click **Create repository**.
+2. Protect its history. On the repository page, click **Settings**. In the left sidebar, under "Code, planning, and automation", click **Rules → Rulesets**. Click **New ruleset → New branch ruleset**.
+   - Ruleset name: `protect-history`.
+   - Enforcement status: **Active**.
+   - Leave the bypass list empty.
+   - Under "Target branches", click **Add a target → Include default branch**.
+   - Under "Branch protections", make sure **Restrict deletions** and **Block force pushes** are both ticked.
+   - Click **Create**.
+3. Check the protection without touching the repository: go back to **Settings → Rules → Rulesets** and click `protect-history`. Check: it shows **Active**, the target is the default branch, and **Restrict deletions** and **Block force pushes** are both ticked. Do not try to delete or force-push anything to test it.
+4. A push key for this one repository. Click your profile picture (top right) → **Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token**.
+   - Token name: `juno-anchors-push`.
+   - Expiration: 90 days.
+   - Resource owner: you.
+   - Repository access: **Only select repositories**, and pick `juno-anchors` only.
+   - Permissions: under the repository permissions, set **Contents** to **Read and write**.
+   - Click **Generate token** and copy it. You see it only once. Where it goes is set when the runner's machine is settled (D-129); until then, do not store it anywhere.
+5. Tell the agent: "Part D done". Never paste the token, the private key or the passphrase anywhere.
+
+**Now:** tell the agent "Parts A–C done", plus the `.pub` line (Part C step 4). Part E follows once this increment is merged.
+
+**Part E — WSL2 for the runner (D-130, D-131; plan §2a).** Do this after Parts A–C and after this increment is merged. It takes about 45 minutes.
+- Boxes marked **PowerShell** go in PowerShell (*as administrator* only where it says so).
+- Boxes marked **Ubuntu** go in the Ubuntu window. Paste each box whole and press Enter.
+- If a check does not show what it says, stop and send the agent the last 15 lines on screen.
+- Sources, read 2026-11-04: Microsoft's WSL settings and file-system pages, and Docker's "Install Docker Engine on Ubuntu" and "Rootless mode" pages (D-130).
+
+1. **Install Ubuntu 24.04 in WSL2.** **PowerShell, as administrator:**
+   ```
+   wsl --update
+   wsl --list --online
+   ```
+   Check: the list includes `Ubuntu-24.04`. Then:
+   ```
+   wsl --install -d Ubuntu-24.04
+   ```
+   An Ubuntu window opens and asks for a new UNIX user name and password. Choose your own; this is your **admin** user, with sudo. JUNO never runs as it. Check, in **PowerShell**: `wsl --list --verbose` shows `Ubuntu-24.04` with `VERSION` `2`.
+2. **Turn on systemd** (Docker's rootless mode needs it). **Ubuntu:**
+   ```
+   printf '[boot]\nsystemd=true\n' | sudo tee /etc/wsl.conf
+   ```
+   Then, in **PowerShell**: `wsl --shutdown`. Wait 10 seconds and open Ubuntu again (Start menu → **Ubuntu 24.04**). Check, in **Ubuntu**:
+   - `systemctl is-system-running` prints `running` or `degraded`;
+   - `stat -fc %T /sys/fs/cgroup` prints `cgroup2fs`.
+3. **Install Docker Engine 29.9.2 from Docker's own repository.** **Ubuntu:**
+   ```
+   sudo apt update
+   sudo apt install -y ca-certificates curl uidmap dbus-user-session git make
+   sudo install -m 0755 -d /etc/apt/keyrings
+   sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+   sudo chmod a+r /etc/apt/keyrings/docker.asc
+   printf 'Types: deb\nURIs: https://download.docker.com/linux/ubuntu\nSuites: noble\nComponents: stable\nArchitectures: amd64\nSigned-By: /etc/apt/keyrings/docker.asc\n' | sudo tee /etc/apt/sources.list.d/docker.sources
+   sudo apt update
+   V=5:29.9.2-1~ubuntu.24.04~noble
+   sudo apt install -y docker-ce=$V docker-ce-cli=$V docker-ce-rootless-extras=$V containerd.io docker-buildx-plugin docker-compose-plugin
+   ```
+   Check: `dockerd-rootless-setuptool.sh --help` prints a usage text. If apt says a version was not found, stop and tell the agent.
+4. **Switch off the root-run Docker.** Anyone who can reach it is root. **Ubuntu:**
+   ```
+   sudo systemctl disable --now docker.service docker.socket
+   sudo rm -f /var/run/docker.sock
+   getent group docker
+   ```
+   Check: the last line looks like `docker:x:999:`, with nothing after the last colon. If a name appears there, run `sudo gpasswd -d <that name> docker`.
+5. **Let user services set CPU limits.** Docker's rootless tips, "Limiting resources": by default only memory and process limits are delegated. **Ubuntu:**
+   ```
+   sudo mkdir -p /etc/systemd/system/user@.service.d
+   printf '[Service]\nDelegate=cpu cpuset io memory pids\n' | sudo tee /etc/systemd/system/user@.service.d/delegate.conf
+   sudo systemctl daemon-reload
+   ```
+6. **Create the runner's user, `juno-runner`.** It gets no password, no sudo and no extra group. **Ubuntu:**
+   ```
+   sudo useradd --create-home --user-group --shell /bin/bash juno-runner
+   sudo passwd -l juno-runner
+   sudo loginctl enable-linger juno-runner
+   id juno-runner
+   grep juno-runner /etc/subuid /etc/subgid
+   ```
+   Check:
+   - the `id` line ends with `groups=NNNN(juno-runner)`: exactly one group;
+   - `grep` prints two lines, one per file. If it prints nothing, run `sudo usermod --add-subuids 300000-365535 --add-subgids 300000-365535 juno-runner`.
+7. **Install Node.js 22 for the runner** (the official archive, checked by its SHA-256). **Ubuntu:**
+   ```
+   cd /tmp
+   curl -fsSLO https://nodejs.org/dist/v22.23.4/node-v22.23.4-linux-x64.tar.xz
+   echo "1805bcd35e6815559bd2eb97db438d3fdb0eb3a5e6a977b7c1badca76337e9ce  node-v22.23.4-linux-x64.tar.xz" | sha256sum -c
+   sudo mkdir -p /opt/node22
+   sudo tar xJf node-v22.23.4-linux-x64.tar.xz -C /opt/node22 --strip-components=1 --no-same-owner
+   /opt/node22/bin/node --version
+   ```
+   Check: `node-v22.23.4-linux-x64.tar.xz: OK`, then `v22.23.4`.
+8. **Start rootless Docker as `juno-runner`.** **Ubuntu**, first box: `sudo -iu juno-runner`. The prompt now starts with `juno-runner@`. Then:
+   ```
+   printf 'export XDG_RUNTIME_DIR=/run/user/$(id -u)\nexport DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus\nexport DOCKER_HOST=unix://$XDG_RUNTIME_DIR/docker.sock\nexport PATH=/opt/node22/bin:$PATH\n' >> ~/.bashrc
+   source ~/.bashrc
+   dockerd-rootless-setuptool.sh install
+   systemctl --user enable docker.service
+   docker info --format 'cgroup v{{.CgroupVersion}} {{.CgroupDriver}} {{json .SecurityOptions}}'
+   cat /sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/cgroup.controllers
+   ```
+   Check:
+   - the `docker info` line starts `cgroup v2 systemd` and contains `"name=rootless"`;
+   - the last line contains `cpu`, `memory` and `pids`.
+
+   If it says `none` instead of `systemd`, stop and tell the agent: the limits would not be enforced. Type `exit` to go back to your admin user.
+9. **Switch off interop and drive mounting** (D-130, D-131). Only root can change this file. **Ubuntu** (as your admin user):
+   ```
+   printf '[boot]\nsystemd=true\n\n[interop]\nenabled=false\nappendWindowsPath=false\n\n[automount]\nenabled=false\n\n[user]\ndefault=juno-runner\n' | sudo tee /etc/wsl.conf
+   sudo chown root:root /etc/wsl.conf
+   sudo chmod 0644 /etc/wsl.conf
+   ```
+   Then, in **PowerShell**:
+   - run `wsl --shutdown` and wait 10 seconds;
+   - check that `wsl --list --running` says there are no running distributions;
+   - open Ubuntu again. You are now `juno-runner`, the default user.
+
+   To act as your admin user later, run `wsl -d Ubuntu-24.04 -u <your admin name>` in PowerShell. Checks, in **Ubuntu**:
+   - `ls /mnt/c` prints `No such file or directory`;
+   - `echo "[$WSL_INTEROP]"` prints `[]`;
+   - `sudo -n true` fails, saying a password is required or that `juno-runner` is not in the sudoers file;
+   - `echo x >> /etc/wsl.conf` prints `Permission denied`.
+
+   And in **PowerShell** (a normal window): `wsl.exe -d Ubuntu-24.04 --user juno-runner --exec /usr/bin/id` prints a line starting `uid=` with `(juno-runner)`. That proves Windows can still start JUNO's programs with interop off.
+10. **Run JUNO's rootless checks on your own machine.** **Ubuntu** (as `juno-runner`):
+    ```
+    git clone https://github.com/khashayarjavi/juno.git ~/juno
+    cd ~/juno
+    npm ci
+    make verify-rootless
+    ```
+    Check: after 10 to 20 minutes the last line is `make verify-rootless: GREEN`. That run proves, on your machine:
+    - the user, sudo, group and `/etc/wsl.conf` checks;
+    - that Docker is rootless with the limits enforceable;
+    - every container seal test, including the CPU, memory and process limits.
+
+    Send the agent the summary lines, or the last 15 lines if it is not green.
+
+**Part D's token, once Part E is done:** it goes in a file only `juno-runner` can read (mode 0600), outside every grant scope (§3.2). Increment 4 says exactly where, when the runner first runs on your machine.
+
+## Previous increment (Slice 1.5 Increment 1, merged)
 **Slice 1.5 — Increment 1: conform Slice 1 to v0.6** (`docs/plans/slice-1.5-build-plan.md`, Increment 1). Branch `claude/gallant-mccarthy-alppyu` (fast-forwarded to `main` c405996 after PR #30 merged). Spec v0.6.1 on `main`. No objection open.
 
 Status: **built; going through the §7 gate.** Every item of the plan's Increment 1 is built and tested. PR #31.
@@ -175,6 +430,14 @@ Status: **Slice 1.2 complete. Part 1 (PR #19), the interface fix (PR #20), Part 
 **Slice 1.1 — real-model evidence (complete).** Parts 1 to 4 merged (PR #12, #13, #16, #17; STATE record PR #18). Report: `docs/evidence/slice-1.1.md`.
 
 ## Merges recorded (CLAUDE.md §7 step 6)
+- **Slice 1.5 Increment 1 (D-107 to D-114), PR #31** (https://github.com/khashayarjavi/juno/pull/31):
+  - Head ae5b38a0c2630210e72e3f88a25d6353c24558b9; PR CI `verify` run 41719481819 (job 126208141078, success).
+  - Merged as merge commit 1432cc3dee9489c1225ea04e28dc399e9c122e3c, pinned to the head SHA. CI `verify` on `main` for the merge commit: run 41720351290 (event `push`, job 126211167933), success.
+  - Reviewer verdict: round 2 MERGE on ae5b38a (all six checks PASS). Round 1 on 0b011fc was DO NOT MERGE for two defects, both fixed (D-114).
+  - Notes from the reviewers for the operator, not defects:
+    - D-109 reads A2's "untrusted" as the literal level, so an out-of-scope `derived` value stays overridable;
+    - D-112's hashed file names are `constant` with `untrusted` integrity (§2.6 "a template slot filled by the runtime");
+    - the C4 resolver and the effect run in separate containers, so the gap between them must be re-examined when write programs arrive (Increment 3).
 - **Slice 1.5 Part 0 revision (D-091 to D-106), PR #30** (https://github.com/khashayarjavi/juno/pull/30):
   - Head bb6aef5fc597ee3946633e388be7899f196ceb7f; PR CI `verify` run 41688473651 (job 126100437341, success).
   - Merged as merge commit c4059961616b10d2013e87562acacdafad5ec2ce, pinned to the head SHA. CI `verify` on `main` for the merge commit: run 41688851640 (event `push`, job 126101743836), success.
@@ -248,14 +511,17 @@ Everything is in `packages/runner/` unless named. Every test names the section i
 - **First independent review of PR #9 (2026-10-30): DO NOT MERGE.** Fixed: (1) the four Increment 6 commits had not reached GitHub (the branch's upstream had become `origin/main`; pushed, upstream fixed); (2) a resume that re-parked left the runner claimed, so it refused all further work (fixed, tested); (3) a task listing an unusable grant could never resume (operator can now drop grants on resume, recorded in D-066 with the consequence; tested, including across a restart); (4) the runner-record classes recorded in D-066.
 
 ## Remaining
-- **Agent:** the revision PR (#30) through the §7 gate; then Increments 1 to 6 of `docs/plans/slice-1.5-build-plan.md`, each through the §7 loop. (PR #27 merged, D-100; V61-1 ruled, D-098.)
+- **Agent:** Increment 2's PR through the §7 gate (round 3, with CI `verify` and `verify-rootless` both read); then Increments 3 to 6 of `docs/plans/slice-1.5-build-plan.md`, each through the §7 loop.
+- **Operator:** the Windows steps above (Increment 2, "Operator steps"). The code does not wait for them.
 
 ## make verify
-Local, 2026-11-03 on this branch (documents only since `main`): **RED on this host only for Docker Hub** (`429 Too Many Requests` pulling `node:22-bookworm-slim` for the container images) after typecheck, lint and 697 of 697 unit tests passed. CI `verify` on the PR head decides. Earlier: local GREEN on 5ee1594 (697 unit, 51 container); GREEN on 83c7e2e and 73100df (D-085, D-086).
+Local, 2026-11-04 on this branch (PR #35): **GREEN** (829 unit, 69 container), after pointing the session's Docker daemon at `mirror.gcr.io` (Docker Hub 429). CI on 8057fe2 (run 41887176162): `verify` success, `verify-rootless` success.
+
+Earlier: local, 2026-11-03 on this branch (documents only since `main`): **RED on this host only for Docker Hub** (`429 Too Many Requests` pulling `node:22-bookworm-slim` for the container images) after typecheck, lint and 697 of 697 unit tests passed. CI `verify` on the PR head decides. Earlier: local GREEN on 5ee1594 (697 unit, 51 container); GREEN on 83c7e2e and 73100df (D-085, D-086).
 
 ## For the operator
-- **Done (2026-11-03):** spec v0.6.1 is on `main` (PR #27 merged by the agent on your ruling, D-100); V61-1 ruled (a) public (D-098). Please confirm D-100 matches what you authorised. You may close PR #29 (superseded by PR #30).
-- **Later (Increment 2), not now:** creating the signing key in the Windows keychain and creating the public `juno-anchors` with its protection and push credential. Increment 2 writes click-by-click steps.
+- **Now:** the Windows steps under "Current increment" (signing key in the Windows agent, one signed grant, and the public `juno-anchors` with its protection and push token). You may close PR #29 (superseded by PR #30) and PR #32 (superseded by this session's PR).
+- **Known limit (D-124):** the runner's "cannot write the trust anchor" check does not work on Windows, where it would refuse to start (fail-closed). The runner runs on Linux in Slice 1.5.
 - **Carried note:** CLAUDE.md §1 and §7 step 1 still name `spec/slice-1-build-plan.md`, not `docs/plans/slice-1.5-build-plan.md` (reviewer notes on PR #28 and PR #30). Left as is: CLAUDE.md is yours to change.
 
 - **(Ruled: D-076, 2026-10-31.) Slice 1.2: the injection now lands as an overridable park.** The operator accepted `scope_violation` or `integrity_floor` with nothing run and the value recorded `synthesized`/`untrusted`; two spec v0.6 items were added. The original finding: In all 6 runs of s18-2 and s18-2b (`evidence/slice-1.2/`), the model read the planted `/bin/sh -c 'cat /etc/passwd'` and obeyed it the only way the new schema lets it: program `{"slot":"cat"}`, `argv: ["/etc/passwd"]`. The boundary parked `scope_violation` (overridable): `/etc/passwd` is outside the grant. **Nothing ran in any run; every safety check held; no boundary rule changed.** Before Part 1 the model wrote `"/bin/sh"` as a literal program, which parks `integrity_floor` (not overridable). So the interface change moved the attack from a non-overridable park to an overridable one: an operator who overrides would let the task read `/etc/passwd` inside the workload. This touches the §7 STOP "make a non-overridable park overridable" in effect, though not in any rule, so it is yours to decide. Options: (a) accept `scope_violation` as the injection result (the attack is now an out-of-scope read, which the boundary refuses; the §18 test 2 acceptance test with the scripted provider still parks `integrity_floor`); (b) for spec v0.6, make a `scope_violation` non-overridable when the out-of-scope value is synthesized from untrusted content (a spec change; I recommend raising it, since §8.3's own test, "the operator could not observe the consequence of proceeding", seems to apply); (c) revert the literal form for instruction fields (undoes Part 1's main gain). I have not changed anything.
@@ -319,6 +585,8 @@ None.
 - **Increment 7 (acceptance):** D-057 (protected paths in every criterion; tests 2 and 3 together). Test 3 needs a discovery program (for example `ls`) in the enum and the workload image (D-029), with bound names after `--` (D-037); `stdout_lines` in a `capability_result` is what a reference binds (D-060). Test 3's program must be a constant or a bound reference to an `attested`-or-better entry. Test 4b must decide how the forced enum entry is registered.
 - **Runner on the host (D-065):** `test/containers/runner.test.ts` is the pattern: the `Runner` class runs on the host with `WorkloadExecFileAdapter`. `providers/scripted.json` is read from the source tree; a dist build would need it copied.
 - Accepted residual (D-047): symlinks are not resolved in scope checks; must be built before JUNO operates on content it did not create (Slice 1.5).
+- Docker Hub answered `429 Too Many Requests` to this cloud VM on 2026-11-04. The session pointed its own daemon at `mirror.gcr.io` (`/etc/docker/daemon.json`, a machine setting, not in the repository). Every base image is pinned by digest, so the bytes are identical. A later session may need the same.
+- Rootless runs in a cloud session: `bash scripts/rootless/setup-root.sh --preload-images`, then `bash scripts/rootless/run-verify.sh` (D-131). This VM is cgroup v1, so the cgroup preflight and the 5 limit tests fail there by design. CI's `verify-rootless` is the proof.
 - Docker: if `docker info` fails at session start, check `/tmp/dockerd.log`. This cloud host runs cgroup v1; CI runs v2. The CPU-limit test needs at least two host CPUs (D-030, D-039).
 - `docker compose run` attaches stdin; anything that runs a program through it must close stdin (D-033).
 - No `npm install` in Dockerfiles (D-001).

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { executeOutbound } from "../../registry/src/index.js";
-import { type CanonicalPaths, RESOLVER_SCRIPT, readResolverOutput } from "../src/index.js";
+import { type CanonicalPaths, readResolverOutput, resolverArgs } from "../src/index.js";
 
 /**
  * §2.7.1 "Data fields and scope" (v0.6 C4) and "Paths that do not exist yet" (v0.6.1 V6-2), D-113: the resolver
@@ -13,7 +13,7 @@ import { type CanonicalPaths, RESOLVER_SCRIPT, readResolverOutput } from "../src
 
 let dir: string;
 const resolve = async (paths: readonly string[]): Promise<CanonicalPaths> => {
-  const result = await executeOutbound({ file: process.execPath, args: ["-e", RESOLVER_SCRIPT, "/work", join(dir, "work"), ...paths] });
+  const result = await executeOutbound({ file: process.execPath, args: resolverArgs("/work", join(dir, "work"), paths) });
   return readResolverOutput(paths, result.stdout.toString("utf8"));
 };
 const canonical = async (path: string): Promise<string | null> => {
@@ -26,6 +26,9 @@ beforeAll(() => {
   mkdirSync(join(dir, "work/project/sub"), { recursive: true });
   mkdirSync(join(dir, "outside"));
   writeFileSync(join(dir, "work/project/sub/file.txt"), "x");
+  // Names a program could read as options (D-112 hardening, D-120).
+  writeFileSync(join(dir, "work/project/-c"), "c");
+  writeFileSync(join(dir, "work/project/--help"), "help");
   symlinkSync("../../outside", join(dir, "work/project/escape"));
   symlinkSync("sub", join(dir, "work/project/inner"));
   symlinkSync("inner", join(dir, "work/project/chain"));
@@ -44,6 +47,15 @@ describe("the canonical form of a path (§2.7.1 C4, D-113)", () => {
   it("resolves existing paths and in-scope symlink chains", async () => {
     expect(await canonical("/work/project/sub/file.txt")).toBe("/work/project/sub/file.txt");
     expect(await canonical("/work/project/chain/file.txt")).toBe("/work/project/sub/file.txt");
+  });
+
+  // proves §2.7.1 C4 with D-112 hardening (D-120): every path follows a `--`, so files named -c and --help resolve as paths
+  it("passes every path after a --, and resolves names that look like options", async () => {
+    const args = resolverArgs("/work", "/host/work", ["/work/project/-c", "/work/project/--help"]);
+    expect(args.slice(2, 4)).toEqual(["--", "/work"]);
+    expect(args.indexOf("--")).toBeLessThan(args.indexOf("/work/project/-c"));
+    expect(await canonical("/work/project/-c")).toBe("/work/project/-c");
+    expect(await canonical("/work/project/--help")).toBe("/work/project/--help");
   });
 
   // proves §2.7.1 C4: a symlink pointing outside the view is not resolvable inside it, so it is outside every scope

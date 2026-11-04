@@ -1,4 +1,5 @@
 import { Grant, instant, parseAtBoundary } from "../../contracts/src/index.js";
+import { type TrustAnchor, grantSignatureValid } from "./signature.js";
 
 /**
  * Grant storage and lookup (spec §3.2, build plan Increment 4; DECISIONS.md D-042).
@@ -17,10 +18,11 @@ import { Grant, instant, parseAtBoundary } from "../../contracts/src/index.js";
 /** Why one grant the task holds does not cover a call. Checked in this order; the first that applies is reported. */
 export const GRANT_REFUSALS = [
   "unknown_grant",
+  "revoked",
+  "signature_invalid",
   "principal_mismatch",
   "capability_not_selected",
   "not_yet_issued",
-  "revoked",
   "expired",
   "exhausted",
 ] as const;
@@ -42,6 +44,17 @@ export class GrantStoreError extends Error {
 export class GrantStore {
   readonly #grants = new Map<string, Grant>();
   readonly #used = new Map<string, number>();
+  readonly #anchor: TrustAnchor;
+
+  /** `anchor` is the operator's public key; every grant is checked against it at lookup (§3.2, v0.6 C1). */
+  constructor(anchor: TrustAnchor) {
+    this.#anchor = anchor;
+  }
+
+  /** The operator's public key this store trusts (read-only; the runner uses it to refuse a journal key equal to it). */
+  get trustAnchor(): TrustAnchor {
+    return this.#anchor;
+  }
 
   /** Stores an operator-issued grant. The grant is a boundary input: it is parsed first. */
   add(input: unknown): Grant {
@@ -53,6 +66,15 @@ export class GrantStore {
 
   get(id: string): Grant | undefined {
     return this.#grants.get(id);
+  }
+
+  /**
+   * A stored grant whose operator signature verifies against the trust anchor, or `undefined`. A grant with a missing
+   * or invalid signature does not exist (§3.2 C1), so admission and resume look grants up through this (D-125).
+   */
+  signed(id: string): Grant | undefined {
+    const grant = this.#grants.get(id);
+    return grant !== undefined && grantSignatureValid(grant, this.#anchor) ? grant : undefined;
   }
 
   /** Revokes a grant from `at` on. Revoking twice keeps the first revocation. */
@@ -110,11 +132,14 @@ export class GrantStore {
 
   #refusal(grant: Grant, principal: string, capability: string, now: Date): GrantRefusalReason | null {
     const at = now.getTime();
+    // A revocation is an act already taken; a recorded revocation time is never waited for. It is read first: the
+    // signature covers `revoked_at`, so a grant revoked here no longer verifies, and it is reported as what it is.
+    if (grant.revoked_at !== null) return "revoked";
+    // §3.2 (C1): a grant whose signature does not verify against the trust anchor does not exist.
+    if (!grantSignatureValid(grant, this.#anchor)) return "signature_invalid";
     if (grant.principal !== principal) return "principal_mismatch";
     if (!grant.capability_selector.capabilities.includes(capability)) return "capability_not_selected";
     if (at < instant(grant.issued_at)) return "not_yet_issued";
-    // A revocation is an act already taken; a recorded revocation time is never waited for.
-    if (grant.revoked_at !== null) return "revoked";
     if (at >= instant(grant.expires_at)) return "expired";
     if (grant.max_invocations !== null && this.invocations(grant.id) >= grant.max_invocations) return "exhausted";
     return null;
