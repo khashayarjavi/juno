@@ -1478,3 +1478,31 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   - **The operator's WSL2 uses Docker's own packages** (`docker-ce`, `docker-ce-rootless-extras`, whose deb ships the rootlesskit AppArmor profile), not the static archives: the documented primary path for Ubuntu. Same engine line; the difference is recorded here.
   - **Increment 4 directive (recorded now, built there):** in hook mode Claude Code and every program a mediated `Bash` call starts run as the operator's Windows user, a trust root that can ask the agent to sign. So the operator-authored name map (§2.3.2) may not contain a program that can sign or start other programs (`ssh-keygen`, `ssh-add`, `ssh`, `ssh-agent`, `wsl`, `powershell`, `pwsh`, `cmd`, `git`, any interpreter), and registration review rejects one that does. §4.3's "not protected" rows for mode C (`@`-mentions, `disableAllHooks`, harness actions without a tool call) are, under D-130, inside the operator's trust root and are stated as residuals.
 - Reason: CLAUDE.md §7 step 3 (fail-closed) and rule 13. Each reading admits less than the alternatives, and none makes a §18 test impossible: the §18 tests and the whole container suite run unchanged under the rootless runtime.
+
+## D-132 — Target and payload fields (Slice 1.5 Increment 3)
+- Date: 2026-11-04
+- Status: Accepted
+- Applies to: Slice 1.5 Increment 3 onward (`packages/contracts/src/capability.ts`, every capability definition)
+- Decision: an interface field may declare `data_effect: "target" | "payload"` (§2.2.2). A `data` field that declares none parses as `target` (§2.2.2 "Undeclared → target"); the parsed field always carries the value, so no reader has to apply the default itself. An `instruction` field may not declare one: the effect table governs `data` fields only, and an instruction is governed by its integrity floor (§2.2), so a declaration there is refused rather than ignored. `isTargetField` is the one reading. `shell.run`'s `argv` and `cwd` are declared `target` explicitly (the build plan's Increment 3 item 1).
+- Reason: §2.2.2 and the plan. Refusing a declaration on an instruction field keeps a misplaced declaration from looking meaningful.
+
+## D-133 — `enumerated_targets` on Grant: shape, signature bytes and attenuation (Slice 1.5 Increment 3)
+- Date: 2026-11-04
+- Status: Accepted (autopilot rulings, the restrictive reading where marked)
+- Applies to: Slice 1.5 Increment 3 onward (`packages/contracts/src/grant.ts`, `attenuation.ts`, the boundary's step 4)
+- Decision:
+  - **Shape.** §3.2 says `list | null` of "exact values an `untrusted` target field may take". Each entry is `{ field, value }`: a target field name and one exact scalar value (a non-empty string, a number, or a boolean). **Restrictive:** an enumerated value counts only for the field it names. A recipient enumerated for `to` does not permit the same string in `cc`. A bare value is refused.
+  - **Exactness.** The value is compared exactly, as the call carries it. An enumerated value is still subject to `resource_scope`: enumeration lifts the integrity condition of §2.2.2's table, not the scope.
+  - **Absent or `null`.** Both mean none. The field is optional and has no default, so the canonical bytes of a grant signed without it are unchanged and its signature still verifies (D-115, D-124). A grant the operator signs with the field covers it like any other field.
+  - **Attenuation.** A derived grant may enumerate only `{ field, value }` pairs its parent enumerates (§3.2: "no wider than its parent on any dimension"). `enumerated_targets` is a seventh authority dimension.
+- Reason: §3.2 and §2.2.2. Per-field enumeration admits less than a flat list of values, and a default would have changed the bytes of grants already signed.
+
+## D-134 — Typed registry entries: capabilities without a program field (Slice 1.5 Increment 3)
+- Date: 2026-11-04
+- Status: Accepted (autopilot ruling, restrictive)
+- Applies to: Slice 1.5 Increment 3 onward (`packages/registry/src/entry.ts` and its readers)
+- Decision: a registry entry names `program_field`, `argv_field` and `cwd_field` together, as `shell.run` does, or none of them. An entry with none is a **typed** entry, such as `fs.file.write(path, content)`, which runs one fixed program chosen by its adapter, never per call.
+  - **Restrictive:** a typed entry may have no `instruction` field and declares no program surface, so nothing in a call to it can choose what runs, and no argv promotion applies.
+  - Its scope paths (§2.7.1) are its `path`-typed data fields.
+  - `programShape(entry)` is the one reading of the three fields; every former reader of them (scope, step 3, rule 6, admission, the criterion text) handles a typed entry.
+- Reason: Increment 3 adds the first capability that is not a program runner. Allowing instruction fields on a typed entry would need rules (which floor, which surface) the spec does not give for that shape; forbidding them admits less.
