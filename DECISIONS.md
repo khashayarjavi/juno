@@ -1394,3 +1394,49 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
 - Tests: `packages/journal/test/anchor.test.ts` ("fails when no anchor is found": a chain with entries and an empty one); `packages/runner/test/anchoring.test.ts` (the CLI with a wrong anchors folder exits 1 with `no_anchor`; the restart test above).
 - **STOP (CLAUDE.md §7: "two review rounds still end DO NOT MERGE").** Round 1 on 495b931 found three FAILs, fixed in D-125. Round 2 on 809714e found one FAIL, fixed here. A third round needs the operator's word, as D-103 and D-106 did.
 - Reason: §3.4.1; CLAUDE.md §7 step 3 (fail-closed) and its STOP list.
+
+## D-127 — A third review round for PR #33; CLAUDE.md §7 allows three rounds (operator ruling)
+- Date: 2026-11-04
+- Status: Accepted (operator ruling: "A third review round on PR #33 is authorised. Also amend CLAUDE.md §7 steps 5 and STOP from 'Max 2 rounds' / 'two review rounds' to 3 (operator change); change nothing else in CLAUDE.md.")
+- Applies to: PR #33's successor (it carries PR #33's commits; see D-129) and every later review under CLAUDE.md §7
+- Decision: CLAUDE.md §7 step 5 now reads "Max 3 rounds." and its STOP list "three review rounds still end DO NOT MERGE". No other line of CLAUDE.md changed. A third round on the Increment 2 PR is allowed; it has **not** been run in this session, because D-129's STOP came first (the operator's instruction orders ruling 3 before the merge).
+- Reason: the operator's instruction. D-103 and D-106 allowed extra rounds one PR at a time; this makes three the standing limit.
+
+## D-128 — Corrections to the operator's Windows steps in STATE.md (operator ruling)
+- Date: 2026-11-04
+- Status: Accepted (operator ruling)
+- Applies to: STATE.md, "Operator steps (Windows)"
+- Decision:
+  - **Part B step 4.** "Microsoft documents that it cannot be read back out" is replaced by: the agent never exports the key, but any program running as your Windows user can ask it to sign (D-093). The words "Microsoft documents that it" were dropped with it, because the new clause is not Microsoft's statement.
+  - **Part D is deferred** until a real runner on the operator's machine will use the token. Its destructive check (`git push origin --delete main`) is removed. The new check is non-destructive: the ruleset page shows **Active**, with **Restrict deletions** and **Block force pushes** ticked. The clone step that existed only for the destructive check is removed; the token step stays, with "do not store it anywhere" until the runner's setup says where it goes.
+  - The closing line now asks for "Parts A–C done" plus the `.pub` line; Part D is reported separately when done.
+- Reason: the operator's instruction. A check that tries to delete `main` would destroy history if the ruleset were missing or misconfigured, the exact case it is meant to detect.
+
+## D-129 — Real use under WSL2 conflicts with §3.2 as the key is held today; STOP (autopilot record)
+- Date: 2026-11-04
+- Status: **STOP for the operator** (the operator's instruction: "If this conflicts with spec §4.3 or §3.2, STOP and report instead"). Nothing about WSL2 was added to the Slice 1.5 plan.
+- Applies to: the operator's ruling 3 of 2026-11-04 (JUNO's runner, journal and workload containers in WSL2 on the operator's Windows machine; Claude Code's hooks call the runner there; grants signed by the Windows agent, D-093, D-124)
+- Sources read on 2026-11-04 (rule 13):
+  - Microsoft Learn, "Advanced settings configuration in WSL" (ms.date 2026-10-16): `wsl.conf` is "Stored in the `/etc` directory of the distribution" and configures, per distribution, "interoperability with the Windows system"; `[interop] enabled` "will determine whether WSL will support launching Windows processes" (default `true`). The `.wslconfig` table (Windows side) has no interop key.
+  - Microsoft Learn, "Working across file systems" (updated 2026-06-02): Windows tools run from WSL "Run as the active Windows user"; interop can be disabled for a session with `echo 0 > /proc/sys/fs/binfmt_misc/WSLInterop` "as root", and "Disabling interop will not persist between WSL sessions".
+  - Microsoft Learn, "Basic commands for WSL" (updated 2026-06-02): `wsl --distribution <Distribution Name> --user <User Name>` runs as any existing user, "(ie. root)".
+  - Microsoft Learn, "Intune settings" for WSL (ms.date 2026-10-30): the full list of Windows-side WSL policies. None controls interop.
+  - microsoft/WSL `localization/strings/en-US/Resources.resw`, `MessageWslUsage`: `--exec, -e`: "Execute the specified command without using the default Linux shell."
+- **The conflict, step by step (each step is documented above or already in this file):**
+  1. The runner drives Docker to start workload containers (D-065). Access to a rootful Docker daemon is equivalent to root in the distribution: a process that can start a container can mount the distribution's `/` into it.
+  2. Root in the distribution can edit `/etc/wsl.conf` and set `[interop] enabled=true`. The only switch for interop lives inside the distribution; Microsoft lists no Windows-side policy for it.
+  3. With interop on, a program in the distribution can launch Windows programs, which "Run as the active Windows user".
+  4. Any program running as the operator's Windows user can ask the Windows `ssh-agent` to sign (D-093, as corrected by D-128).
+  5. So the runner, or anything that takes over the runner or escapes a workload container to the distribution's root, can obtain a valid operator signature on a grant it wrote.
+- **What that contradicts:**
+  - §3.2 C1: the key must live "outside any state the runner can write", and the reason given is "Without this, any process on the host able to write the grant store could issue authority." Under step 5 the runner host can issue authority. Steps 2–3 also reach the agent's own key store, which is Windows-user state.
+  - §3.4.1's residual: "a compromised host can stop JUNO or withhold new entries. It can no longer fake past ones or fake permission." Under step 5 a compromised WSL2 host can fake permission.
+  - Disabling interop in `wsl.conf` does not remove the conflict, because step 2 undoes it from inside. The session-only switch in `/proc` is root's to flip back.
+- **§4.3 was checked too, and is not the blocker.** A hook can reach the runner fail-closed: Claude Code runs `wsl.exe` in exec form with `--exec` (no Linux shell) and `onFailure: "block"`. The plan would still need answers for Windows-path mapping, the Bash tool's programs, and the workspace's location, but each has a restrictive reading. The STOP is §3.2.
+- **Options for the operator (the agent picks none; each changes what D-093/D-124 or ruling 3 says):**
+  - (a) **A hardware key that needs a touch for every signature** (§3.2 names "a hardware key"; for example an OpenSSH `ed25519-sk` key on a FIDO2 security key). A program cannot sign without the operator's finger. This needs D-124's verifier extended to that signature type, and its Windows support checked against current documentation before anything is built.
+  - (b) **Sign in a separate Windows account** that never runs WSL or Claude Code. Interop launches programs only as "the active Windows user", so the agent serving the other account should be out of reach; that the Windows agent keeps each account's keys apart must be checked against current documentation before it is relied on. The operator switches account (or uses a second machine) to sign.
+  - (c) **Run the runner on a separate Linux machine** (as CI and cloud sessions do today), not on the Windows machine that holds the key. Hook mode then reaches it over the network, which the plan would have to design.
+  - (d) **Accept the residual.** This needs a spec change (§3.2 and §3.4.1), which only the operator can make; the agent cannot edit `spec/`.
+- **Not done because of this STOP:** the WSL2 plan section and its click-by-click setup; review round 3 of the Increment 2 PR (D-127); the merge of Increment 2; Increments 3–6. Increment 2's own code does not depend on WSL2, and its third review round can run as soon as the operator rules.
+- Reason: the operator's instruction for ruling 3; CLAUDE.md §2 rule 2 (do not pick the "obvious" reading where the spec is contradicted) and §7 step 3 (fail-closed).

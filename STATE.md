@@ -1,29 +1,28 @@
 # STATE
 
 ## Current increment
-**Slice 1.5 — Increment 2: signed grants and an anchored journal head (C1)** (`docs/plans/slice-1.5-build-plan.md`, Increment 2). Branch `claude/vigilant-cori-79kdx3`, the only branch this session may push. It carries PR #32's commits unchanged (from `claude/gallant-mccarthy-alppyu`, head 443c9e6), so the record continues in a new PR from it; PR #32 is superseded. Spec v0.6.1. No objection open.
+**Slice 1.5 — Increment 2: signed grants and an anchored journal head (C1)** (`docs/plans/slice-1.5-build-plan.md`, Increment 2). Branch `claude/compassionate-noether-9s2sf2`, the only branch this session may push. It carries PR #33's commits unchanged (from `claude/vigilant-cori-79kdx3`, head 5db6306), so the record continues in a new PR from it; PR #33 is superseded. Spec v0.6.1. No objection to the spec open.
 
-Status: **STOPPED at the §7 gate (D-126): two review rounds ended DO NOT MERGE. Every finding is fixed; the merge needs your word for a third review round.** PR #33. Every item of the plan's Increment 2 is built and tested:
-- grant signatures (D-115, now in SSHSIG form, D-124);
-- the trust anchor (D-116);
-- selectors cannot name JUNO storage (D-116);
-- `juno grant sign/verify` (D-117, D-124);
-- the anchored journal head and `juno journal check` (D-122, D-123);
-- the Windows signing mechanism (D-124).
-
-Local `make verify: GREEN` (829 unit, 69 container) after the round 2 fix.
+Status: **STOPPED (D-129): your ruling 3 (real use under WSL2) conflicts with §3.2 as the key is held today. Your instruction for that case was "STOP and report instead", so nothing was merged.** Increment 2's code and tests are unchanged since round 2 and still complete; local `make verify` was GREEN on 5db6306 (829 unit, 69 container).
+- **Your rulings of 2026-11-04 (second set), recorded:**
+  - D-127: a third review round is allowed; CLAUDE.md §7 now allows three rounds (step 5 and the STOP list; nothing else changed). The third round has **not** run yet.
+  - D-128: Part B step 4 corrected; Part D deferred, with a non-destructive check (below).
+  - D-129: STOP. Not added to the plan.
+- **STOP, for you (D-129 has the full chain and sources):**
+  - **The problem, in plain words.** Inside WSL2, the runner controls Docker, which makes it root of the Linux system. Root there can turn WSL's "launch Windows programs" switch back on, because Microsoft puts that switch only inside the Linux system (`/etc/wsl.conf`); there is no Windows-side setting for it. A Windows program launched that way runs as you, and any program running as you can ask your Windows key agent to sign. So the runner, or anything that breaks out of a workload container, could sign its own grants. §3.2 exists to make exactly that impossible, and §3.4.1 promises a compromised host "can no longer ... fake permission".
+  - **§4.3 is not the blocker:** a hook can reach the runner fail-closed through `wsl.exe --exec` with `onFailure: "block"`.
+  - **Your options:**
+    - (a) a hardware security key that needs a touch for every signature (§3.2 allows "a hardware key"); needs a small verifier change and a documentation check first;
+    - (b) keep the key in a separate Windows account that never runs WSL or Claude Code, and switch to it to sign;
+    - (c) run the runner on a separate Linux machine, not on the Windows machine that holds the key;
+    - (d) accept the risk, which needs a spec change only you can make.
+  - **When you rule:** the next session writes the WSL2 plan section to your choice, runs review round 3 on the Increment 2 PR, merges it through the gate if the verdict is MERGE, and continues with Increment 3 (which must satisfy D-121).
 - **Review round 1 (head 495b931; fresh subagent, P2 verbatim): DO NOT MERGE.** CI on 495b931 passed (run 41771539413). Checks 2, 3, 4 and 6 PASS. Fixed (D-125):
   - the plan's "no test key is committed" test was missing (now `test/lint/no-keys.test.ts`);
   - admission and resume accepted an unsigned grant (it could never run a call, but §3.2 says it does not exist);
   - the runner's own start-up did not yet load the trust anchor.
 
 - **Review round 2 (head 809714e; fresh subagent, P2 verbatim): DO NOT MERGE.** CI on 809714e passed (run 41773133614). Checks 1, 2, 3, 4 and 6 PASS. One FAIL, fixed (D-126): `juno journal check` said ok when it found no anchor for a task (fail-open). Also fixed, from the reviewer's notes: the restart test now exercises the runner's own path. Two residuals are recorded in D-126, not changed.
-- **STOP, for you:** CLAUDE.md §7 allows two review rounds; both ended DO NOT MERGE, and both rounds' findings are fixed. Your options:
-  - (a) allow a third review round (as D-103 and D-106 did); if it says MERGE, the agent merges through the gate and continues to Increment 3;
-  - (b) merge PR #33 yourself;
-  - (c) say what else to change.
-
-  Nothing else can proceed meanwhile: Increment 3 may not start until Increment 2 is merged (plan §3). Your Windows steps below do not depend on the merge, except Part A step 3 (building `juno` from `main`). You can build from this branch instead: `git checkout claude/vigilant-cori-79kdx3` after cloning.
 - **Operator rulings of 2026-11-04, recorded:**
   - D-118: D-100 confirmed.
   - D-119: D-109 stands.
@@ -63,7 +62,7 @@ Nothing in the increment's code or tests waits for these: CI and the cloud sessi
    ```
    When asked for a passphrase, type a strong one twice (it does not echo).
 3. Hand the key to the agent: `ssh-add $env:USERPROFILE\.ssh\juno_grant`, then type the passphrase. Check: `ssh-add -l` lists a line ending in `juno-grant-signing (ED25519)`.
-4. Back up the private key file `C:\Users\<you>\.ssh\juno_grant` (the one **without** `.pub`) to somewhere off this computer that you control, for example a USB stick kept safe or your password manager's file attachment. Then delete it from the computer: `Remove-Item $env:USERPROFILE\.ssh\juno_grant`. From now on Windows' agent holds the key; Microsoft documents that it cannot be read back out.
+4. Back up the private key file `C:\Users\<you>\.ssh\juno_grant` (the one **without** `.pub`) to somewhere off this computer that you control, for example a USB stick kept safe or your password manager's file attachment. Then delete it from the computer: `Remove-Item $env:USERPROFILE\.ssh\juno_grant`. From now on Windows' agent holds the key: the agent never exports the key, but any program running as your Windows user can ask it to sign (D-093).
 5. **Keep** `juno_grant.pub`. It is your public key, the trust anchor JUNO checks every grant against. It is not secret.
 
 **Part C — sign a grant, and check it.**
@@ -79,7 +78,7 @@ Nothing in the increment's code or tests waits for these: CI and the cloud sessi
 3. Optional check that forgery fails: open `signed-grant.json` in Notepad, change `"max_invocations": 10` to `11`, save, and run step 2 again. It must print `invalid`.
 4. Paste the single line inside `juno_grant.pub` (it starts with `ssh-ed25519`) into your next message to the agent, so a later session can configure it as the trust anchor. It is public; do not paste anything else.
 
-**Part D — the public anchor repository `juno-anchors` (D-094, D-098; §3.4.1).**
+**Part D — the public anchor repository `juno-anchors` (D-094, D-098; §3.4.1). Deferred (D-128): do it only when a real runner on your machine will use the token (where the runner will run is open: D-129).**
 1. On https://github.com, click **+** (top right) → **New repository**. Repository name: `juno-anchors`. Choose **Public**. Tick **Add a README file**. Click **Create repository**.
 2. Protect its history. On the repository page, click **Settings**. In the left sidebar, under "Code, planning, and automation", click **Rules → Rulesets**. Click **New ruleset → New branch ruleset**.
    - Ruleset name: `protect-history`.
@@ -88,21 +87,19 @@ Nothing in the increment's code or tests waits for these: CI and the cloud sessi
    - Under "Target branches", click **Add a target → Include default branch**.
    - Under "Branch protections", make sure **Restrict deletions** and **Block force pushes** are both ticked.
    - Click **Create**.
-3. A push key for this one repository. Click your profile picture (top right) → **Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token**.
+3. Check the protection without touching the repository: go back to **Settings → Rules → Rulesets** and click `protect-history`. Check: it shows **Active**, the target is the default branch, and **Restrict deletions** and **Block force pushes** are both ticked. Do not try to delete or force-push anything to test it.
+4. A push key for this one repository. Click your profile picture (top right) → **Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token**.
    - Token name: `juno-anchors-push`.
    - Expiration: 90 days.
    - Resource owner: you.
    - Repository access: **Only select repositories**, and pick `juno-anchors` only.
    - Permissions: under the repository permissions, set **Contents** to **Read and write**.
-   - Click **Generate token** and copy it. You see it only once.
-4. Clone it and check the protection:
-   ```
-   git clone https://github.com/khashayarjavi/juno-anchors.git C:\JUNO\anchors-clone
-   cd C:\JUNO\anchors-clone
-   git push origin --delete main
-   ```
-   When Git asks you to sign in, use your GitHub username, and the token from step 3 as the password; Git for Windows remembers it. Check: the delete is **rejected** (the message mentions a rule or ruleset). That proves history cannot be deleted. Do not try anything else on this repository; the runner will add one small file per anchor.
-5. Tell the agent: "Parts A–D done", plus the `.pub` line. Never paste the token, the private key or the passphrase anywhere.
+   - Click **Generate token** and copy it. You see it only once. Where it goes is set when the runner's machine is settled (D-129); until then, do not store it anywhere.
+5. Tell the agent: "Part D done". Never paste the token, the private key or the passphrase anywhere.
+
+**Now:** tell the agent "Parts A–C done", plus the `.pub` line (Part C step 4).
+
+**Part E — WSL2.** Not written: stopped by D-129 until you choose an option.
 
 ## Previous increment (Slice 1.5 Increment 1, merged)
 **Slice 1.5 — Increment 1: conform Slice 1 to v0.6** (`docs/plans/slice-1.5-build-plan.md`, Increment 1). Branch `claude/gallant-mccarthy-alppyu` (fast-forwarded to `main` c405996 after PR #30 merged). Spec v0.6.1 on `main`. No objection open.
