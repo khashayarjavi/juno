@@ -1231,3 +1231,39 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   - a field changed after signing is invalid;
   - a malformed grant, a non-Ed25519 key and bad usage are refused.
 - Reason: §3.2 C1; the plan's Increment 2 ("`juno grant sign` (operator-side, uses the key), `juno grant verify`. The runner and every mediated mode only ever verify").
+
+## D-118 — D-100 confirmed by the operator (operator ruling)
+- Date: 2026-11-04
+- Status: Accepted (operator ruling: "D-100 is confirmed by the operator.")
+- Applies to: the record of D-100 only
+- Decision: the agent's merge of PR #27 (spec v0.6.1, merge commit 603284c) on the operator's ruling is confirmed as what the operator authorised. Nothing else changes: CLAUDE.md §2 rule 6 and §7 NEVER ("edit spec/") stand for every other action.
+- Reason: the operator's instruction of 2026-11-04 (STATE.md had asked for this confirmation).
+
+## D-119 — D-109 stands: A2 applies to `untrusted` and unestablished integrity only (operator ruling)
+- Date: 2026-11-04
+- Status: Accepted (operator ruling: "D-109 stands: A2 applies to untrusted and unestablished integrity only; derived values remain overridable, because they carry no untrusted input.")
+- Applies to: Slice 1.5 onward (§8.2 A2, as built in D-109 and amended by D-114)
+- Decision: a `scope_violation` is non-overridable (remedy: a grant) only when an out-of-scope value is `untrusted` or has no established integrity. A `derived` (or higher) out-of-scope value leaves the park overridable. No code changes: this is what D-109 built.
+- Reason: the operator's ruling; a `derived` value carries no untrusted input.
+
+## D-120 — D-112 hardening: file names from the verification scope follow a `--` (operator ruling)
+- Date: 2026-11-04
+- Status: Accepted (operator ruling: "wherever the verifier or the runner passes file names found in the verification scope to a program, they follow a `--`, and a test plants a file named `-c` (and one named `--help`) in the scope and shows verification still computes its pins.")
+- Applies to: Slice 1.5 onward; amends D-112 and D-113
+- Decision:
+  - **Where file names reach a program**, and how each is now placed:
+    - the pin listing, `ls -l -a -R -n --time-style=full-iso --quoting-style=escape -- <roots>` (already so, D-112);
+    - the pin hashing, `sha256sum -z -- <files>` (already so, D-112);
+    - the path resolver (D-113), which receives every path a verifier call names, the pinned files included. It was `node -e SCRIPT /work /work <paths>`; it is now `node -e SCRIPT -- /work /work <paths>`. One function, `resolverArgs`, builds these arguments for the workload resolver and both unit-test resolvers, so they cannot differ. Node drops the `--`, so the script reads the same `process.argv`.
+  - Every name is also absolute (`/work/...`), so none starts with `-`; the `--` makes that a second, independent guarantee rather than the only one.
+- Tests:
+  - `test/containers/pin-option-names.test.ts` (real workload, real `ls`, `sha256sum` and resolver): files `-c` and `--help` are planted in the criterion's cwd and in a protected path. Each is pinned with a SHA-256, the unchanged task closes `verified`, and in every listing and hashing call each `/work/...` name follows the `--`.
+  - `packages/enforcement/test/canonical.test.ts`: the resolver's arguments put `--` before every path, and paths ending in `-c` and `--help` resolve to themselves.
+- Reason: the operator's ruling; fail-closed hardening of §3.4.4 ("A hash that cannot be computed counts as changed" must never be triggered by a file's name being read as an option).
+
+## D-121 — Increment 3 directive: no gap between resolving a path and writing to it (operator ruling)
+- Date: 2026-11-04
+- Status: Accepted (operator ruling: "Increment 3 must CLOSE the gap between resolving a path and writing to it: at the moment a write capability acts, it refuses to follow a symlink in any path component. Prove it with a test that swaps a component for a symlink after the boundary's check and before the write; the write must fail and journal why.")
+- Applies to: Slice 1.5 Increment 3 (`fs.file.write`) and every later write capability
+- Decision: recorded now; built in Increment 3. The writer program walks the target path one component at a time from a fixed root, opening each directory with no-follow semantics (`O_NOFOLLOW | O_DIRECTORY`, relative to the previous directory's descriptor) and the final file with `O_NOFOLLOW`, so a symlink in any component makes the write fail at the moment it acts, whatever the boundary saw earlier. The test swaps a component for a symlink between the boundary's verdict and the write; the write must fail, nothing outside the scope may change, and the journal must record why.
+- Reason: the operator's ruling; §2.7.1 C4 judges the canonical path at authorization, and only the writer itself can close the time between that check and the effect.

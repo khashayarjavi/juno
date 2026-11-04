@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { TrajectoryEntry } from "../../contracts/src/index.js";
-import { type CanonicalPaths, GrantStore, type PathResolver, RESOLVER_SCRIPT, readResolverOutput } from "../../enforcement/src/index.js";
+import { type CanonicalPaths, GrantStore, type PathResolver, readResolverOutput, resolverArgs } from "../../enforcement/src/index.js";
 import { JournalWriter, readPayload, readTrajectory } from "../../journal/src/index.js";
 import { type Adapter, type CapabilityCall, CapabilityRegistry, WORKLOAD_EXECFILE, executeOutbound, loadRegistryEntry } from "../../registry/src/index.js";
 import type { SourceRegistration } from "../src/admission.js";
@@ -83,7 +83,7 @@ export function hostResolver(root: string): PathResolver {
   return {
     async resolve(paths: readonly string[]): Promise<CanonicalPaths> {
       if (paths.length === 0) return new Map();
-      const result = await executeOutbound({ file: process.execPath, args: ["-e", RESOLVER_SCRIPT, "/work", root, ...paths] });
+      const result = await executeOutbound({ file: process.execPath, args: resolverArgs("/work", root, paths) });
       return readResolverOutput(paths, result.stdout.toString("utf8"));
     },
   };

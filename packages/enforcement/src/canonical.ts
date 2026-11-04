@@ -86,6 +86,14 @@ export function readResolverOutput(paths: readonly string[], stdout: string): Ca
 /** The workload image's node: the resolver's program (D-113). Not in any capability's enum. */
 export const WORKLOAD_NODE = "/nodejs/bin/node";
 
+/**
+ * The resolver's arguments after its program: the script, then `--`, then the view roots and the paths. Every path
+ * follows the `--`, so no name can be read as an option of node (D-112 hardening, operator ruling D-120).
+ */
+export function resolverArgs(from: string, to: string, paths: readonly string[]): string[] {
+  return ["-e", RESOLVER_SCRIPT, "--", from, to, ...paths];
+}
+
 /** Resolves in a fresh workload container, with the same isolation as every capability call (D-113). */
 export class WorkloadPathResolver implements PathResolver {
   readonly #target: WorkloadTarget;
@@ -100,7 +108,7 @@ export class WorkloadPathResolver implements PathResolver {
     try {
       const result = await executeOutbound({
         file: "docker",
-        args: ["compose", "-f", composeFile, "-p", project, "run", "--rm", "--no-deps", "-T", "--entrypoint", WORKLOAD_NODE, service, "-e", RESOLVER_SCRIPT, "/work", "/work", ...paths],
+        args: ["compose", "-f", composeFile, "-p", project, "run", "--rm", "--no-deps", "-T", "--entrypoint", WORKLOAD_NODE, service, ...resolverArgs("/work", "/work", paths)],
       });
       return readResolverOutput(paths, result.exitCode === 0 ? result.stdout.toString("utf8") : "");
     } catch (error: unknown) {
