@@ -127,12 +127,22 @@ if [ "$(cat /proc/1/comm)" = systemd ]; then
 Delegate=cpu cpuset io memory pids
 UNIT
   systemctl daemon-reload
+  diagnose() {
+    systemctl status "user@$RUNNER_UID.service" --no-pager || true
+    journalctl -u "user@$RUNNER_UID.service" --no-pager -n 60 || true
+    journalctl --user-unit docker.service _UID="$RUNNER_UID" --no-pager -n 60 || true
+  }
+  trap 'rm -rf "$download"; diagnose' ERR
+  # The drop-in is in place before the user's manager first starts, so the delegation applies to it.
+  if systemctl is-active --quiet "user@$RUNNER_UID.service"; then
+    echo "setup-root: user@$RUNNER_UID.service was already running; it must start after the drop-in" >&2
+    exit 1
+  fi
   loginctl enable-linger "$RUNNER_USER"
-  for _ in $(seq 1 60); do [ -S "/run/user/$RUNNER_UID/bus" ] && break; sleep 1; done
-  [ -S "/run/user/$RUNNER_UID/bus" ] || { echo "setup-root: the user's systemd manager did not start" >&2; exit 1; }
-  # The user manager may have started before the drop-in; restart it so the delegation applies.
-  systemctl restart "user@$RUNNER_UID.service"
-  for _ in $(seq 1 60); do [ -S "/run/user/$RUNNER_UID/bus" ] && break; sleep 1; done
+  for _ in $(seq 1 90); do [ -S "/run/user/$RUNNER_UID/bus" ] && break; sleep 1; done
+  [ -S "/run/user/$RUNNER_UID/bus" ] || { echo "setup-root: the user's systemd manager did not start" >&2; diagnose; exit 1; }
+  controllers="/sys/fs/cgroup/user.slice/user-$RUNNER_UID.slice/user@$RUNNER_UID.service/cgroup.controllers"
+  echo "setup-root:    delegated to the user: $(cat "$controllers")"
   as_runner "$BIN/dockerd-rootless-setuptool.sh" install
   as_runner systemctl --user enable --now docker.service
 else
