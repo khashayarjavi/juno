@@ -1534,7 +1534,11 @@ function causingArguments(detail: ParkDetail, args: readonly { readonly argument
   const unique = (items: readonly string[]): string[] => [...new Set(items)];
   switch (detail.reason) {
     case "integrity_floor":
-      return unique([...detail.violations.map((item) => item.argument), ...detail.grants.flatMap((item) => item.violations.map((violation) => violation.argument))]);
+      return unique([
+        ...detail.violations.map((item) => item.argument),
+        ...detail.grants.flatMap((item) => item.violations.map((violation) => violation.argument)),
+        ...(detail.effects ?? []).flatMap((item) => item.refused.map((refusal) => refusal.argument)),
+      ]);
     case "scope_violation":
       return unique(detail.grants.flatMap((item) => item.outside.map((violation) => violation.argument)));
     case "sensitivity_ceiling": {

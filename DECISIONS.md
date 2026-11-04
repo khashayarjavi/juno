@@ -1506,3 +1506,18 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   - Its scope paths (§2.7.1) are its `path`-typed data fields.
   - `programShape(entry)` is the one reading of the three fields; every former reader of them (scope, step 3, rule 6, admission, the criterion text) handles a typed entry.
 - Reason: Increment 3 adds the first capability that is not a program runner. Allowing instruction fields on a typed entry would need rules (which floor, which surface) the spec does not give for that shape; forbidding them admits less.
+
+## D-135 — Step 4 applies §2.2.2's effect table (Slice 1.5 Increment 3)
+- Date: 2026-11-04
+- Status: Accepted (autopilot rulings, the restrictive reading where marked)
+- Applies to: Slice 1.5 Increment 3 onward (`packages/enforcement/src/boundary.ts`; the runner's park records)
+- Decision: after the scope check, each candidate grant still in scope is judged by §2.2.2's table over every value of every target field (D-132), named as `argument_provenance` names it (D-022).
+  - **"Untrusted"** is `untrusted` or unestablished integrity (§1.5). For a relative argv operand it is the lower of the operand and `cwd`. This is the same reading as D-109 (confirmed by D-119). `constant` values and `bound` values whose entry is not `untrusted` proceed (§2.2.2's last paragraph).
+  - **`read`:** nothing is added.
+  - **`write`:** the call is reversible only when every target is a path whose canonical form (§2.7.1) lies inside one of the task's reversible workspaces (`TaskContext.reversible`). **Restrictive:** a non-path target, or a path with no canonical form, makes it `irreversible`. A reversible write lets untrusted targets proceed (scope still applies). Otherwise the call is judged `irreversible`, and the park records why.
+  - **`external` and `irreversible`:** every untrusted target must be enumerated by that grant for that field, exactly (D-133). Otherwise the grant is refused for the call.
+  - **The park.** When no candidate is left, the call parks `integrity_floor` with `effects`: each grant and its refused values. That reason is not overridable (§8.3: the operator cannot observe where such an effect lands), so a grant or override never clears it on resume.
+    - The park record's source entries (§11.1, D-110) name the refused arguments.
+    - Payload fields are judged by step 5 only.
+  - **Grant choice.** The call proceeds under the first remaining candidate, in the task's order, that also meets step 5, and that grant is charged (D-042 unchanged).
+- Reason: §2.2.2 and §2.7.1 "Effects". Treating a non-path or unresolvable write target as irreversible admits less than guessing that it is undoable.
