@@ -61,7 +61,16 @@ Status: **D-129's STOP is lifted by your ruling (e) (D-130). The WSL2 plan secti
     - `registry.test.ts`: `pids.max` is not `128`.
 
     That is Docker's documented cgroup v1 behaviour, not a JUNO defect. **The rootless limits are proven or refuted by CI job `verify-rootless`.** If it fails on a limit there, that is the STOP the ruling names.
-- **CI** `verify-rootless`: see "Merges recorded" and the PR once it has run.
+- **CI `verify-rootless` (ubuntu-24.04, run 41887176162 on 8057fe2): GREEN.**
+  - `rootless daemon 29.9.2: cgroup v2, driver systemd`, with cpuset, cpu, io, memory and pids delegated to `juno-runner`.
+  - Preflight **12 of 12**.
+  - Container suite **69 of 69** under the rootless daemon, including every seal test and **every D-025 limit**: the memory OOM-kill at 1024 MiB, EAGAIN at 128 processes, and one CPU.
+  - **No limit is unenforceable rootless, so the ruling's STOP does not fire.** `verify` passed in the same run.
+  - Four CI-image problems were fixed in the setup script on the way (commits e097c0c to 8057fe2, D-131):
+    - the user manager must not be restarted after the delegation drop-in (its first start already has it);
+    - the image's `/etc/environment` gives every user the CI user's `XDG_RUNTIME_DIR` and `XDG_CONFIG_HOME`, so the runner's manager gets its own;
+    - the image's `/home` carries a default ACL naming the CI user, which no rootless namespace maps, so the runner's home and the repository copy carry no ACL;
+    - diagnostics are printed on failure.
 
 ### Operator steps (Windows) — the first point that needs your hands
 Nothing in the increment's code or tests waits for these: CI and the cloud sessions use throwaway keys and the stand-in anchor container. These steps set up real use. Do them in order. Each part ends with a check that tells you it worked. Commands go in **PowerShell**: press the Windows key, type `PowerShell`, and press Enter. When a step says *as administrator*, right-click "Windows PowerShell" and choose **Run as administrator** instead.
@@ -506,7 +515,9 @@ Everything is in `packages/runner/` unless named. Every test names the section i
 - **Operator:** the Windows steps above (Increment 2, "Operator steps"). The code does not wait for them.
 
 ## make verify
-Local, 2026-11-03 on this branch (documents only since `main`): **RED on this host only for Docker Hub** (`429 Too Many Requests` pulling `node:22-bookworm-slim` for the container images) after typecheck, lint and 697 of 697 unit tests passed. CI `verify` on the PR head decides. Earlier: local GREEN on 5ee1594 (697 unit, 51 container); GREEN on 83c7e2e and 73100df (D-085, D-086).
+Local, 2026-11-04 on this branch (PR #35): **GREEN** (829 unit, 69 container), after pointing the session's Docker daemon at `mirror.gcr.io` (Docker Hub 429). CI on 8057fe2 (run 41887176162): `verify` success, `verify-rootless` success.
+
+Earlier: local, 2026-11-03 on this branch (documents only since `main`): **RED on this host only for Docker Hub** (`429 Too Many Requests` pulling `node:22-bookworm-slim` for the container images) after typecheck, lint and 697 of 697 unit tests passed. CI `verify` on the PR head decides. Earlier: local GREEN on 5ee1594 (697 unit, 51 container); GREEN on 83c7e2e and 73100df (D-085, D-086).
 
 ## For the operator
 - **Now:** the Windows steps under "Current increment" (signing key in the Windows agent, one signed grant, and the public `juno-anchors` with its protection and push token). You may close PR #29 (superseded by PR #30) and PR #32 (superseded by this session's PR).
@@ -574,6 +585,8 @@ None.
 - **Increment 7 (acceptance):** D-057 (protected paths in every criterion; tests 2 and 3 together). Test 3 needs a discovery program (for example `ls`) in the enum and the workload image (D-029), with bound names after `--` (D-037); `stdout_lines` in a `capability_result` is what a reference binds (D-060). Test 3's program must be a constant or a bound reference to an `attested`-or-better entry. Test 4b must decide how the forced enum entry is registered.
 - **Runner on the host (D-065):** `test/containers/runner.test.ts` is the pattern: the `Runner` class runs on the host with `WorkloadExecFileAdapter`. `providers/scripted.json` is read from the source tree; a dist build would need it copied.
 - Accepted residual (D-047): symlinks are not resolved in scope checks; must be built before JUNO operates on content it did not create (Slice 1.5).
+- Docker Hub answered `429 Too Many Requests` to this cloud VM on 2026-11-04. The session pointed its own daemon at `mirror.gcr.io` (`/etc/docker/daemon.json`, a machine setting, not in the repository). Every base image is pinned by digest, so the bytes are identical. A later session may need the same.
+- Rootless runs in a cloud session: `bash scripts/rootless/setup-root.sh --preload-images`, then `bash scripts/rootless/run-verify.sh` (D-131). This VM is cgroup v1, so the cgroup preflight and the 5 limit tests fail there by design. CI's `verify-rootless` is the proof.
 - Docker: if `docker info` fails at session start, check `/tmp/dockerd.log`. This cloud host runs cgroup v1; CI runs v2. The CPU-limit test needs at least two host CPUs (D-030, D-039).
 - `docker compose run` attaches stdin; anything that runs a program through it must close stdin (D-033).
 - No `npm install` in Dockerfiles (D-001).
