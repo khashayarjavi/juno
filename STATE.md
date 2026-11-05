@@ -9,14 +9,15 @@ Status: **building; not done.**
   - New: `CLAUDE_CODE_DISABLE_FILE_MENTIONS=1` routes `@`-mentions through the file tools, so the install will require it, and the minimum Claude Code version becomes 2.1.299.
   - JUNO never emits `updatedInput` or `updatedToolOutput`.
 - The cloud session has Claude Code 2.1.318.
-- **Next, in order:**
-  1. the §2.3.2 command-string reader for Bash (pure, unit-tested);
-  2. Claude Code tool capability definitions and the name map;
-  3. the session-as-a-Task admission;
-  4. the boundary service and the hook client (exit 2 on any doubt);
-  5. `juno hook install` and its refusals;
-  6. PostToolUse result journalling;
-  7. the scripted Messages API server and `make mediated-e2e` with the real binary.
+- **Built and green (949 unit tests, 2026-11-05):**
+  1. the §2.3.2 command-string reader (D-140);
+  2. `packages/mediated`: the session as a Task, tool definitions, PreToolUse decisions (deny or nothing), PostToolUse results, Bash via the name map with the untrusted program floor, the path map, the read gate, and checkpoints at admission (D-141). 25 protocol-level tests cover the plan's list.
+- **Left, in order:**
+  3. the Unix-socket service and the `juno-hook` client (exit 2 on any doubt), with tests;
+  4. `juno hook install` and its refusals (D-139: minimum 2.1.299, `CLAUDE_CODE_DISABLE_FILE_MENTIONS`), with tests;
+  5. the scripted Messages API server and `make mediated-e2e` with the real binary: §4.3 tests 1, 2 and 4 in mode C;
+  6. STATE's "what mode C does not protect";
+  7. the PR and the gate.
 
 ### Increment 4 design (2026-11-05; each choice becomes a D-number when built)
 - **Package `packages/mediated`**, shared with Increment 5's gateway. It uses the same `EnforcementBoundary`, `GrantStore` and `JournalWriter` as mode A.
