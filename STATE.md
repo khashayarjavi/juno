@@ -3,7 +3,19 @@
 ## Current increment
 **Slice 1.5 — Increment 3: effects under untrusted influence** (`docs/plans/slice-1.5-build-plan.md`, Increment 3; spec §2.2.2 A1, §2.7.1 "Effects", §3.2 `enumerated_targets`, §2.4; D-121). Branch `claude/vigilant-heisenberg-uko6on`, restarted from `main` d7e7ec3 after PR #35 merged. Spec v0.6.1. No objection open.
 
-Status: **design written (below); building.** Not done.
+Status: **building; not done.** Built and green (861 unit tests, 2026-11-05):
+1. target/payload fields (D-132);
+2. `enumerated_targets` with attenuation (D-133);
+3. typed registry entries (D-134);
+4. step 4's effect table, with tests on test-only write, external and irreversible capabilities (`packages/enforcement/test/effects.test.ts`, D-135).
+
+**Left, in order:**
+5. Task `reversible_workspaces` and admission checks;
+6. checkpoint script, store and journal record, and the runner taking checkpoints before the first turn and passing `reversible` to the boundary;
+7. `fs.file.write`: definition, adapter, the writer script in the workload image, and the D-121 swap test;
+8. `juno checkpoint restore`;
+9. container tests, the §18 regression, and STATE's per-class table;
+10. the PR and the §7 gate.
 
 ### Increment 3 design (2026-11-04; each choice to be recorded as a D-number when built)
 - **Target and payload (§2.2.2).** An interface field gets `data_effect: "target" | "payload"`, meaningful for `data` fields only. An undeclared `data` field parses as `target` (fail-closed). Declaring it on an `instruction` field is refused. `shell.run`'s `argv` and `cwd` are declared `target`.
