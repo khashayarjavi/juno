@@ -117,3 +117,29 @@ export class WorkloadPathResolver implements PathResolver {
     }
   }
 }
+
+/**
+ * Resolves on this host, by the same operator-fixed script, with the workspace's host directory standing for `/work`
+ * (D-141). Hook and gateway modes use it: there the harness performs the effect on the host's files, so the paths are
+ * resolved where it acts. (Unit tests of mode A use it too, over a directory standing for the work volume.)
+ */
+export class HostPathResolver implements PathResolver {
+  readonly #root: string;
+  readonly #node: string;
+
+  constructor(root: string, node: string = process.execPath) {
+    this.#root = root;
+    this.#node = node;
+  }
+
+  async resolve(paths: readonly string[]): Promise<CanonicalPaths> {
+    if (paths.length === 0) return new Map();
+    try {
+      const result = await executeOutbound({ file: this.#node, args: resolverArgs("/work", this.#root, paths) });
+      return readResolverOutput(paths, result.exitCode === 0 ? result.stdout.toString("utf8") : "");
+    } catch (error: unknown) {
+      const reason = `the resolver did not run: ${error instanceof Error ? error.message : String(error)}`;
+      return new Map(paths.map((path) => [path, { ok: false, reason }]));
+    }
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "capability": {
+    "id": "cc.edit",
+    "interface": {
+      "file_path": {
+        "type": {
+          "kind": "path"
+        },
+        "role": "data",
+        "data_effect": "target"
+      },
+      "old_string": {
+        "type": {
+          "kind": "string"
+        },
+        "role": "data",
+        "data_effect": "payload"
+      },
+      "new_string": {
+        "type": {
+          "kind": "string"
+        },
+        "role": "data",
+        "data_effect": "payload"
+      },
+      "replace_all": {
+        "type": {
+          "kind": "boolean"
+        },
+        "role": "data",
+        "data_effect": "payload"
+      }
+    },
+    "providers": [
+      "harness.claude_code"
+    ],
+    "side_effect": "write",
+    "isolation_tier": 1,
+    "max_input_sensitivity": "internal",
+    "min_argument_integrity": "operator",
+    "output_class": {
+      "sensitivity": "input",
+      "integrity": "untrusted"
+    },
+    "cost_model": {
+      "expected_cost": 0,
+      "expected_latency_ms": 1000,
+      "cost_of_failure": 0
+    }
+  }
+}

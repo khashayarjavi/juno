@@ -1,0 +1,37 @@
+{
+  "capability": {
+    "id": "cc.glob",
+    "interface": {
+      "path": {
+        "type": {
+          "kind": "path"
+        },
+        "role": "data",
+        "data_effect": "target"
+      },
+      "pattern": {
+        "type": {
+          "kind": "string"
+        },
+        "role": "data",
+        "data_effect": "target"
+      }
+    },
+    "providers": [
+      "harness.claude_code"
+    ],
+    "side_effect": "read",
+    "isolation_tier": 1,
+    "max_input_sensitivity": "internal",
+    "min_argument_integrity": "operator",
+    "output_class": {
+      "sensitivity": "input",
+      "integrity": "untrusted"
+    },
+    "cost_model": {
+      "expected_cost": 0,
+      "expected_latency_ms": 1000,
+      "cost_of_failure": 0
+    }
+  }
+}
