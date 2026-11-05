@@ -1,6 +1,16 @@
 # STATE
 
 ## Current increment
+**Slice 1.5 — Increment 4: hook mode for Claude Code (§4.3 mode C)** (`docs/plans/slice-1.5-build-plan.md`, Increment 4; also §2.3.2 E1, §7.8 E2, D-131's Increment 4 directives). Branch `claude/vigilant-heisenberg-uko6on`, restarted from `main` 5951e57 after PR #36 merged. Spec v0.6.1. No objection open.
+
+Status: **starting; not done.** First step: re-read the Claude Code hooks reference and record differences from plan §1.1 (plan Increment 4 item 1). The cloud session has Claude Code 2.1.318.
+
+**Carried into Increment 4 and later (from PR #36's review, not defects):**
+- **Enumerated targets are matched as typed, not on the canonical path (D-133).** An enumerated path that is already a symlink would match while the effect lands on its target. Scope is still judged on the canonical path. To settle before any `irreversible` path capability is registered; restrictive option: match enumerated path values on their canonical form.
+- **`resource_scope` limits path fields only.** A string target such as a recipient is limited by `enumerated_targets` alone. To settle in Increment 5, before the first real `external` capability (`message.send`).
+- **Test gap to fill:** for `irreversible`, the bound-not-untrusted case is tested only for `external`.
+
+## Previous increment (Slice 1.5 Increment 3, merged as PR #36)
 **Slice 1.5 — Increment 3: effects under untrusted influence** (`docs/plans/slice-1.5-build-plan.md`, Increment 3; spec §2.2.2 A1, §2.7.1 "Effects", §3.2 `enumerated_targets`, §2.4; D-121). Branch `claude/vigilant-heisenberg-uko6on`, restarted from `main` d7e7ec3 after PR #35 merged. Spec v0.6.1. No objection open.
 
 Status: **built; going through the §7 gate.** `make verify: GREEN` locally on 2026-11-05 (885 unit, 72 container, §18 acceptance included).
@@ -484,6 +494,10 @@ Status: **Slice 1.2 complete. Part 1 (PR #19), the interface fix (PR #20), Part 
 **Slice 1.1 — real-model evidence (complete).** Parts 1 to 4 merged (PR #12, #13, #16, #17; STATE record PR #18). Report: `docs/evidence/slice-1.1.md`.
 
 ## Merges recorded (CLAUDE.md §7 step 6)
+- **Slice 1.5 Increment 3 (D-132 to D-138), PR #36** (https://github.com/khashayarjavi/juno/pull/36):
+  - Head dd485b4ae81d2427149a6e34c31603b5d0630648. PR CI run 41970251969 succeeded on that head: `verify` (job 127056565401) and `verify-rootless` (job 127056565115).
+  - Merged as merge commit 5951e574fb8b96f4294dcf222a04ea36356c4472, pinned to the head SHA. CI on `main` for the merge commit: run 41970658311 (event `push`), `verify` and `verify-rootless` both success.
+  - Reviewer verdict: round 1 MERGE on dd485b4; all six checks PASS.
 - **Slice 1.5 Increment 2 (D-115 to D-131), PR #35** (https://github.com/khashayarjavi/juno/pull/35; supersedes #34 and #33):
   - Head bd4db645e80de6ff17353bc1e5a19504ef52cbe4. PR CI run 41888014160 succeeded on that head: `verify` (job 126777586625) and `verify-rootless` (job 126777586197).
   - Merged as merge commit d7e7ec38f35e3ff7c11f3c07d67f5c808d81f6e2, pinned to the head SHA. CI on `main` for the merge commit: run 41890482246 (event `push`), `verify` and `verify-rootless` both success.
