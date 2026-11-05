@@ -11,7 +11,8 @@ const server = execFile("/usr/local/bin/node", ["/e2e/messages-server.mjs", "/ru
 for (let tries = 0; tries < 100 && !(existsSync("/run-e2e/requests.log") && readFileSync("/run-e2e/requests.log", "utf8").includes("listening")); tries += 1) await sleep(100);
 const child = execFile(
   "/opt/claude-code/bin/claude",
-  ["-p", prompt, "--session-id", sessionId, "--output-format", "json"],
+  // acceptEdits: Claude Code's own rules approve file edits, so JUNO's hook is the only thing that can stop one (D-145).
+  ["-p", prompt, "--session-id", sessionId, "--output-format", "json", "--permission-mode", "acceptEdits"],
   {
     cwd: "/workspace/project",
     timeout: 120_000,

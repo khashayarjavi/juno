@@ -6,8 +6,11 @@ import {
   Integrity as IntegritySchema,
   Ref,
   ResourceSelector,
+  FlagSurface,
+  SIDE_EFFECTS,
   Sensitivity as SensitivitySchema,
   type Sensitivity,
+  type SideEffect,
   Task,
   WorkPath,
   compareSensitivity,
@@ -74,7 +77,14 @@ export const harnessAdapter: Adapter = {
 export const BARRED_PROGRAMS: ReadonlySet<string> = new Set(["ssh-keygen", "ssh-add", "ssh", "ssh-agent", "wsl", "wsl.exe", "powershell", "pwsh", "cmd", "cmd.exe", "git", "sh", "bash", "node", "python", "python3", "env", "xargs", "find"]);
 
 /** One Bash name the operator maps to a program in the workload's program enum, with its declared effect (§2.3.2 V6-10). */
-export const NameMapEntry = z.strictObject({ name: z.string().regex(/^[a-z0-9][a-z0-9._-]*$/), program: z.string(), side_effect: z.literal("read") });
+export const NameMapEntry = z.strictObject({ name: z.string().regex(/^[a-z0-9][a-z0-9._-]*$/), program: z.string(), side_effect: z.enum(SIDE_EFFECTS) });
+
+/** The order §2.2.2 ranks effects by, for registration review's "lower than what it can do" (D-146). */
+const EFFECT_RANK: Readonly<Record<SideEffect, number>> = { read: 0, write: 1, external: 2, irreversible: 3 };
+
+const ProgramsFile = z.object({
+  programs: z.array(z.strictObject({ program: z.string(), minimum_effect: z.enum(SIDE_EFFECTS), surface: z.union([z.literal("shell.run"), FlagSurface]) })),
+});
 
 /** What the operator declares to admit a session (§4.3 V6-6). */
 export const SessionRequest = z.strictObject({
@@ -372,20 +382,37 @@ export class MediatedSessions {
       const result = registry.register(loadRegistryEntry(DEFINITIONS_DIR + file), [harnessAdapter]);
       if (!result.registered) throw new Error(`${file} did not register: ${JSON.stringify(result.refusals)}`);
     }
-    const programs = [...new Set(request.name_map.map((entry) => entry.program))];
-    if (programs.length > 0) {
-      const surfaces = JSON.parse(readFileSync(fileURLToPath(new URL("../../registry/definitions/shell.run.json", import.meta.url)), "utf8")) as { program_surfaces: { program: string }[] };
+    // §2.3.2 V6-10: each member's effect is declared per program; registration review refuses a member declared lower than
+    // what its program can do, or a program whose effect is not on the operator's list (D-146).
+    const known = ProgramsFile.parse(JSON.parse(readFileSync(fileURLToPath(new URL("../definitions/programs.json", import.meta.url)), "utf8"))).programs;
+    const shellRun = JSON.parse(readFileSync(fileURLToPath(new URL("../../registry/definitions/shell.run.json", import.meta.url)), "utf8")) as { program_surfaces: { program: string }[] };
+    const byEffect = new Map<SideEffect, Set<string>>();
+    for (const entry of request.name_map) {
+      const program = known.find((candidate) => candidate.program === entry.program);
+      if (program === undefined) throw new Error(`registration review: ${entry.program} is not on the operator's list of programs and their effects (D-146)`);
+      if (EFFECT_RANK[entry.side_effect] < EFFECT_RANK[program.minimum_effect]) {
+        throw new Error(`registration review: ${entry.name} is declared ${entry.side_effect}, lower than what ${entry.program} can do (${program.minimum_effect}) (§2.3.2 V6-10)`);
+      }
+      byEffect.set(entry.side_effect, (byEffect.get(entry.side_effect) ?? new Set()).add(entry.program));
+    }
+    for (const [effect, members] of byEffect) {
+      const programs = [...members].sort();
+      const surfaces = programs.map((program) => {
+        const declared = known.find((candidate) => candidate.program === program)?.surface;
+        return declared === "shell.run" ? shellRun.program_surfaces.find((surface) => surface.program === program) : declared;
+      });
       // §2.3.2: in hook mode only, a program enum that passes the interpreter test for every member takes floor `untrusted`.
+      // One capability per declared effect, so a call takes the effect of the member it runs (V6-10).
       const entry = RegistryEntry.parse({
         capability: {
-          id: "cc.bash",
+          id: `cc.bash.${effect}`,
           interface: {
             program: { type: { kind: "enum", values: programs } },
             argv: { type: { kind: "list", items: { kind: "string" } }, role: "data", data_effect: "target" },
             cwd: { type: { kind: "path" }, role: "data", data_effect: "target" },
           },
           providers: [HARNESS_ADAPTER],
-          side_effect: "read",
+          side_effect: effect,
           isolation_tier: 1,
           max_input_sensitivity: "internal",
           min_argument_integrity: "untrusted",
@@ -395,7 +422,7 @@ export class MediatedSessions {
         program_field: "program",
         argv_field: "argv",
         cwd_field: "cwd",
-        program_surfaces: surfaces.program_surfaces.filter((surface) => programs.includes(surface.program)),
+        program_surfaces: surfaces.filter((surface) => surface !== undefined),
       });
       const result = registry.register(entry, [harnessAdapter]);
       if (!result.registered) throw new Error(`the Bash name map did not pass registration review: ${JSON.stringify(result.refusals)}`);
@@ -467,7 +494,8 @@ export class MediatedSessions {
           cwd: synthesized(cwd),
         };
         // What a Bash call reads is its operands, not its working directory (§4.3 V6-7).
-        return { kind: "proposal", proposal: { capability: "cc.bash", arguments: args }, constants, paths: reading.argv.map((element) => (element.startsWith("/") ? (this.#paths.toWork(element) ?? element) : `${cwd}/${element}`)) };
+        const member = session.request.name_map.find((entry) => entry.name === reading.name);
+        return { kind: "proposal", proposal: { capability: `cc.bash.${member?.side_effect ?? "irreversible"}`, arguments: args }, constants, paths: reading.argv.map((element) => (element.startsWith("/") ? (this.#paths.toWork(element) ?? element) : `${cwd}/${element}`)) };
       }
     }
   }

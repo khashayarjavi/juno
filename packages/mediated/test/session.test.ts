@@ -88,7 +88,7 @@ beforeEach(async () => {
   writeFileSync(join(work, "project", "secrets", "key.txt"), "secret\n");
   journal = JournalWriter.open(join(dir, "journal"));
   grants = new GrantStore(TEST_ANCHOR);
-  grants.add(grant("grant-cc", ["cc.read", "cc.glob", "cc.write", "cc.edit", "cc.bash", "cc.webfetch"]));
+  grants.add(grant("grant-cc", ["cc.read", "cc.glob", "cc.write", "cc.edit", "cc.bash.read", "cc.bash.write", "cc.webfetch"]));
   now = T0;
   sessions = new MediatedSessions({
     journal,
@@ -188,6 +188,45 @@ describe("§2.3.2 Bash in hook mode", () => {
   it("refuses a name map naming an interpreter or a barred program", async () => {
     expect(await sessions.admit(request({ session_id: "bad-1", name_map: [{ name: "node", program: "/usr/bin/node", side_effect: "read" }] }))).toMatchObject({ admitted: false });
     expect(await sessions.admit(request({ session_id: "bad-2", name_map: [{ name: "ssh-keygen", program: "/usr/bin/ssh-keygen", side_effect: "read" }] }))).toMatchObject({ admitted: false });
+  });
+});
+
+describe("§2.3.2 V6-10: a Bash call takes the effect of the program it runs (D-146)", () => {
+  const withRm = async (id: string, reversible: readonly string[] = []): Promise<MediatedSessions> => {
+    const session = new MediatedSessions({
+      journal,
+      grants,
+      paths: new PathMap([work]),
+      resolver: new HostPathResolver(work),
+      clock: () => now,
+      checkpoints: { workspace: new Workspace(execFileScript(process.execPath, []), "/work", work), store: new CheckpointStore(join(dir, "checkpoints")) },
+    });
+    const admitted = await session.admit(request({ session_id: id, reversible_workspaces: [...reversible], name_map: [{ name: "cat", program: "/usr/bin/cat", side_effect: "read" }, { name: "rm", program: "/usr/bin/rm", side_effect: "write" }] }));
+    expect(admitted).toMatchObject({ admitted: true });
+    return session;
+  };
+  const ask = (session: MediatedSessions, id: string, command: string) => session.preToolUse({ ...(pre("Bash", { command }) as Record<string, unknown>), session_id: id });
+
+  // proves §2.3.2 V6-10: `rm x` takes rm's declared effect (write), so with no checkpoint its untrusted target parks, while `cat x` proceeds
+  it("judges `rm notes.txt` as a write and `cat notes.txt` as a read", async () => {
+    const session = await withRm("rm-1");
+    expect(await ask(session, "rm-1", "rm notes.txt")).toMatchObject({ decision: "deny", reason: expect.stringContaining("integrity_floor") });
+    expect(await ask(session, "rm-1", "cat notes.txt")).toEqual({ decision: "none" });
+  });
+
+  // proves §2.3.2 V6-10 with §2.2.2: inside a checkpointed workspace the same `rm` is a reversible write and proceeds
+  it("lets `rm notes.txt` proceed inside a checkpointed workspace", async () => {
+    const session = await withRm("rm-2", ["/work/project"]);
+    expect(await ask(session, "rm-2", "rm notes.txt")).toEqual({ decision: "none" });
+  });
+
+  // proves §2.3.2 V6-10: registration review refuses a member declared lower than what its program can do, or a program of unknown effect
+  it("refuses rm declared as a read, and a program with no declared effect", async () => {
+    expect(await sessions.admit(request({ session_id: "rm-3", name_map: [{ name: "rm", program: "/usr/bin/rm", side_effect: "read" }] }))).toMatchObject({
+      admitted: false,
+      failures: [expect.stringContaining("lower than what /usr/bin/rm can do")],
+    });
+    expect(await sessions.admit(request({ session_id: "rm-4", name_map: [{ name: "tac", program: "/usr/bin/tac", side_effect: "irreversible" }] }))).toMatchObject({ admitted: false });
   });
 });
 

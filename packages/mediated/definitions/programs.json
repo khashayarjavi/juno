@@ -1,0 +1,128 @@
+{
+  "_comment": "Operator-authored (spec \u00a72.5): what each program Bash may map to can do at least (\u00a72.3.2 V6-10), and the flag surface of programs shell.run's definition does not hold. A name-map member declared lower than its minimum effect is refused at registration (D-146).",
+  "programs": [
+    {
+      "program": "/usr/bin/cat",
+      "minimum_effect": "read",
+      "surface": "shell.run"
+    },
+    {
+      "program": "/usr/bin/ls",
+      "minimum_effect": "read",
+      "surface": "shell.run"
+    },
+    {
+      "program": "/usr/bin/rm",
+      "minimum_effect": "write",
+      "surface": {
+        "program": "/usr/bin/rm",
+        "positions": [
+          {
+            "position": {
+              "kind": "flag",
+              "flag": "-f"
+            },
+            "executes_code": false
+          },
+          {
+            "position": {
+              "kind": "flag",
+              "flag": "--force"
+            },
+            "executes_code": false
+          },
+          {
+            "position": {
+              "kind": "flag",
+              "flag": "-r"
+            },
+            "executes_code": false
+          },
+          {
+            "position": {
+              "kind": "flag",
+              "flag": "-R"
+            },
+            "executes_code": false
+          },
+          {
+            "position": {
+              "kind": "flag",
+              "flag": "--recursive"
+            },
+            "executes_code": false
+          },
+          {
+            "position": {
+              "kind": "flag",
+              "flag": "-d"
+            },
+            "executes_code": false
+          },
+          {
+            "position": {
+              "kind": "flag",
+              "flag": "--dir"
+            },
+            "executes_code": false
+          },
+          {
+            "position": {
+              "kind": "flag",
+              "flag": "-v"
+            },
+            "executes_code": false
+          },
+          {
+            "position": {
+              "kind": "flag",
+              "flag": "--verbose"
+            },
+            "executes_code": false
+          },
+          {
+            "position": {
+              "kind": "flag",
+              "flag": "--one-file-system"
+            },
+            "executes_code": false
+          },
+          {
+            "position": {
+              "kind": "flag",
+              "flag": "--preserve-root"
+            },
+            "executes_code": false
+          },
+          {
+            "position": {
+              "kind": "flag",
+              "flag": "--help"
+            },
+            "executes_code": false
+          },
+          {
+            "position": {
+              "kind": "flag",
+              "flag": "--version"
+            },
+            "executes_code": false
+          },
+          {
+            "position": {
+              "kind": "flag",
+              "flag": "--"
+            },
+            "executes_code": false
+          },
+          {
+            "position": {
+              "kind": "operand"
+            },
+            "executes_code": false
+          }
+        ]
+      }
+    }
+  ]
+}

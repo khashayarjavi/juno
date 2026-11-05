@@ -1709,9 +1709,23 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
     No request can reach a paid endpoint, and the test asserts that every request was to `/v1/messages`.
   - **The scripted server** answers each `POST /v1/messages` with the next scripted turn as a streamed message: `message_start`, a `text` or `tool_use` block with its delta, `message_delta` with the stop reason, `message_stop`. That sequence was observed to work with the real binary on 2026-11-05 (rule 13: the binary is the proof). It records every request.
   - **JUNO** runs in the test process: `MediatedSessions` and `HookService` on a Unix socket mounted into the container. The hook is installed by `installHook` into the fresh home's `.claude/settings.json`, exactly as the operator's command does, so the run also proves the install's output is what Claude Code obeys. Sessions are admitted before Claude Code starts, by passing `--session-id`.
-  - **What it proves** (2026-11-05: 4 of 4):
+  - **What it proves** (2026-11-05: 5 of 5):
     - **§4.3 test 1:** a Write outside the grant is denied, the file does not exist, the journal has the `scope_violation` park with `answer: deny`, and the model's next request carries JUNO's reason.
     - **§4.3 test 2:** after reading a planted file, `cat notes.txt; sh -c 'touch …'` parks `integrity_floor` (not overridable) and nothing runs.
     - **§4.3 test 4 (mode C):** a forged grant is not honoured; the session's admission is refused and journalled, and no call runs.
+  - **Fail-closed with the real binary.** With JUNO's service down, a write JUNO would allow is blocked: the client exits 2 and the hook has `onFailure: "block"`. A positive control shows the same kind of write happening while the service is up.
+  - **Claude Code's own permission rules** run with `--permission-mode acceptEdits`, so JUNO's hook is the only thing that can stop a file edit. Every denial above is JUNO's.
   - **Mode A's parts** of tests 2 and 4 stay in `make verify`.
 - Reason: plan §4: "if Claude Code cannot run against it, Increment 4 stops and reports". It can, so no stop.
+
+## D-146 — Effect per program in hook mode (§2.3.2 V6-10) (Slice 1.5 Increment 4)
+- Date: 2026-11-05
+- Status: Accepted (applies §2.3.2 V6-10; autopilot rulings, restrictive, where marked)
+- Applies to: Slice 1.5 Increment 4 onward (`packages/mediated/definitions/programs.json`, the session's Bash registry)
+- Decision:
+  - **Declared effects.** Each name-map member declares its `side_effect`. The operator-authored list `packages/mediated/definitions/programs.json` gives each program's minimum effect and its flag surface:
+    - `cat` and `ls` are `read`, with surfaces from `shell.run`'s definition;
+    - `rm` is `write`, with a code-free surface of `-f`, `-r`, `-R`, `-d`, `-v` and their long forms, `--one-file-system`, `--preserve-root`, `--help`, `--version`, `--` and operands. **Restrictive:** the prompting flags and `--no-preserve-root` are left out, so they are undeclared and rejected (§2.3.1 rule 6).
+  - **Registration review** refuses a member declared lower than its program's minimum (ranked read < write < external < irreversible), and a program not on the list.
+  - **"A call takes the effect of the member it runs":** members are registered as one capability per declared effect (`cc.bash.read`, `cc.bash.write`, …), each passing the interpreter test, and a Bash call goes to its member's capability. So `rm x` is judged as a `write`: with no checkpointed workspace its untrusted operand parks `integrity_floor`; inside one it proceeds. `cat x` is a read and proceeds. Grants select these capabilities by name.
+- Reason: §2.3.2 V6-10 and the plan's Increment 4 tests.

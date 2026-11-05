@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { GrantStore, HostPathResolver } from "../../packages/enforcement/src/index.js";
+import { CheckpointStore, GrantStore, HostPathResolver, Workspace, execFileScript } from "../../packages/enforcement/src/index.js";
 import { JournalWriter, readPayload, readTrajectory } from "../../packages/journal/src/index.js";
 import { HookService } from "../../packages/mediated/src/hook-service.js";
 import { SYSTEM_INSTALL_IO, installHook } from "../../packages/mediated/src/install.js";
@@ -48,7 +48,7 @@ function grant(id: string): Record<string, unknown> {
   return signed({
     id,
     principal: PRINCIPAL,
-    capability_selector: { capabilities: ["cc.read", "cc.write", "cc.edit", "cc.glob", "cc.bash"] },
+    capability_selector: { capabilities: ["cc.read", "cc.write", "cc.edit", "cc.glob", "cc.bash.read"] },
     resource_scope: [{ kind: "path", prefix: "/work/project" }],
     data_class_bounds: { max_sensitivity: "internal", min_integrity: "untrusted" },
     issuance: "preissued",
@@ -61,8 +61,9 @@ function grant(id: string): Record<string, unknown> {
   });
 }
 
-async function admit(sessionId: string, grantIds: readonly string[]): Promise<unknown> {
+async function admit(sessionId: string, grantIds: readonly string[], reversible: readonly string[] = []): Promise<unknown> {
   return sessions.admit({
+    reversible_workspaces: [...reversible],
     session_id: sessionId,
     principal: PRINCIPAL,
     attendance: "autonomous",
@@ -117,7 +118,13 @@ beforeAll(async () => {
   journal = JournalWriter.open(join(host, "journal"));
   grants = new GrantStore(TEST_ANCHOR);
   grants.add(grant("grant-cc"));
-  sessions = new MediatedSessions({ journal, grants, paths: new PathMap(["/workspace"]), resolver: new HostPathResolver(workspace) });
+  sessions = new MediatedSessions({
+    journal,
+    grants,
+    paths: new PathMap(["/workspace"]),
+    resolver: new HostPathResolver(workspace),
+    checkpoints: { workspace: new Workspace(execFileScript(process.execPath, []), "/work", workspace), store: new CheckpointStore(join(host, "checkpoints")) },
+  });
   service = new HookService(sessions);
   await service.listen(socketPath);
   chmodSync(sockets, 0o700);
@@ -174,6 +181,28 @@ describe(`§4.3 acceptance in mode C, real Claude Code (no paid model)`, () => {
     const recorded = payloads(id);
     expect(recorded).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "park", reason: "integrity_floor", overridable: false, answer: "deny" })]));
     expect(recorded).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "capability_result", tool: "Read" })]));
+  }, 240_000);
+
+  // proves §4.3 fail-closed ingress with the real binary: with JUNO's service down, even a call JUNO would allow is blocked
+  // (the client exits 2 and the hook's onFailure is "block"), so nothing is written
+  it("blocks every call when JUNO's service is down", async () => {
+    // Positive control: with the service up, this session's write inside its checkpointed workspace happens.
+    const control = randomUUID();
+    expect(await admit(control, ["grant-cc"], ["/work/project"])).toMatchObject({ admitted: true });
+    await claude(control, [{ tool_use: { name: "Write", input: { file_path: "/workspace/project/control.txt", content: "allowed" } } }, { text: "done" }], "write the file");
+    expect(readFileSync(join(workspace, "project", "control.txt"), "utf8")).toBe("allowed");
+    const id = randomUUID();
+    expect(await admit(id, ["grant-cc"], ["/work/project"])).toMatchObject({ admitted: true });
+    await service.close();
+    try {
+      await claude(id, [{ tool_use: { name: "Write", input: { file_path: "/workspace/project/allowed.txt", content: "would be allowed" } } }, { text: "done" }], "write the file");
+      expect(existsSync(join(workspace, "project", "allowed.txt"))).toBe(false);
+    } finally {
+      service = new HookService(sessions);
+      await service.listen(socketPath);
+      chmodSync(socketPath, 0o777);
+      chownSync(socketPath, CONTAINER_UID, CONTAINER_UID);
+    }
   }, 240_000);
 
   // proves §4.3 acceptance test 4 (mode C): a forged grant is not honoured: the session is not admitted and every call is denied

@@ -93,7 +93,7 @@ describe("the hook service and client together (§4.3 mode C, D-142)", () => {
       signed({
         id: "grant-cc",
         principal: "alireza",
-        capability_selector: { capabilities: ["cc.bash", "cc.read"] },
+        capability_selector: { capabilities: ["cc.bash.read", "cc.read"] },
         resource_scope: [{ kind: "path", prefix: "/work/project" }],
         data_class_bounds: { max_sensitivity: "internal", min_integrity: "untrusted" },
         issuance: "preissued",
