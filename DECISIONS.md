@@ -1759,3 +1759,14 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   - **The operator's check.** `juno runtime check` prints the runtime and exits 1 on a refusal.
   - **Not yet wired at start-up.** JUNO's host runner is still a library (D-065), with no start-up command of its own. The real-use start-up that later wires it must pass the probe; this is recorded so that it cannot be missed.
 - Reason: D-025's limits are only real if the runtime enforces them; a silent ignore would be fail-open.
+
+## D-150 — The mode-C read gate is the boundary's step 5; Bash program lookup by the shell is a residual (Slice 1.5 Increment 4; PR #37 review round 2)
+- Date: 2026-11-05
+- Status: Accepted (fixes review findings; the restrictive reading)
+- Applies to: `packages/enforcement/src/boundary.ts` (step 5), `packages/mediated/src/session.ts`, `install.ts`
+- Decision:
+  - **Order.** The read gate of §4.3 V6-7 is judged inside the boundary, at step 5, after step 3 (integrity), step 4 (scope and §2.2.2 effects) and before the capability's own sensitivity ceiling. The session passes `TaskContext.readGate = { reads, clearance }`. A call that would park `integrity_floor` or `scope_violation` is recorded as that park, never as an overridable `sensitivity_ceiling`. The gate's own park is `sensitivity_ceiling` with `read_gate: true`, and the journal holds one `capability_call` record with the verdict.
+  - **Before this**, the gate ran before the boundary. Then `rm` of a secret file, or an Edit of one, was recorded as an overridable `sensitivity_ceiling` instead of `integrity_floor` (§2.2.2, §8.3), and a read outside the grant instead of `scope_violation` (§8.2 A2). Nothing ran either way, but the record and the answer to Claude were wrong. That is the downgrade CLAUDE.md §7 STOPs for, so it was fixed at the root. Tests reproduce each case.
+  - **A result with no authorized call** is recorded at the highest class any declared source holds (§1.5), not at the provider's clearance.
+  - **Residual, recorded (not protected in mode C):** JUNO judges a Bash command's program through the operator's name map, but Claude Code's shell finds the program through its own `PATH`, aliases and functions. JUNO cannot rewrite the call (D-139: no `updatedInput`). `juno hook install` and STATE.md say so, with the remedy: keep the shell's startup files free of aliases and functions for mapped names.
+- Reason: §2.7's order and §2.7.1 D5's principle that no later check may turn a non-overridable park into a retryable one.

@@ -13,7 +13,6 @@ import {
   type SideEffect,
   Task,
   WorkPath,
-  compareSensitivity,
   maxSensitivity,
   pathWithin,
 } from "../../contracts/src/index.js";
@@ -345,14 +344,12 @@ export class MediatedSessions {
     if (mapped.kind === "reject") return this.#reject(session, mapped.reason, input.tool_name);
     if (mapped.kind === "park") return this.#park(session, mapped.reason, mapped.detail, mapped.overridable);
 
-    // §4.3 V6-7: a read of a source classified above the provider's clearance parks before it runs.
+    // §4.3 V6-7: a read of a source classified above the provider's clearance parks before it runs. The boundary judges it
+    // at step 5, after integrity, scope and effects, so a park that cannot be overridden always wins (D-150).
     const reads = this.#readsSensitivity(session, mapped.paths);
-    if (compareSensitivity(reads, session.request.provider_clearance) > 0) {
-      return this.#park(session, "sensitivity_ceiling", { tool: input.tool_name, reads, clearance: session.request.provider_clearance }, true);
-    }
 
     const constants = mapped.constants;
-    const base: TaskContext = { task: { ...session.task, sensitivity_floor: session.floor }, constants, synthesis: { sensitivity: session.floor }, reversible: session.reversible };
+    const base: TaskContext = { task: { ...session.task, sensitivity_floor: session.floor }, constants, synthesis: { sensitivity: session.floor }, reversible: session.reversible, readGate: { reads, clearance: session.request.provider_clearance } };
     const canonical: CanonicalPaths = await this.#resolver.resolve(built.boundary.pathsToResolve(base, mapped.proposal));
     const verdict: Verdict = built.boundary.authorize({ ...base, canonical }, mapped.proposal);
     if (verdict.outcome === "proceed") {
@@ -377,7 +374,8 @@ export class MediatedSessions {
     const call = session.pending.get(key);
     session.pending.delete(key);
     // §4.3: a tool result is untrusted content; it raises the session's floor by what it read (§1.2).
-    const reads = call?.reads ?? session.request.provider_clearance;
+    // A result with no call JUNO authorized read something JUNO never classified: the highest declared class (§1.5, D-150).
+    const reads = call?.reads ?? session.request.sources.reduce<Sensitivity>((high, source) => maxSensitivity(high, source.data_class.sensitivity), "public");
     session.floor = maxSensitivity(session.floor, reads);
     const dataClass: DataClass = { sensitivity: reads, integrity: "untrusted" };
     this.#append(id, "capability_result", dataClass, HARNESS_ACTOR, {

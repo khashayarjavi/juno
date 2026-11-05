@@ -26,6 +26,7 @@ export const NOT_CONTROLLED = [
   "anything Claude Code does without a tool call: its own memory, and an @-mention Claude does not follow with a file tool",
   "a file or symlink changed between JUNO's check and Claude Code's use of it: Claude Code, not JUNO, performs the effect",
   "managed settings that allow only managed hooks, if JUNO's hook is not among them",
+  "which program a Bash command runs: JUNO judges the name through your name map, but Claude Code's shell finds it through its own PATH, aliases and functions; keep that shell's startup files free of aliases and functions for mapped names (D-150)",
   "a PreToolUse hook in another settings file (a project's .claude/settings.json included) that changes a call after JUNO judged it; managed settings with allowManagedHooksOnly prevent that",
 ];
 

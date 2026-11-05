@@ -262,6 +262,47 @@ describe("§2.2.2 in hook mode", () => {
   });
 });
 
+describe("§2.7 order in mode C (D-150): the read gate never turns a park that cannot be overridden into one that can", () => {
+  const plain = async (id: string, grantIds: readonly string[]): Promise<MediatedSessions> => {
+    const session = new MediatedSessions({ journal, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), protectedPaths: [join(dir, "checkpoints")], clock: () => now });
+    expect(await session.admit(request({ session_id: id, grants: [...grantIds], name_map: [{ name: "cat", program: "/usr/bin/cat", side_effect: "read" }, { name: "rm", program: "/usr/bin/rm", side_effect: "write" }] }))).toMatchObject({ admitted: true });
+    return session;
+  };
+  const lastPark = (id: string): Record<string, unknown> | undefined => readTrajectory(journal.root, `session-${id}`).filter((entry) => entry.kind === "park").map(payload).at(-1);
+
+  // proves §2.2.2 with §8.3: `rm` of a file above the clearance, with no checkpoint, parks integrity_floor, not overridable
+  it("parks `rm secrets/key.txt` integrity_floor, not sensitivity_ceiling", async () => {
+    const session = await plain("order-1", ["grant-cc"]);
+    expect(await session.preToolUse({ ...(pre("Bash", { command: "rm secrets/key.txt" }) as Record<string, unknown>), session_id: "order-1" })).toMatchObject({ reason: expect.stringContaining("integrity_floor") });
+    expect(lastPark("order-1")).toMatchObject({ reason: "integrity_floor", overridable: false });
+  });
+
+  // proves the same for an Edit of a file above the clearance
+  it("parks an Edit of a secret file integrity_floor, not sensitivity_ceiling", async () => {
+    const session = await plain("order-2", ["grant-cc"]);
+    const asked = { ...(pre("Edit", { file_path: join(work, "project", "secrets", "key.txt"), old_string: "a", new_string: "b", replace_all: false }) as Record<string, unknown>), session_id: "order-2" };
+    expect(await session.preToolUse(asked)).toMatchObject({ reason: expect.stringContaining("integrity_floor") });
+    expect(lastPark("order-2")).toMatchObject({ reason: "integrity_floor", overridable: false });
+  });
+
+  // proves §8.2 A2 with §2.7 order: a read of a secret file outside the grant parks scope_violation (grant remedy only)
+  it("parks a Read of a secret file outside the grant scope_violation, not sensitivity_ceiling", async () => {
+    grants.add(grant("grant-narrow", ["cc.read"], { resource_scope: [{ kind: "path", prefix: "/work/project/public" }] }));
+    const session = await plain("order-3", ["grant-narrow"]);
+    const asked = { ...(pre("Read", { file_path: join(work, "project", "secrets", "key.txt") }) as Record<string, unknown>), session_id: "order-3" };
+    expect(await session.preToolUse(asked)).toMatchObject({ reason: expect.stringContaining("scope_violation") });
+    expect(lastPark("order-3")).toMatchObject({ reason: "scope_violation", overridable: false });
+  });
+
+  // proves §4.3 V6-7: when everything else passes, the read gate still parks the read before it runs, as one boundary record
+  it("still parks an in-scope read above the clearance, as the boundary's own step-5 park", async () => {
+    const session = await plain("order-4", ["grant-cc"]);
+    const asked = { ...(pre("Read", { file_path: join(work, "project", "secrets", "key.txt") }) as Record<string, unknown>), session_id: "order-4" };
+    expect(await session.preToolUse(asked)).toMatchObject({ reason: expect.stringContaining("sensitivity_ceiling") });
+    expect(lastPark("order-4")).toMatchObject({ reason: "sensitivity_ceiling", detail: { read_gate: true, aggregate: "secret", ceiling: "internal" } });
+  });
+});
+
 describe("plan item 10 (D-148): JUNO's own state is outside every scope", () => {
   // proves plan item 10: sessions refuse to start when a workspace root would cover the journal or another protected path
   it("refuses a workspace root that covers the journal or a protected path", () => {

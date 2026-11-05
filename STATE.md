@@ -29,16 +29,18 @@ Status: **building; not done.**
     - the runtime refusal is built (D-149);
     - D-141's wording is corrected, and D-144's claim with it;
     - three tests made stronger.
-  - Next: round 2.
+  - Round 2 (head 0e358df, CI run 41975157057 green): **DO NOT MERGE.** Checks 1–4 and 6 PASS; check 5 FAIL. The read gate ran before the integrity and scope checks, so non-overridable parks were recorded as overridable. Fixed by D-150: the gate is now the boundary's step 5. The PATH/alias residual is recorded, and an unauthorized result is recorded at the highest class.
+  - Next: round 3, the last allowed (D-127).
 
 ### What mode C does not protect (§4.3; Increment 4's done-when)
 In plain words, JUNO's hook governs every **tool call** Claude Code makes. It does not govern:
 1. **Anything Claude Code does without a tool call:** its own memory, and the content of a file you `@`-mention if Claude does not then read it with a tool. JUNO's install turns direct `@`-insertion off (D-139), so a mentioned file is read through the Read tool, which JUNO judges.
 2. **A file or symlink changed between JUNO's check and Claude Code's use of it.** Claude Code, not JUNO, performs the effect, so D-121's writer protection does not apply in this mode. Keep the workspace out of reach of anything else.
 3. **A configuration that bypasses the hook:** a run started with `--settings '{"disableAllHooks": true}'`, settings of higher precedence that turn hooks off, managed settings that allow only managed hooks, or **another PreToolUse hook in a different settings file (a project's included) that changes a call after JUNO judged it**. JUNO refuses to install into project or local settings, or beside another PreToolUse hook in the same file (D-148), and the install prints these limits. The remedy is managed settings with `allowManagedHooksOnly`.
-4. **Context ownership and steering** (§7.8: a hook session's `steer_capability` is `none`), and the text of tool descriptions Claude Code reads.
-5. **Tokens and money:** Claude Code's own limits govern them; you accept that when a session is admitted (`unmetered`).
-6. **Everything mode A does not protect**, plus D-130's residuals: a kernel or WSL escape, and a compromised Windows account. Claude Code runs as your Windows user, which can ask your agent to sign.
+4. **Which program a Bash command really runs.** JUNO judges `cat` through your name map, but Claude Code's shell finds `cat` through its own `PATH`, aliases and shell functions (D-150). Keep that shell's startup files free of aliases and functions for the names you map.
+5. **Context ownership and steering** (§7.8: a hook session's `steer_capability` is `none`), and the text of tool descriptions Claude Code reads.
+6. **Tokens and money:** Claude Code's own limits govern them; you accept that when a session is admitted (`unmetered`).
+7. **Everything mode A does not protect**, plus D-130's residuals: a kernel or WSL escape, and a compromised Windows account. Claude Code runs as your Windows user, which can ask your agent to sign.
 
 ### Increment 4 design (2026-11-05; each choice becomes a D-number when built)
 - **Package `packages/mediated`**, shared with Increment 5's gateway. It uses the same `EnforcementBoundary`, `GrantStore` and `JournalWriter` as mode A.

@@ -152,6 +152,8 @@ export type ParkDetail =
       readonly ceiling: Sensitivity;
       /** When the capability's ceiling was met: each remaining candidate grant and its lower `max_sensitivity` (D-046). */
       readonly grants: readonly { readonly grant: string; readonly max_sensitivity: Sensitivity }[];
+      /** Mediated modes (§4.3 V6-7, D-150): the park is the read gate's: `aggregate` is what the call reads, `ceiling` the provider's clearance. */
+      readonly read_gate?: true;
     }
   | {
       readonly reason: "adapter_quarantined";
@@ -734,6 +736,13 @@ export class EnforcementBoundary {
     const permitted = effects.filter((candidate) => candidate.refused.length === 0).map((candidate) => candidate.grant);
     if (permitted.length === 0) {
       return park({ reason: "integrity_floor", violations: [], grants: [], effects: effects.map(({ grant, refused }) => ({ grant: grant.id, refused })) });
+    }
+
+    // Step 5, mediated modes (§4.3 V6-7, D-150): a read above the session provider's clearance parks before it runs. It is
+    // judged here, after steps 3 and 4, so an integrity_floor or scope_violation park is never turned into this one.
+    const gate = context.readGate;
+    if (gate !== undefined && compareSensitivity(gate.reads, gate.clearance) > 0) {
+      return park({ reason: "sensitivity_ceiling", aggregate: gate.reads, ceiling: gate.clearance, grants: [], read_gate: true });
     }
 
     // Step 5: the capability's ceiling, then each remaining candidate's lower ceiling.
