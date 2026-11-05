@@ -12,12 +12,14 @@ Status: **building; not done.**
 - **Built and green (949 unit tests, 2026-11-05):**
   1. the §2.3.2 command-string reader (D-140);
   2. `packages/mediated`: the session as a Task, tool definitions, PreToolUse decisions (deny or nothing), PostToolUse results, Bash via the name map with the untrusted program floor, the path map, the read gate, and checkpoints at admission (D-141). 25 protocol-level tests cover the plan's list.
-- **Left, in order:**
-  3. the Unix-socket service and the `juno-hook` client (exit 2 on any doubt), with tests;
-  4. `juno hook install` and its refusals (D-139: minimum 2.1.299, `CLAUDE_CODE_DISABLE_FILE_MENTIONS`), with tests;
-  5. the scripted Messages API server and `make mediated-e2e` with the real binary: §4.3 tests 1, 2 and 4 in mode C;
-  6. STATE's "what mode C does not protect";
-  7. the PR and the gate.
+- **Also built (969 unit tests green):**
+  3. the socket service and the `juno-hook` client, which exits 2 on any doubt (D-142);
+  4. `juno hook install` and its setup refusals (D-143);
+  5. D-073's network guard admits the hook's Unix-socket files only, with a new check that they name no host, port or URL (D-144; flagged for the reviewer).
+- **Left:**
+  6. the scripted Messages API server and `make mediated-e2e` with the real binary (§4.3 tests 1, 2, 4 in mode C). If Claude Code cannot run against it, STOP and report (plan §4);
+  7. STATE's "what mode C does not protect";
+  8. the PR and the gate.
 
 ### Increment 4 design (2026-11-05; each choice becomes a D-number when built)
 - **Package `packages/mediated`**, shared with Increment 5's gateway. It uses the same `EnforcementBoundary`, `GrantStore` and `JournalWriter` as mode A.
