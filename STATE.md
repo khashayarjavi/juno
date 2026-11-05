@@ -16,10 +16,13 @@ Status: **building; not done.**
   3. the socket service and the `juno-hook` client, which exits 2 on any doubt (D-142);
   4. `juno hook install` and its setup refusals (D-143);
   5. D-073's network guard admits the hook's Unix-socket files only, with a new check that they name no host, port or URL (D-144; flagged for the reviewer).
-- **`make mediated-e2e`: GREEN on 2026-11-05 with the real Claude Code 2.1.318, 4 of 4, no paid model, no network** (D-145). It covers §4.3 tests 1, 2 and 4 in mode C.
-- **Left:**
-  - the full `make verify`;
-  - the PR and the gate.
+- **`make mediated-e2e`: GREEN on 2026-11-05 with the real Claude Code 2.1.318, 5 of 5, no paid model, no network** (D-145). It covers:
+  - §4.3 tests 1, 2 and 4 in mode C;
+  - fail-closed with the service down, against a positive control;
+  - every denial is JUNO's, with Claude Code's own edit approvals on.
+- **Effect per program** (D-146): `rm` is a write.
+- **`make verify: GREEN`** on 7c987c5 (972 unit, 72 container).
+- **Left:** the PR and the §7 gate.
 
 ### What mode C does not protect (§4.3; Increment 4's done-when)
 In plain words, JUNO's hook governs every **tool call** Claude Code makes. It does not govern:
