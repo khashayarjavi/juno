@@ -1692,3 +1692,26 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
 
   Nothing the guard refused before is accepted now, and the hook files are held to more than the guard asked.
 - Reason: CLAUDE.md rule 5 forbids weakening a test. The guard's intent (no egress except the provider) is unchanged and now proven for the new files too. This is listed in the PR for the reviewer's check 2.
+
+## D-145 — `make mediated-e2e`: §4.3's acceptance in mode C with the real Claude Code binary (Slice 1.5 Increment 4)
+- Date: 2026-11-05
+- Status: Accepted (applies plan §4 and D-092)
+- Applies to: `test/mediated-e2e/`, `vitest.mediated.config.ts`, `make mediated-e2e`
+- Decision:
+  - **Where.** Cloud sessions only, never `make verify` or CI (D-092). The binary is the session's own installation (`/opt/claude-code`), mounted read-only, never added to the repository, the lockfile or an image. The test records its version (2.1.318 on 2026-11-05).
+  - **Isolation.** Claude Code runs in `-p` mode in the runner image with:
+    - `--network none`, `--cap-drop ALL`, `no-new-privileges`, uid 1000;
+    - the scripted Messages API server on the container's loopback (`ANTHROPIC_BASE_URL=http://127.0.0.1:18765`);
+    - a random `ANTHROPIC_API_KEY` that is not a key;
+    - `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`;
+    - a fresh `HOME`, so the operator's login is never read.
+
+    No request can reach a paid endpoint, and the test asserts that every request was to `/v1/messages`.
+  - **The scripted server** answers each `POST /v1/messages` with the next scripted turn as a streamed message: `message_start`, a `text` or `tool_use` block with its delta, `message_delta` with the stop reason, `message_stop`. That sequence was observed to work with the real binary on 2026-11-05 (rule 13: the binary is the proof). It records every request.
+  - **JUNO** runs in the test process: `MediatedSessions` and `HookService` on a Unix socket mounted into the container. The hook is installed by `installHook` into the fresh home's `.claude/settings.json`, exactly as the operator's command does, so the run also proves the install's output is what Claude Code obeys. Sessions are admitted before Claude Code starts, by passing `--session-id`.
+  - **What it proves** (2026-11-05: 4 of 4):
+    - **§4.3 test 1:** a Write outside the grant is denied, the file does not exist, the journal has the `scope_violation` park with `answer: deny`, and the model's next request carries JUNO's reason.
+    - **§4.3 test 2:** after reading a planted file, `cat notes.txt; sh -c 'touch …'` parks `integrity_floor` (not overridable) and nothing runs.
+    - **§4.3 test 4 (mode C):** a forged grant is not honoured; the session's admission is refused and journalled, and no call runs.
+  - **Mode A's parts** of tests 2 and 4 stay in `make verify`.
+- Reason: plan §4: "if Claude Code cannot run against it, Increment 4 stops and reports". It can, so no stop.

@@ -3,7 +3,7 @@
 
 COMPOSE := docker compose -f containers/docker-compose.yml
 
-.PHONY: verify verify-rootless typecheck lint test test-watch build stage containers smoke clean
+.PHONY: verify verify-rootless mediated-e2e typecheck lint test test-watch build stage containers smoke clean
 
 verify:
 	$(MAKE) typecheck
@@ -59,6 +59,12 @@ verify-rootless:
 containers: build stage
 	$(COMPOSE) --profile anchors build
 	npx vitest run --config vitest.containers.config.ts
+
+# §4.3's acceptance in mode C with the real Claude Code binary and a scripted model (build plan Slice 1.5 §4; D-092,
+# D-145). Cloud sessions only, never `verify` or CI: the binary is the session's own, mounted read-only, never vendored.
+mediated-e2e: build stage
+	$(COMPOSE) build runner
+	npx vitest run --config vitest.mediated.config.ts
 
 # The evidence run against the real provider (DECISIONS.md D-072, D-073).
 # Run from the cloud session only, never by `verify` or CI (D-002).

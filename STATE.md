@@ -16,10 +16,19 @@ Status: **building; not done.**
   3. the socket service and the `juno-hook` client, which exits 2 on any doubt (D-142);
   4. `juno hook install` and its setup refusals (D-143);
   5. D-073's network guard admits the hook's Unix-socket files only, with a new check that they name no host, port or URL (D-144; flagged for the reviewer).
+- **`make mediated-e2e`: GREEN on 2026-11-05 with the real Claude Code 2.1.318, 4 of 4, no paid model, no network** (D-145). It covers §4.3 tests 1, 2 and 4 in mode C.
 - **Left:**
-  6. the scripted Messages API server and `make mediated-e2e` with the real binary (§4.3 tests 1, 2, 4 in mode C). If Claude Code cannot run against it, STOP and report (plan §4);
-  7. STATE's "what mode C does not protect";
-  8. the PR and the gate.
+  - the full `make verify`;
+  - the PR and the gate.
+
+### What mode C does not protect (§4.3; Increment 4's done-when)
+In plain words, JUNO's hook governs every **tool call** Claude Code makes. It does not govern:
+1. **Anything Claude Code does without a tool call:** its own memory, and the content of a file you `@`-mention if Claude does not then read it with a tool. JUNO's install turns direct `@`-insertion off (D-139), so a mentioned file is read through the Read tool, which JUNO judges.
+2. **A file or symlink changed between JUNO's check and Claude Code's use of it.** Claude Code, not JUNO, performs the effect, so D-121's writer protection does not apply in this mode. Keep the workspace out of reach of anything else.
+3. **A configuration that bypasses the hook:** a run started with `--settings '{"disableAllHooks": true}'`, settings of higher precedence that turn hooks off, or managed settings that allow only managed hooks. JUNO refuses to install into project or local settings, and the install prints these limits.
+4. **Context ownership and steering** (§7.8: a hook session's `steer_capability` is `none`), and the text of tool descriptions Claude Code reads.
+5. **Tokens and money:** Claude Code's own limits govern them; you accept that when a session is admitted (`unmetered`).
+6. **Everything mode A does not protect**, plus D-130's residuals: a kernel or WSL escape, and a compromised Windows account. Claude Code runs as your Windows user, which can ask your agent to sign.
 
 ### Increment 4 design (2026-11-05; each choice becomes a D-number when built)
 - **Package `packages/mediated`**, shared with Increment 5's gateway. It uses the same `EnforcementBoundary`, `GrantStore` and `JournalWriter` as mode A.

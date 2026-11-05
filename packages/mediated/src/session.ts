@@ -227,7 +227,11 @@ export class MediatedSessions {
     } catch (error: unknown) {
       failures.push(error instanceof Error ? error.message : String(error));
     }
-    if (failures.length > 0 || built === null) return { admitted: false, failures };
+    if (failures.length > 0 || built === null) {
+      // Never admitted, never referenced: recorded at the most restrictive class, as mode A records a refused admission.
+      if (!this.#sessions.has(id)) this.#append(id, "note", { sensitivity: "secret", integrity: "untrusted" }, SESSION_ACTOR, { type: "admission", outcome: "rejected", mode: "hook", failures });
+      return { admitted: false, failures };
+    }
     const task = Task.parse({
       id,
       principal: request.principal,
