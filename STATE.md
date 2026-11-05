@@ -3,22 +3,32 @@
 ## Current increment
 **Slice 1.5 — Increment 3: effects under untrusted influence** (`docs/plans/slice-1.5-build-plan.md`, Increment 3; spec §2.2.2 A1, §2.7.1 "Effects", §3.2 `enumerated_targets`, §2.4; D-121). Branch `claude/vigilant-heisenberg-uko6on`, restarted from `main` d7e7ec3 after PR #35 merged. Spec v0.6.1. No objection open.
 
-Status: **building; not done.** Built and green (885 unit tests, 2026-11-05):
-1. target/payload fields (D-132);
-2. `enumerated_targets` (D-133);
-3. typed registry entries (D-134);
-4. step 4's effect table (D-135);
-5. reversible workspaces at admission, checkpointed before the first turn, rebuilt from the journal, passed to the boundary (D-136);
-6. the checkpoint store and the snapshot and restore scripts (`packages/enforcement/src/checkpoint.ts`);
-7. `fs.file.write` and its writer that never follows a symlink in any component (D-121, D-137);
-8. `juno checkpoint restore` and `Runner.restoreCheckpoint` (D-138).
+Status: **built; going through the §7 gate.** `make verify: GREEN` locally on 2026-11-05 (885 unit, 72 container, §18 acceptance included).
+- **Built:**
+  - target/payload fields (D-132);
+  - `enumerated_targets` (D-133);
+  - typed registry entries (D-134);
+  - step 4's effect table (D-135);
+  - reversible workspaces with checkpoints taken before the first turn (D-136);
+  - `fs.file.write` with a writer that never follows a symlink in any component (D-121, D-137);
+  - `juno checkpoint restore` (D-138).
+- **Done-when:**
+  - the plan's tests are green (see the PR);
+  - the registry has exactly one new capability, `fs.file.write`;
+  - the per-class table is below.
 
-**Left, in order:**
-9. register `fs.file.write` where the real runner and containers do;
-10. container tests: the writer in the real workload with the D-121 swap between the boundary's check and the write; checkpoint and restore in the real workload; the §18 regression;
-11. STATE's per-class table;
-12. `make verify`;
-13. the PR and the §7 gate.
+### What untrusted content can and cannot choose (§2.2.2; Increment 3's done-when)
+"Untrusted" means anything the model wrote, read or was steered by: a synthesized value, or a value bound to an `untrusted` entry, or one with no established integrity. Operator constants and values bound to entries that are not `untrusted` are not affected by this table.
+
+| Effect class | In a **target** field (what is affected, or where it goes) | In a **payload** field (content) |
+|---|---|---|
+| `read` (e.g. `shell.run` with `cat`) | **Can choose** anything inside the grant's scope (canonical paths, §2.7.1). | Can choose it. |
+| `write` (e.g. `fs.file.write`) | **Can choose** a path only inside a reversible workspace: one the operator named at admission, checkpointed before the first turn, restorable by `juno checkpoint restore`. **Cannot choose** anywhere else; that parks `integrity_floor` (not overridable). | Can choose it, up to the capability's sensitivity ceiling. |
+| `external` (send, post, push) | **Cannot choose** it unless the grant enumerates that exact value for that field. Otherwise it parks `integrity_floor` (not overridable). | Can choose the wording, up to the capability's sensitivity ceiling. |
+| `irreversible` (delete, pay) | **Cannot choose** it unless the grant enumerates that exact value for that field. Otherwise it parks `integrity_floor` (not overridable). | Can choose it, up to the ceiling. |
+| Any (§2.3, unchanged) | **Never chooses which program runs**: instruction fields are judged by integrity floors, and typed capabilities like `fs.file.write` have none. | n/a |
+
+Every write, at the moment it happens, refuses to follow a symlink in any part of its path, whatever the boundary saw earlier (D-121). A component swapped for a symlink in between makes the write fail, and the journal records why.
 
 ### Increment 3 design (2026-11-04; each choice to be recorded as a D-number when built)
 - **Target and payload (§2.2.2).** An interface field gets `data_effect: "target" | "payload"`, meaningful for `data` fields only. An undeclared `data` field parses as `target` (fail-closed). Declaring it on an `instruction` field is refused. `shell.run`'s `argv` and `cwd` are declared `target`.
