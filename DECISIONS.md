@@ -1618,3 +1618,39 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
     - a keyword or builtin parks **whatever its quoting**, in any position (`cat 'eval'` parks), using bash 5's reserved words and builtins, `echo`, `printf`, `test`, `true` and `kill` included;
     - an absolute path as the program parks unless the name map has that exact string as a key.
 - Reason: §2.3.2 V6-5. Where it says "any of these", the reader admits less, never more.
+
+## D-141 — Mode C: the Claude Code session, its tools, paths and decisions (Slice 1.5 Increment 4)
+- Date: 2026-11-05
+- Status: Accepted (applies §4.3, §2.3.2, §2.2.2 and §7.8 E2; autopilot rulings, restrictive, where marked)
+- Applies to: Slice 1.5 Increment 4 onward (`packages/mediated/src/session.ts`, `packages/mediated/definitions/claude-code/`)
+- Decision:
+  - **The session is a Task (§4.3 V6-6):**
+    - id `session-<session_id>`, objective "operator session via claude-code", strategy `hook`, `closure_mode: accepted`, no criterion, `steer_capability: none` (§7.8 E2), `native`;
+    - budgets: tool calls (as turns) and wall clock are enforced, and tokens and currency are journalled as `unmetered`. Admission requires `unmetered_accepted: true`.
+    - **Restrictive:** admission refuses a grant that is unsigned, belongs to another principal, or reaches beyond the declared sources (§5.4 check 4).
+  - **Tools.** Claude Code's `Read`, `Glob`, `Write`, `Edit` and `WebFetch` map to operator-authored typed entries (D-134) in `packages/mediated/definitions/claude-code/`:
+    - read: `cc.read`, `cc.glob`;
+    - write: `cc.write`, `cc.edit` (`file_path` the target; contents and strings payloads);
+    - external: `cc.webfetch` (`url` the target).
+
+    The harness adapter plans a no-op invocation that is never run (Claude Code performs the effect). It passes §2.4.
+
+    **Restrictive:**
+    - a tool input field JUNO does not know is a `malformed_call`;
+    - a Glob pattern that is absolute, starts with `~` or holds `..` is a `malformed_call`;
+    - `Grep` has no definition, because its pattern is a regular expression (an instruction under §2.2), and is denied as `unknown_capability`, as is any other tool.
+  - **Bash** goes through `readCommandString` (D-140) and the operator's name map to `cc.bash`: a `shell.run`-shaped entry whose enum holds the name map's programs, with the surfaces from `shell.run`'s definition, and program floor `untrusted`.
+    - The untrusted floor applies **only in this mediated registry** (§2.3.2), and only after registration review passes every member with the interpreter test.
+    - **Restrictive:** the D-131 barred names (signing, launching and interpreter programs) are refused at admission, and every member must be declared `read` in Increment 4.
+    - The working directory is the hook's `cwd`, untrusted. A command string the operator listed is read the same way, but its words become `constant` slots at `operator` integrity (§4.3).
+  - **Paths.** Paths are mapped onto `/work` from the operator's workspace roots (WSL or Windows spelling). A path under no root is outside every scope and parks `scope_violation`, not overridable. Canonical forms come from `HostPathResolver`, the same resolver script on the host where the harness acts.
+  - **The read gate (§4.3 V6-7).** A call that reads parks `sensitivity_ceiling` before it runs when what it reads is above the session provider's declared clearance:
+    - `Read`, `Edit` and Bash operands read the file;
+    - a `Glob` reads its tree;
+    - a `Write` reads nothing.
+
+    **Restrictive:** a path in no declared source counts at the highest declared class.
+  - **Decisions.** Proceed answers no decision (exit 0, empty), so Claude Code's own permission rules still apply. Park and reject answer `deny` with the reason; a park is journalled with `answer: deny` and the same `overridable` rule as mode A. Nothing emits `allow`, `ask`, `defer`, `updatedInput` or `updatedToolOutput`. Three consecutive rejections park `rejection_limit`, counted per session.
+  - **Results.** PostToolUse and PostToolUseFailure are journalled as `capability_result` against the authorized call (by `tool_use_id`): `untrusted`, at the class of what the call read, raising the session floor. A result with no authorized call is marked `without_authorized_call`. When a call is asked while an earlier authorized call has no result, the gap is journalled (`result_missing`) and that call is denied.
+  - **Writes** use Increment 3's checkpoints on the host workspace. Session `reversible_workspaces` are checkpointed at admission, with the same scripts run by the host's node; a session whose workspace cannot be checkpointed is not admitted. Without one, a write's untrusted target parks `integrity_floor`.
+- Reason: §4.3's rules for mode C, each choice fail-closed.

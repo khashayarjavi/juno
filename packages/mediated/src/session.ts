@@ -20,6 +20,7 @@ import {
   EnforcementBoundary,
   type Workspace,
   checkpointId,
+  operandPath,
   type GrantStore,
   type PathResolver,
   type TaskContext,
@@ -424,7 +425,8 @@ export class MediatedSessions {
         if (filePath === null) return outside("file_path");
         const args: Record<string, unknown> = { file_path: synthesized(filePath) };
         for (const key of tool.fields.slice(1)) args[key] = synthesized(key === "replace_all" ? value(key) === true : String(value(key) ?? ""));
-        return proposal(tool.capability, args, [filePath]);
+        // §4.3 V6-7 gates reads: a Write reads nothing; an Edit reads the file it edits (D-141).
+        return proposal(tool.capability, args, tool.capability === "cc.edit" ? [filePath] : []);
       }
       case "cc.glob": {
         const pattern = value("pattern");
@@ -433,7 +435,8 @@ export class MediatedSessions {
         }
         const where = path("path", input.cwd);
         if (where === null) return outside("path");
-        return proposal("cc.glob", { path: synthesized(where), pattern: synthesized(pattern) }, [where]);
+        // A Glob lists everything under its path, so every source under it counts as read (D-141).
+        return proposal("cc.glob", { path: synthesized(where), pattern: synthesized(pattern) }, [`${where}/**`]);
       }
       case "cc.webfetch":
         return proposal("cc.webfetch", { url: synthesized(String(value("url") ?? "")), prompt: synthesized(String(value("prompt") ?? "")) }, []);
@@ -459,20 +462,33 @@ export class MediatedSessions {
           argv: reading.argv.map((element, index) => word(`command.argv.${String(index)}`, element)),
           cwd: synthesized(cwd),
         };
-        return { kind: "proposal", proposal: { capability: "cc.bash", arguments: args }, constants, paths: [cwd, ...reading.argv.map((element) => (element.startsWith("/") ? (this.#paths.toWork(element) ?? element) : `${cwd}/${element}`))] };
+        // What a Bash call reads is its operands, not its working directory (§4.3 V6-7).
+        return { kind: "proposal", proposal: { capability: "cc.bash", arguments: args }, constants, paths: reading.argv.map((element) => (element.startsWith("/") ? (this.#paths.toWork(element) ?? element) : `${cwd}/${element}`)) };
       }
     }
   }
 
+  /**
+   * The highest class of what a call reads (§4.3 V6-7): every source a read path lies in; for a tree (`<dir>/**`),
+   * also every source under it. A path that names no source is read at the highest class any source declares
+   * (restrictive: an unclassified read is never below the clearance by default, D-141).
+   */
   #readsSensitivity(session: Session, paths: readonly string[]): Sensitivity {
     let reads: Sensitivity = "public";
-    for (const path of paths) {
-      const parsed = WorkPath.safeParse(path.split("/").filter((part) => part !== "." ).join("/") || "/");
+    const highest = session.request.sources.reduce<Sensitivity>((high, source) => maxSensitivity(high, source.data_class.sensitivity), "public");
+    for (const raw of paths) {
+      const tree = raw.endsWith("/**");
+      const parsed = WorkPath.safeParse(operandPath("/", tree ? raw.slice(0, -3) : raw));
+      if (!parsed.success) return highest;
+      let named = false;
       for (const source of session.request.sources) {
-        if (source.selector.kind === "path" && parsed.success && (pathWithin(parsed.data, source.selector.prefix) || pathWithin(source.selector.prefix, parsed.data))) {
+        if (source.selector.kind !== "path") continue;
+        if (pathWithin(parsed.data, source.selector.prefix) || (tree && pathWithin(source.selector.prefix, parsed.data))) {
+          named = true;
           reads = maxSensitivity(reads, source.data_class.sensitivity);
         }
       }
+      if (!named) return highest;
     }
     return reads;
   }
