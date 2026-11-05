@@ -22,7 +22,7 @@ import {
   selectorWithin,
 } from "../../contracts/src/index.js";
 import { type GrantStore, operandPath, scopePaths } from "../../enforcement/src/index.js";
-import { type CapabilityRegistry, type RegistryEntry, callSchemaFor } from "../../registry/src/index.js";
+import { type CapabilityRegistry, type RegistryEntry, callSchemaFor, programShape } from "../../registry/src/index.js";
 import { PIN_HASH_FLAGS, PIN_HASH_PROGRAM, PIN_LISTING_FLAGS, pinRoots, within } from "./pins.js";
 import type { ProviderProfile } from "./profile.js";
 
@@ -118,6 +118,11 @@ export const AdmissionRequest = z.strictObject({
     .default({}),
   /** §2.7.1 (A4, v0.6.1): consecutive rejections that park `rejection_limit`; set per task between 1 and 10, default 3. */
   rejection_limit: RejectionLimit.default(DEFAULT_REJECTION_LIMIT),
+  /**
+   * §2.2.2 (v0.6, A1): the scopes the operator makes reversible workspaces. Each is checkpointed before the task's first
+   * turn; a `write` with an untrusted target proceeds only inside one (D-135, D-136).
+   */
+  reversible_workspaces: z.array(WorkPath).max(16).default([]),
 });
 export type AdmissionRequest = z.input<typeof AdmissionRequest>;
 
@@ -145,6 +150,8 @@ export type AdmittedTask = {
   readonly warnings: readonly string[];
   /** §2.7.1 (A4): consecutive rejections that park `rejection_limit`. */
   readonly rejection_limit: number;
+  /** §2.2.2: the task's reversible workspaces, checkpointed before its first turn (D-136). */
+  readonly reversible_workspaces: readonly string[];
 };
 
 export type AdmissionResult =
@@ -200,7 +207,8 @@ export const PROTECTED_LISTING = { capability: "shell.run", program: "/usr/bin/l
  * first turn (fail-closed); a file the task is to create belongs in `outputs`.
  */
 export function verificationScope(statement: CriterionStatement, entry: RegistryEntry | undefined): string[] {
-  const cwd = entry === undefined ? undefined : statement.command.arguments[entry.cwd_field];
+  const cwdField = entry === undefined ? undefined : programShape(entry)?.cwd;
+  const cwd = cwdField === undefined ? undefined : statement.command.arguments[cwdField];
   const named: string[] = [];
   if (entry !== undefined) {
     const call = callSchemaFor(entry.capability.interface).safeParse(statement.command.arguments);
@@ -323,7 +331,8 @@ export function admit(input: unknown, env: AdmissionEnvironment): AdmissionResul
       });
       if (licensed && !listable) fail("D-112", `verification scope ${root} lies within no grant for ${PROTECTED_LISTING.capability}, so the verifier could not pin it`);
     }
-    const programs = listing?.capability.interface[listing.program_field]?.type;
+    const programField = listing === undefined ? undefined : programShape(listing)?.program;
+    const programs = programField === undefined ? undefined : listing?.capability.interface[programField]?.type;
     for (const program of [PROTECTED_LISTING.program, PROTECTED_LISTING.hash_program]) {
       if (licensed && (programs?.kind !== "enum" || !programs.values.includes(program))) {
         fail("D-112", `${PROTECTED_LISTING.capability} with ${program} must be registered to pin verification inputs`);
@@ -381,6 +390,15 @@ export function admit(input: unknown, env: AdmissionEnvironment): AdmissionResul
     for (const capability of grant.capability_selector.capabilities) scope.add(capability);
     failures.push(...grantChecks(grant, request.principal, env, sourceRegistrations));
   }
+
+  // §2.2.2 (D-136): a reversible workspace lies inside a path scope of one of the task's grants (a scope the task cannot
+  // reach needs no undoing), is not the whole capability namespace (§5.3), and no two overlap (each path has one checkpoint).
+  request.reversible_workspaces.forEach((root, index) => {
+    if (root === WORK_NAMESPACE) fail("D-136", `reversible workspace ${root} is the whole capability namespace (§5.3)`);
+    const reachable = request.grants.some((id) => env.grants.signed(id)?.resource_scope.some((selector) => selectorWithin({ kind: "path", prefix: root }, selector)) === true);
+    if (!reachable) fail("D-136", `reversible workspace ${root} lies within no path scope of the task's grants`);
+    for (const other of request.reversible_workspaces.slice(0, index)) if (within(root, other) || within(other, root)) fail("D-136", `reversible workspaces ${other} and ${root} overlap`);
+  });
 
   // Check 9: every capability in scope is registered and none of its adapters is quarantined.
   for (const id of scope) {
@@ -449,5 +467,8 @@ export function admit(input: unknown, env: AdmissionEnvironment): AdmissionResul
     const entry = env.registry.entry(criterion.command.capability);
     for (const { slot, value } of [...criterionSlots(criterion), ...protectedSlots(criterion, entry), ...hashSlots(criterion, entry)]) constants[slot] = { value, data_class: { sensitivity: floor, integrity: criterionIntegrity }, actors: ["verifier"] };
   }
-  return { admitted: true, admission: { task, constants, criterion, provider, sources, warnings, rejection_limit: request.rejection_limit } };
+  return {
+    admitted: true,
+    admission: { task, constants, criterion, provider, sources, warnings, rejection_limit: request.rejection_limit, reversible_workspaces: request.reversible_workspaces },
+  };
 }

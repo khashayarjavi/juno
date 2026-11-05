@@ -6,3 +6,4 @@ export * from "./instruction.js";
 export * from "./registry.js";
 export * from "./review.js";
 export * from "./workload-adapter.js";
+export * from "./fs-write.js";

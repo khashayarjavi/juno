@@ -12,7 +12,7 @@
 #
 # What it does, each step fail-closed (set -euo pipefail):
 #  1. installs uidmap (newuidmap, newgidmap), dbus-user-session and iproute2, which rootless mode needs;
-#  2. creates the runner's user, juno-runner: no password, no login shell, no supplementary group;
+#  2. creates the runner's user, juno-runner: password locked, no supplementary group, no ACL on its home;
 #  3. installs Docker 29.9.2's static and rootless-extras binaries, root-owned, under /opt/juno-rootless/bin,
 #     after checking each archive's SHA-256 (pinned below; computed 2026-11-04 from download.docker.com);
 #  4. allows only that rootlesskit to create user namespaces, where AppArmor restricts them (Ubuntu 24.04);

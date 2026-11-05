@@ -7,3 +7,4 @@ export * from "./scope.js";
 export * from "./canonical.js";
 export * from "./signature.js";
 export * from "./sshsig.js";
+export * from "./checkpoint.js";

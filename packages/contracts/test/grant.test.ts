@@ -198,6 +198,8 @@ describe("attenuation (§3.2): a derived grant never widens its parent", () => {
               overrides = { ...overrides, expires_at: later(parent.expires_at, extraMs) };
             } else if (dimension === "max_invocations") {
               overrides = { ...overrides, max_invocations: cap };
+            } else if (dimension === "enumerated_targets") {
+              overrides = { ...overrides, enumerated_targets: [{ field: "to", value: "intruder@example.com" }] };
             } else {
               overrides = { ...overrides, resource_scope: [...parent.resource_scope, { kind: "record", id: "ticket-1" }] };
             }
@@ -355,5 +357,32 @@ describe("attenuation (§3.2, D-024): a child no wider than its parent on every 
         expect(isValidAttenuation(a, b)).toBe(noneWider);
       }),
     );
+  });
+});
+
+describe("enumerated_targets (§3.2, §2.2.2; D-133)", () => {
+  // proves §3.2: enumerated_targets is list | null; absent is accepted and means none
+  it("accepts a grant without, with null, and with a list of exact field values", () => {
+    expect(Grant.parse(parent).enumerated_targets).toBeUndefined();
+    expect(Grant.parse({ ...parent, enumerated_targets: null }).enumerated_targets).toBeNull();
+    const listed = Grant.parse({ ...parent, enumerated_targets: [{ field: "to", value: "ops@example.com" }] });
+    expect(listed.enumerated_targets).toEqual([{ field: "to", value: "ops@example.com" }]);
+  });
+
+  // proves §3.2 (D-133): an enumerated value names its target field; a bare value or a pattern-shaped entry is refused
+  it.each([["ops@example.com"], [{ value: "x" }], [{ field: "To", value: "x" }], [{ field: "to", value: "" }], [{ field: "to", value: ["x"] }]])(
+    "refuses the malformed entry %j",
+    (entry) => {
+      expect(Grant.safeParse({ ...parent, enumerated_targets: [entry] }).success).toBe(false);
+    },
+  );
+
+  // proves §3.2 attenuation (D-133): a child may enumerate only targets its parent enumerates
+  it("rejects a child that enumerates a target its parent does not", () => {
+    const enumerating = { ...parent, enumerated_targets: [{ field: "to", value: "a@example.com" }] };
+    expect(attenuationViolations(enumerating, { ...enumerating, enumerated_targets: [{ field: "to", value: "b@example.com" }] })).toEqual(["enumerated_targets"]);
+    expect(attenuationViolations(parent, { ...parent, enumerated_targets: [{ field: "to", value: "a@example.com" }] })).toEqual(["enumerated_targets"]);
+    expect(attenuationViolations(enumerating, { ...enumerating, enumerated_targets: null })).toEqual([]);
+    expect(attenuationViolations(enumerating, enumerating)).toEqual([]);
   });
 });

@@ -1,0 +1,16 @@
+{
+  "capability": {
+    "id": "fs.file.write",
+    "interface": {
+      "path": { "type": { "kind": "path" }, "role": "data", "data_effect": "target" },
+      "content": { "type": { "kind": "string" }, "role": "data", "data_effect": "payload" }
+    },
+    "providers": ["workload.fs_write"],
+    "side_effect": "write",
+    "isolation_tier": 1,
+    "max_input_sensitivity": "internal",
+    "min_argument_integrity": "attested",
+    "output_class": { "sensitivity": "input", "integrity": "untrusted" },
+    "cost_model": { "expected_cost": 0, "expected_latency_ms": 2000, "cost_of_failure": 0 }
+  }
+}

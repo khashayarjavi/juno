@@ -50,13 +50,24 @@ export function isComplexFieldType(type: FieldType): type is ComplexFieldType {
 }
 
 /**
+ * What a `data` field does to an effect (spec §2.2.2, v0.6 A1): a **target** selects what is affected or where it goes
+ * (a path written, a destination, a recipient); a **payload** is content written or sent.
+ */
+export const DATA_EFFECTS = ["target", "payload"] as const;
+export const DataEffect = z.enum(DATA_EFFECTS);
+export type DataEffect = z.infer<typeof DataEffect>;
+
+/**
  * One interface field. A missing `role` parses as `instruction` (§2.2 rule 1);
  * an `instruction` field of list or map type is rejected (§2.2 rule 2).
+ * A `data` field with no declared `data_effect` parses as a `target` (§2.2.2 "Undeclared → target", fail-closed);
+ * an `instruction` field may not declare one, because the effect table governs data fields only (DECISIONS.md D-132).
  */
 export const InterfaceField = z
   .strictObject({
     type: FieldType,
     role: FieldRole.default("instruction"),
+    data_effect: DataEffect.optional(),
   })
   .superRefine((field, ctx) => {
     if (field.role === "instruction" && isComplexFieldType(field.type)) {
@@ -66,8 +77,21 @@ export const InterfaceField = z
         message: `an instruction field must be a scalar, not a ${field.type.kind} (spec §2.2 rule 2); declare it data or decompose the capability`,
       });
     }
-  });
-export type InterfaceField = z.infer<typeof InterfaceField>;
+    if (field.role === "instruction" && field.data_effect !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["data_effect"],
+        message: "only a data field is a target or a payload (spec §2.2.2); an instruction field declares neither",
+      });
+    }
+  })
+  .transform((field) => (field.role === "data" ? { ...field, data_effect: field.data_effect ?? ("target" as const) } : field));
+export type InterfaceField = z.output<typeof InterfaceField>;
+
+/** Whether a field is a target field (§2.2.2): a `data` field not declared `payload`. */
+export function isTargetField(field: InterfaceField): boolean {
+  return field.role === "data" && field.data_effect !== "payload";
+}
 
 const FieldName = z.string().regex(/^[a-z_][a-z0-9_]*$/, "must be a lower-case identifier");
 

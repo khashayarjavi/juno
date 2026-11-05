@@ -7,7 +7,7 @@ import {
   parseAtBoundary,
 } from "../../contracts/src/index.js";
 import { callSchemaFor } from "./call.js";
-import type { RegistryEntry } from "./entry.js";
+import { type RegistryEntry, programShape } from "./entry.js";
 
 /**
  * The instruction values of one call, and the floor each must meet
@@ -38,7 +38,8 @@ export type InstructionValue = {
 
 /** Lists every instruction value of `call`. The call is parsed against the interface first. */
 export function instructionValues(entry: RegistryEntry, call: unknown): InstructionValue[] {
-  const { capability, program_field: programField, argv_field: argvField } = entry;
+  const { capability } = entry;
+  const shape = programShape(entry);
   const parsed = parseAtBoundary(`${capability.id} call`, callSchemaFor(capability.interface), call);
   const values: InstructionValue[] = [];
   for (const [name, field] of Object.entries(capability.interface)) {
@@ -46,7 +47,10 @@ export function instructionValues(entry: RegistryEntry, call: unknown): Instruct
       values.push({ argument: name, floor: capability.min_argument_integrity, source: { kind: "instruction_field" } });
     }
   }
-  const program = String(parsed[programField]);
+  // A typed entry (D-134) has no argv, so nothing can be promoted.
+  if (shape === null) return values;
+  const argvField = shape.argv;
+  const program = String(parsed[shape.program]);
   const argv = (parsed[argvField] as readonly unknown[]).map(String);
   const surface = entry.program_surfaces.find((candidate) => candidate.program === program);
   for (const element of argvRoles(program, surface, argv).elements) {

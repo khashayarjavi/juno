@@ -76,4 +76,10 @@ export type TaskContext = {
    * every scope (fail-closed).
    */
   readonly canonical?: CanonicalPaths;
+  /**
+   * The canonical roots of the task's reversible workspaces (§2.2.2, D-135): scopes checkpointed before the task's first
+   * effect, whose restore is an operator action recorded in the journal. Absent: none, so every `write` is judged as
+   * `irreversible`.
+   */
+  readonly reversible?: readonly string[];
 };

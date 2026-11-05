@@ -1478,3 +1478,98 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   - **The operator's WSL2 uses Docker's own packages** (`docker-ce`, `docker-ce-rootless-extras`, whose deb ships the rootlesskit AppArmor profile), not the static archives: the documented primary path for Ubuntu. Same engine line; the difference is recorded here.
   - **Increment 4 directive (recorded now, built there):** in hook mode Claude Code and every program a mediated `Bash` call starts run as the operator's Windows user, a trust root that can ask the agent to sign. So the operator-authored name map (§2.3.2) may not contain a program that can sign or start other programs (`ssh-keygen`, `ssh-add`, `ssh`, `ssh-agent`, `wsl`, `powershell`, `pwsh`, `cmd`, `git`, any interpreter), and registration review rejects one that does. §4.3's "not protected" rows for mode C (`@`-mentions, `disableAllHooks`, harness actions without a tool call) are, under D-130, inside the operator's trust root and are stated as residuals.
 - Reason: CLAUDE.md §7 step 3 (fail-closed) and rule 13. Each reading admits less than the alternatives, and none makes a §18 test impossible: the §18 tests and the whole container suite run unchanged under the rootless runtime.
+
+## D-132 — Target and payload fields (Slice 1.5 Increment 3)
+- Date: 2026-11-04
+- Status: Accepted
+- Applies to: Slice 1.5 Increment 3 onward (`packages/contracts/src/capability.ts`, every capability definition)
+- Decision: an interface field may declare `data_effect: "target" | "payload"` (§2.2.2). A `data` field that declares none parses as `target` (§2.2.2 "Undeclared → target"); the parsed field always carries the value, so no reader has to apply the default itself. An `instruction` field may not declare one: the effect table governs `data` fields only, and an instruction is governed by its integrity floor (§2.2), so a declaration there is refused rather than ignored. `isTargetField` is the one reading. `shell.run`'s `argv` and `cwd` are declared `target` explicitly (the build plan's Increment 3 item 1).
+- Reason: §2.2.2 and the plan. Refusing a declaration on an instruction field keeps a misplaced declaration from looking meaningful.
+
+## D-133 — `enumerated_targets` on Grant: shape, signature bytes and attenuation (Slice 1.5 Increment 3)
+- Date: 2026-11-04
+- Status: Accepted (autopilot rulings, the restrictive reading where marked)
+- Applies to: Slice 1.5 Increment 3 onward (`packages/contracts/src/grant.ts`, `attenuation.ts`, the boundary's step 4)
+- Decision:
+  - **Shape.** §3.2 says `list | null` of "exact values an `untrusted` target field may take". Each entry is `{ field, value }`: a target field name and one exact scalar value (a non-empty string, a number, or a boolean). **Restrictive:** an enumerated value counts only for the field it names. A recipient enumerated for `to` does not permit the same string in `cc`. A bare value is refused.
+  - **Exactness.** The value is compared exactly, as the call carries it. An enumerated value is still subject to `resource_scope`: enumeration lifts the integrity condition of §2.2.2's table, not the scope.
+  - **Absent or `null`.** Both mean none. The field is optional and has no default, so the canonical bytes of a grant signed without it are unchanged and its signature still verifies (D-115, D-124). A grant the operator signs with the field covers it like any other field.
+  - **Attenuation.** A derived grant may enumerate only `{ field, value }` pairs its parent enumerates (§3.2: "no wider than its parent on any dimension"). `enumerated_targets` is a seventh authority dimension.
+- Reason: §3.2 and §2.2.2. Per-field enumeration admits less than a flat list of values, and a default would have changed the bytes of grants already signed.
+
+## D-134 — Typed registry entries: capabilities without a program field (Slice 1.5 Increment 3)
+- Date: 2026-11-04
+- Status: Accepted (autopilot ruling, restrictive)
+- Applies to: Slice 1.5 Increment 3 onward (`packages/registry/src/entry.ts` and its readers)
+- Decision: a registry entry names `program_field`, `argv_field` and `cwd_field` together, as `shell.run` does, or none of them. An entry with none is a **typed** entry, such as `fs.file.write(path, content)`, which runs one fixed program chosen by its adapter, never per call.
+  - **Restrictive:** a typed entry may have no `instruction` field and declares no program surface, so nothing in a call to it can choose what runs, and no argv promotion applies.
+  - Its scope paths (§2.7.1) are its `path`-typed data fields.
+  - `programShape(entry)` is the one reading of the three fields; every former reader of them (scope, step 3, rule 6, admission, the criterion text) handles a typed entry.
+- Reason: Increment 3 adds the first capability that is not a program runner. Allowing instruction fields on a typed entry would need rules (which floor, which surface) the spec does not give for that shape; forbidding them admits less.
+
+## D-135 — Step 4 applies §2.2.2's effect table (Slice 1.5 Increment 3)
+- Date: 2026-11-04
+- Status: Accepted (autopilot rulings, the restrictive reading where marked)
+- Applies to: Slice 1.5 Increment 3 onward (`packages/enforcement/src/boundary.ts`; the runner's park records)
+- Decision: after the scope check, each candidate grant still in scope is judged by §2.2.2's table over every value of every target field (D-132), named as `argument_provenance` names it (D-022).
+  - **"Untrusted"** is `untrusted` or unestablished integrity (§1.5). For a relative argv operand it is the lower of the operand and `cwd`. This is the same reading as D-109 (confirmed by D-119). `constant` values and `bound` values whose entry is not `untrusted` proceed (§2.2.2's last paragraph).
+  - **`read`:** nothing is added.
+  - **`write`:** the call is reversible only when every target is a path whose canonical form (§2.7.1) lies inside one of the task's reversible workspaces (`TaskContext.reversible`). **Restrictive:** a non-path target, or a path with no canonical form, makes it `irreversible`. A reversible write lets untrusted targets proceed (scope still applies). Otherwise the call is judged `irreversible`, and the park records why.
+  - **`external` and `irreversible`:** every untrusted target must be enumerated by that grant for that field, exactly (D-133). Otherwise the grant is refused for the call.
+  - **The park.** When no candidate is left, the call parks `integrity_floor` with `effects`: each grant and its refused values. That reason is not overridable (§8.3: the operator cannot observe where such an effect lands), so a grant or override never clears it on resume.
+    - The park record's source entries (§11.1, D-110) name the refused arguments.
+    - Payload fields are judged by step 5 only.
+  - **Grant choice.** The call proceeds under the first remaining candidate, in the task's order, that also meets step 5, and that grant is charged (D-042 unchanged).
+- Reason: §2.2.2 and §2.7.1 "Effects". Treating a non-path or unresolvable write target as irreversible admits less than guessing that it is undoable.
+
+## D-136 — Reversible workspaces: declared at admission, checkpointed before the first turn, restored by the operator (Slice 1.5 Increment 3)
+- Date: 2026-11-05
+- Status: Accepted (autopilot rulings, the restrictive reading where marked)
+- Applies to: Slice 1.5 Increment 3 onward (`packages/enforcement/src/checkpoint.ts`, admission, the runner)
+- Decision:
+  - **Which scopes are reversible.** §2.2.2 says a scope is reversible when "a checkpoint of its full content is taken before the task's first effect on it". The operator names the task's reversible workspaces at admission (`reversible_workspaces`, at most 16 work paths). Admission refuses one that:
+    - lies in no path scope of the task's grants;
+    - is the whole namespace `/work` (§5.3's whole-filesystem rule);
+    - overlaps another.
+
+    **Restrictive:** nothing else is ever reversible. The Task contract (§3.1) is unchanged; the list lives in the admission record.
+  - **When.** Every declared workspace is checkpointed when the task first runs, before its first turn, so before any effect. A rebuilt task keeps its journalled checkpoints and is not checkpointed again. The root must be its own canonical form (a root reached through a symlink is refused). A workspace that cannot be checkpointed (no checkpoint store configured, a bound exceeded, a symlink root, a listing error) fails the task before its first turn, with `checkpoint_unavailable` or `checkpoint_failed`. **Restrictive:** never a partial checkpoint.
+  - **How.** An operator-fixed node program (`SNAPSHOT_SCRIPT`) runs in a fresh workload container, with the workload's isolation. It lists the root without following any symlink and returns every entry (path, type, mode, SHA-256, symlink target) and every file's bytes. The bounds are 2,000 entries and 8 MiB.
+    - The bytes go to the **checkpoint store**: a host directory outside every mount and every selector (§3.2 "No selector may name journal storage" already covers it, D-116). It is content-addressed and write-once, and every read is checked against the hash.
+    - The manifest is journalled as a `checkpoint` note. The checkpoint id is the SHA-256 of the canonical root and manifest.
+  - **The boundary** treats exactly the journalled checkpoint roots as the task's reversible workspaces (`TaskContext.reversible`, D-135).
+  - **Restore** is the operator's action (`juno checkpoint restore`, Increment 3 item 8). `RESTORE_SCRIPT` reads the manifest and bytes on standard input. It is an operator action, not a capability, so §2.3.1's rule on standard input does not apply. It then:
+    - removes every entry the manifest lacks or whose type differs, never descending a symlink;
+    - recreates directories, files (`O_EXCL | O_NOFOLLOW`, each checked against its hash) and symlinks;
+    - sets every mode.
+
+    The workspace is listed again and compared with the manifest, and the restore and its result are journalled.
+- Reason: §2.2.2's definition, built so that "reversible" is never claimed on less than the full content, and so that taking or restoring a checkpoint never follows a link out of the workspace.
+
+## D-137 — `fs.file.write`: the first write capability, and its writer (Slice 1.5 Increment 3)
+- Date: 2026-11-05
+- Status: Accepted (applies the operator's ruling D-121; autopilot rulings where marked)
+- Applies to: Slice 1.5 Increment 3 onward (`packages/registry/definitions/fs.file.write.json`, `packages/registry/src/fs-write.ts`)
+- Decision:
+  - **The capability.** `fs.file.write(path: data/target path, content: data/payload string)`, `side_effect: write`, a typed entry (D-134) served by `workload.fs_write`. It passes the §2.4 conformance suite, and an interpolating variant is refused at registration.
+  - **The writer** is an operator-fixed node program, run by the workload image's own node (`/nodejs/bin/node -e <script> -- /work /work <path> <content>`) in a fresh workload container with every compose setting. The path and the content are two argv elements after `--`. Content never goes through standard input (§2.3.1).
+  - **D-121, the mechanism chosen from what the image provides (rule 13: the image's node and Linux `/proc`).** The writer opens the root with `O_DIRECTORY | O_NOFOLLOW`. It then opens each component relative to the directory before it, by `/proc/self/fd/<fd>/<name>`, which resolves from the open directory, not from the path, with `O_DIRECTORY | O_NOFOLLOW`. It creates a missing directory there and opens the file with `O_CREAT | O_TRUNC | O_NOFOLLOW`. A component that is a symlink (`ELOOP`, `ENOTDIR`) fails the write with exit 5 and the reason on standard error. The runner journals both in the call's `capability_result`. Whatever the boundary saw at its check, the write never follows a symlink.
+  - **Bounds (restrictive):**
+    - content of at most 65,536 bytes of UTF-8;
+    - a path under `/work` with no empty, `.` or `..` component.
+
+    Anything else is refused by the writer (exit 2) and journalled like any failed effect. A longer content than the kernel's argv limit fails to start and is journalled as an error.
+  - **Residual, recorded:** a hard link inside the work volume is not a symlink. A task could reach another file of the same volume through one only if some capability could create hard links, and none can.
+- Reason: D-121 and the plan's Increment 3 item 5.
+
+## D-138 — `juno checkpoint restore`: the operator's restore (Slice 1.5 Increment 3)
+- Date: 2026-11-05
+- Status: Accepted (autopilot rulings, restrictive)
+- Applies to: Slice 1.5 Increment 3 onward (`packages/runner/src/restore.ts`, `Runner.restoreCheckpoint`, `juno checkpoint restore`)
+- Decision:
+  - **Who.** Only the task's principal, as recorded in the task's admission, may restore. The `checkpoint_restore` note names the principal as its actor.
+  - **What.** The manifest is read from the task's own trajectory, which is verified as it is read (an unverifiable journal is refused, D-056), and only if its id is the hash of that manifest. The bytes come from the checkpoint store, each checked against its hash.
+  - **When.** Never while the task runs. `Runner.restoreCheckpoint` refuses the runner's active task. The CLI takes the journal's runner lock and refuses while any runner holds it.
+  - **Outcome.** The workspace is listed after the write and compared with the manifest. `restored` only when they are identical; `failed`, with the reason, otherwise. Either way it is journalled.
+  - **CLI:** `juno checkpoint restore --journal <dir> --checkpoints <dir> --compose <file> --project <name> --principal <operator> <task> <checkpoint>`. It prints the outcome as JSON. Exit 0 restored, 1 not, 2 bad usage.
+- Reason: §2.2.2's "restoring that checkpoint is an operator action recorded in the journal".

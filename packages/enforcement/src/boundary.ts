@@ -10,9 +10,11 @@ import {
   argvRoles,
   compareIntegrity,
   compareSensitivity,
+  isTargetField,
   join,
   minIntegrity,
   parseAtBoundary,
+  pathWithin,
 } from "../../contracts/src/index.js";
 import { type EntryDraft, type JournalWriter, canonicalJson, readPayload, readTrajectory } from "../../journal/src/index.js";
 import {
@@ -31,8 +33,10 @@ import {
   checkInstructionFloors,
   executeOutbound,
   instructionValues,
+  programShape,
 } from "../../registry/src/index.js";
 import { type ResolutionFailureCode, resolveReference } from "./binding.js";
+import type { CanonicalPaths } from "./canonical.js";
 import { type DeliveryFailure, deliveryFailures } from "./delivery.js";
 import type { GrantRefusal, GrantStore } from "./grants.js";
 import { ArgumentSource, ProposalEnvelope, ProposedCall, type TaskContext } from "./proposal.js";
@@ -98,6 +102,22 @@ export const ENFORCEMENT_PARK_REASONS = [
 ] as const;
 export type EnforcementParkReason = (typeof ENFORCEMENT_PARK_REASONS)[number];
 
+/**
+ * One untrusted value in a target field that §2.2.2's table does not permit (D-135): the call's effect, as judged
+ * (`write` outside a reversible workspace is judged `irreversible`), and the value, which the grant does not enumerate.
+ */
+export type EffectRefusal = {
+  readonly argument: string;
+  readonly field: string;
+  readonly value: CallScalar;
+  readonly judged_as: "external" | "irreversible";
+  /** For a `write`: why it was judged `irreversible`. */
+  readonly not_reversible?: string;
+};
+
+/** A candidate grant and the target values whose effect it does not permit. */
+export type GrantEffectRefusals = { readonly grant: string; readonly refused: readonly EffectRefusal[] };
+
 /** Why one candidate grant was not usable for the call. */
 export type GrantFloorViolations = { readonly grant: string; readonly violations: readonly FloorViolation[] };
 
@@ -108,6 +128,11 @@ export type ParkDetail =
       readonly violations: readonly FloorViolation[];
       /** When every value met its own floor: each candidate grant, with the values below the floor its `min_integrity` raised (D-046). */
       readonly grants: readonly GrantFloorViolations[];
+      /**
+       * §2.2.2 (v0.6, A1) at step 4: when every value met its floors and the call was in scope, each remaining candidate
+       * grant with the untrusted target values its effect does not permit (D-135). Absent when step 3 parked.
+       */
+      readonly effects?: readonly GrantEffectRefusals[];
     }
   | { readonly reason: "awaiting_grant"; readonly refused: readonly GrantRefusal[] }
   | {
@@ -412,7 +437,7 @@ function judgeUnparsed(
   considered: (value: InstructionValue | FloorViolation) => boolean,
 ): Pick<StepThree, "values" | "violations"> {
   const { entry, args, leaves, valueOf } = input;
-  const { capability, argv_field: argvField } = entry;
+  const { capability } = entry;
   const values: InstructionValue[] = [];
   for (const [name, field] of Object.entries(capability.interface)) {
     if (field.role !== "instruction") continue;
@@ -420,8 +445,10 @@ function judgeUnparsed(
       if (leaf.field === name) values.push({ argument: leaf.argument, floor: capability.min_argument_integrity, source: { kind: "instruction_field" } });
     }
   }
-  const argv = leaves.filter((leaf) => leaf.field === argvField);
-  const raw = args[argvField];
+  // A typed entry (D-134) has no argv and no instruction field; nothing is promoted.
+  const argvField = programShape(entry)?.argv;
+  const argv = argvField === undefined ? [] : leaves.filter((leaf) => leaf.field === argvField);
+  const raw = argvField === undefined ? [] : args[argvField];
   const readable = Array.isArray(raw) && argv.length === raw.length && argv.every((leaf, index) => leaf.argument === `${argvField}[${String(index)}]`);
   if (readable) {
     const program = establishedProgram(input);
@@ -456,18 +483,96 @@ function judgeUnparsed(
  */
 function causingIntegrity(entry: RegistryEntry, call: CapabilityCall, argument: string, integrityOf: ReadonlyMap<string, Integrity>): Integrity {
   const own = integrityOf.get(argument) ?? "untrusted";
-  const prefix = `${entry.argv_field}[`;
+  const shape = programShape(entry);
+  if (shape === null) return own;
+  const prefix = `${shape.argv}[`;
   if (!argument.startsWith(prefix)) return own;
-  const element = (call[entry.argv_field] as readonly unknown[])[Number(argument.slice(prefix.length, -1))];
+  const element = (call[shape.argv] as readonly unknown[])[Number(argument.slice(prefix.length, -1))];
   if (typeof element === "string" && element.startsWith("/")) return own;
-  const cwd = integrityOf.get(entry.cwd_field) ?? "untrusted";
+  const cwd = integrityOf.get(shape.cwd) ?? "untrusted";
   return compareIntegrity(cwd, own) < 0 ? cwd : own;
+}
+
+/** How §2.2.2's table judges a call's effect: `read` and `external` as declared; a `write` reversible or not (D-135). */
+type JudgedEffect =
+  | { readonly kind: "read" }
+  | { readonly kind: "reversible_write" }
+  | { readonly kind: "external" }
+  | { readonly kind: "irreversible"; readonly not_reversible?: string };
+
+/**
+ * A `write` is reversible only when every target of the call is a path whose canonical form lies inside one of the
+ * task's reversible workspaces (§2.2.2: "only if the scope lies in a reversible workspace"; D-135, restrictive): a
+ * target that is not a path, or a path with no canonical form, makes it `irreversible`.
+ */
+function effectOf(entry: RegistryEntry, call: CapabilityCall, canonical: CanonicalPaths, reversible: readonly string[]): JudgedEffect {
+  const { side_effect: effect } = entry.capability;
+  if (effect === "read") return { kind: "read" };
+  if (effect === "external") return { kind: "external" };
+  if (effect === "irreversible") return { kind: "irreversible" };
+  const paths = new Map(scopePaths(entry, call).map((path) => [path.argument, path.raw]));
+  for (const { argument } of targetValues(entry, call)) {
+    const raw = paths.get(argument);
+    if (raw === undefined) return { kind: "irreversible", not_reversible: `${argument} is not a path` };
+    const answer = canonical.get(raw);
+    if (answer === undefined || !answer.ok) return { kind: "irreversible", not_reversible: `${argument} has no canonical path` };
+    if (!reversible.some((root) => pathWithin(answer.canonical, root))) {
+      return { kind: "irreversible", not_reversible: `${answer.canonical} lies in no reversible workspace of the task` };
+    }
+  }
+  return { kind: "reversible_write" };
+}
+
+/** Every value of a target field (§2.2.2), named as `argument_provenance` names it (D-022). */
+function targetValues(entry: RegistryEntry, call: CapabilityCall): { readonly argument: string; readonly field: string; readonly value: CallScalar }[] {
+  const values: { argument: string; field: string; value: CallScalar }[] = [];
+  for (const [name, field] of Object.entries(entry.capability.interface)) {
+    if (!isTargetField(field)) continue;
+    const value = call[name];
+    if (Array.isArray(value)) value.forEach((item: CallScalar, index) => values.push({ argument: `${name}[${String(index)}]`, field: name, value: item }));
+    else if (typeof value === "object" && value !== null) {
+      for (const [key, item] of Object.entries(value as Readonly<Record<string, CallScalar>>)) values.push({ argument: `${name}[${JSON.stringify(key)}]`, field: name, value: item });
+    } else if (value !== undefined) values.push({ argument: name, field: name, value });
+  }
+  return values;
+}
+
+/**
+ * §2.2.2's table for one candidate grant (D-135): under a `read` or a reversible `write`, nothing; under `external` or
+ * `irreversible` (a `write` outside a reversible workspace included), every untrusted target value (or one with no
+ * established integrity, §1.5; for a relative argv operand, the lower of it and `cwd`) the grant does not enumerate for
+ * that field. `constant` values and `bound` values whose entry is not `untrusted` proceed.
+ */
+function effectRefusals(
+  entry: RegistryEntry,
+  call: CapabilityCall,
+  grant: Grant,
+  integrityOf: ReadonlyMap<string, Integrity>,
+  effect: JudgedEffect,
+): EffectRefusal[] {
+  if (effect.kind === "read" || effect.kind === "reversible_write") return [];
+  const enumerated = grant.enumerated_targets ?? [];
+  const refusals: EffectRefusal[] = [];
+  for (const { argument, field, value } of targetValues(entry, call)) {
+    if (causingIntegrity(entry, call, argument, integrityOf) !== "untrusted") continue;
+    if (enumerated.some((target) => target.field === field && target.value === value)) continue;
+    refusals.push({
+      argument,
+      field,
+      value,
+      judged_as: effect.kind,
+      ...(effect.kind === "irreversible" && effect.not_reversible !== undefined ? { not_reversible: effect.not_reversible } : {}),
+    });
+  }
+  return refusals;
 }
 
 /** §2.3.1 rule 6 (A5): the first undeclared flag of a parsed call whose program's surface is code-free everywhere, or `null`. */
 function undeclaredFlagOf(entry: RegistryEntry, call: CapabilityCall): number | null {
-  const program = String(call[entry.program_field]);
-  const argv = (call[entry.argv_field] as readonly unknown[]).map(String);
+  const shape = programShape(entry);
+  if (shape === null) return null;
+  const program = String(call[shape.program]);
+  const argv = (call[shape.argv] as readonly unknown[]).map(String);
   const surface = entry.program_surfaces.find((candidate) => candidate.program === program);
   return argvRoles(program, surface, argv).undeclaredFlag;
 }
@@ -604,7 +709,7 @@ export class EnforcementBoundary {
     // on the §2.3 list, is a rejection. Step 3 has passed, so no instruction value is below its floor.
     const undeclared = undeclaredFlagOf(entry, floors.parsed.call);
     if (undeclared !== null) {
-      return reject({ reason: "malformed_call", message: `${entry.argv_field}[${String(undeclared)}] is a flag the program's declared surface does not list (§2.3.1 rule 6)` });
+      return reject({ reason: "malformed_call", message: `${programShape(entry)?.argv ?? "argv"}[${String(undeclared)}] is a flag the program's declared surface does not list (§2.3.1 rule 6)` });
     }
     // One frozen copy of the inspected call: the adapter plans from it, and the Authorization carries it (D-053).
     const parsedCall = frozenCall(floors.parsed.call);
@@ -622,6 +727,15 @@ export class EnforcementBoundary {
       return park({ reason: "scope_violation", grants: scoped.map(({ grant, outside: values }) => ({ grant: grant.id, outside: values })), untrusted });
     }
 
+    // Step 4, effects (§2.2.2, §2.7.1 "Effects"; D-135): an untrusted target of an effect that cannot be undone must be
+    // one the grant enumerates. Not overridable (§8.3): the operator cannot observe where such an effect lands.
+    const judgedEffect = effectOf(entry, parsedCall, canonical, context.reversible ?? []);
+    const effects = inScope.map((grant) => ({ grant, refused: effectRefusals(entry, parsedCall, grant, integrityOf, judgedEffect) }));
+    const permitted = effects.filter((candidate) => candidate.refused.length === 0).map((candidate) => candidate.grant);
+    if (permitted.length === 0) {
+      return park({ reason: "integrity_floor", violations: [], grants: [], effects: effects.map(({ grant, refused }) => ({ grant: grant.id, refused })) });
+    }
+
     // Step 5: the capability's ceiling, then each remaining candidate's lower ceiling.
     const inputClass = callInputClass(
       records.map((item) => item.data_class),
@@ -632,13 +746,13 @@ export class EnforcementBoundary {
     if (compareSensitivity(aggregate, ceiling) > 0) {
       return park({ reason: "sensitivity_ceiling", aggregate, ceiling, grants: [] });
     }
-    const chosen = inScope.find((grant) => compareSensitivity(aggregate, grant.data_class_bounds.max_sensitivity) <= 0);
+    const chosen = permitted.find((grant) => compareSensitivity(aggregate, grant.data_class_bounds.max_sensitivity) <= 0);
     if (chosen === undefined) {
       return park({
         reason: "sensitivity_ceiling",
         aggregate,
         ceiling,
-        grants: inScope.map((grant) => ({ grant: grant.id, max_sensitivity: grant.data_class_bounds.max_sensitivity })),
+        grants: permitted.map((grant) => ({ grant: grant.id, max_sensitivity: grant.data_class_bounds.max_sensitivity })),
       });
     }
 
