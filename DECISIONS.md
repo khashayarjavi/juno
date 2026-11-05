@@ -1561,3 +1561,15 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
     Anything else is refused by the writer (exit 2) and journalled like any failed effect. A longer content than the kernel's argv limit fails to start and is journalled as an error.
   - **Residual, recorded:** a hard link inside the work volume is not a symlink. A task could reach another file of the same volume through one only if some capability could create hard links, and none can.
 - Reason: D-121 and the plan's Increment 3 item 5.
+
+## D-138 — `juno checkpoint restore`: the operator's restore (Slice 1.5 Increment 3)
+- Date: 2026-11-05
+- Status: Accepted (autopilot rulings, restrictive)
+- Applies to: Slice 1.5 Increment 3 onward (`packages/runner/src/restore.ts`, `Runner.restoreCheckpoint`, `juno checkpoint restore`)
+- Decision:
+  - **Who.** Only the task's principal, as recorded in the task's admission, may restore. The `checkpoint_restore` note names the principal as its actor.
+  - **What.** The manifest is read from the task's own trajectory, which is verified as it is read (an unverifiable journal is refused, D-056), and only if its id is the hash of that manifest. The bytes come from the checkpoint store, each checked against its hash.
+  - **When.** Never while the task runs. `Runner.restoreCheckpoint` refuses the runner's active task. The CLI takes the journal's runner lock and refuses while any runner holds it.
+  - **Outcome.** The workspace is listed after the write and compared with the manifest. `restored` only when they are identical; `failed`, with the reason, otherwise. Either way it is journalled.
+  - **CLI:** `juno checkpoint restore --journal <dir> --checkpoints <dir> --compose <file> --project <name> --principal <operator> <task> <checkpoint>`. It prints the outcome as JSON. Exit 0 restored, 1 not, 2 bad usage.
+- Reason: §2.2.2's "restoring that checkpoint is an operator action recorded in the journal".

@@ -58,6 +58,7 @@ import {
   verificationScope,
 } from "./admission.js";
 import { type CheckpointStore, ManifestEntry, type Workspace, checkpointId } from "../../enforcement/src/index.js";
+import { type RestoreOutcome, restoreCheckpoint } from "./restore.js";
 import { MAX_PINNED_FILES, PIN_HASH_BATCH, type Pin, changedPins, filesToHash, parseHashes, parseListing, pinsOf, within } from "./pins.js";
 import { type BudgetAxis, NO_SPEND, type Spend, exhaustedAxes, overrunAxes } from "./budget.js";
 import { type RunnerLock, acquireRunnerLock } from "./lock.js";
@@ -650,6 +651,16 @@ export class Runner {
     this.#append(run.task.id, "note", this.#runnerClass(run), { type: "checkpoint", root, checkpoint, manifest: taken.snapshot.manifest });
     run.checkpoints.set(root, checkpoint);
     return null;
+  }
+
+  /**
+   * The operator restores one of a task's checkpoints (§2.2.2, D-138): never while the task is running here. The outcome
+   * is journalled in the task's trajectory, with the operator as its actor.
+   */
+  async restoreCheckpoint(id: string, checkpoint: string, principal: string): Promise<RestoreOutcome> {
+    if (this.#active === id) throw new RunnerError(`task ${id} is running; a checkpoint is restored only while it is not (§2.2.2)`);
+    if (this.#checkpoints === undefined) return { ok: false, reason: "no checkpoint store is configured" };
+    return restoreCheckpoint(this.#journal, this.#checkpoints, id, checkpoint, principal);
   }
 
   /** The operator closes a task that completed unverified (§6, §6.1): `accepted`, the weakest closure; then anchors it. */
