@@ -3,7 +3,16 @@
 ## Current increment
 **Slice 1.5 — Increment 4: hook mode for Claude Code (§4.3 mode C)** (`docs/plans/slice-1.5-build-plan.md`, Increment 4; also §2.3.2 E1, §7.8 E2, D-131's Increment 4 directives). Branch `claude/vigilant-heisenberg-uko6on`, restarted from `main` 5951e57 after PR #36 merged. Spec v0.6.1. No objection open.
 
-Status: **building; not done.**
+Status: **STOPPED (CLAUDE.md §7): PR #37's three review rounds each ended DO NOT MERGE.** Every finding is fixed on the branch, with tests: rounds 1 and 2 by D-147 to D-150, round 3 by D-151. `make verify` is GREEN locally (988 unit, 72 container), and `make mediated-e2e` is 5 of 5 with the real Claude Code 2.1.318. **Nothing was merged. The round-3 fix has not been reviewed.**
+- **For you (the operator):** authorise a fourth review round on PR #37, as D-103, D-106 and D-127 did before. With it, the next session runs round 4, merges through the gate on MERGE, and continues with Increment 5.
+- **What the three rounds found, in plain words.** Each finding was a case where JUNO's record or answer was weaker than the spec, never one where a forbidden action ran:
+  - **Round 1:**
+    - a Bash command with an absolute path was judged on a different file than Claude Code would touch;
+    - JUNO's own files were not yet fenced off from the workspace;
+    - the runtime check was missing.
+  - **Round 2:** a read of something above the model's clearance was judged before the integrity check, so some never-overridable parks were recorded as overridable.
+  - **Round 3:** the same kind of ordering slip inside Bash handling: an extra field, an outside working directory, or a spent budget each made an injected command look retryable.
+  - **One lesson for the next increments:** in mediated modes the command string is judged first, then everything else, in the spec's step order. D-150 and D-151 record this, and the gateway (Increment 5) must follow it.
 - **Step 1 done** (D-139): the hooks reference was re-read on 2026-11-05.
   - Plan §1.1 still holds point by point.
   - New: `CLAUDE_CODE_DISABLE_FILE_MENTIONS=1` routes `@`-mentions through the file tools, so the install will require it, and the minimum Claude Code version becomes 2.1.299.
@@ -30,7 +39,7 @@ Status: **building; not done.**
     - D-141's wording is corrected, and D-144's claim with it;
     - three tests made stronger.
   - Round 2 (head 0e358df, CI run 41975157057 green): **DO NOT MERGE.** Checks 1–4 and 6 PASS; check 5 FAIL. The read gate ran before the integrity and scope checks, so non-overridable parks were recorded as overridable. Fixed by D-150: the gate is now the boundary's step 5. The PATH/alias residual is recorded, and an unauthorized result is recorded at the highest class.
-  - Next: round 3, the last allowed (D-127).
+  - Round 3 (head f2a3b59, CI run 41976299272 green): **DO NOT MERGE.** Checks 1–4 and 6 PASS; check 5 FAIL. Unknown fields, the working directory and the budget were checked before the Bash command, so an injected command could be recorded as retryable. Fixed by D-151, but not reviewed: **STOP**.
 
 ### What mode C does not protect (§4.3; Increment 4's done-when)
 In plain words, JUNO's hook governs every **tool call** Claude Code makes. It does not govern:

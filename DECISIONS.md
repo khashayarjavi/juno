@@ -1770,3 +1770,22 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   - **A result with no authorized call** is recorded at the highest class any declared source holds (§1.5), not at the provider's clearance.
   - **Residual, recorded (not protected in mode C):** JUNO judges a Bash command's program through the operator's name map, but Claude Code's shell finds the program through its own `PATH`, aliases and functions. JUNO cannot rewrite the call (D-139: no `updatedInput`). `juno hook install` and STATE.md say so, with the remedy: keep the shell's startup files free of aliases and functions for mapped names.
 - Reason: §2.7's order and §2.7.1 D5's principle that no later check may turn a non-overridable park into a retryable one.
+
+## D-151 — In mode C a Bash command is judged first; STOP after three review rounds (Slice 1.5 Increment 4; PR #37 review round 3)
+- Date: 2026-11-05
+- Status: Accepted (fixes the round-3 finding); **STOP for the operator** (CLAUDE.md §7: three review rounds ended DO NOT MERGE)
+- Applies to: `packages/mediated/src/session.ts` (PreToolUse order)
+- Decision:
+  - **Order (§2.7.1 D5, §2.7 steps 3 then 4, §2.7.1 D4).** A Bash call's command string is its one instruction value. It is read by `readCommandString` before anything else is checked: unknown tool-input fields, the session's tool-call budget, the working directory's mapping, the missing-result check. So an injected command parks `integrity_floor` (not overridable) whatever else is wrong with the call.
+    - Before this, an extra field (Claude Code's Bash really has `dangerouslyDisableSandbox`) made it a retryable `malformed_call`;
+    - a working directory outside the workspace made it `scope_violation`;
+    - a spent budget made it an overridable `budget_exceeded`.
+
+    Nothing ran in any case. Tests reproduce all three.
+  - **Recorded:** WebFetch's `prompt` (text sent to the fetching model) is declared a `payload` `data` field. An unlisted URL parks first anyway. To revisit with Increment 5's first real `external` capability.
+  - **STOP.** Review rounds 1, 2 and 3 of PR #37 each ended DO NOT MERGE.
+    - Every finding has been fixed on the branch (D-147 to D-151), with tests.
+    - `make verify` is GREEN and `make mediated-e2e` is 5 of 5.
+    - The round-3 fix is not reviewed; a fourth round needs the operator's authorisation (as D-103, D-106 and D-127 gave before).
+    - Nothing was merged.
+- Reason: §2.7.1 D5: "a wrapped or broken value must not turn a non-overridable park into a retryable rejection"; CLAUDE.md §7's STOP list.

@@ -322,6 +322,13 @@ export class MediatedSessions {
     const built = this.#registries.get(id);
     if (session === undefined || built === undefined) return deny("this Claude Code session is not admitted to JUNO, so no call is allowed (§4.3)");
     if (session.task.state !== "running") return deny(`this session is ${session.task.state}; no call is allowed`);
+    // §2.7.1 D5 (D-151): a Bash command string is the call's one instruction value, so it is judged first, before the
+    // budget, unknown fields, the working directory or a missing result can turn its non-overridable park into anything else.
+    if (input.tool_name === "Bash" && typeof input.tool_input["command"] === "string") {
+      const command = input.tool_input["command"];
+      const reading = readCommandString(command, new Map(session.request.name_map.map((entry) => [entry.name, entry.program])));
+      if (!reading.ok) return this.#park(session, "integrity_floor", { tool: "Bash", command, why: reading.reason }, false);
+    }
     const now = this.#clock().getTime();
     if (now - session.admittedAt > session.request.ttl) {
       session.task = Task.parse({ ...session.task, state: "failed", runtime_substate: null });

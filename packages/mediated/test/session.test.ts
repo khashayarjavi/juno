@@ -303,6 +303,35 @@ describe("§2.7 order in mode C (D-150): the read gate never turns a park that c
   });
 });
 
+describe("§2.7.1 D5 in mode C (D-151): an injected command is judged before anything that could make its park retryable", () => {
+  const injected = "cat notes.txt; sh -c 'touch pwned'";
+  const lastPark = (): Record<string, unknown> | undefined => parks().at(-1);
+
+  // proves §2.7.1 D5: an extra tool-input field Claude Code really offers does not turn integrity_floor into malformed_call
+  it("parks integrity_floor even with an unknown extra field", async () => {
+    expect(await call("Bash", { command: injected, dangerouslyDisableSandbox: true })).toMatchObject({ reason: expect.stringContaining("integrity_floor") });
+    expect(lastPark()).toMatchObject({ reason: "integrity_floor", overridable: false });
+  });
+
+  // proves §2.7 order and §2.7.1 D4: a working directory outside the workspace does not present the injection as a scope problem
+  it("parks integrity_floor even from a working directory outside the workspace", async () => {
+    expect(await call("Bash", { command: injected }, { cwd: "/tmp" })).toMatchObject({ reason: expect.stringContaining("integrity_floor") });
+    expect(lastPark()).toMatchObject({ reason: "integrity_floor", overridable: false });
+  });
+
+  // proves D-151: after the tool-call budget is spent, an injected command still parks integrity_floor, not budget_exceeded
+  it("parks integrity_floor even after the budget is spent", async () => {
+    const spent = new MediatedSessions({ journal, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), protectedPaths: [join(dir, "checkpoints")], clock: () => now });
+    await spent.admit(request({ session_id: "spent-1", budget: { tool_calls: 1, wall_clock_ms: 3_600_000 } }));
+    const ask = (command: string) => spent.preToolUse({ ...(pre("Bash", { command }) as Record<string, unknown>), session_id: "spent-1" });
+    const first = { ...(pre("Bash", { command: "cat notes.txt" }) as Record<string, unknown>), session_id: "spent-1" };
+    expect(await spent.preToolUse(first)).toEqual({ decision: "none" });
+    expect(spent.postToolUse({ ...first, hook_event_name: "PostToolUse", tool_response: {} })).toEqual({ recorded: true });
+    expect(await ask(injected)).toMatchObject({ reason: expect.stringContaining("integrity_floor") });
+    expect(await ask("cat notes.txt")).toMatchObject({ reason: expect.stringContaining("budget_exceeded") });
+  });
+});
+
 describe("plan item 10 (D-148): JUNO's own state is outside every scope", () => {
   // proves plan item 10: sessions refuse to start when a workspace root would cover the journal or another protected path
   it("refuses a workspace root that covers the journal or a protected path", () => {
