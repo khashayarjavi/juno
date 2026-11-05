@@ -1666,3 +1666,29 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
     - **Everything else exits 2** with the reason on standard error, which blocks the call: an unreachable service, a timeout, a malformed or unknown answer (`allow`, `ask`, `defer`, extra keys), a missing newline, unreadable input, a missing or invalid `--socket` / `--timeout-ms`, or any exception.
     - It never prints `allow`, `ask`, `defer`, `updatedInput` or `updatedToolOutput`. Claude Code's own `onFailure: "block"` (D-139) covers the client crashing or hanging.
 - Reason: §4.3: "A hook or gateway that cannot reach the boundary, times out, or gets no explicit decision must block the call."
+
+## D-143 — `juno hook install` (Slice 1.5 Increment 4)
+- Date: 2026-11-05
+- Status: Accepted (applies §4.3 "refused at setup" and D-139; autopilot rulings, restrictive, where marked)
+- Applies to: Slice 1.5 Increment 4 onward (`packages/mediated/src/install.ts`; `juno hook install`)
+- Decision:
+  - **What it writes.** For each of `PreToolUse`, `PostToolUse` and `PostToolUseFailure`: matcher `*`, `type: command`, exec form (`command` plus `args`), `onFailure: "block"`, `timeout: 30`. Plus `env.CLAUDE_CODE_DISABLE_FILE_MENTIONS = "1"` (D-139). Other settings and other hooks are kept; an earlier JUNO entry is replaced. The file is written to a temporary name, then renamed, mode 0600.
+  - **Under WSL2** (`--wsl-distro` and `--wsl-user`) the command is `wsl.exe -d <distro> --user <user> --exec <node> <client> --socket <path>` (D-130, D-131). `wsl.exe` is a real executable, as exec form requires on Windows (D-139).
+  - **Refused, and nothing written:**
+    - a settings file that is not the user's (`~/.claude/settings.json`) or a `managed-settings.json` (restrictive: project and local files are refused, because Claude Code ignores the file-mentions variable there and a project can change them);
+    - Claude Code older than 2.1.299 (from `claude --version`, run by `execFile`), or a version that cannot be read;
+    - a settings file that is not a JSON object;
+    - any result without JUNO's hook on all three events, in exec form, with `onFailure: "block"` and a timeout, with the variable set, and without `disableAllHooks: true`. The same check, `hookRefusals`, is what the tests run against shell form, missing `onFailure` and missing timeouts.
+  - **It prints what it cannot control:** a run that disables hooks; harness actions without a tool call; files changed between JUNO's check and Claude Code's use; managed settings that allow only managed hooks.
+- Reason: §4.3: "A configuration in which a hook failure lets a call proceed is a misconfiguration and is refused at setup."
+
+## D-144 — D-073's network guard and the hook's Unix-domain socket (Slice 1.5 Increment 4)
+- Date: 2026-11-05
+- Status: Accepted (autopilot record; the guard keeps its property and gains a check)
+- Applies to: `packages/runner/test/groq.test.ts` (D-073's guard)
+- Decision: the plan's mode C uses a **local socket** between the hook client and the boundary service (plan §2 topology, Increment 4). In Node that is `node:net`, which D-073's guard reads as network code. Its property, "no package source opens a network connection except the Groq adapter", is kept as written for every file, with this one change:
+  - `mediated/hook-service.ts` and `mediated/hook-client.ts` may import `node:net` (and nothing else from its list: no `fetch`, `http(s)`, `tls`, `dgram`, `undici` or `WebSocket`);
+  - a **new assertion** requires those two files to name no host, port, hostname or URL, to use no `createConnection`, and to call `connect` and `listen` only on a socket path (`connect(socketPath)`, `listen(path, …)`).
+
+  Nothing the guard refused before is accepted now, and the hook files are held to more than the guard asked.
+- Reason: CLAUDE.md rule 5 forbids weakening a test. The guard's intent (no egress except the provider) is unchanged and now proven for the new files too. This is listed in the PR for the reviewer's check 2.
