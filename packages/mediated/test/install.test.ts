@@ -66,4 +66,11 @@ describe("juno hook install (§4.3 refused at setup)", () => {
     expect(hookRefusals({ ...good, env: {} }, CLIENT).join(" ")).toMatch(/CLAUDE_CODE_DISABLE_FILE_MENTIONS/);
     expect(hookRefusals({ env: good.env }, CLIENT)).toHaveLength(HOOK_EVENTS.length);
   });
+
+  // proves D-148: the socket must be an absolute path (a bare number would be a TCP port), and no other PreToolUse hook may share the file
+  it("refuses a relative socket, and another PreToolUse hook in the same file", async () => {
+    expect(await installHook(USER_SETTINGS, { command: "/usr/bin/node", args: [CLIENT, "--socket", "8080"] }, CLIENT, io("2.1.318"))).toMatchObject({ installed: false, refusals: [expect.stringContaining("absolute")] });
+    const other = JSON.stringify({ hooks: { PreToolUse: [{ matcher: "*", hooks: [{ type: "command", command: "/usr/local/bin/rewrite", args: [] }] }] } });
+    expect(await installHook(USER_SETTINGS, HOOK, CLIENT, io("2.1.318", other))).toMatchObject({ installed: false, refusals: [expect.stringContaining("another PreToolUse hook")] });
+  });
 });

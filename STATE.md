@@ -22,13 +22,20 @@ Status: **building; not done.**
   - every denial is JUNO's, with Claude Code's own edit approvals on.
 - **Effect per program** (D-146): `rm` is a write.
 - **`make verify: GREEN`** on 7c987c5 (972 unit, 72 container).
-- **Left:** the PR and the §7 gate.
+- **PR #37 review round 1: DO NOT MERGE.** Checks 1–4 and 6 PASS; check 5 FAIL, plus one finding.
+  - Fixed:
+    - absolute Bash operands are now mapped like host paths (D-147);
+    - JUNO's own state is outside every scope, sockets must be absolute paths, and no other PreToolUse hook may share the settings file (D-148);
+    - the runtime refusal is built (D-149);
+    - D-141's wording is corrected, and D-144's claim with it;
+    - three tests made stronger.
+  - Next: round 2.
 
 ### What mode C does not protect (§4.3; Increment 4's done-when)
 In plain words, JUNO's hook governs every **tool call** Claude Code makes. It does not govern:
 1. **Anything Claude Code does without a tool call:** its own memory, and the content of a file you `@`-mention if Claude does not then read it with a tool. JUNO's install turns direct `@`-insertion off (D-139), so a mentioned file is read through the Read tool, which JUNO judges.
 2. **A file or symlink changed between JUNO's check and Claude Code's use of it.** Claude Code, not JUNO, performs the effect, so D-121's writer protection does not apply in this mode. Keep the workspace out of reach of anything else.
-3. **A configuration that bypasses the hook:** a run started with `--settings '{"disableAllHooks": true}'`, settings of higher precedence that turn hooks off, or managed settings that allow only managed hooks. JUNO refuses to install into project or local settings, and the install prints these limits.
+3. **A configuration that bypasses the hook:** a run started with `--settings '{"disableAllHooks": true}'`, settings of higher precedence that turn hooks off, managed settings that allow only managed hooks, or **another PreToolUse hook in a different settings file (a project's included) that changes a call after JUNO judged it**. JUNO refuses to install into project or local settings, or beside another PreToolUse hook in the same file (D-148), and the install prints these limits. The remedy is managed settings with `allowManagedHooksOnly`.
 4. **Context ownership and steering** (§7.8: a hook session's `steer_capability` is `none`), and the text of tool descriptions Claude Code reads.
 5. **Tokens and money:** Claude Code's own limits govern them; you accept that when a session is admitted (`unmetered`).
 6. **Everything mode A does not protect**, plus D-130's residuals: a kernel or WSL escape, and a compromised Windows account. Claude Code runs as your Windows user, which can ask your agent to sign.

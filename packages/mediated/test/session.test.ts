@@ -94,7 +94,7 @@ beforeEach(async () => {
     journal,
     grants,
     paths: new PathMap([work, "\\\\wsl.localhost\\Ubuntu-24.04" + work.replace(/\//g, "\\")]),
-    resolver: new HostPathResolver(work),
+    resolver: new HostPathResolver(work), protectedPaths: [join(dir, "checkpoints")],
     clock: () => now,
     checkpoints: { workspace: new Workspace(execFileScript(process.execPath, []), "/work", work), store: new CheckpointStore(join(dir, "checkpoints")) },
   });
@@ -108,7 +108,7 @@ afterEach(() => {
 describe("§4.3 a session is a Task (V6-6) and §7.8 E2", () => {
   // proves §4.3 V6-6: admission refuses a session whose operator has not accepted unmetered tokens and currency
   it("refuses a session without the operator's acceptance of unmetered axes", async () => {
-    const other = new MediatedSessions({ journal, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), clock: () => now });
+    const other = new MediatedSessions({ journal, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), protectedPaths: [join(dir, "checkpoints")], clock: () => now });
     const refused = await other.admit({ ...request({ session_id: "other-1" }), unmetered_accepted: false });
     expect(refused).toMatchObject({ admitted: false });
   });
@@ -160,6 +160,17 @@ describe("§2.3.2 Bash in hook mode", () => {
   // proves §2.3.2: `cat notes.txt` (in the name map) proceeds, its program judged at floor untrusted
   it("lets `cat notes.txt` proceed", async () => {
     expect(await call("Bash", { command: "cat notes.txt", description: "read the notes" })).toEqual({ decision: "none" });
+    // The program value is the model's (synthesized, untrusted), and it still passes: its floor here is untrusted.
+    const callEntry = entries().find((entry) => entry.kind === "capability_call");
+    expect(callEntry?.argument_provenance).toEqual(expect.arrayContaining([expect.objectContaining({ argument: "program", class: "synthesized", integrity: "untrusted" })]));
+  });
+
+  // proves §2.7.1 C4 in mode C (D-147): an absolute Bash operand is a host path, mapped like a Read's; /work/... on the host
+  // is not the workspace, so it is outside every scope, and the workspace's own host path is judged in scope
+  it("judges absolute Bash operands on the host path the harness will touch", async () => {
+    expect(await call("Bash", { command: "cat /work/project/notes.txt" })).toMatchObject({ decision: "deny", reason: expect.stringContaining("scope_violation") });
+    expect(await call("Bash", { command: `cat ${join(work, "project", "notes.txt")}` })).toEqual({ decision: "none" });
+    expect(await call("Bash", { command: "rm /work/project/notes.txt" })).toMatchObject({ decision: "deny" });
   });
 
   // proves §4.3 acceptance test 2 at the protocol level: shell syntax or an interpreter parks integrity_floor, not overridable
@@ -176,7 +187,7 @@ describe("§2.3.2 Bash in hook mode", () => {
 
   // proves §4.3: an operator-listed exact command proceeds as written, its words recorded as constants of operator integrity
   it("lets an operator-listed command proceed as written, as constants", async () => {
-    const listed = new MediatedSessions({ journal, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), clock: () => now });
+    const listed = new MediatedSessions({ journal, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), protectedPaths: [join(dir, "checkpoints")], clock: () => now });
     await listed.admit(request({ session_id: "listed-1", commands: ["cat notes.txt"] }));
     const asked = { ...(pre("Bash", { command: "cat notes.txt" }) as Record<string, unknown>), session_id: "listed-1" };
     expect(await listed.preToolUse(asked)).toEqual({ decision: "none" });
@@ -197,7 +208,7 @@ describe("§2.3.2 V6-10: a Bash call takes the effect of the program it runs (D-
       journal,
       grants,
       paths: new PathMap([work]),
-      resolver: new HostPathResolver(work),
+      resolver: new HostPathResolver(work), protectedPaths: [join(dir, "checkpoints")],
       clock: () => now,
       checkpoints: { workspace: new Workspace(execFileScript(process.execPath, []), "/work", work), store: new CheckpointStore(join(dir, "checkpoints")) },
     });
@@ -239,7 +250,7 @@ describe("§2.2.2 in hook mode", () => {
 
   // proves §2.2.2: with no checkpoint, the same Write is irreversible and its untrusted target parks integrity_floor
   it("parks a Write when the session has no checkpointed workspace", async () => {
-    const unchecked = new MediatedSessions({ journal, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), clock: () => now });
+    const unchecked = new MediatedSessions({ journal, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), protectedPaths: [join(dir, "checkpoints")], clock: () => now });
     await unchecked.admit(request({ session_id: "nockpt-1" }));
     const asked = { ...(pre("Write", { file_path: join(work, "project", "out.txt"), content: "x" }) as Record<string, unknown>), session_id: "nockpt-1" };
     expect(await unchecked.preToolUse(asked)).toMatchObject({ decision: "deny", reason: expect.stringContaining("integrity_floor") });
@@ -251,11 +262,28 @@ describe("§2.2.2 in hook mode", () => {
   });
 });
 
+describe("plan item 10 (D-148): JUNO's own state is outside every scope", () => {
+  // proves plan item 10: sessions refuse to start when a workspace root would cover the journal or another protected path
+  it("refuses a workspace root that covers the journal or a protected path", () => {
+    expect(() => new MediatedSessions({ journal, grants, paths: new PathMap([dir]), resolver: new HostPathResolver(dir), protectedPaths: [] })).toThrow(/JUNO's own state/);
+    expect(() => new MediatedSessions({ journal, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), protectedPaths: [join(work, "project", ".claude", "settings.json")] })).toThrow(/JUNO's own state/);
+  });
+
+  // proves plan item 10: a tool call naming the journal or the hook's settings parks scope_violation and is denied
+  it("denies a tool call naming the journal or Claude Code's settings", async () => {
+    expect(await call("Write", { file_path: join(dir, "journal", "x"), content: "x" })).toMatchObject({ decision: "deny", reason: expect.stringContaining("scope_violation") });
+    expect(await call("Edit", { file_path: join(dir, "home", ".claude", "settings.json"), old_string: "block", new_string: "continue", replace_all: false })).toMatchObject({ decision: "deny" });
+  });
+});
+
 describe("§4.3 sensitivity (V6-7), subagents, results and the rejection limit", () => {
   // proves §4.3 V6-7: a read of a source above the provider's clearance parks before it runs; a later permitted read is unaffected
   it("parks a read above the clearance, and later reads still proceed", async () => {
     expect(await call("Read", { file_path: join(work, "project", "secrets", "key.txt") })).toMatchObject({ decision: "deny", reason: expect.stringContaining("sensitivity_ceiling") });
     expect(await call("Read", { file_path: join(work, "project", "notes.txt") })).toEqual({ decision: "none" });
+    // A call after a permitted read is unaffected by it.
+    expect(await call("Read", { file_path: join(work, "project", "notes.txt") })).toEqual({ decision: "none" });
+    expect(await call("Bash", { command: "cat notes.txt" })).toEqual({ decision: "none" });
   });
 
   // proves §4.3 and hooks reference point 7: a subagent's call (with agent_id) is mediated the same way
@@ -276,6 +304,17 @@ describe("§4.3 sensitivity (V6-7), subagents, results and the rejection limit",
   it("parks rejection_limit after three rejections in a row", async () => {
     for (let index = 0; index < 2; index += 1) expect(await call("Frobnicate", {})).toMatchObject({ decision: "deny", reason: expect.stringContaining("unknown_capability") });
     expect(await call("Frobnicate", {})).toMatchObject({ decision: "deny", reason: expect.stringContaining("rejection_limit") });
+  });
+
+  // proves §2.7.1 A4 "in hook and gateway modes the count is per session": another session's rejections do not count
+  it("counts rejections per session", async () => {
+    await sessions.admit(request({ session_id: "other-session" }));
+    const other = (input: unknown): Promise<HookDecision> => sessions.preToolUse({ ...(input as Record<string, unknown>), session_id: "other-session" });
+    expect(await call("Frobnicate", {})).toMatchObject({ reason: expect.stringContaining("unknown_capability") });
+    expect(await call("Frobnicate", {})).toMatchObject({ reason: expect.stringContaining("unknown_capability") });
+    expect(await other(pre("Frobnicate", {}))).toMatchObject({ reason: expect.stringContaining("unknown_capability") });
+    expect(await other(pre("Frobnicate", {}))).toMatchObject({ reason: expect.stringContaining("unknown_capability") });
+    expect(await call("Frobnicate", {})).toMatchObject({ reason: expect.stringContaining("rejection_limit") });
   });
 
   // proves §4.3: a session not admitted, or input JUNO cannot read, is denied (fail-closed)

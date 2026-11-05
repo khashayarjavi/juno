@@ -64,6 +64,11 @@ describe("§4.3 fail-closed: the hook client blocks on any doubt", () => {
     },
   );
 
+  // proves D-148: a socket that is not an absolute path (a bare number would be a TCP port) is refused, never connected to
+  it("blocks a socket that is not an absolute path", async () => {
+    expect(await runHookClient(preInput(), "8080")).toMatchObject({ exitCode: 2, stderr: expect.stringContaining("absolute") });
+  });
+
   // proves §4.3: input JUNO cannot read is blocked without asking
   it("blocks unreadable hook input", async () => {
     expect((await runHookClient("{", socketPath)).exitCode).toBe(2);
@@ -105,7 +110,7 @@ describe("the hook service and client together (§4.3 mode C, D-142)", () => {
         revoked_at: null,
       }),
     );
-    const sessions = new MediatedSessions({ journal: JournalWriter.open(join(dir, "journal")), grants, paths: new PathMap([join(dir, "work")]), resolver: new HostPathResolver(join(dir, "work")) });
+    const sessions = new MediatedSessions({ journal: JournalWriter.open(join(dir, "journal")), grants, paths: new PathMap([join(dir, "work")]), resolver: new HostPathResolver(join(dir, "work")), protectedPaths: [dir + "/sock-unused"] });
     await sessions.admit({
       session_id: "s-1",
       principal: "alireza",

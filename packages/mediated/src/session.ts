@@ -172,7 +172,18 @@ export type MediatedOptions = {
   readonly clock?: () => Date;
   /** Where the host workspace is checkpointed (the same scripts, run on the host) and the store for its content (D-136). */
   readonly checkpoints?: { readonly workspace: Workspace; readonly store: CheckpointStore };
+  /**
+   * JUNO's own state on the host, which no tool call may reach (plan Increment 4 item 10; §3.2 "No selector may name
+   * journal storage"; D-148): the checkpoint store, the trust anchor, the hook's socket directory, Claude Code's settings
+   * files. The journal's root is always included. Each must lie under no workspace root, in any spelling the map knows,
+   * or the sessions refuse to start.
+   */
+  readonly protectedPaths: readonly string[];
 };
+
+export class MediatedError extends Error {
+  override readonly name = "MediatedError";
+}
 
 /** Unknown tool → no capability; known tools map their input fields onto the capability's interface (D-141). */
 const TOOLS: Readonly<Record<string, { readonly capability: string; readonly fields: readonly string[] }>> = {
@@ -201,6 +212,11 @@ export class MediatedSessions {
     this.#resolver = options.resolver;
     this.#clock = options.clock ?? (() => new Date());
     this.#checkpoints = options.checkpoints;
+    for (const path of [options.journal.root, ...options.protectedPaths]) {
+      if (options.paths.toWork(path) !== null) {
+        throw new MediatedError(`${path} is JUNO's own state and lies under a workspace root, so a tool call could reach it; move the workspace or the state (D-148)`);
+      }
+    }
   }
 
   /** Admits a session as a Task (§4.3 V6-6), or says why not. */
@@ -479,6 +495,18 @@ export class MediatedSessions {
         const map = new Map(session.request.name_map.map((entry) => [entry.name, entry.program]));
         const reading = readCommandString(command, map);
         if (!reading.ok) return { kind: "park", reason: "integrity_floor", detail: { tool: "Bash", command, why: reading.reason }, overridable: false };
+        // Every absolute operand is a host path, like a Read's file_path: it is mapped onto /work through the workspace roots,
+        // so the boundary judges the file the harness will act on. One that maps nowhere is outside every scope (D-147).
+        const argv: string[] = [];
+        for (const element of reading.argv) {
+          if (!element.startsWith("/")) {
+            argv.push(element);
+            continue;
+          }
+          const mappedOperand = this.#paths.toWork(element);
+          if (mappedOperand === null) return outside("argv");
+          argv.push(mappedOperand);
+        }
         // §4.3: a command string the operator listed is `constant`, as written; anything else is the model's.
         const listed = session.request.commands.includes(command);
         const constants: Record<string, { value: string; data_class: DataClass }> = {};
@@ -490,12 +518,12 @@ export class MediatedSessions {
         };
         const args = {
           program: word("command.program", reading.program),
-          argv: reading.argv.map((element, index) => word(`command.argv.${String(index)}`, element)),
+          argv: argv.map((element, index) => word(`command.argv.${String(index)}`, element)),
           cwd: synthesized(cwd),
         };
         // What a Bash call reads is its operands, not its working directory (§4.3 V6-7).
         const member = session.request.name_map.find((entry) => entry.name === reading.name);
-        return { kind: "proposal", proposal: { capability: `cc.bash.${member?.side_effect ?? "irreversible"}`, arguments: args }, constants, paths: reading.argv.map((element) => (element.startsWith("/") ? (this.#paths.toWork(element) ?? element) : `${cwd}/${element}`)) };
+        return { kind: "proposal", proposal: { capability: `cc.bash.${member?.side_effect ?? "irreversible"}`, arguments: args }, constants, paths: argv.map((element) => (element.startsWith("/") ? element : `${cwd}/${element}`)) };
       }
     }
   }

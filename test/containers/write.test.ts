@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { type CanonicalPaths, CheckpointStore, GrantStore, type PathResolver, WorkloadPathResolver, workloadWorkspace } from "../../packages/enforcement/src/index.js";
+import { type CanonicalPaths, CheckpointStore, type ContainerRuntime, GrantStore, type PathResolver, WorkloadPathResolver, probeContainerRuntime, workloadWorkspace } from "../../packages/enforcement/src/index.js";
 import { JournalWriter, readPayload, readTrajectory } from "../../packages/journal/src/index.js";
 import { CapabilityRegistry, WorkloadExecFileAdapter, WorkloadWriteAdapter, loadRegistryEntry } from "../../packages/registry/src/index.js";
 import { SCRIPTED_PROFILE_FILE, loadProviderProfile } from "../../packages/runner/src/profile.js";
@@ -45,6 +45,7 @@ let journal: JournalWriter;
 let registry: CapabilityRegistry;
 let grants: GrantStore;
 const runners: Runner[] = [];
+let runtime: ContainerRuntime;
 
 function grant(id: string, capabilities: readonly string[]): Record<string, unknown> {
   return signed({
@@ -104,6 +105,8 @@ function runnerWith(calls: readonly unknown[], resolver: PathResolver = new Work
     resolver,
     anchoring: testAnchoring({ sink: new MemoryAnchorSink() }),
     checkpoints: { workspace: workloadWorkspace(target), store: new CheckpointStore(join(hostDir, "checkpoints")) },
+    // D-149: a runner that starts real workloads checks that the runtime enforces their limits.
+    containerRuntime: runtime,
   });
   runners.push(runner);
   return runner;
@@ -118,6 +121,7 @@ const payloads = (taskId: string): Record<string, unknown>[] =>
 
 beforeAll(async () => {
   await docker([...compose, "down", "--volumes", "--remove-orphans"]);
+  runtime = await probeContainerRuntime();
   await inWorkload(
     'const fs = require("node:fs"); fs.mkdirSync("/work/scope/sub", { recursive: true }); fs.mkdirSync("/work/outside"); fs.writeFileSync("/work/scope/notes.txt", "the original notes\\n"); fs.writeFileSync("/work/outside/keep.txt", "outside\\n");',
   );

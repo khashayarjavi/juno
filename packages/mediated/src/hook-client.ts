@@ -59,6 +59,7 @@ function ask(socketPath: string, request: string, timeoutMs: number): Promise<{ 
 
 /** Asks the service about one hook input and turns the answer into what Claude Code reads. */
 export async function runHookClient(stdin: string, socketPath: string, timeoutMs: number = DEFAULT_TIMEOUT_MS): Promise<ClientResult> {
+  if (!socketPath.startsWith("/")) return blocked("the JUNO socket is not an absolute path");
   let input: unknown;
   try {
     input = JSON.parse(stdin);
@@ -90,7 +91,8 @@ export async function main(argv: readonly string[]): Promise<number> {
   const socketPath = socketAt === -1 ? undefined : argv[socketAt + 1];
   const timeoutAt = argv.indexOf("--timeout-ms");
   const timeoutMs = timeoutAt === -1 ? DEFAULT_TIMEOUT_MS : Number(argv[timeoutAt + 1]);
-  if (socketPath === undefined || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
+  // An absolute path only: Node reads a bare number as a TCP port, which would be a network connection (D-144, D-148).
+  if (socketPath === undefined || !socketPath.startsWith("/") || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
     process.stderr.write("JUNO blocked this call: juno-hook was installed without a valid --socket or --timeout-ms\n");
     return 2;
   }

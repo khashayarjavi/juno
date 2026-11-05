@@ -1641,7 +1641,7 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
     - `Grep` has no definition, because its pattern is a regular expression (an instruction under §2.2), and is denied as `unknown_capability`, as is any other tool.
   - **Bash** goes through `readCommandString` (D-140) and the operator's name map to `cc.bash`: a `shell.run`-shaped entry whose enum holds the name map's programs, with the surfaces from `shell.run`'s definition, and program floor `untrusted`.
     - The untrusted floor applies **only in this mediated registry** (§2.3.2), and only after registration review passes every member with the interpreter test.
-    - **Restrictive:** the D-131 barred names (signing, launching and interpreter programs) are refused at admission, and every member must be declared `read` in Increment 4.
+    - **Restrictive:** the D-131 barred names (signing, launching and interpreter programs) are refused at admission. (As first built every member had to be `read`; D-146 replaced that with a declared effect per program.)
     - The working directory is the hook's `cwd`, untrusted. A command string the operator listed is read the same way, but its words become `constant` slots at `operator` integrity (§4.3).
   - **Paths.** Paths are mapped onto `/work` from the operator's workspace roots (WSL or Windows spelling). A path under no root is outside every scope and parks `scope_violation`, not overridable. Canonical forms come from `HostPathResolver`, the same resolver script on the host where the harness acts.
   - **The read gate (§4.3 V6-7).** A call that reads parks `sensitivity_ceiling` before it runs when what it reads is above the session provider's declared clearance:
@@ -1690,7 +1690,7 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   - `mediated/hook-service.ts` and `mediated/hook-client.ts` may import `node:net` (and nothing else from its list: no `fetch`, `http(s)`, `tls`, `dgram`, `undici` or `WebSocket`);
   - a **new assertion** requires those two files to name no host, port, hostname or URL, to use no `createConnection`, and to call `connect` and `listen` only on a socket path (`connect(socketPath)`, `listen(path, …)`).
 
-  Nothing the guard refused before is accepted now, and the hook files are held to more than the guard asked.
+  Correction (PR #37 review round 1): the two hook files would have failed the guard before; they are the only files it now accepts that it refused before, and only under the new check. The new check reads text, so it is backed by behaviour: the client and the service refuse any socket that is not an absolute path (a bare number would make Node open TCP, D-148).
 - Reason: CLAUDE.md rule 5 forbids weakening a test. The guard's intent (no egress except the provider) is unchanged and now proven for the new files too. This is listed in the PR for the reviewer's check 2.
 
 ## D-145 — `make mediated-e2e`: §4.3's acceptance in mode C with the real Claude Code binary (Slice 1.5 Increment 4)
@@ -1729,3 +1729,33 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   - **Registration review** refuses a member declared lower than its program's minimum (ranked read < write < external < irreversible), and a program not on the list.
   - **"A call takes the effect of the member it runs":** members are registered as one capability per declared effect (`cc.bash.read`, `cc.bash.write`, …), each passing the interpreter test, and a Bash call goes to its member's capability. So `rm x` is judged as a `write`: with no checkpointed workspace its untrusted operand parks `integrity_floor`; inside one it proceeds. `cat x` is a read and proceeds. Grants select these capabilities by name.
 - Reason: §2.3.2 V6-10 and the plan's Increment 4 tests.
+
+## D-147 — Absolute Bash operands are mapped like any host path (Slice 1.5 Increment 4; PR #37 review round 1)
+- Date: 2026-11-05
+- Status: Accepted (fixes a review finding)
+- Applies to: `packages/mediated/src/session.ts` (Bash mapping)
+- Decision: every absolute operand of a Bash command is a host path, as a `Read`'s `file_path` is. It is mapped onto `/work` through the workspace roots before the boundary judges it; an operand under no root parks `scope_violation` (not overridable), as it would for a `Read`. Relative operands stay relative to the mapped `cwd`.
+- Before this, `rm /work/project/notes.txt` was judged as the workspace's file while Claude Code would act on the host's literal `/work/...`. That was a mismatch between what JUNO judged and what runs. A test now proves `/work/...` is denied and the workspace's own host path proceeds.
+- Reason: §2.7.1 C4: scope is judged on the path "the effect will touch".
+
+## D-148 — JUNO's own state lies outside every mediated scope; local socket only (Slice 1.5 Increment 4; PR #37 review round 1)
+- Date: 2026-11-05
+- Status: Accepted (plan Increment 4 item 10; autopilot rulings, restrictive)
+- Applies to: `packages/mediated` (sessions, service, client, install)
+- Decision:
+  - **Protected paths.** `MediatedSessions` requires `protectedPaths`: the checkpoint store, the trust anchor, the hook's socket directory, and Claude Code's settings files. The journal's root is always added. If any lies under a workspace root, in any spelling the path map knows, the sessions refuse to start. So no grant can ever reach JUNO's state or the hook's own configuration, and a tool call naming any of them maps nowhere and parks `scope_violation`.
+  - **Absolute socket paths only.** The client, the service and `juno hook install` refuse a socket that is not an absolute path. Node would read a bare number as a TCP port.
+  - **No other PreToolUse hook in the same file.** `juno hook install` refuses a settings file that already holds another PreToolUse hook, which could change a call (`updatedInput`) after JUNO judged it. Hooks in other settings files, a project's included, cannot be seen from the user file. The install now says so in its "cannot control" list and names the remedy: managed settings with `allowManagedHooksOnly`.
+- Reason: plan Increment 4 item 10 ("a tool call naming them parks `scope_violation`, so Claude Code cannot edit its way out of the hook"), and §4.3 fail-closed.
+
+## D-149 — A runner refuses a container runtime that would ignore the workload's limits (D-131's Increment 4 directive)
+- Date: 2026-11-05
+- Status: Accepted (builds D-131's directive)
+- Applies to: `packages/enforcement/src/runtime.ts`, `RunnerOptions.containerRuntime`, `juno runtime check`
+- Decision:
+  - **The rule.** `runtimeRefusal` refuses cgroup driver `none` (or empty), any cgroup version other than 1 or 2, and a rootless runtime not on cgroup v2 with the `systemd` driver. Those are the cases in which Docker documents that the limit flags are ignored.
+  - **The probe.** `probeContainerRuntime` reads `docker info` by `execFile`.
+  - **The runner.** A `Runner` given `containerRuntime` refuses to start on a refused runtime. Every container test that starts real workloads through a runner now passes the probe (`test/containers/write.test.ts`).
+  - **The operator's check.** `juno runtime check` prints the runtime and exits 1 on a refusal.
+  - **Not yet wired at start-up.** JUNO's host runner is still a library (D-065), with no start-up command of its own. The real-use start-up that later wires it must pass the probe; this is recorded so that it cannot be missed.
+- Reason: D-025's limits are only real if the runtime enforces them; a silent ignore would be fail-open.

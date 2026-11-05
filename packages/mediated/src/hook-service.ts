@@ -27,6 +27,8 @@ export class HookService {
 
   /** Listens on `path`, a Unix socket only the runner's user can reach (its directory is the runner's, mode 0700). */
   listen(path: string): Promise<void> {
+    // An absolute path only: Node reads a bare number as a TCP port, which would listen on the network (D-144, D-148).
+    if (!path.startsWith("/")) return Promise.reject(new Error("the hook service listens only on an absolute Unix socket path"));
     return new Promise((resolve, reject) => {
       this.#server.once("error", reject);
       this.#server.listen(path, () => {

@@ -26,6 +26,7 @@ export const NOT_CONTROLLED = [
   "anything Claude Code does without a tool call: its own memory, and an @-mention Claude does not follow with a file tool",
   "a file or symlink changed between JUNO's check and Claude Code's use of it: Claude Code, not JUNO, performs the effect",
   "managed settings that allow only managed hooks, if JUNO's hook is not among them",
+  "a PreToolUse hook in another settings file (a project's .claude/settings.json included) that changes a call after JUNO judged it; managed settings with allowManagedHooksOnly prevent that",
 ];
 
 export type HookCommand = { readonly command: string; readonly args: readonly string[] };
@@ -124,6 +125,8 @@ export async function installHook(file: string, hook: HookCommand, client: strin
   }
   if (version !== "" && !versionAtLeast(version)) refusals.push(`Claude Code ${version.trim()} is older than ${MINIMUM_CLAUDE_CODE}, which onFailure "block" and the file-mentions setting need (D-139)`);
   if (hook.args.length === 0 || !hook.args.includes(client)) refusals.push("the hook command must name JUNO's client in its args");
+  const socket = hook.args[hook.args.indexOf("--socket") + 1];
+  if (!hook.args.includes("--socket") || socket === undefined || !socket.startsWith("/")) refusals.push("--socket must be an absolute Unix socket path (D-148)");
   let settings: Record<string, unknown> = {};
   const existing = io.readSettings(file);
   if (existing !== null) {
@@ -135,6 +138,10 @@ export async function installHook(file: string, hook: HookCommand, client: strin
       refusals.push(`${file} is not a JSON object; it is left unchanged`);
     }
   }
+  // Restrictive (D-148): another PreToolUse hook in the same file could change a call (updatedInput) after JUNO judged it.
+  const existingHooks = typeof settings["hooks"] === "object" && settings["hooks"] !== null ? (settings["hooks"] as Record<string, unknown>) : {};
+  const otherPre = (Array.isArray(existingHooks["PreToolUse"]) ? (existingHooks["PreToolUse"] as unknown[]) : []).filter((group) => !JSON.stringify(group).includes(JSON.stringify(client)));
+  if (otherPre.length > 0) refusals.push(`${file} already has another PreToolUse hook, which could change a call after JUNO judged it; remove it first (D-148)`);
   if (refusals.length > 0) return { installed: false, refusals };
   const hooks = { ...(typeof settings["hooks"] === "object" && settings["hooks"] !== null ? (settings["hooks"] as Record<string, unknown>) : {}) };
   for (const event of HOOK_EVENTS) {
