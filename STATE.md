@@ -18,6 +18,45 @@ Status: **building; not done.**
   6. PostToolUse result journalling;
   7. the scripted Messages API server and `make mediated-e2e` with the real binary.
 
+### Increment 4 design (2026-11-05; each choice becomes a D-number when built)
+- **Package `packages/mediated`**, shared with Increment 5's gateway. It uses the same `EnforcementBoundary`, `GrantStore` and `JournalWriter` as mode A.
+- **Session as a Task (§4.3 V6-6).**
+  - `admitSession` takes:
+    - the principal, attendance, `ttl`;
+    - the grants;
+    - the tool-call budget (`turns`) and wall clock;
+    - `unmetered_accepted: true`, without which admission is refused;
+    - the session provider's declared sensitivity clearance;
+    - the operator's constants: exact command strings and values;
+    - the Bash name map.
+  - The Task id is `session-<session_id>`. `closure_mode` is `accepted`, `steer_capability` is `none` (§7.8 E2), and the strategy is `hook`.
+- **Paths.** The operator's workspace root (WSL path, plus its Windows `\\wsl.localhost\…` form) maps onto `/work`. Any other path has no mapping, so it is outside every scope. Canonical resolution uses the same resolver script on the host (`HostPathResolver`, moved into `packages/enforcement`).
+- **Tools → capabilities** (operator-authored typed entries, D-134; harness adapters plan a no-op invocation that is never performed, so they pass §2.4):
+  - `Read`, `Glob`, `Grep`: `read`;
+  - `Write`, `Edit`: `write`, with `file_path` the target and content and strings the payload;
+  - `WebFetch`: `external`, `url` the target;
+  - `Bash` → `cc.bash`: a `shell.run`-shaped entry whose enum is the name map's programs and whose program floor is `untrusted` (§2.3.2, mediated only). Registration review requires every member to pass the interpreter test, and D-131 bars signing or launching programs.
+  - A Glob/Grep pattern with `..` or a leading `/` or `~` is `malformed_call`.
+  - Any other tool is `unknown_capability`, which denies; three in a row park `rejection_limit`.
+- **PreToolUse**, in order:
+  1. no admitted session → deny;
+  2. a previous call with no result → the gap is journalled and this call is denied;
+  3. a budget or TTL exceeded → deny (TTL fails the session);
+  4. a read of a source above the clearance → park `sensitivity_ceiling`, deny (§4.3 V6-7);
+  5. Bash → `readCommandString`; a constant command proceeds as written;
+  6. the boundary decides.
+
+  Proceed → **no decision** (exit 0, empty: Claude Code's own rules still apply). Park → `deny` with the reason, and the park journalled with `overridable` as in mode A. Reject → `deny`. Never `ask`, `defer`, `allow`, `updatedInput` or `updatedToolOutput`.
+- **PostToolUse / PostToolUseFailure.** The result is journalled against the call JUNO authorized (by `tool_use_id`), as `untrusted` content raising the session floor by the source read. A result with no authorized call is journalled as such.
+- **Service and client.** A Unix-socket service (one JSON line in, one out). The client `juno-hook` (node builtins only) reads the hook input from stdin, asks the service with a timeout, and prints Claude Code's `deny` JSON or nothing. On **any** doubt (no service, timeout, malformed answer) it exits 2.
+- **`juno hook install`** writes `PreToolUse`, `PostToolUse` and `PostToolUseFailure` with matcher `*`, exec form, `onFailure: "block"` and an explicit `timeout`, plus `env.CLAUDE_CODE_DISABLE_FILE_MENTIONS=1`, into the user (or managed) settings file. It refuses:
+  - project and local settings files;
+  - Claude Code older than 2.1.299 (`claude --version` by `execFile`);
+  - shell form, a missing `onFailure: "block"`, or a missing timeout.
+
+  It prints what it cannot control.
+- **E2E (`make mediated-e2e`, cloud only, D-092):** a scripted Messages API server, and real `claude -p` in a container whose only network is that server.
+
 **Carried into Increment 4 and later (from PR #36's review, not defects):**
 - **Enumerated targets are matched as typed, not on the canonical path (D-133).** An enumerated path that is already a symlink would match while the effect lands on its target. Scope is still judged on the canonical path. To settle before any `irreversible` path capability is registered; restrictive option: match enumerated path values on their canonical form.
 - **`resource_scope` limits path fields only.** A string target such as a recipient is limited by `enumerated_targets` alone. To settle in Increment 5, before the first real `external` capability (`message.send`).
