@@ -1654,3 +1654,15 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   - **Results.** PostToolUse and PostToolUseFailure are journalled as `capability_result` against the authorized call (by `tool_use_id`): `untrusted`, at the class of what the call read, raising the session floor. A result with no authorized call is marked `without_authorized_call`. When a call is asked while an earlier authorized call has no result, the gap is journalled (`result_missing`) and that call is denied.
   - **Writes** use Increment 3's checkpoints on the host workspace. Session `reversible_workspaces` are checkpointed at admission, with the same scripts run by the host's node; a session whose workspace cannot be checkpointed is not admitted. Without one, a write's untrusted target parks `integrity_floor`.
 - Reason: §4.3's rules for mode C, each choice fail-closed.
+
+## D-142 — The mode-C service and the `juno-hook` client (Slice 1.5 Increment 4)
+- Date: 2026-11-05
+- Status: Accepted (applies §4.3 "Fail-closed ingress" and V6-3)
+- Applies to: Slice 1.5 Increment 4 onward (`packages/mediated/src/hook-service.ts`, `hook-client.ts`, `juno-hook.ts`)
+- Decision:
+  - **The service** listens on a Unix-domain socket on the runner's host, in a directory only the runner's user can reach. Each connection carries one request line, `{event, input}`, and gets one answer line. Requests are judged one at a time in arrival order, so a session's calls and results are journalled in order. Unreadable requests, unknown events and internal failures answer a denial.
+  - **The client** uses Node's built-in modules only. It reads the hook input from standard input and asks the service with a timeout (default 10 s).
+    - It accepts only `{decision: "none"}`, which it turns into exit 0 with no output, and `{decision: "deny", reason}`, which it turns into Claude Code's PreToolUse deny JSON with exit 0. For PostToolUse it accepts only `{recorded: true}`.
+    - **Everything else exits 2** with the reason on standard error, which blocks the call: an unreachable service, a timeout, a malformed or unknown answer (`allow`, `ask`, `defer`, extra keys), a missing newline, unreadable input, a missing or invalid `--socket` / `--timeout-ms`, or any exception.
+    - It never prints `allow`, `ask`, `defer`, `updatedInput` or `updatedToolOutput`. Claude Code's own `onFailure: "block"` (D-139) covers the client crashing or hanging.
+- Reason: §4.3: "A hook or gateway that cannot reach the boundary, times out, or gets no explicit decision must block the call."
