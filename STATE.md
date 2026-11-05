@@ -3,7 +3,20 @@
 ## Current increment
 **Slice 1.5 — Increment 4: hook mode for Claude Code (§4.3 mode C)** (`docs/plans/slice-1.5-build-plan.md`, Increment 4; also §2.3.2 E1, §7.8 E2, D-131's Increment 4 directives). Branch `claude/vigilant-heisenberg-uko6on`, restarted from `main` 5951e57 after PR #36 merged. Spec v0.6.1. No objection open.
 
-Status: **starting; not done.** First step: re-read the Claude Code hooks reference and record differences from plan §1.1 (plan Increment 4 item 1). The cloud session has Claude Code 2.1.318.
+Status: **building; not done.**
+- **Step 1 done** (D-139): the hooks reference was re-read on 2026-11-05.
+  - Plan §1.1 still holds point by point.
+  - New: `CLAUDE_CODE_DISABLE_FILE_MENTIONS=1` routes `@`-mentions through the file tools, so the install will require it, and the minimum Claude Code version becomes 2.1.299.
+  - JUNO never emits `updatedInput` or `updatedToolOutput`.
+- The cloud session has Claude Code 2.1.318.
+- **Next, in order:**
+  1. the §2.3.2 command-string reader for Bash (pure, unit-tested);
+  2. Claude Code tool capability definitions and the name map;
+  3. the session-as-a-Task admission;
+  4. the boundary service and the hook client (exit 2 on any doubt);
+  5. `juno hook install` and its refusals;
+  6. PostToolUse result journalling;
+  7. the scripted Messages API server and `make mediated-e2e` with the real binary.
 
 **Carried into Increment 4 and later (from PR #36's review, not defects):**
 - **Enumerated targets are matched as typed, not on the canonical path (D-133).** An enumerated path that is already a symlink would match while the effect lands on its target. Scope is still judged on the canonical path. To settle before any `irreversible` path capability is registered; restrictive option: match enumerated path values on their canonical form.

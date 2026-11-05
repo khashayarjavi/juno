@@ -1573,3 +1573,33 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   - **Outcome.** The workspace is listed after the write and compared with the manifest. `restored` only when they are identical; `failed`, with the reason, otherwise. Either way it is journalled.
   - **CLI:** `juno checkpoint restore --journal <dir> --checkpoints <dir> --compose <file> --project <name> --principal <operator> <task> <checkpoint>`. It prints the outcome as JSON. Exit 0 restored, 1 not, 2 bad usage.
 - Reason: §2.2.2's "restoring that checkpoint is an operator action recorded in the journal".
+
+## D-139 — Increment 4: the Claude Code hooks reference re-read; differences from plan §1.1 (Slice 1.5 Increment 4)
+- Date: 2026-11-05
+- Status: Accepted (plan Increment 4 item 1; autopilot rulings, restrictive, where marked)
+- Applies to: Slice 1.5 Increment 4 (hook mode)
+- Sources read on 2026-11-05 (rule 13; SHA-256 of the fetched Markdown, first 16 hex digits):
+  - https://code.claude.com/docs/en/hooks.md: `54d66bf143d888ac` (the plan read `524960c086d43f6e`);
+  - …/headless.md: `62359e4f8585a404`;
+  - …/env-vars.md: `a28b5288f8855f54`;
+  - …/settings.md: `448f49ae3a98bdf9`;
+  - Claude Code in the cloud session: 2.1.318.
+- **Unchanged from plan §1.1, checked point by point:**
+  1. Hooks fail open by default.
+  2. `onFailure: "block"` on a `command` or `http` hook blocks the action when the hook fails or times out (v2.1.295 or later).
+  3. Exec form (`command` plus `args`) spawns "with no shell involved".
+  4. PreToolUse decisions are `allow`, `deny`, `ask` and `defer`, with precedence `deny` > `defer` > `ask` > `allow`. A `deny` reason is shown to Claude. Exit 0 with no output is no decision ("staying silent doesn't approve it").
+  5. `defer` works only in `-p` mode.
+  6. PostToolUse cannot block; the tool has already run.
+  7. Subagents fire the same hooks, with `agent_id` and `agent_type`.
+  8. `disableAllHooks` exists, and `--settings '{"disableAllHooks": true}'` overrides project and local settings.
+  9. `tool_input.file_path` is always absolute for `Write`, `Edit` and `Read`.
+  10. `ANTHROPIC_BASE_URL` and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` exist.
+- **New since the plan, and how JUNO reads it:**
+  - **`CLAUDE_CODE_DISABLE_FILE_MENTIONS=1`** (v2.1.299 or later; honoured in the shell, user or managed settings, ignored in project and local settings). With it, `@`-mentioned files are not inserted; Claude gets the paths "with a note to read them using its file tools", and "your matching PreToolUse hooks run". **Restrictive ruling:**
+    - `juno hook install` writes this variable into the settings file it installs into, and refuses a project or local settings file (where Claude Code ignores it);
+    - the minimum Claude Code version becomes **2.1.299**, not 2.1.295;
+    - §4.3's "not protected" row for `@`-mentions then shrinks to "a mention Claude does not follow up with a file tool reads nothing".
+  - **`updatedInput`** (PreToolUse) can replace a tool's input, and **`updatedToolOutput`** (PostToolUse) can replace what Claude sees. **JUNO never emits either:** a hook that rewrote calls would make what JUNO judged differ from what runs. Tests assert that no decision JUNO emits carries them.
+  - **On Windows, exec form needs a real executable** (`.cmd` and `.bat` shims cannot be spawned). The hook's `command` is `wsl.exe` (D-131), which is one.
+- Reason: plan Increment 4 item 1 and rule 13. Each new feature is either used to close a gap, fail-closed, or never emitted.
