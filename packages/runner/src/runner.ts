@@ -57,6 +57,7 @@ import {
   routable,
   verificationScope,
 } from "./admission.js";
+import { type CheckpointStore, ManifestEntry, type Workspace, checkpointId } from "../../enforcement/src/index.js";
 import { MAX_PINNED_FILES, PIN_HASH_BATCH, type Pin, changedPins, filesToHash, parseHashes, parseListing, pinsOf, within } from "./pins.js";
 import { type BudgetAxis, NO_SPEND, type Spend, exhaustedAxes, overrunAxes } from "./budget.js";
 import { type RunnerLock, acquireRunnerLock } from "./lock.js";
@@ -118,6 +119,12 @@ export type RunnerOptions = {
   readonly resolver: PathResolver;
   /** The anchored head (§3.4.1, v0.6 C1, D-122): where anchors go, the journal key that signs them, and how often. */
   readonly anchoring: Anchoring;
+  /**
+   * Reversible workspaces (§2.2.2, D-136): where checkpoints are taken and restored (the workload, by the fixed scripts),
+   * and the store outside every mount that keeps their content. Without them a task naming a reversible workspace fails
+   * before its first turn.
+   */
+  readonly checkpoints?: { readonly workspace: Workspace; readonly store: CheckpointStore };
 };
 
 /** How the runner anchors journal heads off the host (§3.4.1, D-122). */
@@ -160,6 +167,8 @@ type TaskRun = {
    * (§2.6 "a template slot filled by the runtime", §5.1, D-112), with the listing result's class. `null` until taken.
    */
   pinFiles: { readonly files: readonly string[]; readonly data_class: DataClass } | null;
+  /** The checkpoints of the task's reversible workspaces (§2.2.2, D-136), by root; empty until taken. */
+  readonly checkpoints: Map<string, string>;
 };
 
 const QuarantineRecord = z.strictObject({ type: z.literal("quarantine"), capability: z.string(), adapter: z.string(), observation: z.string() });
@@ -226,7 +235,11 @@ const AdmissionRecord = z.object({
   warnings: z.array(z.string()),
   // A journal written before v0.6 has no limit recorded; it gets the default (§2.7.1).
   rejection_limit: RejectionLimit.default(DEFAULT_REJECTION_LIMIT),
+  // A journal written before Slice 1.5 Increment 3 names no reversible workspace (D-136).
+  reversible_workspaces: z.array(z.string()).default([]),
 });
+
+const CheckpointNote = z.object({ type: z.literal("checkpoint"), root: z.string(), checkpoint: z.string(), manifest: z.array(ManifestEntry) });
 
 const RunnerRecordEntry = z.discriminatedUnion("type", [
   z.object({ type: z.literal("grant_charge"), grant: z.string(), task: z.string(), call_seq: z.number() }),
@@ -329,6 +342,7 @@ export class Runner {
   readonly #verifier: string;
   readonly #boundary: EnforcementBoundary;
   readonly #resolver: PathResolver;
+  readonly #checkpoints: RunnerOptions["checkpoints"];
   readonly #lock: RunnerLock;
   readonly #runs = new Map<string, TaskRun>();
   readonly #recordedQuarantines = new Set<string>();
@@ -349,6 +363,7 @@ export class Runner {
     this.#clock = options.clock ?? (() => new Date());
     this.#verifier = options.verifierIdentity ?? VERIFIER_ACTOR;
     this.#resolver = options.resolver;
+    this.#checkpoints = options.checkpoints;
     this.#anchoring = options.anchoring;
     if (!Number.isSafeInteger(options.anchoring.intervalMs) || options.anchoring.intervalMs < 1) throw new RunnerError("the anchoring interval must be a positive whole number of milliseconds");
     // §3.4.1 V6-4: the operator key never enters the runner, so the journal key can never be it.
@@ -427,6 +442,7 @@ export class Runner {
       sources: admission.sources,
       warnings: admission.warnings,
       rejection_limit: admission.rejection_limit,
+      reversible_workspaces: admission.reversible_workspaces,
     });
     this.#runs.set(task.id, {
       task,
@@ -441,6 +457,7 @@ export class Runner {
       turns: 0,
       rejections: [],
       pinFiles: null,
+      checkpoints: new Map(),
     });
     result = { admitted: true, admission };
     return result;
@@ -593,6 +610,13 @@ export class Runner {
     if (this.#active !== null && this.#active !== run.task.id) throw new RunnerError(`task ${this.#active} is running; this runner runs one task at a time`);
     this.#active = run.task.id;
     try {
+      // §2.2.2 (D-136): every reversible workspace is checkpointed before the task's first turn, so before its first
+      // effect. A workspace that cannot be checkpointed is not reversible, and the task fails before any turn.
+      for (const root of run.admission.reversible_workspaces) {
+        if (run.checkpoints.has(root)) continue;
+        const failure = await this.#checkpoint(run, root);
+        if (failure !== null) return this.#fail(run, failure);
+      }
       // §3.4.4 B2 / §5.1 (D-112): before the first turn of a task the verifier will check, pin its verification scope.
       // A task whose pinning parked has no pins yet, so they are taken when the task runs again (D-067).
       if (run.task.closure_mode === "verified" && run.admission.criterion !== null && this.#baselinePins(run) === null) {
@@ -606,6 +630,26 @@ export class Runner {
       this.#stopClock(run);
       this.#active = null;
     }
+  }
+
+  /**
+   * Checkpoints one reversible workspace (§2.2.2, D-136): the root must be its own canonical form (a root reached through
+   * a symlink is refused); every file's bytes go to the store; the manifest is journalled. Returns why it failed, or null.
+   */
+  async #checkpoint(run: TaskRun, root: string): Promise<string | null> {
+    if (this.#checkpoints === undefined) return "checkpoint_unavailable";
+    const resolved = (await this.#resolver.resolve([root])).get(root);
+    if (resolved === undefined || !resolved.ok || resolved.canonical !== root) return "checkpoint_failed";
+    const taken = await this.#checkpoints.workspace.list(root, true);
+    if (!taken.ok) {
+      this.#append(run.task.id, "note", this.#runnerClass(run), { type: "checkpoint_failed", root, reason: taken.reason });
+      return "checkpoint_failed";
+    }
+    for (const bytes of taken.snapshot.contents.values()) this.#checkpoints.store.put(bytes);
+    const checkpoint = checkpointId(root, taken.snapshot.manifest);
+    this.#append(run.task.id, "note", this.#runnerClass(run), { type: "checkpoint", root, checkpoint, manifest: taken.snapshot.manifest });
+    run.checkpoints.set(root, checkpoint);
+    return null;
   }
 
   /** The operator closes a task that completed unverified (§6, §6.1): `accepted`, the weakest closure; then anchors it. */
@@ -975,7 +1019,8 @@ export class Runner {
     if (actor === "verifier" && run.pinFiles !== null) {
       for (const [index, path] of run.pinFiles.files.entries()) constants[pinFileSlot(index)] = { value: path, data_class: run.pinFiles.data_class, actors: ["verifier"] };
     }
-    const base: TaskContext = { task: run.task, constants, synthesis: { sensitivity } };
+    // §2.2.2 (D-135): the task's checkpointed workspaces are the only reversible ones.
+    const base: TaskContext = { task: run.task, constants, synthesis: { sensitivity }, reversible: [...run.checkpoints.keys()] };
     // §2.7.1 C4 (D-113): the paths the call names are resolved where the effect will run, then the boundary judges them.
     const canonical = await this.#resolver.resolve(this.#boundary.pathsToResolve(base, proposal));
     const context: TaskContext = { ...base, canonical };
@@ -1310,6 +1355,7 @@ export class Runner {
       sources: record.sources,
       warnings: record.warnings,
       rejection_limit: record.rejection_limit,
+      reversible_workspaces: record.reversible_workspaces,
     };
     const run: TaskRun = {
       task: record.task,
@@ -1324,6 +1370,7 @@ export class Runner {
       turns: 0,
       rejections: [],
       pinFiles: null,
+      checkpoints: new Map(),
     };
     let state: TaskState = "admitted";
     let floor = record.task.sensitivity_floor;
@@ -1353,6 +1400,9 @@ export class Runner {
         // Read from the note itself: the replay record keeps only the fields every note shares.
         const pinned = PinFilesNote.parse(this.#payloadOf(entry.payload_ref));
         run.pinFiles = { files: pinned.files, data_class: pinned.data_class };
+      } else if (body.type === "checkpoint") {
+        const taken = CheckpointNote.parse(this.#payloadOf(entry.payload_ref));
+        run.checkpoints.set(taken.root, taken.checkpoint);
       }
     }
     run.task = TaskSchema.parse({ ...record.task, state, runtime_substate: state === "running" ? "active" : null, sensitivity_floor: floor, grants });

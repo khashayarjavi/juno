@@ -4,7 +4,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import { type AbsolutePath, WorkPath, parseAtBoundary } from "../../contracts/src/index.js";
-import { WORKLOAD_NODE } from "../../enforcement/src/index.js";
+import { WORKLOAD_NODE } from "./canonical.js";
 import { canonicalJson } from "../../journal/src/index.js";
 import { type WorkloadTarget, WorkloadTarget as WorkloadTargetSchema } from "../../registry/src/index.js";
 

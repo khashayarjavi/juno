@@ -1521,3 +1521,43 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
     - Payload fields are judged by step 5 only.
   - **Grant choice.** The call proceeds under the first remaining candidate, in the task's order, that also meets step 5, and that grant is charged (D-042 unchanged).
 - Reason: §2.2.2 and §2.7.1 "Effects". Treating a non-path or unresolvable write target as irreversible admits less than guessing that it is undoable.
+
+## D-136 — Reversible workspaces: declared at admission, checkpointed before the first turn, restored by the operator (Slice 1.5 Increment 3)
+- Date: 2026-11-05
+- Status: Accepted (autopilot rulings, the restrictive reading where marked)
+- Applies to: Slice 1.5 Increment 3 onward (`packages/enforcement/src/checkpoint.ts`, admission, the runner)
+- Decision:
+  - **Which scopes are reversible.** §2.2.2 says a scope is reversible when "a checkpoint of its full content is taken before the task's first effect on it". The operator names the task's reversible workspaces at admission (`reversible_workspaces`, at most 16 work paths). Admission refuses one that:
+    - lies in no path scope of the task's grants;
+    - is the whole namespace `/work` (§5.3's whole-filesystem rule);
+    - overlaps another.
+
+    **Restrictive:** nothing else is ever reversible. The Task contract (§3.1) is unchanged; the list lives in the admission record.
+  - **When.** Every declared workspace is checkpointed when the task first runs, before its first turn, so before any effect. A rebuilt task keeps its journalled checkpoints and is not checkpointed again. The root must be its own canonical form (a root reached through a symlink is refused). A workspace that cannot be checkpointed (no checkpoint store configured, a bound exceeded, a symlink root, a listing error) fails the task before its first turn, with `checkpoint_unavailable` or `checkpoint_failed`. **Restrictive:** never a partial checkpoint.
+  - **How.** An operator-fixed node program (`SNAPSHOT_SCRIPT`) runs in a fresh workload container, with the workload's isolation. It lists the root without following any symlink and returns every entry (path, type, mode, SHA-256, symlink target) and every file's bytes. The bounds are 2,000 entries and 8 MiB.
+    - The bytes go to the **checkpoint store**: a host directory outside every mount and every selector (§3.2 "No selector may name journal storage" already covers it, D-116). It is content-addressed and write-once, and every read is checked against the hash.
+    - The manifest is journalled as a `checkpoint` note. The checkpoint id is the SHA-256 of the canonical root and manifest.
+  - **The boundary** treats exactly the journalled checkpoint roots as the task's reversible workspaces (`TaskContext.reversible`, D-135).
+  - **Restore** is the operator's action (`juno checkpoint restore`, Increment 3 item 8). `RESTORE_SCRIPT` reads the manifest and bytes on standard input. It is an operator action, not a capability, so §2.3.1's rule on standard input does not apply. It then:
+    - removes every entry the manifest lacks or whose type differs, never descending a symlink;
+    - recreates directories, files (`O_EXCL | O_NOFOLLOW`, each checked against its hash) and symlinks;
+    - sets every mode.
+
+    The workspace is listed again and compared with the manifest, and the restore and its result are journalled.
+- Reason: §2.2.2's definition, built so that "reversible" is never claimed on less than the full content, and so that taking or restoring a checkpoint never follows a link out of the workspace.
+
+## D-137 — `fs.file.write`: the first write capability, and its writer (Slice 1.5 Increment 3)
+- Date: 2026-11-05
+- Status: Accepted (applies the operator's ruling D-121; autopilot rulings where marked)
+- Applies to: Slice 1.5 Increment 3 onward (`packages/registry/definitions/fs.file.write.json`, `packages/registry/src/fs-write.ts`)
+- Decision:
+  - **The capability.** `fs.file.write(path: data/target path, content: data/payload string)`, `side_effect: write`, a typed entry (D-134) served by `workload.fs_write`. It passes the §2.4 conformance suite, and an interpolating variant is refused at registration.
+  - **The writer** is an operator-fixed node program, run by the workload image's own node (`/nodejs/bin/node -e <script> -- /work /work <path> <content>`) in a fresh workload container with every compose setting. The path and the content are two argv elements after `--`. Content never goes through standard input (§2.3.1).
+  - **D-121, the mechanism chosen from what the image provides (rule 13: the image's node and Linux `/proc`).** The writer opens the root with `O_DIRECTORY | O_NOFOLLOW`. It then opens each component relative to the directory before it, by `/proc/self/fd/<fd>/<name>`, which resolves from the open directory, not from the path, with `O_DIRECTORY | O_NOFOLLOW`. It creates a missing directory there and opens the file with `O_CREAT | O_TRUNC | O_NOFOLLOW`. A component that is a symlink (`ELOOP`, `ENOTDIR`) fails the write with exit 5 and the reason on standard error. The runner journals both in the call's `capability_result`. Whatever the boundary saw at its check, the write never follows a symlink.
+  - **Bounds (restrictive):**
+    - content of at most 65,536 bytes of UTF-8;
+    - a path under `/work` with no empty, `.` or `..` component.
+
+    Anything else is refused by the writer (exit 2) and journalled like any failed effect. A longer content than the kernel's argv limit fails to start and is journalled as an error.
+  - **Residual, recorded:** a hard link inside the work volume is not a symlink. A task could reach another file of the same volume through one only if some capability could create hard links, and none can.
+- Reason: D-121 and the plan's Increment 3 item 5.
