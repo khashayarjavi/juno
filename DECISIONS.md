@@ -1603,3 +1603,18 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   - **`updatedInput`** (PreToolUse) can replace a tool's input, and **`updatedToolOutput`** (PostToolUse) can replace what Claude sees. **JUNO never emits either:** a hook that rewrote calls would make what JUNO judged differ from what runs. Tests assert that no decision JUNO emits carries them.
   - **On Windows, exec form needs a real executable** (`.cmd` and `.bat` shims cannot be spawned). The hook's `command` is `wsl.exe` (D-131), which is one.
 - Reason: plan Increment 4 item 1 and rule 13. Each new feature is either used to close a gap, fail-closed, or never emitted.
+
+## D-140 — The §2.3.2 command-string reader (Slice 1.5 Increment 4)
+- Date: 2026-11-05
+- Status: Accepted (applies §2.3.2 and D-105; autopilot rulings, restrictive, where marked)
+- Applies to: Slice 1.5 Increment 4 onward (`packages/enforcement/src/command-string.ts`)
+- Decision: `readCommandString(text, nameMap)` splits a Bash command string by §2.3.2's grammar, with no shell, and either parks (`integrity_floor`, with a reason) or returns the program path from the operator's name map and the argv.
+  - **As the spec lists:** spaces and tabs separate words. A single-quoted word is literal. A double-quoted word may contain none of `$`, `` ` ``, `\`, `!`. Outside single quotes, `| & ; < > ( ) $ ` \ { }`, a newline and (D-105) `#` park. Also parked: an unquoted `* ? [ ]`, a leading `~`, a leading `NAME=value` on the first word, and a name not in the map. `PATH` is never read.
+  - **Restrictive readings:**
+    - an unquoted `!` parks (bash's negation keyword and history character);
+    - a carriage return parks like a newline;
+    - double quotes may not hide any character that parks outside them (`#`, `|`, …);
+    - an unterminated quote parks;
+    - a keyword or builtin parks **whatever its quoting**, in any position (`cat 'eval'` parks), using bash 5's reserved words and builtins, `echo`, `printf`, `test`, `true` and `kill` included;
+    - an absolute path as the program parks unless the name map has that exact string as a key.
+- Reason: §2.3.2 V6-5. Where it says "any of these", the reader admits less, never more.
