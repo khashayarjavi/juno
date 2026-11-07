@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -94,7 +94,7 @@ beforeEach(async () => {
     journal,
     grants,
     paths: new PathMap([work, "\\\\wsl.localhost\\Ubuntu-24.04" + work.replace(/\//g, "\\")]),
-    resolver: new HostPathResolver(work), protectedPaths: [join(dir, "checkpoints")],
+    resolver: new HostPathResolver(work), view: new Workspace(execFileScript(process.execPath, []), "/work", work), protectedPaths: [join(dir, "checkpoints")],
     clock: () => now,
     checkpoints: { workspace: new Workspace(execFileScript(process.execPath, []), "/work", work), store: new CheckpointStore(join(dir, "checkpoints")) },
   });
@@ -108,7 +108,7 @@ afterEach(() => {
 describe("§4.3 a session is a Task (V6-6) and §7.8 E2", () => {
   // proves §4.3 V6-6: admission refuses a session whose operator has not accepted unmetered tokens and currency
   it("refuses a session without the operator's acceptance of unmetered axes", async () => {
-    const other = new MediatedSessions({ journal, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), protectedPaths: [join(dir, "checkpoints")], clock: () => now });
+    const other = new MediatedSessions({ journal, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), view: new Workspace(execFileScript(process.execPath, []), "/work", work), protectedPaths: [join(dir, "checkpoints")], clock: () => now });
     const refused = await other.admit({ ...request({ session_id: "other-1" }), unmetered_accepted: false });
     expect(refused).toMatchObject({ admitted: false });
   });
@@ -192,7 +192,7 @@ describe("§2.3.2 Bash in hook mode", () => {
 
   // proves §4.3: an operator-listed exact command proceeds as written, its words recorded as constants of operator integrity
   it("lets an operator-listed command proceed as written, as constants", async () => {
-    const listed = new MediatedSessions({ journal, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), protectedPaths: [join(dir, "checkpoints")], clock: () => now });
+    const listed = new MediatedSessions({ journal, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), view: new Workspace(execFileScript(process.execPath, []), "/work", work), protectedPaths: [join(dir, "checkpoints")], clock: () => now });
     await listed.admit(request({ session_id: "listed-1", commands: ["cat notes.txt"] }));
     const asked = { ...(pre("Bash", { command: "cat notes.txt" }) as Record<string, unknown>), session_id: "listed-1" };
     expect(await listed.preToolUse(asked)).toEqual({ decision: "allow", updatedInput: { command: "/usr/bin/cat 'notes.txt'" } });
@@ -213,7 +213,7 @@ describe("§2.3.2 V6-10: a Bash call takes the effect of the program it runs (D-
       journal,
       grants,
       paths: new PathMap([work]),
-      resolver: new HostPathResolver(work), protectedPaths: [join(dir, "checkpoints")],
+      resolver: new HostPathResolver(work), view: new Workspace(execFileScript(process.execPath, []), "/work", work), protectedPaths: [join(dir, "checkpoints")],
       clock: () => now,
       checkpoints: { workspace: new Workspace(execFileScript(process.execPath, []), "/work", work), store: new CheckpointStore(join(dir, "checkpoints")) },
     });
@@ -255,7 +255,7 @@ describe("§2.2.2 in hook mode", () => {
 
   // proves §2.2.2: with no checkpoint, the same Write is irreversible and its untrusted target parks integrity_floor
   it("parks a Write when the session has no checkpointed workspace", async () => {
-    const unchecked = new MediatedSessions({ journal, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), protectedPaths: [join(dir, "checkpoints")], clock: () => now });
+    const unchecked = new MediatedSessions({ journal, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), view: new Workspace(execFileScript(process.execPath, []), "/work", work), protectedPaths: [join(dir, "checkpoints")], clock: () => now });
     await unchecked.admit(request({ session_id: "nockpt-1" }));
     const asked = { ...(pre("Write", { file_path: join(work, "project", "out.txt"), content: "x" }) as Record<string, unknown>), session_id: "nockpt-1" };
     expect(await unchecked.preToolUse(asked)).toMatchObject({ decision: "deny", reason: expect.stringContaining("integrity_floor") });
@@ -269,7 +269,7 @@ describe("§2.2.2 in hook mode", () => {
 
 describe("§2.7 order in mode C (D-150): the read gate never turns a park that cannot be overridden into one that can", () => {
   const plain = async (id: string, grantIds: readonly string[]): Promise<MediatedSessions> => {
-    const session = new MediatedSessions({ journal, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), protectedPaths: [join(dir, "checkpoints")], clock: () => now });
+    const session = new MediatedSessions({ journal, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), view: new Workspace(execFileScript(process.execPath, []), "/work", work), protectedPaths: [join(dir, "checkpoints")], clock: () => now });
     expect(await session.admit(request({ session_id: id, grants: [...grantIds], name_map: [{ name: "cat", program: "/usr/bin/cat", side_effect: "read" }, { name: "rm", program: "/usr/bin/rm", side_effect: "write" }] }))).toMatchObject({ admitted: true });
     return session;
   };
@@ -326,7 +326,7 @@ describe("§2.7.1 D5 in mode C (D-151): an injected command is judged before any
 
   // proves D-151: after the tool-call budget is spent, an injected command still parks integrity_floor, not budget_exceeded
   it("parks integrity_floor even after the budget is spent", async () => {
-    const spent = new MediatedSessions({ journal, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), protectedPaths: [join(dir, "checkpoints")], clock: () => now });
+    const spent = new MediatedSessions({ journal, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), view: new Workspace(execFileScript(process.execPath, []), "/work", work), protectedPaths: [join(dir, "checkpoints")], clock: () => now });
     await spent.admit(request({ session_id: "spent-1", budget: { tool_calls: 1, wall_clock_ms: 3_600_000 } }));
     const ask = (command: string) => spent.preToolUse({ ...(pre("Bash", { command }) as Record<string, unknown>), session_id: "spent-1" });
     const first = { ...(pre("Bash", { command: "cat notes.txt" }) as Record<string, unknown>), session_id: "spent-1" };
@@ -340,14 +340,98 @@ describe("§2.7.1 D5 in mode C (D-151): an injected command is judged before any
 describe("plan item 10 (D-148): JUNO's own state is outside every scope", () => {
   // proves plan item 10: sessions refuse to start when a workspace root would cover the journal or another protected path
   it("refuses a workspace root that covers the journal or a protected path", () => {
-    expect(() => new MediatedSessions({ journal, grants, paths: new PathMap([dir]), resolver: new HostPathResolver(dir), protectedPaths: [] })).toThrow(/JUNO's own state/);
-    expect(() => new MediatedSessions({ journal, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), protectedPaths: [join(work, "project", ".claude", "settings.json")] })).toThrow(/JUNO's own state/);
+    expect(() => new MediatedSessions({ journal, grants, paths: new PathMap([dir]), resolver: new HostPathResolver(dir), view: new Workspace(execFileScript(process.execPath, []), "/work", dir), protectedPaths: [] })).toThrow(/JUNO's own state/);
+    expect(() => new MediatedSessions({ journal, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), view: new Workspace(execFileScript(process.execPath, []), "/work", work), protectedPaths: [join(work, "project", ".claude", "settings.json")] })).toThrow(/JUNO's own state/);
   });
 
   // proves plan item 10: a tool call naming the journal or the hook's settings parks scope_violation and is denied
   it("denies a tool call naming the journal or Claude Code's settings", async () => {
     expect(await call("Write", { file_path: join(dir, "journal", "x"), content: "x" })).toMatchObject({ decision: "deny", reason: expect.stringContaining("scope_violation") });
     expect(await call("Edit", { file_path: join(dir, "home", ".claude", "settings.json"), old_string: "block", new_string: "continue", replace_all: false })).toMatchObject({ decision: "deny" });
+  });
+});
+
+describe("§4.3 V6-7 on what the call will read (D-156, PR #38 review round 4)", () => {
+  const withLs = async (id: string): Promise<MediatedSessions> => {
+    const session = new MediatedSessions({ journal, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), view: new Workspace(execFileScript(process.execPath, []), "/work", work), protectedPaths: [join(dir, "checkpoints")], clock: () => now });
+    const nameMap = [{ name: "cat", program: "/usr/bin/cat", side_effect: "read" as const }, { name: "ls", program: "/usr/bin/ls", side_effect: "read" as const }];
+    expect(await session.admit(request({ session_id: id, name_map: nameMap }))).toMatchObject({ admitted: true });
+    return session;
+  };
+  /** Asks, and reports the result when JUNO did not deny, as Claude Code would. */
+  const ask = async (session: MediatedSessions, id: string, tool: string, input: Record<string, unknown>, cwd = join(work, "project")): Promise<HookDecision> => {
+    const asked = { ...(pre(tool, input) as Record<string, unknown>), session_id: id, cwd };
+    const decision = await session.preToolUse(asked);
+    if (decision.decision !== "deny") expect(session.postToolUse({ ...asked, hook_event_name: "PostToolUse", tool_response: {} })).toEqual({ recorded: true });
+    return decision;
+  };
+  const lastPark = (id: string): Record<string, unknown> | undefined => readTrajectory(journal.root, `session-${id}`).filter((entry) => entry.kind === "park").map(payload).at(-1);
+  const gated = { reason: "sensitivity_ceiling", detail: expect.objectContaining({ read_gate: true, aggregate: "secret", ceiling: "internal" }) };
+
+  // proves §4.3 V6-7 with §2.7.1 C4: a symlink to a file above the clearance is judged as its target, by Read and by Bash
+  it("parks a read of a secret file through a symlink, by Read and by Bash cat", async () => {
+    symlinkSync(join(work, "project", "secrets", "key.txt"), join(work, "project", "link.txt"));
+    const session = await withLs("gate-1");
+    expect(await ask(session, "gate-1", "Read", { file_path: join(work, "project", "link.txt") })).toMatchObject({ decision: "deny", reason: expect.stringContaining("sensitivity_ceiling") });
+    expect(lastPark("gate-1")).toMatchObject(gated);
+    expect(await ask(session, "gate-1", "Bash", { command: "cat link.txt" })).toMatchObject({ decision: "deny", reason: expect.stringContaining("sensitivity_ceiling") });
+    expect(lastPark("gate-1")).toMatchObject(gated);
+    expect(await ask(session, "gate-1", "Edit", { file_path: join(work, "project", "link.txt"), old_string: "a", new_string: "b", replace_all: false })).toMatchObject({ decision: "deny" });
+  });
+
+  // proves the same through a chain of links, and through a relative link
+  it("follows a chain of links to the secret file", async () => {
+    symlinkSync("secrets/key.txt", join(work, "project", "first.txt"));
+    symlinkSync(join(work, "project", "first.txt"), join(work, "project", "second.txt"));
+    const session = await withLs("gate-2");
+    expect(await ask(session, "gate-2", "Bash", { command: "cat second.txt" })).toMatchObject({ decision: "deny", reason: expect.stringContaining("sensitivity_ceiling") });
+    expect(lastPark("gate-2")).toMatchObject(gated);
+  });
+
+  // proves §4.3 V6-7 for directory reads: a link inside a listed tree is a read of its target's tree, for Glob and for ls
+  it("parks a Glob or ls of a directory that holds a link into the secrets", async () => {
+    mkdirSync(join(work, "project", "public"));
+    writeFileSync(join(work, "project", "public", "a.txt"), "a\n");
+    const session = await withLs("gate-3");
+    // Without the link, the public tree is below the clearance.
+    expect(await ask(session, "gate-3", "Glob", { pattern: "**/*", path: join(work, "project", "public") })).toEqual({ decision: "none" });
+    symlinkSync(join(work, "project", "secrets"), join(work, "project", "public", "docs"));
+    expect(await ask(session, "gate-3", "Glob", { pattern: "**/*", path: join(work, "project", "public") })).toMatchObject({ decision: "deny", reason: expect.stringContaining("sensitivity_ceiling") });
+    expect(await ask(session, "gate-3", "Bash", { command: "ls -R public" })).toMatchObject({ decision: "deny", reason: expect.stringContaining("sensitivity_ceiling") });
+    expect(await ask(session, "gate-3", "Bash", { command: "ls public/docs" })).toMatchObject({ decision: "deny", reason: expect.stringContaining("sensitivity_ceiling") });
+    expect(lastPark("gate-3")).toMatchObject(gated);
+  });
+
+  // proves §4.3 V6-7 for ls (the round-4 note): ls with no operand lists its working directory, and ls of a directory lists it
+  it("judges ls with no operand on its working directory, and ls of a directory on that directory", async () => {
+    mkdirSync(join(work, "project", "public"));
+    const session = await withLs("gate-4");
+    expect(await ask(session, "gate-4", "Bash", { command: "ls -R" })).toMatchObject({ decision: "deny", reason: expect.stringContaining("sensitivity_ceiling") });
+    expect(await ask(session, "gate-4", "Bash", { command: "ls" })).toMatchObject({ decision: "deny", reason: expect.stringContaining("sensitivity_ceiling") });
+    expect(await ask(session, "gate-4", "Bash", { command: "ls secrets" })).toMatchObject({ decision: "deny", reason: expect.stringContaining("sensitivity_ceiling") });
+    expect(lastPark("gate-4")).toMatchObject(gated);
+    expect(await ask(session, "gate-4", "Bash", { command: "ls -R public" })).toEqual({ decision: "allow", updatedInput: { command: "/usr/bin/ls '-R' 'public'" } });
+    expect(await ask(session, "gate-4", "Bash", { command: "ls" }, join(work, "project", "public"))).toEqual({ decision: "allow", updatedInput: { command: "/usr/bin/ls" } });
+  });
+
+  // proves §1.2 with D-156: a link to a file at the clearance proceeds, and its result is recorded at the target's class
+  it("lets a link to an internal file proceed and records its result at the target's class", async () => {
+    symlinkSync(join(work, "project", "notes.txt"), join(work, "project", "alias.txt"));
+    const session = await withLs("gate-5");
+    const asked = { ...(pre("Read", { file_path: join(work, "project", "alias.txt") }) as Record<string, unknown>), session_id: "gate-5" };
+    expect(await session.preToolUse(asked)).toEqual({ decision: "none" });
+    expect(session.postToolUse({ ...asked, hook_event_name: "PostToolUse", tool_response: { content: "notes" } })).toEqual({ recorded: true });
+    const result = readTrajectory(journal.root, "session-gate-5").filter((entry) => entry.kind === "capability_result").at(-1);
+    expect(result?.data_class).toEqual({ sensitivity: "internal", integrity: "untrusted" });
+  });
+
+  // proves D-156 fail-closed: a link that leaves every declared source is read at the highest declared class
+  it("reads a link to an undeclared place at the highest declared class", async () => {
+    mkdirSync(join(work, "project", "public"));
+    mkdirSync(join(work, "elsewhere"));
+    symlinkSync(join(work, "elsewhere"), join(work, "project", "public", "out"));
+    const session = await withLs("gate-6");
+    expect(await ask(session, "gate-6", "Glob", { pattern: "*", path: join(work, "project", "public") })).toMatchObject({ decision: "deny", reason: expect.stringContaining("sensitivity_ceiling") });
   });
 });
 

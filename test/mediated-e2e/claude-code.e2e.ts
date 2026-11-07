@@ -125,7 +125,7 @@ beforeAll(async () => {
     journal,
     grants,
     paths: new PathMap(["/workspace"]),
-    resolver: new HostPathResolver(workspace),
+    resolver: new HostPathResolver(workspace), view: new Workspace(execFileScript(process.execPath, []), "/work", workspace),
     protectedPaths: [join(host, "checkpoints"), sockets, home],
     checkpoints: { workspace: new Workspace(execFileScript(process.execPath, []), "/work", workspace), store: new CheckpointStore(join(host, "checkpoints")) },
   });

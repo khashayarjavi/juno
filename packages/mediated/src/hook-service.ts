@@ -5,7 +5,9 @@ import type { MediatedSessions } from "./session.js";
  * The boundary service for mode C (spec §4.3; DECISIONS.md D-142): a Unix-domain socket on the runner's host. Each
  * connection carries one request line, `{ "event": <hook event>, "input": <Claude Code's hook input> }`, and gets one
  * answer line:
- *   - PreToolUse: `{ "decision": "none" }` or `{ "decision": "deny", "reason": <text> }`;
+ *   - PreToolUse: `{ "decision": "none" }`, `{ "decision": "deny", "reason": <text> }`, or, for a Bash call JUNO proceeded
+ *     only, `{ "decision": "allow", "updatedInput": <the whole Bash input, its command rebuilt from what JUNO judged> }`
+ *     (D-152);
  *   - PostToolUse / PostToolUseFailure: `{ "recorded": true | false }`.
  * Anything it cannot read gets a denial (for PreToolUse) or `recorded: false`. Requests are judged one at a time, in
  * arrival order, so a session's calls and results are journalled in order.

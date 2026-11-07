@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { GrantStore, HostPathResolver } from "../../enforcement/src/index.js";
+import { GrantStore, HostPathResolver, Workspace, execFileScript } from "../../enforcement/src/index.js";
 import { JournalWriter } from "../../journal/src/index.js";
 import { TEST_ANCHOR, signed } from "../../enforcement/test/test-keys.js";
 import { runHookClient } from "../src/hook-client.js";
@@ -128,7 +128,7 @@ describe("the hook service and client together (§4.3 mode C, D-142)", () => {
         revoked_at: null,
       }),
     );
-    const sessions = new MediatedSessions({ journal: JournalWriter.open(join(dir, "journal")), grants, paths: new PathMap([join(dir, "work")]), resolver: new HostPathResolver(join(dir, "work")), protectedPaths: [dir + "/sock-unused"] });
+    const sessions = new MediatedSessions({ journal: JournalWriter.open(join(dir, "journal")), grants, paths: new PathMap([join(dir, "work")]), resolver: new HostPathResolver(join(dir, "work")), view: new Workspace(execFileScript(process.execPath, []), "/work", join(dir, "work")), protectedPaths: [dir + "/sock-unused"] });
     await sessions.admit({
       session_id: "s-1",
       principal: "alireza",

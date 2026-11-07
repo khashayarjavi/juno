@@ -189,6 +189,11 @@ export type MediatedOptions = {
   readonly grants: GrantStore;
   readonly paths: PathMap;
   readonly resolver: PathResolver;
+  /**
+   * The host workspace as the read gate lists it, never following a symlink (D-156): a read of a directory counts every
+   * link inside it as a read of that link's target.
+   */
+  readonly view: Workspace;
   readonly clock?: () => Date;
   /** Where the host workspace is checkpointed (the same scripts, run on the host) and the store for its content (D-136). */
   readonly checkpoints?: { readonly workspace: Workspace; readonly store: CheckpointStore };
@@ -222,6 +227,7 @@ export class MediatedSessions {
   readonly #resolver: PathResolver;
   readonly #clock: () => Date;
   readonly #checkpoints: MediatedOptions["checkpoints"];
+  readonly #view: Workspace;
   readonly #sessions = new Map<string, Session>();
   readonly #registries = new Map<string, { registry: CapabilityRegistry; boundary: EnforcementBoundary }>();
   /** Sessions whose admission was refused and journalled: task id → the refused request's name map (D-152). */
@@ -234,6 +240,7 @@ export class MediatedSessions {
     this.#resolver = options.resolver;
     this.#clock = options.clock ?? (() => new Date());
     this.#checkpoints = options.checkpoints;
+    this.#view = options.view;
     for (const path of [options.journal.root, ...options.protectedPaths]) {
       if (options.paths.toWork(path) !== null) {
         throw new MediatedError(`${path} is JUNO's own state and lies under a workspace root, so a tool call could reach it; move the workspace or the state (D-148)`);
@@ -389,7 +396,7 @@ export class MediatedSessions {
 
     // §4.3 V6-7: a read of a source classified above the provider's clearance parks before it runs. The boundary judges it
     // at step 5, after integrity, scope and effects, so a park that cannot be overridden always wins (D-150).
-    const reads = this.#readsSensitivity(session, mapped.paths);
+    const reads = await this.#readsSensitivity(session, mapped.paths);
 
     const constants = mapped.constants;
     const base: TaskContext = { task: { ...session.task, sensitivity_floor: session.floor }, constants, synthesis: { sensitivity: session.floor }, reversible: session.reversible, readGate: { reads, clearance: session.request.provider_clearance } };
@@ -572,13 +579,21 @@ export class MediatedSessions {
           argv: argv.map((element, index) => word(`command.argv.${String(index)}`, element)),
           cwd: synthesized(cwd),
         };
-        // What a Bash call reads is its operands, not its working directory (§4.3 V6-7).
+        // What a Bash call reads (§4.3 V6-7, D-156): every operand, each as a tree, since a program such as `ls` lists a
+        // directory it is given (and `ls -R` all below it); a file's tree is the file. With no operand, the working
+        // directory's tree (`ls` lists it). Flags are words before `--` that start with `-`; anything else is an operand.
+        const operands: string[] = [];
+        let flagsEnd = false;
+        for (const element of argv) {
+          if (!flagsEnd && element === "--") flagsEnd = true;
+          else if (flagsEnd || !element.startsWith("-")) operands.push(element);
+        }
         const member = session.request.name_map.find((entry) => entry.name === reading.name);
         return {
           kind: "proposal",
           proposal: { capability: `cc.bash.${member?.side_effect ?? "irreversible"}`, arguments: args },
           constants,
-          paths: argv.map((element) => (element.startsWith("/") ? element : `${cwd}/${element}`)),
+          paths: operands.length === 0 ? [`${cwd}/**`] : operands.map((element) => `${element.startsWith("/") ? element : `${cwd}/${element}`}/**`),
           bash: { ...fields.data, command: rebuilt },
         };
       }
@@ -586,26 +601,50 @@ export class MediatedSessions {
   }
 
   /**
-   * The highest class of what a call reads (§4.3 V6-7): every source a read path lies in; for a tree (`<dir>/**`),
-   * also every source under it. A path that names no source is read at the highest class any source declares
-   * (restrictive: an unclassified read is never below the clearance by default, D-141).
+   * The highest class of what a call reads (§4.3 V6-7), judged on what the effect will touch (§2.7.1 C4, D-156): every
+   * path is resolved first, so a symlink is judged as its target. For a tree (`<dir>/**`), every source under or around
+   * its resolved directory counts, and so does every symlink inside it, followed the same way (the listing itself never
+   * follows one). A path that names no source, cannot be resolved or listed, or holds too many links is read at the
+   * highest class any source declares (restrictive: an unclassified read is never below the clearance by default, D-141).
    */
-  #readsSensitivity(session: Session, paths: readonly string[]): Sensitivity {
+  async #readsSensitivity(session: Session, paths: readonly string[]): Promise<Sensitivity> {
     let reads: Sensitivity = "public";
     const highest = session.request.sources.reduce<Sensitivity>((high, source) => maxSensitivity(high, source.data_class.sensitivity), "public");
-    for (const raw of paths) {
-      const tree = raw.endsWith("/**");
-      const parsed = WorkPath.safeParse(operandPath("/", tree ? raw.slice(0, -3) : raw));
+    const queue = paths.map((raw) => ({ path: raw.endsWith("/**") ? raw.slice(0, -3) : raw, tree: raw.endsWith("/**") }));
+    const seen = new Set<string>();
+    let links = 0;
+    for (let item = queue.shift(); item !== undefined; item = queue.shift()) {
+      const parsed = WorkPath.safeParse(operandPath("/", item.path));
       if (!parsed.success) return highest;
+      const answer = (await this.#resolver.resolve([parsed.data])).get(parsed.data);
+      if (answer === undefined || !answer.ok) return highest;
+      const canonical = answer.canonical;
+      const key = `${item.tree ? "tree" : "file"}:${canonical}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
       let named = false;
       for (const source of session.request.sources) {
         if (source.selector.kind !== "path") continue;
-        if (pathWithin(parsed.data, source.selector.prefix) || (tree && pathWithin(source.selector.prefix, parsed.data))) {
+        if (pathWithin(canonical, source.selector.prefix) || (item.tree && pathWithin(source.selector.prefix, canonical))) {
           named = true;
           reads = maxSensitivity(reads, source.data_class.sensitivity);
         }
       }
       if (!named) return highest;
+      if (!item.tree) continue;
+      // The links inside the tree: listed without following any, then each judged as its own target's tree.
+      const listed = await this.#view.list(canonical, false);
+      if (!listed.ok) {
+        // A file or a path that does not exist has no tree beneath it; any other failure is a doubt.
+        if (NO_TREE.test(listed.reason)) continue;
+        return highest;
+      }
+      for (const entry of listed.snapshot.manifest) {
+        if (entry.type !== "symlink") continue;
+        links += 1;
+        if (links > MAX_READ_LINKS) return highest;
+        queue.push({ path: `${canonical}/${entry.path}`, tree: true });
+      }
     }
     return reads;
   }
@@ -654,6 +693,11 @@ type Mapped =
     }
   | { readonly kind: "reject"; readonly reason: string }
   | { readonly kind: "park"; readonly reason: string; readonly detail: Record<string, unknown>; readonly overridable: boolean };
+
+/** The lister's answers that mean "there is no tree here": a file, or a path that does not exist (D-156). */
+const NO_TREE = /^(the workspace root is not a directory|cannot read the workspace root: (ENOENT|ENOTDIR))/;
+/** Symlinks a read may follow before it is read at the highest class (D-156). */
+const MAX_READ_LINKS = 64;
 
 /** A refused admission and what is recorded against it: the most restrictive class, as mode A records one. */
 const REFUSED_CLASS: DataClass = { sensitivity: "secret", integrity: "untrusted" };
