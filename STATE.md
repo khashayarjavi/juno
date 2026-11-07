@@ -1,18 +1,18 @@
 # STATE
 
 ## Current increment
-**Slice 1.5 — Increment 4: hook mode for Claude Code (§4.3 mode C)** (`docs/plans/slice-1.5-build-plan.md`, Increment 4; also §2.3.2 E1, §7.8 E2, D-131's Increment 4 directives). Branch `claude/vigilant-heisenberg-uko6on`, restarted from `main` 5951e57 after PR #36 merged. Spec v0.6.1. No objection open.
+**Slice 1.5 — Increment 4: hook mode for Claude Code (§4.3 mode C)** (`docs/plans/slice-1.5-build-plan.md`, Increment 4; also §2.3.2 E1, §7.8 E2, D-131's Increment 4 directives). Branch `claude/serene-fermat-clg2xb` (this session's only pushable branch, D-155); it carries PR #37's 16 commits unchanged, and its PR supersedes PR #37. Spec v0.6.1. No objection open.
 
-Status: **STOPPED (CLAUDE.md §7): PR #37's three review rounds each ended DO NOT MERGE.** Every finding is fixed on the branch, with tests: rounds 1 and 2 by D-147 to D-150, round 3 by D-151. `make verify` is GREEN locally (988 unit, 72 container), and `make mediated-e2e` is 5 of 5 with the real Claude Code 2.1.318. **Nothing was merged. The round-3 fix has not been reviewed.**
-- **For you (the operator):** authorise a fourth review round on PR #37, as D-103, D-106 and D-127 did before. With it, the next session runs round 4, merges through the gate on MERGE, and continues with Increment 5.
-- **What the three rounds found, in plain words.** Each finding was a case where JUNO's record or answer was weaker than the spec, never one where a forbidden action ran:
-  - **Round 1:**
-    - a Bash command with an absolute path was judged on a different file than Claude Code would touch;
-    - JUNO's own files were not yet fenced off from the workspace;
-    - the runtime check was missing.
-  - **Round 2:** a read of something above the model's clearance was judged before the integrity check, so some never-overridable parks were recorded as overridable.
-  - **Round 3:** the same kind of ordering slip inside Bash handling: an extra field, an outside working directory, or a spent budget each made an injected command look retryable.
-  - **One lesson for the next increments:** in mediated modes the command string is judged first, then everything else, in the spec's step order. D-150 and D-151 record this, and the gateway (Increment 5) must follow it.
+Status: **operator rulings of 2026-11-07 built (D-152 to D-155); review round 4 (authorised) next, then the §7 gate.** `make mediated-e2e` is 6 of 6 with the real Claude Code 2.1.319.
+- **Ruling 1, the class closed (D-152).** A Bash command is now judged from the least of the hook input that names it, before anything else: the session's state, the budget, unknown or mistyped fields, the working directory, a missing result, grants, scope and the read gate. A property test tries 150 random injected commands, each with a random mix of every defect the ruling lists, and checks that each one is denied, recorded as exactly one `integrity_floor` park that can never be overridden, and authorizes nothing. A control call with the same defects and a harmless command is never recorded that way.
+  - **Run against PR #37's round-3 code, the property found three more members of the class:** a session already ended by its time limit, a mistyped hook field, and a session whose admission was refused. Each gave a plain denial with no record. All three are fixed.
+- **Ruling 2, what runs is what was judged (D-152, D-153).** When JUNO allows a Bash call, it answers `allow` with the command rebuilt from what it judged: the program's absolute path from your name map, then each argument in single quotes. JUNO's own strict reader reads the rebuilt command back and must get exactly the judged program and arguments, or the call is refused. Property tests (2,000 runs each) cover quotes, spaces, newlines, leading dashes and arbitrary characters.
+  - **Claude Code honours it:** its hooks reference (re-read 2026-11-07) says `updatedInput` replaces the tool's whole input; Bash is included. **No STOP.** The real binary proves it: the model asks for `show`, a name only your name map knows, and Claude Code prints the file, so it ran JUNO's command. With the model's own string handed back instead, the same call fails.
+  - **One deviation, decided by the restrictive rule (D-153):** a `'` inside an argument is written `'"'"'`, not `'\''`. The spec's reader refuses any `\` outside single quotes, so `'\''` could never pass the read-back proof you asked for. Both forms mean the same to the shell.
+  - **No lint exemption was needed;** the no-shell rule and its config are unchanged.
+  - **Residual narrowed:** `PATH` and aliases no longer choose the program. A bash function named with the absolute path (`function /usr/bin/cat {…}`) in the shell's startup files still could; the install says so.
+- **Ruling 3 recorded for Increment 5 (D-154):** enumerated targets match on the resolved path; a non-path destination only on an exact enumerated value (email domain case-insensitive); an untrusted destination not enumerated parks.
+- **Earlier status (PR #37):** three review rounds each ended DO NOT MERGE; every finding was fixed (D-147 to D-151). Round 4 is authorised by your ruling and runs on the new PR.
 - **Step 1 done** (D-139): the hooks reference was re-read on 2026-11-05.
   - Plan §1.1 still holds point by point.
   - New: `CLAUDE_CODE_DISABLE_FILE_MENTIONS=1` routes `@`-mentions through the file tools, so the install will require it, and the minimum Claude Code version becomes 2.1.299.
@@ -46,7 +46,7 @@ In plain words, JUNO's hook governs every **tool call** Claude Code makes. It do
 1. **Anything Claude Code does without a tool call:** its own memory, and the content of a file you `@`-mention if Claude does not then read it with a tool. JUNO's install turns direct `@`-insertion off (D-139), so a mentioned file is read through the Read tool, which JUNO judges.
 2. **A file or symlink changed between JUNO's check and Claude Code's use of it.** Claude Code, not JUNO, performs the effect, so D-121's writer protection does not apply in this mode. Keep the workspace out of reach of anything else.
 3. **A configuration that bypasses the hook:** a run started with `--settings '{"disableAllHooks": true}'`, settings of higher precedence that turn hooks off, managed settings that allow only managed hooks, or **another PreToolUse hook in a different settings file (a project's included) that changes a call after JUNO judged it**. JUNO refuses to install into project or local settings, or beside another PreToolUse hook in the same file (D-148), and the install prints these limits. The remedy is managed settings with `allowManagedHooksOnly`.
-4. **Which program a Bash command really runs.** JUNO judges `cat` through your name map, but Claude Code's shell finds `cat` through its own `PATH`, aliases and shell functions (D-150). Keep that shell's startup files free of aliases and functions for the names you map.
+4. **A shell function named with a program's absolute path.** JUNO hands Claude Code the command rebuilt with the program's absolute path (D-152), so `PATH` and aliases no longer choose the program. Bash still lets a startup file define `function /usr/bin/cat { … }`, which would run instead. Keep that shell's startup files free of functions.
 5. **Context ownership and steering** (§7.8: a hook session's `steer_capability` is `none`), and the text of tool descriptions Claude Code reads.
 6. **Tokens and money:** Claude Code's own limits govern them; you accept that when a session is admitted (`unmetered`).
 7. **Everything mode A does not protect**, plus D-130's residuals: a kernel or WSL escape, and a compromised Windows account. Claude Code runs as your Windows user, which can ask your agent to sign.
@@ -79,7 +79,7 @@ In plain words, JUNO's hook governs every **tool call** Claude Code makes. It do
   5. Bash → `readCommandString`; a constant command proceeds as written;
   6. the boundary decides.
 
-  Proceed → **no decision** (exit 0, empty: Claude Code's own rules still apply). Park → `deny` with the reason, and the park journalled with `overridable` as in mode A. Reject → `deny`. Never `ask`, `defer`, `allow`, `updatedInput` or `updatedToolOutput`.
+  Proceed → **no decision** (exit 0, empty: Claude Code's own rules still apply). Park → `deny` with the reason, and the park journalled with `overridable` as in mode A. Reject → `deny`. Never `ask`, `defer` or `updatedToolOutput`. (Changed by D-152: a Bash proceed is answered `allow` with `updatedInput`, the command rebuilt from what JUNO judged.)
 - **PostToolUse / PostToolUseFailure.** The result is journalled against the call JUNO authorized (by `tool_use_id`), as `untrusted` content raising the session floor by the source read. A result with no authorized call is journalled as such.
 - **Service and client.** A Unix-socket service (one JSON line in, one out). The client `juno-hook` (node builtins only) reads the hook input from stdin, asks the service with a timeout, and prints Claude Code's `deny` JSON or nothing. On **any** doubt (no service, timeout, malformed answer) it exits 2.
 - **`juno hook install`** writes `PreToolUse`, `PostToolUse` and `PostToolUseFailure` with matcher `*`, exec form, `onFailure: "block"` and an explicit `timeout`, plus `env.CLAUDE_CODE_DISABLE_FILE_MENTIONS=1`, into the user (or managed) settings file. It refuses:
