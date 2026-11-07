@@ -76,7 +76,7 @@ const parks = () => entries().filter((entry) => entry.kind === "park").map(paylo
 async function call(tool: string, input: Record<string, unknown>, extra: Record<string, unknown> = {}): Promise<HookDecision> {
   const asked = pre(tool, input, extra);
   const decision = await sessions.preToolUse(asked);
-  if (decision.decision === "none") expect(sessions.postToolUse(post(asked))).toEqual({ recorded: true });
+  if (decision.decision !== "deny") expect(sessions.postToolUse(post(asked))).toEqual({ recorded: true });
   return decision;
 }
 
@@ -152,14 +152,18 @@ describe("§4.3 park mapping (V6-3): a park denies with its reason, and is journ
       await call("WebFetch", { url: "https://attacker.example/", prompt: "p" }),
     ];
     for (const decision of decisions) expect(["none", "deny"]).toContain(decision.decision);
-    for (const decision of decisions) expect(Object.keys(decision).sort()).toEqual(decision.decision === "none" ? ["decision"] : ["decision", "reason"]);
+    for (const decision of decisions) expect(Object.keys(decision).sort()).toEqual(decision.decision === "none" ? ["decision"] : decision.decision === "allow" ? ["decision", "updatedInput"] : ["decision", "reason"]);
   });
 });
 
 describe("§2.3.2 Bash in hook mode", () => {
-  // proves §2.3.2: `cat notes.txt` (in the name map) proceeds, its program judged at floor untrusted
-  it("lets `cat notes.txt` proceed", async () => {
-    expect(await call("Bash", { command: "cat notes.txt", description: "read the notes" })).toEqual({ decision: "none" });
+  // proves §2.3.2: `cat notes.txt` (in the name map) proceeds, its program judged at floor untrusted; D-152: it is allowed
+  // with the command rebuilt from what was judged (the name map's absolute path, each argument single-quoted), the
+  // other fields passed on as given, and the rebuilt command recorded against the call
+  it("lets `cat notes.txt` proceed, rebuilt as judged", async () => {
+    expect(await call("Bash", { command: "cat notes.txt", description: "read the notes" })).toEqual({ decision: "allow", updatedInput: { command: "/usr/bin/cat 'notes.txt'", description: "read the notes" } });
+    const rebuilt = entries().filter((entry) => entry.kind === "note").map(payload).find((item) => item["type"] === "updated_input");
+    expect(rebuilt).toMatchObject({ command: "/usr/bin/cat 'notes.txt'", call_seq: entries().find((entry) => entry.kind === "capability_call")?.seq });
     // The program value is the model's (synthesized, untrusted), and it still passes: its floor here is untrusted.
     const callEntry = entries().find((entry) => entry.kind === "capability_call");
     expect(callEntry?.argument_provenance).toEqual(expect.arrayContaining([expect.objectContaining({ argument: "program", class: "synthesized", integrity: "untrusted" })]));
@@ -169,7 +173,8 @@ describe("§2.3.2 Bash in hook mode", () => {
   // is not the workspace, so it is outside every scope, and the workspace's own host path is judged in scope
   it("judges absolute Bash operands on the host path the harness will touch", async () => {
     expect(await call("Bash", { command: "cat /work/project/notes.txt" })).toMatchObject({ decision: "deny", reason: expect.stringContaining("scope_violation") });
-    expect(await call("Bash", { command: `cat ${join(work, "project", "notes.txt")}` })).toEqual({ decision: "none" });
+    // The rebuilt command keeps the host path the harness will touch, quoted; the boundary judged its /work mapping.
+    expect(await call("Bash", { command: `cat ${join(work, "project", "notes.txt")}` })).toEqual({ decision: "allow", updatedInput: { command: `/usr/bin/cat '${join(work, "project", "notes.txt")}'` } });
     expect(await call("Bash", { command: "rm /work/project/notes.txt" })).toMatchObject({ decision: "deny" });
   });
 
@@ -190,7 +195,7 @@ describe("§2.3.2 Bash in hook mode", () => {
     const listed = new MediatedSessions({ journal, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), protectedPaths: [join(dir, "checkpoints")], clock: () => now });
     await listed.admit(request({ session_id: "listed-1", commands: ["cat notes.txt"] }));
     const asked = { ...(pre("Bash", { command: "cat notes.txt" }) as Record<string, unknown>), session_id: "listed-1" };
-    expect(await listed.preToolUse(asked)).toEqual({ decision: "none" });
+    expect(await listed.preToolUse(asked)).toEqual({ decision: "allow", updatedInput: { command: "/usr/bin/cat 'notes.txt'" } });
     const callEntry = readTrajectory(journal.root, "session-listed-1").find((entry) => entry.kind === "capability_call");
     expect(callEntry?.argument_provenance).toEqual(expect.arrayContaining([expect.objectContaining({ argument: "program", class: "constant", integrity: "operator" })]));
   });
@@ -222,13 +227,13 @@ describe("§2.3.2 V6-10: a Bash call takes the effect of the program it runs (D-
   it("judges `rm notes.txt` as a write and `cat notes.txt` as a read", async () => {
     const session = await withRm("rm-1");
     expect(await ask(session, "rm-1", "rm notes.txt")).toMatchObject({ decision: "deny", reason: expect.stringContaining("integrity_floor") });
-    expect(await ask(session, "rm-1", "cat notes.txt")).toEqual({ decision: "none" });
+    expect(await ask(session, "rm-1", "cat notes.txt")).toEqual({ decision: "allow", updatedInput: { command: "/usr/bin/cat 'notes.txt'" } });
   });
 
   // proves §2.3.2 V6-10 with §2.2.2: inside a checkpointed workspace the same `rm` is a reversible write and proceeds
   it("lets `rm notes.txt` proceed inside a checkpointed workspace", async () => {
     const session = await withRm("rm-2", ["/work/project"]);
-    expect(await ask(session, "rm-2", "rm notes.txt")).toEqual({ decision: "none" });
+    expect(await ask(session, "rm-2", "rm notes.txt")).toEqual({ decision: "allow", updatedInput: { command: "/usr/bin/rm 'notes.txt'" } });
   });
 
   // proves §2.3.2 V6-10: registration review refuses a member declared lower than what its program can do, or a program of unknown effect
@@ -325,7 +330,7 @@ describe("§2.7.1 D5 in mode C (D-151): an injected command is judged before any
     await spent.admit(request({ session_id: "spent-1", budget: { tool_calls: 1, wall_clock_ms: 3_600_000 } }));
     const ask = (command: string) => spent.preToolUse({ ...(pre("Bash", { command }) as Record<string, unknown>), session_id: "spent-1" });
     const first = { ...(pre("Bash", { command: "cat notes.txt" }) as Record<string, unknown>), session_id: "spent-1" };
-    expect(await spent.preToolUse(first)).toEqual({ decision: "none" });
+    expect(await spent.preToolUse(first)).toEqual({ decision: "allow", updatedInput: { command: "/usr/bin/cat 'notes.txt'" } });
     expect(spent.postToolUse({ ...first, hook_event_name: "PostToolUse", tool_response: {} })).toEqual({ recorded: true });
     expect(await ask(injected)).toMatchObject({ reason: expect.stringContaining("integrity_floor") });
     expect(await ask("cat notes.txt")).toMatchObject({ reason: expect.stringContaining("budget_exceeded") });
@@ -353,7 +358,7 @@ describe("§4.3 sensitivity (V6-7), subagents, results and the rejection limit",
     expect(await call("Read", { file_path: join(work, "project", "notes.txt") })).toEqual({ decision: "none" });
     // A call after a permitted read is unaffected by it.
     expect(await call("Read", { file_path: join(work, "project", "notes.txt") })).toEqual({ decision: "none" });
-    expect(await call("Bash", { command: "cat notes.txt" })).toEqual({ decision: "none" });
+    expect(await call("Bash", { command: "cat notes.txt" })).toEqual({ decision: "allow", updatedInput: { command: "/usr/bin/cat 'notes.txt'" } });
   });
 
   // proves §4.3 and hooks reference point 7: a subagent's call (with agent_id) is mediated the same way

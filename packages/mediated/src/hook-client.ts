@@ -8,9 +8,11 @@ import { connect } from "node:net";
  *   node hook-client.js --socket <path> [--timeout-ms <ms>]     (the hook input JSON on standard input)
  *
  * PreToolUse: JUNO's `{ decision: "none" }` → exit 0 with no output (no decision; Claude Code's own rules apply);
- * `{ decision: "deny", reason }` → Claude Code's deny JSON on standard output, exit 0. **Any doubt** — the service is
- * unreachable, slow, or answers anything else; the input is unreadable — → exit 2 with the reason on standard error,
- * which blocks the call. It never prints `allow`, `ask`, `defer`, `updatedInput` or `updatedToolOutput`.
+ * `{ decision: "deny", reason }` → Claude Code's deny JSON on standard output, exit 0; for a Bash call only,
+ * `{ decision: "allow", updatedInput }` → Claude Code's allow JSON with that `updatedInput`, whose command JUNO rebuilt
+ * from what it judged (D-152). **Any doubt** — the service is unreachable, slow, or answers anything else; the input is
+ * unreadable — → exit 2 with the reason on standard error, which blocks the call. It never prints `ask`, `defer` or
+ * `updatedToolOutput`, and never `allow` for any tool but Bash.
  * PostToolUse / PostToolUseFailure: `{ recorded: true }` → exit 0; anything else → exit 2.
  */
 
@@ -57,6 +59,9 @@ function ask(socketPath: string, request: string, timeoutMs: number): Promise<{ 
   });
 }
 
+/** The Bash tool input fields an `updatedInput` may carry (D-152): the rebuilt command and the known fields as given. */
+const BASH_FIELDS: ReadonlySet<string> = new Set(["command", "description", "timeout", "run_in_background"]);
+
 /** Asks the service about one hook input and turns the answer into what Claude Code reads. */
 export async function runHookClient(stdin: string, socketPath: string, timeoutMs: number = DEFAULT_TIMEOUT_MS): Promise<ClientResult> {
   if (!socketPath.startsWith("/")) return blocked("the JUNO socket is not an absolute path");
@@ -78,6 +83,22 @@ export async function runHookClient(stdin: string, socketPath: string, timeoutMs
     if (keys === "decision" && record["decision"] === "none") return { exitCode: 0, stdout: "", stderr: "" };
     if (keys === "decision,reason" && record["decision"] === "deny" && typeof record["reason"] === "string") {
       const output = { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: record["reason"] } };
+      return { exitCode: 0, stdout: `${JSON.stringify(output)}\n`, stderr: "" };
+    }
+    // D-152: `allow` only for a Bash call, and only with a whole Bash input whose command is a string.
+    const tool = typeof input === "object" && input !== null && "tool_name" in input ? input.tool_name : undefined;
+    const updated = record["updatedInput"];
+    if (
+      keys === "decision,updatedInput" &&
+      record["decision"] === "allow" &&
+      tool === "Bash" &&
+      typeof updated === "object" &&
+      updated !== null &&
+      !Array.isArray(updated) &&
+      typeof (updated as Record<string, unknown>)["command"] === "string" &&
+      Object.keys(updated).every((key) => BASH_FIELDS.has(key))
+    ) {
+      const output = { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow", permissionDecisionReason: "JUNO judged this command; it runs as JUNO rebuilt it", updatedInput: updated } };
       return { exitCode: 0, stdout: `${JSON.stringify(output)}\n`, stderr: "" };
     }
     return blocked("the JUNO service's answer is not a decision JUNO can give");

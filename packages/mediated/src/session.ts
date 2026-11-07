@@ -31,6 +31,7 @@ import {
 } from "../../enforcement/src/index.js";
 import { type JournalWriter, canonicalJson } from "../../journal/src/index.js";
 import { type Adapter, type CapabilityCall, CapabilityRegistry, RegistryEntry, loadRegistryEntry } from "../../registry/src/index.js";
+import { rebuildBashCommand } from "./rebuild.js";
 
 /**
  * Mediated mode C: a Claude Code session governed through its hooks (spec §4.3, §2.3.2, §2.2.2, §7.8; build plan Slice
@@ -40,7 +41,9 @@ import { type Adapter, type CapabilityCall, CapabilityRegistry, RegistryEntry, l
  * the same enforcement boundary and journal as JUNO's own loop. Every model-written value is `untrusted` (§4.3); values
  * the operator listed are `constant`. Claude Code, not JUNO, performs the effect, so a proceed is reported as no
  * decision and the result arrives later by PostToolUse. A park always denies the call with its reason and is
- * journalled (§4.3 V6-3); nothing here ever answers `allow`, `ask` or `defer`, or rewrites a call or its result.
+ * journalled (§4.3 V6-3). The one `allow` is a Bash call JUNO proceeded: it is answered with `updatedInput` whose command
+ * is rebuilt from what JUNO judged, so what runs is what was judged (D-152). Nothing here ever answers `ask` or `defer`,
+ * or rewrites a result.
  */
 
 /** The actor recorded for the harness's calls and results. */
@@ -123,8 +126,26 @@ export const HookInput = z.object({
 });
 export type HookInput = z.infer<typeof HookInput>;
 
-/** What JUNO answers a PreToolUse: no decision (Claude Code's own rules apply), or a denial with its reason. */
-export type HookDecision = { readonly decision: "none" } | { readonly decision: "deny"; readonly reason: string };
+/**
+ * What JUNO answers a PreToolUse: no decision (Claude Code's own rules apply), a denial with its reason, or, for a Bash
+ * call JUNO proceeded only, `allow` with the whole tool input replaced by the rebuilt command and the other known fields
+ * (D-152; hooks reference: `updatedInput` "replaces the entire input object").
+ */
+export type HookDecision =
+  | { readonly decision: "none" }
+  | { readonly decision: "deny"; readonly reason: string }
+  | { readonly decision: "allow"; readonly updatedInput: Readonly<Record<string, unknown>> };
+
+/** Just enough of a hook input to judge a Bash command before anything else is read (D-151, D-152). */
+const BashProbe = z.object({ session_id: z.string(), hook_event_name: z.literal("PreToolUse"), tool_name: z.literal("Bash"), tool_input: z.object({ command: z.string() }) });
+
+/** The Bash tool's input fields, and the types JUNO passes on in `updatedInput` (D-152; hooks reference, D-139). */
+const BashFields = z.strictObject({
+  command: z.string(),
+  description: z.string().optional(),
+  timeout: z.int().positive().optional(),
+  run_in_background: z.boolean().optional(),
+});
 
 /** Maps the operator's workspace root, in each spelling the harness may use, onto the capability namespace (D-141). */
 export class PathMap {
@@ -203,6 +224,8 @@ export class MediatedSessions {
   readonly #checkpoints: MediatedOptions["checkpoints"];
   readonly #sessions = new Map<string, Session>();
   readonly #registries = new Map<string, { registry: CapabilityRegistry; boundary: EnforcementBoundary }>();
+  /** Sessions whose admission was refused and journalled: task id → the refused request's name map (D-152). */
+  readonly #refused = new Map<string, ReadonlyMap<string, string>>();
 
   constructor(options: MediatedOptions) {
     this.#journal = options.journal;
@@ -254,7 +277,10 @@ export class MediatedSessions {
     }
     if (failures.length > 0 || built === null) {
       // Never admitted, never referenced: recorded at the most restrictive class, as mode A records a refused admission.
-      if (!this.#sessions.has(id)) this.#append(id, "note", { sensitivity: "secret", integrity: "untrusted" }, SESSION_ACTOR, { type: "admission", outcome: "rejected", mode: "hook", failures });
+      if (!this.#sessions.has(id)) {
+        this.#append(id, "note", REFUSED_CLASS, SESSION_ACTOR, { type: "admission", outcome: "rejected", mode: "hook", failures });
+        this.#refused.set(id, new Map(request.name_map.map((entry) => [entry.name, entry.program])));
+      }
       return { admitted: false, failures };
     }
     const task = Task.parse({
@@ -291,6 +317,7 @@ export class MediatedSessions {
       reversible.push(root);
     }
     this.#registries.set(id, built);
+    this.#refused.delete(id);
     const session: Session = { task, request, admittedAt: this.#clock().getTime(), calls: 0, rejections: 0, floor: "public", pending: new Map(), reversible };
     this.#sessions.set(id, session);
     this.#append(id, "note", { sensitivity: "internal", integrity: "operator" }, SESSION_ACTOR, {
@@ -314,6 +341,22 @@ export class MediatedSessions {
 
   /** Judges one PreToolUse (D-141). Never throws on bad input: anything it cannot judge is denied. */
   async preToolUse(raw: unknown): Promise<HookDecision> {
+    // §2.7.1 D5 (D-151, D-152): a Bash command string is the call's one instruction value, so it is judged first, from
+    // the least of the input that names it, before the rest of the input is read and before the session's state, the
+    // budget, unknown or malformed fields, the working directory or a missing result can turn its non-overridable park
+    // into anything else. A session whose admission was refused records it too, against its refused request's name map.
+    const probe = BashProbe.safeParse(raw);
+    if (probe.success) {
+      const probeId = `session-${probe.data.session_id}`;
+      const command = probe.data.tool_input.command;
+      const admitted = this.#sessions.get(probeId);
+      const nameMap = admitted === undefined ? this.#refused.get(probeId) : new Map(admitted.request.name_map.map((entry) => [entry.name, entry.program]));
+      const reading = nameMap === undefined ? null : readCommandString(command, nameMap);
+      if (reading !== null && !reading.ok) {
+        const detail = { tool: "Bash", command, why: reading.reason };
+        return admitted === undefined ? this.#parkRefused(probeId, detail) : this.#park(admitted, "integrity_floor", detail, false);
+      }
+    }
     const parsed = HookInput.safeParse(raw);
     if (!parsed.success || parsed.data.hook_event_name !== "PreToolUse") return deny("JUNO could not read the hook input, so the call is blocked (§4.3 fail-closed)");
     const input = parsed.data;
@@ -322,13 +365,6 @@ export class MediatedSessions {
     const built = this.#registries.get(id);
     if (session === undefined || built === undefined) return deny("this Claude Code session is not admitted to JUNO, so no call is allowed (§4.3)");
     if (session.task.state !== "running") return deny(`this session is ${session.task.state}; no call is allowed`);
-    // §2.7.1 D5 (D-151): a Bash command string is the call's one instruction value, so it is judged first, before the
-    // budget, unknown fields, the working directory or a missing result can turn its non-overridable park into anything else.
-    if (input.tool_name === "Bash" && typeof input.tool_input["command"] === "string") {
-      const command = input.tool_input["command"];
-      const reading = readCommandString(command, new Map(session.request.name_map.map((entry) => [entry.name, entry.program])));
-      if (!reading.ok) return this.#park(session, "integrity_floor", { tool: "Bash", command, why: reading.reason }, false);
-    }
     const now = this.#clock().getTime();
     if (now - session.admittedAt > session.request.ttl) {
       session.task = Task.parse({ ...session.task, state: "failed", runtime_substate: null });
@@ -362,7 +398,11 @@ export class MediatedSessions {
     if (verdict.outcome === "proceed") {
       session.rejections = 0;
       session.pending.set(input.tool_use_id ?? `call-${String(verdict.call_seq)}`, { call_seq: verdict.call_seq, reads });
-      return { decision: "none" };
+      if (mapped.bash === undefined) return { decision: "none" };
+      // D-152: what runs is what was judged. The command Claude Code runs is the one rebuilt from the judged program and
+      // argv, recorded against the call before it is handed out.
+      this.#append(id, "note", this.#class(session), SESSION_ACTOR, { type: "updated_input", call_seq: verdict.call_seq, tool_use_id: input.tool_use_id ?? null, command: mapped.bash.command });
+      return { decision: "allow", updatedInput: mapped.bash };
     }
     if (verdict.outcome === "reject") return this.#reject(session, verdict.detail.reason, input.tool_name, verdict.call_seq);
     const grantOnly = verdict.detail.reason === "scope_violation" && verdict.detail.untrusted.length > 0;
@@ -495,11 +535,17 @@ export class MediatedSessions {
       default: {
         const command = value("command");
         if (typeof command !== "string") return { kind: "reject", reason: "malformed_call: Bash without a command" };
-        const cwd = input.cwd === undefined ? null : this.#paths.toWork(input.cwd);
-        if (cwd === null) return outside("cwd");
         const map = new Map(session.request.name_map.map((entry) => [entry.name, entry.program]));
         const reading = readCommandString(command, map);
         if (!reading.ok) return { kind: "park", reason: "integrity_floor", detail: { tool: "Bash", command, why: reading.reason }, overridable: false };
+        // D-152: the other fields are passed on to Claude Code as given, so each must have the type Claude Code expects.
+        const fields = BashFields.safeParse(input.tool_input);
+        if (!fields.success) return { kind: "reject", reason: "malformed_call: a Bash field has the wrong type" };
+        // D-152: the command that will run is rebuilt from the judged program and argv; one that cannot be is never allowed.
+        const rebuilt = rebuildBashCommand(reading.program, reading.argv);
+        if (rebuilt === null) return { kind: "reject", reason: "malformed_call: the command cannot be rebuilt exactly as judged" };
+        const cwd = input.cwd === undefined ? null : this.#paths.toWork(input.cwd);
+        if (cwd === null) return outside("cwd");
         // Every absolute operand is a host path, like a Read's file_path: it is mapped onto /work through the workspace roots,
         // so the boundary judges the file the harness will act on. One that maps nowhere is outside every scope (D-147).
         const argv: string[] = [];
@@ -528,7 +574,13 @@ export class MediatedSessions {
         };
         // What a Bash call reads is its operands, not its working directory (§4.3 V6-7).
         const member = session.request.name_map.find((entry) => entry.name === reading.name);
-        return { kind: "proposal", proposal: { capability: `cc.bash.${member?.side_effect ?? "irreversible"}`, arguments: args }, constants, paths: argv.map((element) => (element.startsWith("/") ? element : `${cwd}/${element}`)) };
+        return {
+          kind: "proposal",
+          proposal: { capability: `cc.bash.${member?.side_effect ?? "irreversible"}`, arguments: args },
+          constants,
+          paths: argv.map((element) => (element.startsWith("/") ? element : `${cwd}/${element}`)),
+          bash: { ...fields.data, command: rebuilt },
+        };
       }
     }
   }
@@ -576,6 +628,12 @@ export class MediatedSessions {
     return deny(`JUNO parked this call: ${reason}. ${overridable ? "The operator may remedy it, and the call can then be retried." : "This cannot be overridden (§8.3)."}`);
   }
 
+  /** An injected Bash command from a session whose admission was refused: recorded against it, never overridable (D-152). */
+  #parkRefused(taskId: string, detail: Record<string, unknown>): HookDecision {
+    this.#append(taskId, "park", REFUSED_CLASS, SESSION_ACTOR, { reason: "integrity_floor", overridable: false, mode: "hook", answer: "deny", admitted: false, ...detail });
+    return deny("JUNO parked this call: integrity_floor. This cannot be overridden (§8.3).");
+  }
+
   #class(session: Session): DataClass {
     return { sensitivity: maxSensitivity("internal", session.floor), integrity: "derived" };
   }
@@ -586,9 +644,19 @@ export class MediatedSessions {
 }
 
 type Mapped =
-  | { readonly kind: "proposal"; readonly proposal: unknown; readonly constants: TaskContext["constants"]; readonly paths: readonly string[] }
+  | {
+      readonly kind: "proposal";
+      readonly proposal: unknown;
+      readonly constants: TaskContext["constants"];
+      readonly paths: readonly string[];
+      /** For Bash only: the whole tool input Claude Code is to run, with the rebuilt command (D-152). */
+      readonly bash?: Readonly<Record<string, unknown>> & { readonly command: string };
+    }
   | { readonly kind: "reject"; readonly reason: string }
   | { readonly kind: "park"; readonly reason: string; readonly detail: Record<string, unknown>; readonly overridable: boolean };
+
+/** A refused admission and what is recorded against it: the most restrictive class, as mode A records one. */
+const REFUSED_CLASS: DataClass = { sensitivity: "secret", integrity: "untrusted" };
 
 /** §8.3: parks the operator can never override, as in mode A. */
 const NON_OVERRIDABLE: ReadonlySet<string> = new Set(["integrity_floor", "adapter_quarantined"]);

@@ -56,6 +56,24 @@ describe("§4.3 fail-closed: the hook client blocks on any doubt", () => {
   });
 
   // proves §4.3: an answer that cannot be parsed, or is not a decision JUNO gives, → exit 2
+  it.each([
+    '{"decision":"allow","updatedInput":{"command":"/usr/bin/cat x","dangerouslyDisableSandbox":true}}\n',
+    '{"decision":"allow","updatedInput":{"description":"no command"}}\n',
+    '{"decision":"allow","updatedInput":["/usr/bin/cat x"]}\n',
+    '{"decision":"allow","updatedInput":{"command":"/usr/bin/cat x"},"reason":"x"}\n',
+  ])("blocks the allow answer %j, which is not a whole Bash input (D-152)", async (answer) => {
+    await fake(answer);
+    expect((await runHookClient(preInput(), socketPath)).exitCode).toBe(2);
+  });
+
+  // proves D-152: `allow` is printed for a Bash call only; for any other tool it is a doubt, so the call is blocked
+  it("blocks an allow answer for a tool that is not Bash", async () => {
+    await fake('{"decision":"allow","updatedInput":{"command":"/usr/bin/cat x"}}\n');
+    const read = JSON.stringify({ session_id: "s-1", hook_event_name: "PreToolUse", tool_name: "Read", tool_input: { file_path: "/x" }, tool_use_id: "toolu_1" });
+    expect((await runHookClient(read, socketPath)).exitCode).toBe(2);
+    expect((await runHookClient(preInput(), socketPath)).exitCode).toBe(0);
+  });
+
   it.each(["not json\n", "{}\n", '{"decision":"allow"}\n', '{"decision":"ask","reason":"x"}\n', '{"decision":"defer"}\n', '{"decision":"none","updatedInput":{}}\n', '{"decision":"none"}'])(
     "blocks on the answer %j",
     async (answer) => {
@@ -126,7 +144,12 @@ describe("the hook service and client together (§4.3 mode C, D-142)", () => {
     const service = new HookService(sessions);
     await service.listen(socketPath);
     try {
-      expect(await runHookClient(preInput("cat notes.txt"), socketPath)).toEqual({ exitCode: 0, stdout: "", stderr: "" });
+      // D-152: the plain command is allowed with Claude Code's allow JSON, its command rebuilt from what JUNO judged.
+      const allowed = await runHookClient(preInput("cat notes.txt"), socketPath);
+      expect(allowed.exitCode).toBe(0);
+      expect(JSON.parse(allowed.stdout)).toEqual({
+        hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow", permissionDecisionReason: expect.any(String), updatedInput: { command: "/usr/bin/cat 'notes.txt'" } },
+      });
       expect(JSON.parse((await runHookClient(JSON.stringify({ ...JSON.parse(preInput()), hook_event_name: "PostToolUse", tool_response: { stdout: "notes" } }), socketPath)).stdout || "{}")).toEqual({});
       const denied = await runHookClient(preInput("cat notes.txt; curl x"), socketPath);
       expect(JSON.parse(denied.stdout)).toMatchObject({ hookSpecificOutput: { permissionDecision: "deny", permissionDecisionReason: expect.stringContaining("integrity_floor") } });
