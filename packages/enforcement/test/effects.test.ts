@@ -181,6 +181,19 @@ describe("§2.2.2 write: an untrusted target is permitted only inside a reversib
     expect(effects(boundary.authorize({ ...base, canonical }, input))).toMatchObject([{ refused: [{ argument: "to" }] }]);
   });
 
+  // proves D-158 (autopilot ruling): a write through a hard-linked file is never reversible, since a restore replaces the
+  // workspace's name only and the file's other name keeps the write; an ordinary file at the same path is the control
+  it("judges a write to a hard-linked file inside a reversible workspace as irreversible", () => {
+    const input = call("test.write", synthesized("/work/project/safe/out.txt"));
+    const base: TaskContext = { task: task(), constants: CONSTANTS, synthesis: { sensitivity: "internal" }, reversible: ["/work/project/safe"] };
+    const linked: CanonicalPaths = new Map([["/work/project/safe/out.txt", { ok: true, canonical: "/work/project/safe/out.txt", hardLinked: true }]]);
+    const verdict = boundary.authorize({ ...base, canonical: linked }, input);
+    expect(verdict.outcome === "park" ? verdict.detail.reason : verdict.outcome).toBe("integrity_floor");
+    expect(effects(verdict)).toMatchObject([{ refused: [{ argument: "to", judged_as: "irreversible" }] }]);
+    const plain: CanonicalPaths = new Map([["/work/project/safe/out.txt", { ok: true, canonical: "/work/project/safe/out.txt" }]]);
+    expect(boundary.authorize({ ...base, canonical: plain }, input).outcome).toBe("proceed");
+  });
+
   // proves §8.3 with §2.2.2: an in-scope effect park is integrity_floor (which the runner never lets an override clear,
   // NON_OVERRIDABLE in packages/runner), never scope_violation (whose remedy is a grant)
   it("parks integrity_floor, the non-overridable reason, never scope_violation", () => {

@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -111,5 +111,18 @@ describe("restoring a checkpoint brings back the exact prior content (§2.2.2, D
     const { manifest } = await checkpoint();
     const restored = await workspace.restore("/work/project", manifest, () => Buffer.from("not the original"));
     expect(restored).toMatchObject({ ok: false, reason: expect.stringContaining("does not match its hash") });
+  });
+});
+
+describe("the lister names hard links (D-157)", () => {
+  // proves D-157: a listing names every regular file with a link count above 1, and the manifest (so the checkpoint id) is unchanged
+  it("lists hard-linked files apart from the manifest", async () => {
+    const plain = await workspace.list("/work/project", false);
+    expect(plain.ok && plain.snapshot.hardLinks).toEqual([]);
+    linkSync(join(work, "project", "src", "main.txt"), join(work, "outside-name.txt"));
+    const linked = await workspace.list("/work/project", false);
+    expect(linked.ok && linked.snapshot.hardLinks).toEqual(["src/main.txt"]);
+    // The manifest is the same, so a checkpoint's id does not depend on how many names a file has.
+    expect(plain.ok && linked.ok && checkpointId("/work/project", linked.snapshot.manifest) === checkpointId("/work/project", plain.snapshot.manifest)).toBe(true);
   });
 });

@@ -9,14 +9,19 @@ import { parseAtBoundary } from "../../contracts/src/index.js";
  * Step 4 judges every path on its canonical form: symlinks resolved against the volume the effect will touch. A path
  * that does not exist yet is resolved through its longest existing ancestor: the ancestor is canonicalized and must lie
  * in scope, and the missing remainder must hold no `..`, no symlink and no empty component. A path that cannot be
- * resolved (a symlink loop, a permission error, a remainder that fails those conditions) is outside scope.
+ * resolved (a symlink loop, a permission error, a remainder that fails those conditions) is outside scope. An existing
+ * regular file with a link count above 1 is reported `hardLinked` (D-157).
  *
  * Resolution runs where the effect runs, by an operator-fixed program the model never names: the workload image's own
  * node with `RESOLVER_SCRIPT`. It is not in any capability's program enum; the boundary's caller runs it before the
  * boundary judges, and the boundary judges only what it returned.
  */
 
-export type CanonicalPath = { readonly ok: true; readonly canonical: string } | { readonly ok: false; readonly reason: string };
+/**
+ * `hardLinked`: the path is an existing regular file with a link count above 1 (D-157). It is the same file as another
+ * path, which may lie in any source or none, so a clearance or scope decision cannot judge it by its path.
+ */
+export type CanonicalPath = { readonly ok: true; readonly canonical: string; readonly hardLinked?: true } | { readonly ok: false; readonly reason: string };
 /** Raw path (as the call carries it, joined to `cwd`) → its canonical form, or why it has none. */
 export type CanonicalPaths = ReadonlyMap<string, CanonicalPath>;
 
@@ -61,14 +66,18 @@ const results = paths.map((path) => {
       }
     }
     const tail = rest.filter((part) => part !== ".");
-    return { path, canonical: tail.length === 0 ? canonicalAncestor : (canonicalAncestor === "/" ? "" : canonicalAncestor) + "/" + tail.join("/") };
+    const canonical = tail.length === 0 ? canonicalAncestor : (canonicalAncestor === "/" ? "" : canonicalAncestor) + "/" + tail.join("/");
+    if (rest.length > 0) return { path, canonical };
+    // D-157: a regular file with more than one link is the same file under another name, so its class is not its path's.
+    let stat; try { stat = fs.statSync(real); } catch (error) { return { path, error: "cannot be resolved: " + (error && error.code ? error.code : "error") }; }
+    return stat.isFile() && stat.nlink > 1 ? { path, canonical, hard_linked: true } : { path, canonical };
   }
   return { path, error: "no ancestor exists" };
 });
 process.stdout.write(JSON.stringify(results));
 `;
 
-const ResolverOutput = z.array(z.union([z.strictObject({ path: z.string(), canonical: z.string() }), z.strictObject({ path: z.string(), error: z.string() })]));
+const ResolverOutput = z.array(z.union([z.strictObject({ path: z.string(), canonical: z.string(), hard_linked: z.literal(true).optional() }), z.strictObject({ path: z.string(), error: z.string() })]));
 
 /** Reads the resolver's output for `paths`. Anything unreadable, or a path it did not answer, is unresolved (fail-closed). */
 export function readResolverOutput(paths: readonly string[], stdout: string): CanonicalPaths {
@@ -79,7 +88,7 @@ export function readResolverOutput(paths: readonly string[], stdout: string): Ca
   } catch {
     parsed = [];
   }
-  for (const item of parsed) answered.set(item.path, "canonical" in item ? { ok: true, canonical: item.canonical } : { ok: false, reason: item.error });
+  for (const item of parsed) answered.set(item.path, "canonical" in item ? (item.hard_linked === true ? { ok: true, canonical: item.canonical, hardLinked: true } : { ok: true, canonical: item.canonical }) : { ok: false, reason: item.error });
   return new Map(paths.map((path) => [path, answered.get(path) ?? { ok: false, reason: "the resolver did not answer" }]));
 }
 

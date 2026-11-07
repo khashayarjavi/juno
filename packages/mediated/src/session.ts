@@ -606,6 +606,8 @@ export class MediatedSessions {
    * its resolved directory counts, and so does every symlink inside it, followed the same way (the listing itself never
    * follows one). A path that names no source, cannot be resolved or listed, or holds too many links is read at the
    * highest class any source declares (restrictive: an unclassified read is never below the clearance by default, D-141).
+   * So is a regular file with a link count above 1, read by name or inside a tree (D-157): a hard link is the same file
+   * as another path, which JUNO cannot see by path.
    */
   async #readsSensitivity(session: Session, paths: readonly string[]): Promise<Sensitivity> {
     let reads: Sensitivity = "public";
@@ -618,6 +620,8 @@ export class MediatedSessions {
       if (!parsed.success) return highest;
       const answer = (await this.#resolver.resolve([parsed.data])).get(parsed.data);
       if (answer === undefined || !answer.ok) return highest;
+      // D-157: a regular file with more than one link is the same file as a path in any source, or none.
+      if (answer.hardLinked === true) return highest;
       const canonical = answer.canonical;
       const key = `${item.tree ? "tree" : "file"}:${canonical}`;
       if (seen.has(key)) continue;
@@ -639,6 +643,7 @@ export class MediatedSessions {
         if (NO_TREE.test(listed.reason)) continue;
         return highest;
       }
+      if (listed.snapshot.hardLinks.length > 0) return highest;
       for (const entry of listed.snapshot.manifest) {
         if (entry.type !== "symlink") continue;
         links += 1;

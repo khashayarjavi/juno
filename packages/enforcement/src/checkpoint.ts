@@ -33,7 +33,8 @@ export const MAX_CHECKPOINT_BYTES = 8 * 1024 * 1024;
 /**
  * Lists a workspace without following any symlink. Arguments: the view roots (`/work` and `/work` in the workload; a
  * host directory in unit tests), the workspace root, the bounds, and `content` or `listing`. Prints
- * `{ entries }` (paths relative to the root, the root itself as "") or `{ error }`.
+ * `{ entries, hard_links }` (paths relative to the root, the root itself as ""; `hard_links` names the regular files
+ * whose link count is above 1, D-157) or `{ error }`.
  */
 export const SNAPSHOT_SCRIPT = String.raw`
 const fs = require("node:fs"); const crypto = require("node:crypto");
@@ -43,7 +44,7 @@ if (root !== from && !root.startsWith(from + "/")) out({ error: "the workspace r
 const host = (rel) => to + root.slice(from.length) + (rel === "" ? "" : "/" + rel);
 let top; try { top = fs.lstatSync(host("")); } catch (error) { out({ error: "cannot read the workspace root: " + (error.code || "error") }); }
 if (!top.isDirectory()) out({ error: "the workspace root is not a directory (a symlink is refused)" });
-const entries = [{ path: "", type: "directory", mode: top.mode & 0o7777 }]; let bytes = 0;
+const entries = [{ path: "", type: "directory", mode: top.mode & 0o7777 }]; const hardLinks = []; let bytes = 0;
 const walk = (rel) => {
   for (const name of fs.readdirSync(host(rel)).sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)))) {
     const path = rel === "" ? name : rel + "/" + name; const s = fs.lstatSync(host(path)); const m = s.mode & 0o7777;
@@ -55,12 +56,13 @@ const walk = (rel) => {
       if (bytes > Number(maxBytes)) out({ error: "the workspace holds more than " + maxBytes + " bytes" });
       const entry = { path, type: "file", mode: m, sha256: crypto.createHash("sha256").update(data).digest("hex") };
       if (mode === "content") entry.content = data.toString("base64");
+      if (s.nlink > 1) hardLinks.push(path);
       entries.push(entry);
     } else out({ error: "the workspace holds an entry that is not a file, directory or symlink: " + path });
   }
 };
 try { walk(""); } catch (error) { out({ error: "cannot list the workspace: " + (error.code || "error") }); }
-out({ entries });
+out({ entries, hard_links: hardLinks });
 `;
 
 /**
@@ -113,11 +115,14 @@ const SnapshotEntry = z.union([
   ManifestEntry.options[1],
   z.strictObject({ path: z.string(), type: z.literal("file"), mode: z.int().min(0).max(0o7777), sha256: z.string().regex(/^[0-9a-f]{64}$/), content: z.string().optional() }),
 ]);
-const SnapshotOutput = z.union([z.strictObject({ entries: z.array(SnapshotEntry) }), z.strictObject({ error: z.string() })]);
+const SnapshotOutput = z.union([z.strictObject({ entries: z.array(SnapshotEntry), hard_links: z.array(z.string()) }), z.strictObject({ error: z.string() })]);
 const RestoreOutput = z.union([z.strictObject({ restored: z.literal(true) }), z.strictObject({ error: z.string() })]);
 
-/** A workspace's full content: the manifest, and the bytes of every file by hash. */
-export type Snapshot = { readonly manifest: readonly ManifestEntry[]; readonly contents: ReadonlyMap<string, Buffer> };
+/**
+ * A workspace's full content: the manifest, and the bytes of every file by hash. `hardLinks`: the files (paths relative
+ * to the root) whose link count is above 1 (D-157); not part of the manifest, so checkpoint ids are unchanged.
+ */
+export type Snapshot = { readonly manifest: readonly ManifestEntry[]; readonly contents: ReadonlyMap<string, Buffer>; readonly hardLinks: readonly string[] };
 
 /** The checkpoint's id: the SHA-256 of its canonical manifest. */
 export function checkpointId(root: string, manifest: readonly ManifestEntry[]): string {
@@ -163,7 +168,7 @@ export class Workspace {
     for (const [hash, bytes] of contents) {
       if (createHash("sha256").update(bytes).digest("hex") !== hash) return { ok: false, reason: "a file's content does not match its hash" };
     }
-    return { ok: true, snapshot: { manifest, contents } };
+    return { ok: true, snapshot: { manifest, contents, hardLinks: output.hard_links } };
   }
 
   /** Writes `manifest` back under `root`, with each file's bytes from `content`. */

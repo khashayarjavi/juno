@@ -505,7 +505,7 @@ type JudgedEffect =
 /**
  * A `write` is reversible only when every target of the call is a path whose canonical form lies inside one of the
  * task's reversible workspaces (§2.2.2: "only if the scope lies in a reversible workspace"; D-135, restrictive): a
- * target that is not a path, or a path with no canonical form, makes it `irreversible`.
+ * target that is not a path, or a path with no canonical form, makes it `irreversible`; so does a hard-linked file (D-158).
  */
 function effectOf(entry: RegistryEntry, call: CapabilityCall, canonical: CanonicalPaths, reversible: readonly string[]): JudgedEffect {
   const { side_effect: effect } = entry.capability;
@@ -518,6 +518,9 @@ function effectOf(entry: RegistryEntry, call: CapabilityCall, canonical: Canonic
     if (raw === undefined) return { kind: "irreversible", not_reversible: `${argument} is not a path` };
     const answer = canonical.get(raw);
     if (answer === undefined || !answer.ok) return { kind: "irreversible", not_reversible: `${argument} has no canonical path` };
+    // D-158: a hard-linked file is the same file under a name the checkpoint may not hold, and a restore replaces the
+    // workspace's name only, so a write through it is not undone by the restore: never reversible.
+    if (answer.hardLinked === true) return { kind: "irreversible", not_reversible: `${answer.canonical} is a file with more than one link` };
     if (!reversible.some((root) => pathWithin(answer.canonical, root))) {
       return { kind: "irreversible", not_reversible: `${answer.canonical} lies in no reversible workspace of the task` };
     }

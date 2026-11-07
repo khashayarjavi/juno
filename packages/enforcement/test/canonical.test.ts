@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -37,6 +37,10 @@ beforeAll(() => {
   symlinkSync("nowhere", join(dir, "work/project/dangling"));
   // A symlink then `..`: physically this is /work/project/sub/.. = /work/project, lexically it would be /work/project/x.
   symlinkSync("sub/file.txt", join(dir, "work/project/to-file"));
+  // D-157: a second name for a file outside the view, and its own link to it.
+  writeFileSync(join(dir, "outside", "secret.txt"), "s");
+  linkSync(join(dir, "outside", "secret.txt"), join(dir, "work/project/hard.txt"));
+  symlinkSync("hard.txt", join(dir, "work/project/to-hard"));
 });
 afterAll(() => {
   rmSync(dir, { recursive: true, force: true });
@@ -97,5 +101,20 @@ describe("the canonical form of a path (§2.7.1 C4, D-113)", () => {
     expect(await canonical("relative/x")).toBeNull();
     expect(readResolverOutput(["/work/a"], "not json").get("/work/a")).toMatchObject({ ok: false });
     expect(readResolverOutput(["/work/a", "/work/b"], JSON.stringify([{ path: "/work/a", canonical: "/work/a" }])).get("/work/b")).toMatchObject({ ok: false });
+  });
+});
+
+describe("hard links (D-157, operator ruling of 2026-11-07, amends D-156)", () => {
+  // proves D-157: a regular file with a link count above 1 is reported as such, by name or through a symlink to it
+  it("reports a regular file with more than one link, by name and through a symlink", async () => {
+    expect((await resolve(["/work/project/hard.txt"])).get("/work/project/hard.txt")).toEqual({ ok: true, canonical: "/work/project/hard.txt", hardLinked: true });
+    expect((await resolve(["/work/project/to-hard"])).get("/work/project/to-hard")).toEqual({ ok: true, canonical: "/work/project/hard.txt", hardLinked: true });
+  });
+
+  // proves D-157's positive control: an ordinary file, a directory (always more than one link) and a missing path are not
+  it("does not report an ordinary file, a directory or a path that does not exist yet", async () => {
+    const paths = ["/work/project/sub/file.txt", "/work/project/sub", "/work/project/new.txt"];
+    const answers = await resolve(paths);
+    for (const path of paths) expect(answers.get(path)).toEqual({ ok: true, canonical: path });
   });
 });

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -253,6 +253,16 @@ describe("§2.2.2 in hook mode", () => {
     expect(entries().map(payload).some((body) => body["type"] === "checkpoint")).toBe(true);
   });
 
+  // proves D-158 (autopilot ruling) in hook mode: inside the checkpointed workspace, a Write to a file that has a second
+  // name outside it is irreversible (a restore would not undo it there) and parks integrity_floor; an ordinary file proceeds
+  it("parks a Write to a hard-linked file inside the checkpointed workspace", async () => {
+    writeFileSync(join(work, "outside.txt"), "outside\n");
+    linkSync(join(work, "outside.txt"), join(work, "project", "shared.txt"));
+    expect(await call("Write", { file_path: join(work, "project", "shared.txt"), content: "written" })).toMatchObject({ decision: "deny", reason: expect.stringContaining("integrity_floor") });
+    expect(parks().at(-1)).toMatchObject({ reason: "integrity_floor", overridable: false });
+    expect(await call("Write", { file_path: join(work, "project", "fresh.txt"), content: "written" })).toEqual({ decision: "none" });
+  });
+
   // proves §2.2.2: with no checkpoint, the same Write is irreversible and its untrusted target parks integrity_floor
   it("parks a Write when the session has no checkpointed workspace", async () => {
     const unchecked = new MediatedSessions({ journal, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), view: new Workspace(execFileScript(process.execPath, []), "/work", work), protectedPaths: [join(dir, "checkpoints")], clock: () => now });
@@ -432,6 +442,63 @@ describe("§4.3 V6-7 on what the call will read (D-156, PR #38 review round 4)",
     symlinkSync(join(work, "elsewhere"), join(work, "project", "public", "out"));
     const session = await withLs("gate-6");
     expect(await ask(session, "gate-6", "Glob", { pattern: "*", path: join(work, "project", "public") })).toMatchObject({ decision: "deny", reason: expect.stringContaining("sensitivity_ceiling") });
+  });
+});
+
+describe("§4.3 V6-7 and hard links (D-157, operator ruling of 2026-11-07, amends D-156)", () => {
+  const withLs = async (id: string): Promise<MediatedSessions> => {
+    const session = new MediatedSessions({ journal, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), view: new Workspace(execFileScript(process.execPath, []), "/work", work), protectedPaths: [join(dir, "checkpoints")], clock: () => now });
+    const nameMap = [{ name: "cat", program: "/usr/bin/cat", side_effect: "read" as const }, { name: "ls", program: "/usr/bin/ls", side_effect: "read" as const }];
+    expect(await session.admit(request({ session_id: id, name_map: nameMap }))).toMatchObject({ admitted: true });
+    return session;
+  };
+  const ask = async (session: MediatedSessions, id: string, tool: string, input: Record<string, unknown>, response: unknown = {}): Promise<HookDecision> => {
+    const asked = { ...(pre(tool, input) as Record<string, unknown>), session_id: id, cwd: join(work, "project") };
+    const decision = await session.preToolUse(asked);
+    if (decision.decision !== "deny") expect(session.postToolUse({ ...asked, hook_event_name: "PostToolUse", tool_response: response })).toEqual({ recorded: true });
+    return decision;
+  };
+  const lastPark = (id: string): Record<string, unknown> | undefined => readTrajectory(journal.root, `session-${id}`).filter((entry) => entry.kind === "park").map(payload).at(-1);
+  const lastResult = (id: string) => readTrajectory(journal.root, `session-${id}`).filter((entry) => entry.kind === "capability_result").at(-1);
+  const gated = { reason: "sensitivity_ceiling", detail: expect.objectContaining({ read_gate: true, aggregate: "secret", ceiling: "internal" }) };
+  const parked = { decision: "deny", reason: expect.stringContaining("sensitivity_ceiling") };
+
+  // proves D-157 with §4.3 V6-7: a hard link in an internal folder to a secret file is read at the highest declared class,
+  // by Read, Bash cat and Edit, and as part of a directory read (Glob, ls -R)
+  it("parks a read of a hard link to a secret file, by name and inside a tree", async () => {
+    mkdirSync(join(work, "project", "public"));
+    linkSync(join(work, "project", "secrets", "key.txt"), join(work, "project", "public", "copy.txt"));
+    const session = await withLs("hard-1");
+    expect(await ask(session, "hard-1", "Read", { file_path: join(work, "project", "public", "copy.txt") })).toMatchObject(parked);
+    expect(lastPark("hard-1")).toMatchObject(gated);
+    expect(await ask(session, "hard-1", "Bash", { command: "cat public/copy.txt" })).toMatchObject(parked);
+    expect(lastPark("hard-1")).toMatchObject(gated);
+    // An Edit is also a write with no reversible workspace here, so step 4's integrity_floor comes first (D-150's order).
+    expect(await ask(session, "hard-1", "Edit", { file_path: join(work, "project", "public", "copy.txt"), old_string: "a", new_string: "b", replace_all: false })).toMatchObject({ decision: "deny" });
+    expect(await ask(session, "hard-1", "Glob", { pattern: "**/*", path: join(work, "project", "public") })).toMatchObject(parked);
+    expect(await ask(session, "hard-1", "Bash", { command: "ls -R public" })).toMatchObject(parked);
+    expect(lastPark("hard-1")).toMatchObject(gated);
+  });
+
+  // proves D-157's positive control: an ordinary file in the same folder proceeds and is recorded at its own class
+  it("leaves an ordinary file unaffected, by name and inside a tree", async () => {
+    mkdirSync(join(work, "project", "public"));
+    writeFileSync(join(work, "project", "public", "plain.txt"), "plain\n");
+    const session = await withLs("hard-2");
+    expect(await ask(session, "hard-2", "Read", { file_path: join(work, "project", "public", "plain.txt") }, { content: "plain" })).toEqual({ decision: "none" });
+    expect(lastResult("hard-2")?.data_class).toEqual({ sensitivity: "internal", integrity: "untrusted" });
+    expect(await ask(session, "hard-2", "Bash", { command: "cat public/plain.txt" })).toEqual({ decision: "allow", updatedInput: { command: "/usr/bin/cat 'public/plain.txt'" } });
+    expect(await ask(session, "hard-2", "Glob", { pattern: "**/*", path: join(work, "project", "public") })).toEqual({ decision: "none" });
+    expect(lastPark("hard-2")).toBeUndefined();
+  });
+
+  // proves D-157 as ruled: the class is the highest declared whatever the other name is, since JUNO cannot see it by path;
+  // two names for one internal file are read at the highest class too
+  it("reads any regular file with more than one link at the highest declared class", async () => {
+    linkSync(join(work, "project", "notes.txt"), join(work, "project", "notes-again.txt"));
+    const session = await withLs("hard-3");
+    expect(await ask(session, "hard-3", "Read", { file_path: join(work, "project", "notes.txt") })).toMatchObject(parked);
+    expect(lastPark("hard-3")).toMatchObject(gated);
   });
 });
 
