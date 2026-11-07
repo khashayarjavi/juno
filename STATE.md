@@ -1,11 +1,16 @@
 # STATE
 
 ## Current increment
-**Slice 1.5 — Increment 4: hook mode for Claude Code (§4.3 mode C)** (`docs/plans/slice-1.5-build-plan.md`, Increment 4; also §2.3.2 E1, §7.8 E2, D-131's Increment 4 directives). Branch `claude/dazzling-einstein-75mver` (this session's only pushable branch, D-159); it carries PR #38's commits unchanged (which carry PR #37's), and its PR supersedes PR #38. Spec v0.6.1. No objection open.
+**Slice 1.5 — Increment 4: hook mode for Claude Code (§4.3 mode C)** (`docs/plans/slice-1.5-build-plan.md`, Increment 4; also §2.3.2 E1, §7.8 E2, D-131's Increment 4 directives). Branch `claude/great-goldberg-39jnb4` (this session's only pushable branch, D-165); it carries PR #39's commits unchanged (which carry PR #38's and PR #37's), and its PR supersedes PR #39. Spec v0.6.1. No objection open.
 
-Status: **STOPPED (CLAUDE.md §7 as amended by D-157): review round 5 (PR #39, head b842080, CI run 42340291289 green) ended DO NOT MERGE, and its finding repeats a class already fixed (D-150, D-156).** Round 5 was also the last round under the new limit. The finding is fixed on the branch with a test (D-160), not reviewed. Nothing was merged, and Increment 5 is not started.
-- **For you (the operator):** decide how to proceed: authorise a round 6 beyond the limit of 5, or rule otherwise. The fix itself needs no decision.
-- **What round 5 found, in plain words.** Claude Code's WebFetch tool fetches a web page. JUNO counted every fetched page as public, because it belongs to none of the folders you classified. So a page at an address you had allowed (an intranet page, say) was never checked against Claude's clearance, and was recorded as public. Every other read JUNO cannot classify is already counted at the highest class you declared; WebFetch was left out.
+Status: **the operator's rulings of 2026-11-07 (third set) are built (D-161 to D-165); review round 6 is next (authorised by D-163).** Nothing is merged yet; Increment 5 is not started.
+- **Your rulings, recorded:** D-161 (the CLAUDE.md §7 change in D-157 is yours); D-162 (close the "unclassified read counted low" class structurally); D-163 (round 6 authorised; a repeat of this class in round 6 is a STOP).
+- **What D-162 changes, in plain words.** There is now **one** piece of code that decides the class of anything Claude reads: a file, a folder, a web page, or a tool's result. It answers "your highest class" unless one of the sources you listed **positively** matches what is really read (after following shortcuts and checking for hard links). And there is **one** table that says, for each of the six tools JUNO supports, what that tool reads. A tool not in the table is refused, and anything it returns counts at your highest class.
+- **The property test asked for.** For every tool in the table, generated reads of places you did not list (shortcuts by name and inside folders, hard links, places outside the workspace, broken shortcuts, web addresses of every kind, results of unknown tools) are all counted at your highest class and stopped when that is above Claude's clearance. Positive controls: files you listed keep their class, and so does a web page from a site you listed.
+- **Run against round 5's code, it found three more members of the class,** now closed: a Read of a **folder** that holds a hard link was counted at the folder's class; a shortcut inside a folder to a place you **partly** listed was counted at the listed part's class; a Write's result (which can carry the file's old content) was counted `public`.
+- **Autopilot rulings (D-164):** what "the public internet" means (ordinary public names only; never IP addresses, `localhost`, one-word names, private endings like `.local` or `.corp`, unusual ports, or addresses with a password); a site source names one exact origin; a `tool_result` source may only name a tool JUNO does not judge itself; every path a tool names is read as a folder (a file's "folder" is itself); a Write counts as reading the file it replaces.
+- **New operator step:** Part F below explains that web fetches count at your highest class unless you list web sources, and how to list them.
+- **Earlier (PR #39, round 5) — what round 5 found, in plain words.** Claude Code's WebFetch tool fetches a web page. JUNO counted every fetched page as public, because it belongs to none of the folders you classified. So a page at an address you had allowed (an intranet page, say) was never checked against Claude's clearance, and was recorded as public. Every other read JUNO cannot classify is already counted at the highest class you declared; WebFetch was left out.
 - **The fix (D-160).** A fetched page is now counted at the highest class you declared. Above Claude's clearance the fetch is stopped before it runs; at or below it, the fetch runs and the page is recorded at that class. One new test fails on the round-5 code and passes now.
 - **Same class, named:** D-150 (a result with no authorized call, PR #37 round 2) and D-156 (a link to a place no source classifies, PR #38 round 4).
 - **The reviewer also noted:** the CLAUDE.md §7 change is recorded as your ruling (D-157, quoted from your message); and the PR description now states the verify and e2e results.
@@ -66,6 +71,7 @@ In plain words, JUNO's hook governs every **tool call** Claude Code makes. It do
 6. **Tokens and money:** Claude Code's own limits govern them; you accept that when a session is admitted (`unmetered`).
 7. **Everything mode A does not protect**, plus D-130's residuals: a kernel or WSL escape, and a compromised Windows account. Claude Code runs as your Windows user, which can ask your agent to sign.
 8. **A hard link made after JUNO's check.** JUNO now detects hard links (D-157): a file with more than one name is read at the highest class you declared, and a write through one is never treated as undoable (D-158). Symlinks are followed and judged by their target. A link created between JUNO's check and Claude Code's use is the gap in item 2.
+9. **A public-looking web name that leads to a private server**, if you list the public internet as a source (D-164). JUNO does not look names up, so `wiki.yourcompany.com` counts as the public internet. List exact sites instead if your intranet uses such names (Part F). Without a web source, every fetched page counts at your highest class.
 
 ### Increment 4 design (2026-11-05; each choice becomes a D-number when built)
 - **Package `packages/mediated`**, shared with Increment 5's gateway. It uses the same `EnforcementBoundary`, `GrantStore` and `JournalWriter` as mode A.
@@ -419,6 +425,30 @@ Nothing in the increment's code or tests waits for these: CI and the cloud sessi
     Send the agent the summary lines, or the last 15 lines if it is not green.
 
 **Part D's token, once Part E is done:** it goes in a file only `juno-runner` can read (mode 0600), outside every grant scope (§3.2). Increment 4 says exactly where, when the runner first runs on your machine.
+
+**Part F — what Claude Code may read, web pages included (Increment 4, D-162, D-164).** Do this when you admit your first Claude Code session to JUNO. It takes about 10 minutes.
+
+When JUNO admits a Claude Code session, you list the **sources** the session may read, each with a class (`public`, `internal`, `confidential`, `secret`). JUNO counts **anything Claude reads that no source you listed matches** at the **highest class you listed**. If that class is above the session's clearance, the call is stopped before it runs. If not, it runs and its result is recorded at that class.
+
+**Web fetches follow the same rule.** A page Claude fetches with WebFetch matches no folder, so with folders alone **every web fetch counts at your highest class**. With a `secret` folder listed and a clearance of `internal`, Claude cannot fetch any page. To let it, list web sources too:
+
+1. **One site** (the safest): add a source with `"kind": "url"` and the site's origin, which is the scheme, the name and the port if it is not the usual one, with no path and no trailing slash. Example: `https://docs.python.org`. Only that exact origin matches: not `http://docs.python.org`, not `https://www.docs.python.org`, not another port.
+2. **The public internet**: add a source with `"kind": "internet"`. It matches web addresses with an ordinary public name (two or more parts, such as `en.wikipedia.org`) on the usual port. It never matches an IP address, `localhost`, a name with one part (`intranet`), a name ending in `.local`, `.internal`, `.corp`, `.lan`, `.home` and similar private endings, an address with a user name or password, or an unusual port. Those stay at your highest class.
+   - **Its limit:** JUNO cannot tell whether a public-looking name leads to a private server. If your company's intranet uses names like `wiki.yourcompany.com`, do not list the public internet; list the exact sites instead.
+3. Whatever you list, a fetch still needs a grant that names the exact web address (`enumerated_targets`), as before (§2.2.2).
+
+In the session request, the `sources` list then looks like this (your folders first, then the web):
+
+```json
+"sources": [
+  { "id": "project", "selector": { "kind": "path", "prefix": "/work/project" }, "data_class": { "sensitivity": "internal", "integrity": "untrusted" } },
+  { "id": "secrets", "selector": { "kind": "path", "prefix": "/work/project/secrets" }, "data_class": { "sensitivity": "secret", "integrity": "operator" } },
+  { "id": "python-docs", "selector": { "kind": "url", "origin": "https://docs.python.org" }, "data_class": { "sensitivity": "public", "integrity": "untrusted" } },
+  { "id": "web", "selector": { "kind": "internet" }, "data_class": { "sensitivity": "public", "integrity": "untrusted" } }
+]
+```
+
+The same rule covers everything else Claude reads. A file reached through a shortcut is counted by where the shortcut leads. A file with two names (a hard link) is counted at your highest class. A folder is counted by everything inside it. A tool JUNO does not know is refused, and anything it returns is counted at your highest class. You can give one such tool's results a class with `{ "kind": "tool_result", "tool": "<its name>" }`. JUNO refuses this for the six tools it judges itself (Read, Glob, Write, Edit, WebFetch, Bash).
 
 ## Previous increment (Slice 1.5 Increment 1, merged)
 **Slice 1.5 — Increment 1: conform Slice 1 to v0.6** (`docs/plans/slice-1.5-build-plan.md`, Increment 1). Branch `claude/gallant-mccarthy-alppyu` (fast-forwarded to `main` c405996 after PR #30 merged). Spec v0.6.1 on `main`. No objection open.

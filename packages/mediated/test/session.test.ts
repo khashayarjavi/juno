@@ -76,7 +76,7 @@ const parks = () => entries().filter((entry) => entry.kind === "park").map(paylo
 async function call(tool: string, input: Record<string, unknown>, extra: Record<string, unknown> = {}): Promise<HookDecision> {
   const asked = pre(tool, input, extra);
   const decision = await sessions.preToolUse(asked);
-  if (decision.decision !== "deny") expect(sessions.postToolUse(post(asked))).toEqual({ recorded: true });
+  if (decision.decision !== "deny") expect(await sessions.postToolUse(post(asked))).toEqual({ recorded: true });
   return decision;
 }
 
@@ -286,7 +286,7 @@ describe("§2.2.2 in hook mode", () => {
     expect(await sessions.admit(request({ session_id: "fetch-2", grants: ["grant-fetch"], provider_clearance: "secret" }))).toMatchObject({ admitted: true });
     const second = asked("fetch-2");
     expect(await sessions.preToolUse(second)).toEqual({ decision: "none" });
-    expect(sessions.postToolUse(post(second, { content: "TOP SECRET page" }))).toEqual({ recorded: true });
+    expect(await sessions.postToolUse(post(second, { content: "TOP SECRET page" }))).toEqual({ recorded: true });
     const result = readTrajectory(journal.root, "session-fetch-2").filter((entry) => entry.kind === "capability_result").at(-1);
     expect(result?.data_class).toEqual({ sensitivity: "secret", integrity: "untrusted" });
   });
@@ -361,7 +361,7 @@ describe("§2.7.1 D5 in mode C (D-151): an injected command is judged before any
     const ask = (command: string) => spent.preToolUse({ ...(pre("Bash", { command }) as Record<string, unknown>), session_id: "spent-1" });
     const first = { ...(pre("Bash", { command: "cat notes.txt" }) as Record<string, unknown>), session_id: "spent-1" };
     expect(await spent.preToolUse(first)).toEqual({ decision: "allow", updatedInput: { command: "/usr/bin/cat 'notes.txt'" } });
-    expect(spent.postToolUse({ ...first, hook_event_name: "PostToolUse", tool_response: {} })).toEqual({ recorded: true });
+    expect(await spent.postToolUse({ ...first, hook_event_name: "PostToolUse", tool_response: {} })).toEqual({ recorded: true });
     expect(await ask(injected)).toMatchObject({ reason: expect.stringContaining("integrity_floor") });
     expect(await ask("cat notes.txt")).toMatchObject({ reason: expect.stringContaining("budget_exceeded") });
   });
@@ -392,7 +392,7 @@ describe("§4.3 V6-7 on what the call will read (D-156, PR #38 review round 4)",
   const ask = async (session: MediatedSessions, id: string, tool: string, input: Record<string, unknown>, cwd = join(work, "project")): Promise<HookDecision> => {
     const asked = { ...(pre(tool, input) as Record<string, unknown>), session_id: id, cwd };
     const decision = await session.preToolUse(asked);
-    if (decision.decision !== "deny") expect(session.postToolUse({ ...asked, hook_event_name: "PostToolUse", tool_response: {} })).toEqual({ recorded: true });
+    if (decision.decision !== "deny") expect(await session.postToolUse({ ...asked, hook_event_name: "PostToolUse", tool_response: {} })).toEqual({ recorded: true });
     return decision;
   };
   const lastPark = (id: string): Record<string, unknown> | undefined => readTrajectory(journal.root, `session-${id}`).filter((entry) => entry.kind === "park").map(payload).at(-1);
@@ -450,7 +450,7 @@ describe("§4.3 V6-7 on what the call will read (D-156, PR #38 review round 4)",
     const session = await withLs("gate-5");
     const asked = { ...(pre("Read", { file_path: join(work, "project", "alias.txt") }) as Record<string, unknown>), session_id: "gate-5" };
     expect(await session.preToolUse(asked)).toEqual({ decision: "none" });
-    expect(session.postToolUse({ ...asked, hook_event_name: "PostToolUse", tool_response: { content: "notes" } })).toEqual({ recorded: true });
+    expect(await session.postToolUse({ ...asked, hook_event_name: "PostToolUse", tool_response: { content: "notes" } })).toEqual({ recorded: true });
     const result = readTrajectory(journal.root, "session-gate-5").filter((entry) => entry.kind === "capability_result").at(-1);
     expect(result?.data_class).toEqual({ sensitivity: "internal", integrity: "untrusted" });
   });
@@ -475,7 +475,7 @@ describe("§4.3 V6-7 and hard links (D-157, operator ruling of 2026-11-07, amend
   const ask = async (session: MediatedSessions, id: string, tool: string, input: Record<string, unknown>, response: unknown = {}): Promise<HookDecision> => {
     const asked = { ...(pre(tool, input) as Record<string, unknown>), session_id: id, cwd: join(work, "project") };
     const decision = await session.preToolUse(asked);
-    if (decision.decision !== "deny") expect(session.postToolUse({ ...asked, hook_event_name: "PostToolUse", tool_response: response })).toEqual({ recorded: true });
+    if (decision.decision !== "deny") expect(await session.postToolUse({ ...asked, hook_event_name: "PostToolUse", tool_response: response })).toEqual({ recorded: true });
     return decision;
   };
   const lastPark = (id: string): Record<string, unknown> | undefined => readTrajectory(journal.root, `session-${id}`).filter((entry) => entry.kind === "park").map(payload).at(-1);

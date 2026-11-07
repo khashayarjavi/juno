@@ -78,7 +78,7 @@ export class HookService {
     const input = typeof request === "object" && request !== null && "input" in request ? request.input : undefined;
     try {
       if (event === "PreToolUse") return await this.#sessions.preToolUse(input);
-      if (event === "PostToolUse" || event === "PostToolUseFailure") return this.#sessions.postToolUse(input);
+      if (event === "PostToolUse" || event === "PostToolUseFailure") return await this.#sessions.postToolUse(input);
     } catch (error: unknown) {
       return { decision: "deny", reason: `JUNO failed while judging the call, so it is blocked: ${error instanceof Error ? error.message : String(error)}` };
     }

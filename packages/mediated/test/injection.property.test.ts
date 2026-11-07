@@ -172,7 +172,7 @@ async function prepare(sessionId: string, d: Defects): Promise<void> {
   if (d.budget === "calls_spent" || d.pendingResult) {
     const first = benign(`prep-${sessionId}-1`);
     await sessions.preToolUse(first);
-    if (!d.pendingResult) sessions.postToolUse({ ...first, hook_event_name: "PostToolUse", tool_response: {} });
+    if (!d.pendingResult) await sessions.postToolUse({ ...first, hook_event_name: "PostToolUse", tool_response: {} });
   }
   if (d.ttl === "already_failed") {
     now = new Date(T0.getTime() + TTL + 1_000);
@@ -214,7 +214,7 @@ describe("operator ruling 1 (D-152): the injected-command class is closed in hoo
         expect(park).toMatchObject({ reason: "integrity_floor", overridable: false, answer: "deny", mode: "hook", tool: "Bash", command: (input["tool_input"] as Record<string, unknown>)["command"] });
         // Nothing was authorized: a result reported for this call is recorded as one without an authorized call.
         if (admitted.admitted && typeof input["tool_use_id"] === "string") {
-          sessions.postToolUse({ ...input, cwd: join(work, "project"), agent_id: undefined, hook_event_name: "PostToolUse", tool_response: {} });
+          await sessions.postToolUse({ ...input, cwd: join(work, "project"), agent_id: undefined, hook_event_name: "PostToolUse", tool_response: {} });
           expect(payload(records(taskId).at(-1) ?? { payload_ref: "" })).toMatchObject({ tool_use_id: toolUseId, call_seq: null, without_authorized_call: true });
         }
 

@@ -3,9 +3,7 @@ import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import {
   type DataClass,
-  Integrity as IntegritySchema,
   Ref,
-  ResourceSelector,
   FlagSurface,
   SIDE_EFFECTS,
   Sensitivity as SensitivitySchema,
@@ -22,7 +20,6 @@ import {
   EnforcementBoundary,
   type Workspace,
   checkpointId,
-  operandPath,
   type GrantStore,
   type PathResolver,
   type TaskContext,
@@ -31,6 +28,7 @@ import {
 } from "../../enforcement/src/index.js";
 import { type JournalWriter, canonicalJson } from "../../journal/src/index.js";
 import { type Adapter, type CapabilityCall, CapabilityRegistry, RegistryEntry, loadRegistryEntry } from "../../registry/src/index.js";
+import { DeclaredSource, type ReadTarget, classifyRead } from "./reads.js";
 import { rebuildBashCommand } from "./rebuild.js";
 
 /**
@@ -101,7 +99,12 @@ export const SessionRequest = z.strictObject({
   unmetered_accepted: z.literal(true),
   /** The session provider's declared sensitivity clearance (§4.3 V6-7). */
   provider_clearance: SensitivitySchema,
-  sources: z.array(z.strictObject({ id: Ref, selector: ResourceSelector, data_class: z.strictObject({ sensitivity: SensitivitySchema, integrity: IntegritySchema }) })).min(1),
+  /**
+   * What the operator declares the session can read, each with its class (§1.5): paths, URL origins, the public internet,
+   * and the results of named tools JUNO does not support (D-162, D-164). A read no source positively matches is read at
+   * the highest class declared here.
+   */
+  sources: z.array(DeclaredSource).min(1),
   /** Exact Bash command strings the operator allows as written (§4.3: `constant` at `operator` integrity). */
   commands: z.array(z.string().min(1)).default([]),
   name_map: z.array(NameMapEntry).default([]),
@@ -210,15 +213,53 @@ export class MediatedError extends Error {
   override readonly name = "MediatedError";
 }
 
-/** Unknown tool → no capability; known tools map their input fields onto the capability's interface (D-141). */
-const TOOLS: Readonly<Record<string, { readonly capability: string; readonly fields: readonly string[] }>> = {
-  Read: { capability: "cc.read", fields: ["file_path", "offset", "limit"] },
-  Glob: { capability: "cc.glob", fields: ["pattern", "path"] },
-  Write: { capability: "cc.write", fields: ["file_path", "content"] },
-  Edit: { capability: "cc.edit", fields: ["file_path", "old_string", "new_string", "replace_all"] },
-  WebFetch: { capability: "cc.webfetch", fields: ["url", "prompt"] },
-  Bash: { capability: "cc.bash", fields: ["command", "description", "timeout", "run_in_background"] },
+/**
+ * THE tool table (D-141, D-162): every tool JUNO supports, the capability it maps to, the input fields it knows, and what
+ * it reads. A tool with no entry is `unknown_capability` (denied), and any result it produces is classified as an
+ * unknown read (the highest declared class). `reads` is given the values JUNO judged (paths already mapped onto `/work`),
+ * field by field, and returns every read the call makes; a value it cannot describe is an `unknown` read. What it
+ * returns is classified only by `classifyRead` (reads.ts).
+ */
+const TOOLS: Readonly<Record<string, { readonly capability: string; readonly fields: readonly string[]; readonly reads: (judged: (field: string) => unknown) => readonly ReadTarget[] }>> = {
+  // Every path a tool names is read as a tree: a file's tree is the file, and what a tool does with a directory it was
+  // handed is not JUNO's to know (restrictive, D-164; found by the D-162 property: a Read naming a directory that holds a
+  // hard link was counted at the directory's class).
+  // A Read reads the file it names.
+  Read: { capability: "cc.read", fields: ["file_path", "offset", "limit"], reads: (judged) => [tree(judged("file_path"))] },
+  // A Glob lists every name under its path, and through every link inside it (D-156).
+  Glob: { capability: "cc.glob", fields: ["pattern", "path"], reads: (judged) => [tree(judged("path"))] },
+  // A Write's result may carry the content it replaced; JUNO does not rely on it not doing so (restrictive, D-164).
+  Write: { capability: "cc.write", fields: ["file_path", "content"], reads: (judged) => [tree(judged("file_path"))] },
+  // An Edit reads the file it edits (D-141).
+  Edit: { capability: "cc.edit", fields: ["file_path", "old_string", "new_string", "replace_all"], reads: (judged) => [tree(judged("file_path"))] },
+  // A WebFetch reads the page at its URL; no path source can match it (D-160, D-162).
+  WebFetch: { capability: "cc.webfetch", fields: ["url", "prompt"], reads: (judged) => { const url = judged("url"); return [typeof url === "string" ? { kind: "url", url } : unknown("url")]; } },
+  // A Bash program reads every operand, each as a tree (`ls -R` lists a directory's whole tree; a file's tree is the
+  // file), and with no operand its working directory's tree (`ls` lists it). Flags are words before `--` that start with
+  // `-`; anything else, a flag's separate value included, is an operand (restrictive, D-156).
+  Bash: { capability: "cc.bash", fields: ["command", "description", "timeout", "run_in_background"], reads: (judged) => {
+    const argv = judged("argv");
+    const cwd = judged("cwd");
+    if (typeof cwd !== "string" || !Array.isArray(argv) || !argv.every((element) => typeof element === "string")) return [unknown("argv")];
+    const operands: string[] = [];
+    let flagsEnd = false;
+    for (const element of argv as string[]) {
+      if (!flagsEnd && element === "--") flagsEnd = true;
+      else if (flagsEnd || !element.startsWith("-")) operands.push(element);
+    }
+    return operands.length === 0 ? [{ kind: "tree", path: cwd }] : operands.map((element) => ({ kind: "tree", path: element.startsWith("/") ? element : `${cwd}/${element}` }));
+  } },
 };
+
+/** The tools JUNO supports: exactly the tool table's entries (D-162). */
+export const SUPPORTED_TOOLS: readonly string[] = Object.keys(TOOLS);
+
+function tree(path: unknown): ReadTarget {
+  return typeof path === "string" ? { kind: "tree", path } : unknown("path");
+}
+function unknown(field: string): ReadTarget {
+  return { kind: "unknown", why: `the table cannot describe what ${field} reads` };
+}
 
 export class MediatedSessions {
   readonly #journal: JournalWriter;
@@ -271,6 +312,13 @@ export class MediatedSessions {
     for (const root of request.reversible_workspaces) {
       const reachable = request.grants.some((grantId) => this.#grants.signed(grantId)?.resource_scope.some((selector) => selector.kind === "path" && pathWithin(root, selector.prefix)) === true);
       if (!reachable || root === "/work") failures.push(`reversible workspace ${root} is the whole namespace or lies within no grant (D-136)`);
+    }
+    for (const source of request.sources) {
+      // D-164: a supported tool's result is classified by what its call read; a result of one with no authorized call
+      // bypassed JUNO's decision, so it is never given a lower class by a source (D-150).
+      if (source.selector.kind === "tool_result" && Object.hasOwn(TOOLS, source.selector.tool)) {
+        failures.push(`source ${source.id} classifies results of ${source.selector.tool}, a tool JUNO judges by what it reads; only a tool outside the table may be declared (D-164)`);
+      }
     }
     if (request.reversible_workspaces.length > 0 && this.#checkpoints === undefined) failures.push("no checkpoint store is configured, so no workspace can be reversible (D-136)");
     for (const entry of request.name_map) {
@@ -395,9 +443,9 @@ export class MediatedSessions {
     if (mapped.kind === "park") return this.#park(session, mapped.reason, mapped.detail, mapped.overridable);
 
     // §4.3 V6-7: a read of a source classified above the provider's clearance parks before it runs. The boundary judges it
-    // at step 5, after integrity, scope and effects, so a park that cannot be overridden always wins (D-150).
-    // D-160: what a WebFetch reads lies in no declared source, so it is read at the highest declared class (§1.5).
-    const reads = mapped.unclassified === true ? highestDeclared(session) : await this.#readsSensitivity(session, mapped.paths);
+    // at step 5, after integrity, scope and effects, so a park that cannot be overridden always wins (D-150). What the call
+    // reads comes from the tool table, and its class from the one classification function (D-162).
+    const reads = await this.#classify(session, TOOLS[input.tool_name]?.reads(judgedValue(mapped.proposal.arguments, mapped.constants)) ?? [unknown(input.tool_name)]);
 
     const constants = mapped.constants;
     const base: TaskContext = { task: { ...session.task, sensitivity_floor: session.floor }, constants, synthesis: { sensitivity: session.floor }, reversible: session.reversible, readGate: { reads, clearance: session.request.provider_clearance } };
@@ -418,7 +466,7 @@ export class MediatedSessions {
   }
 
   /** Journals a PostToolUse or PostToolUseFailure result against the call JUNO authorized (plan item 8). */
-  postToolUse(raw: unknown): { readonly recorded: boolean } {
+  async postToolUse(raw: unknown): Promise<{ readonly recorded: boolean }> {
     const parsed = HookInput.safeParse(raw);
     if (!parsed.success || parsed.data.hook_event_name === "PreToolUse") return { recorded: false };
     const input = parsed.data;
@@ -429,8 +477,10 @@ export class MediatedSessions {
     const call = session.pending.get(key);
     session.pending.delete(key);
     // §4.3: a tool result is untrusted content; it raises the session's floor by what it read (§1.2).
-    // A result with no call JUNO authorized read something JUNO never classified: the highest declared class (§1.5, D-150).
-    const reads = call?.reads ?? session.request.sources.reduce<Sensitivity>((high, source) => maxSensitivity(high, source.data_class.sensitivity), "public");
+    // A result with no call JUNO authorized is classified as that tool's result: the highest declared class unless a
+    // declared `tool_result` source names that tool, which admission allows only for a tool outside the table (§1.5;
+    // D-150, D-162, D-164).
+    const reads = call?.reads ?? (await this.#classify(session, [{ kind: "tool_result", tool: input.tool_name }]));
     session.floor = maxSensitivity(session.floor, reads);
     const dataClass: DataClass = { sensitivity: reads, integrity: "untrusted" };
     this.#append(id, "capability_result", dataClass, HARNESS_ACTOR, {
@@ -517,7 +567,7 @@ export class MediatedSessions {
       case "cc.read": {
         const filePath = path("file_path");
         if (filePath === null) return outside("file_path");
-        return proposal("cc.read", { file_path: synthesized(filePath), offset: synthesized(numberOr(value("offset"))), limit: synthesized(numberOr(value("limit"))) }, [filePath]);
+        return proposal("cc.read", { file_path: synthesized(filePath), offset: synthesized(numberOr(value("offset"))), limit: synthesized(numberOr(value("limit"))) });
       }
       case "cc.write":
       case "cc.edit": {
@@ -525,8 +575,7 @@ export class MediatedSessions {
         if (filePath === null) return outside("file_path");
         const args: Record<string, unknown> = { file_path: synthesized(filePath) };
         for (const key of tool.fields.slice(1)) args[key] = synthesized(key === "replace_all" ? value(key) === true : String(value(key) ?? ""));
-        // §4.3 V6-7 gates reads: a Write reads nothing; an Edit reads the file it edits (D-141).
-        return proposal(tool.capability, args, tool.capability === "cc.edit" ? [filePath] : []);
+        return proposal(tool.capability, args);
       }
       case "cc.glob": {
         const pattern = value("pattern");
@@ -535,12 +584,10 @@ export class MediatedSessions {
         }
         const where = path("path", input.cwd);
         if (where === null) return outside("path");
-        // A Glob lists everything under its path, so every source under it counts as read (D-141).
-        return proposal("cc.glob", { path: synthesized(where), pattern: synthesized(pattern) }, [`${where}/**`]);
+        return proposal("cc.glob", { path: synthesized(where), pattern: synthesized(pattern) });
       }
       case "cc.webfetch":
-        // A fetched page belongs to no declared source: read at the highest declared class, never below it (§1.5, D-160).
-        return { kind: "proposal", proposal: { capability: "cc.webfetch", arguments: { url: synthesized(String(value("url") ?? "")), prompt: synthesized(String(value("prompt") ?? "")) } }, constants: {}, paths: [], unclassified: true };
+        return proposal("cc.webfetch", { url: synthesized(String(value("url") ?? "")), prompt: synthesized(String(value("prompt") ?? "")) });
       default: {
         const command = value("command");
         if (typeof command !== "string") return { kind: "reject", reason: "malformed_call: Bash without a command" };
@@ -581,79 +628,20 @@ export class MediatedSessions {
           argv: argv.map((element, index) => word(`command.argv.${String(index)}`, element)),
           cwd: synthesized(cwd),
         };
-        // What a Bash call reads (§4.3 V6-7, D-156): every operand, each as a tree, since a program such as `ls` lists a
-        // directory it is given (and `ls -R` all below it); a file's tree is the file. With no operand, the working
-        // directory's tree (`ls` lists it). Flags are words before `--` that start with `-`; anything else is an operand.
-        const operands: string[] = [];
-        let flagsEnd = false;
-        for (const element of argv) {
-          if (!flagsEnd && element === "--") flagsEnd = true;
-          else if (flagsEnd || !element.startsWith("-")) operands.push(element);
-        }
         const member = session.request.name_map.find((entry) => entry.name === reading.name);
         return {
           kind: "proposal",
           proposal: { capability: `cc.bash.${member?.side_effect ?? "irreversible"}`, arguments: args },
           constants,
-          paths: operands.length === 0 ? [`${cwd}/**`] : operands.map((element) => `${element.startsWith("/") ? element : `${cwd}/${element}`}/**`),
           bash: { ...fields.data, command: rebuilt },
         };
       }
     }
   }
 
-  /**
-   * The highest class of what a call reads (§4.3 V6-7), judged on what the effect will touch (§2.7.1 C4, D-156): every
-   * path is resolved first, so a symlink is judged as its target. For a tree (`<dir>/**`), every source under or around
-   * its resolved directory counts, and so does every symlink inside it, followed the same way (the listing itself never
-   * follows one). A path that names no source, cannot be resolved or listed, or holds too many links is read at the
-   * highest class any source declares (restrictive: an unclassified read is never below the clearance by default, D-141).
-   * So is a regular file with a link count above 1, read by name or inside a tree (D-157): a hard link is the same file
-   * as another path, which JUNO cannot see by path.
-   */
-  async #readsSensitivity(session: Session, paths: readonly string[]): Promise<Sensitivity> {
-    let reads: Sensitivity = "public";
-    const highest = highestDeclared(session);
-    const queue = paths.map((raw) => ({ path: raw.endsWith("/**") ? raw.slice(0, -3) : raw, tree: raw.endsWith("/**") }));
-    const seen = new Set<string>();
-    let links = 0;
-    for (let item = queue.shift(); item !== undefined; item = queue.shift()) {
-      const parsed = WorkPath.safeParse(operandPath("/", item.path));
-      if (!parsed.success) return highest;
-      const answer = (await this.#resolver.resolve([parsed.data])).get(parsed.data);
-      if (answer === undefined || !answer.ok) return highest;
-      // D-157: a regular file with more than one link is the same file as a path in any source, or none.
-      if (answer.hardLinked === true) return highest;
-      const canonical = answer.canonical;
-      const key = `${item.tree ? "tree" : "file"}:${canonical}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      let named = false;
-      for (const source of session.request.sources) {
-        if (source.selector.kind !== "path") continue;
-        if (pathWithin(canonical, source.selector.prefix) || (item.tree && pathWithin(source.selector.prefix, canonical))) {
-          named = true;
-          reads = maxSensitivity(reads, source.data_class.sensitivity);
-        }
-      }
-      if (!named) return highest;
-      if (!item.tree) continue;
-      // The links inside the tree: listed without following any, then each judged as its own target's tree.
-      const listed = await this.#view.list(canonical, false);
-      if (!listed.ok) {
-        // A file or a path that does not exist has no tree beneath it; any other failure is a doubt.
-        if (NO_TREE.test(listed.reason)) continue;
-        return highest;
-      }
-      if (listed.snapshot.hardLinks.length > 0) return highest;
-      for (const entry of listed.snapshot.manifest) {
-        if (entry.type !== "symlink") continue;
-        links += 1;
-        if (links > MAX_READ_LINKS) return highest;
-        queue.push({ path: `${canonical}/${entry.path}`, tree: true });
-      }
-    }
-    return reads;
+  /** What a session's call reads, classified by the one classification function (D-162). */
+  #classify(session: Session, targets: readonly ReadTarget[]): Promise<Sensitivity> {
+    return classifyRead(targets, { sources: session.request.sources, resolver: this.#resolver, view: this.#view });
   }
 
   #reject(session: Session, reason: string, tool: string, callSeq?: number): HookDecision {
@@ -692,26 +680,13 @@ export class MediatedSessions {
 type Mapped =
   | {
       readonly kind: "proposal";
-      readonly proposal: unknown;
+      readonly proposal: { readonly capability: string; readonly arguments: Readonly<Record<string, unknown>> };
       readonly constants: TaskContext["constants"];
-      readonly paths: readonly string[];
-      /** The call reads something no declared source classifies (a WebFetch): read at the highest declared class (D-160). */
-      readonly unclassified?: true;
       /** For Bash only: the whole tool input Claude Code is to run, with the rebuilt command (D-152). */
       readonly bash?: Readonly<Record<string, unknown>> & { readonly command: string };
     }
   | { readonly kind: "reject"; readonly reason: string }
   | { readonly kind: "park"; readonly reason: string; readonly detail: Record<string, unknown>; readonly overridable: boolean };
-
-/** The highest class any declared source holds: what an unclassified read counts as (§1.5; D-141, D-150, D-156, D-160). */
-function highestDeclared(session: Session): Sensitivity {
-  return session.request.sources.reduce<Sensitivity>((high, source) => maxSensitivity(high, source.data_class.sensitivity), "public");
-}
-
-/** The lister's answers that mean "there is no tree here": a file, or a path that does not exist (D-156). */
-const NO_TREE = /^(the workspace root is not a directory|cannot read the workspace root: (ENOENT|ENOTDIR))/;
-/** Symlinks a read may follow before it is read at the highest class (D-156). */
-const MAX_READ_LINKS = 64;
 
 /** A refused admission and what is recorded against it: the most restrictive class, as mode A records one. */
 const REFUSED_CLASS: DataClass = { sensitivity: "secret", integrity: "untrusted" };
@@ -719,8 +694,24 @@ const REFUSED_CLASS: DataClass = { sensitivity: "secret", integrity: "untrusted"
 /** §8.3: parks the operator can never override, as in mode A. */
 const NON_OVERRIDABLE: ReadonlySet<string> = new Set(["integrity_floor", "adapter_quarantined"]);
 
-function proposal(capability: string, args: Record<string, unknown>, paths: readonly string[]): Mapped {
-  return { kind: "proposal", proposal: { capability, arguments: args }, constants: {}, paths };
+function proposal(capability: string, args: Record<string, unknown>): Mapped {
+  return { kind: "proposal", proposal: { capability, arguments: args }, constants: {} };
+}
+
+/**
+ * The value JUNO judged for one proposal field: a synthesized value as written, an operator constant from its slot, a
+ * list element by element. Anything else is `undefined`, which the tool table reads as an `unknown` read (D-162).
+ */
+function judgedValue(args: Readonly<Record<string, unknown>>, constants: TaskContext["constants"]): (field: string) => unknown {
+  const one = (arg: unknown): unknown => {
+    if (Array.isArray(arg)) return arg.map(one);
+    if (typeof arg !== "object" || arg === null) return undefined;
+    const tagged = arg as { class?: unknown; value?: unknown; slot?: unknown };
+    if (tagged.class === "synthesized") return tagged.value;
+    if (tagged.class === "constant" && typeof tagged.slot === "string") return constants[tagged.slot]?.value;
+    return undefined;
+  };
+  return (field) => one(args[field]);
 }
 
 function numberOr(value: unknown): number {
