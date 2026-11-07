@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { ResourceSelector, type Sensitivity, Sensitivity as SensitivitySchema, Integrity as IntegritySchema, Ref, WorkPath, maxSensitivity, pathWithin } from "../../contracts/src/index.js";
-import { type PathResolver, type Workspace, operandPath } from "../../enforcement/src/index.js";
+import { ResourceSelector, type Sensitivity, Sensitivity as SensitivitySchema, Integrity as IntegritySchema, Ref, maxSensitivity, pathWithin } from "../../contracts/src/index.js";
+import { type PathResolver, type Workspace, rawOperandPath } from "../../enforcement/src/index.js";
 
 /**
  * What anything a mode-C call reads is classified as (spec §4.3 V6-7, §1.5, §1.2, §2.7.1 C4; operator ruling of
@@ -71,7 +71,7 @@ const NO_TREE = /^(the workspace root is not a directory|cannot read the workspa
  * THE classification function (D-162). The highest class of what `targets` read: for each target, the class of the
  * declared sources that positively match its resolved form, or the highest declared class when none does.
  *
- * - `tree`: the path is resolved first (symlinks followed, §2.7.1 C4). A regular file with more than one link is the
+ * - `tree`: the raw path is resolved first (symlinks followed, then `..` as the file system takes it, §2.7.1 C4, D-113). A regular file with more than one link is the
  *   highest class (D-157). The tree's root must lie inside a declared path source (so nothing under it is in no source),
  *   and every source inside the tree adds its class. Every symlink inside a tree is followed as a
  *   tree of its own (D-156). A path that cannot be resolved or listed, or too many links, is the highest class.
@@ -109,9 +109,11 @@ export async function classifyRead(targets: readonly ReadTarget[], context: Read
   const seen = new Set<string>();
   let links = 0;
   for (let item = queue.shift(); item !== undefined; item = queue.shift()) {
-    const parsed = WorkPath.safeParse(operandPath("/", item));
-    if (!parsed.success) return highest;
-    const answer = (await context.resolver.resolve([parsed.data])).get(parsed.data);
+    // The raw path goes to the resolver as written: `..` is resolved by the file system after the symlinks before it,
+    // as the program will (D-113), never collapsed as text first (D-166, PR #40 review round 6).
+    const raw = rawOperandPath("/", item);
+    if (raw !== "/work" && !raw.startsWith("/work/")) return highest;
+    const answer = (await context.resolver.resolve([raw])).get(raw);
     if (answer === undefined || !answer.ok) return highest;
     // D-157: a regular file with more than one link is the same file as a path in any source, or none.
     if (answer.hardLinked === true) return highest;

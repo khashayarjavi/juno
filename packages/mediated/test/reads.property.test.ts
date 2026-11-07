@@ -79,7 +79,7 @@ function request(id: string, clearance: "internal" | "secret", grantId: string, 
 beforeAll(() => {
   dir = mkdtempSync(join(tmpdir(), "juno-reads-property-"));
   work = join(dir, "work");
-  mkdirSync(join(work, "project", "secrets"), { recursive: true });
+  mkdirSync(join(work, "project", "secrets", "sub"), { recursive: true });
   mkdirSync(join(work, "project", "docs"), { recursive: true });
   mkdirSync(join(work, "project", "rw"), { recursive: true });
   mkdirSync(join(work, "other", "pub"), { recursive: true });
@@ -131,7 +131,7 @@ async function askAndReport(id: string, tool: string, input: Record<string, unkn
 
 /** An unregistered read as a file system fixture: what kind, and where its link leads. */
 const fixture = fc.record({
-  kind: fc.constantFrom("hard_link", "link_by_name", "link_in_tree", "hard_link_in_tree"),
+  kind: fc.constantFrom("hard_link", "link_by_name", "link_in_tree", "hard_link_in_tree", "link_then_dotdot"),
   // Every target lies in no declared source, or is the same file as one (a hard link is the highest class whatever it names).
   linkTarget: fc.constantFrom("other", "other/plain.txt", "outside", "outside/host.txt", "other/missing.txt"),
   hardTarget: fc.constantFrom("project/secrets/key.txt", "other/plain.txt", "project/notes.txt"),
@@ -165,6 +165,13 @@ function build(f: Fixture): { readonly root: string; readonly relRoot: string; r
     case "hard_link_in_tree": {
       linkSync(hardFrom, join(root, "tree", `${f.name}.txt`));
       return { root, relRoot, named: join(root, "tree"), relNamed: rel(join(root, "tree")) };
+    }
+    case "link_then_dotdot": {
+      // PR #40 review round 6 (D-166): a link followed by `..` leaves where the text says; the file system takes the
+      // link first, so `<link to secrets/sub>/../key.txt` is the secret key.
+      symlinkSync(join(work, "project", "secrets", "sub"), join(root, `${f.name}.d`));
+      const named = `${root}/${f.name}.d/../key.txt`;
+      return { root, relRoot, named, relNamed: rel(named) };
     }
   }
 }

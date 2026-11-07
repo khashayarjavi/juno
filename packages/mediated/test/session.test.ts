@@ -409,6 +409,21 @@ describe("§4.3 V6-7 on what the call will read (D-156, PR #38 review round 4)",
     expect(await ask(session, "gate-1", "Edit", { file_path: join(work, "project", "link.txt"), old_string: "a", new_string: "b", replace_all: false })).toMatchObject({ decision: "deny" });
   });
 
+  // proves §4.3 V6-7 with §2.7.1 C4 and D-113 (D-166, PR #40 review round 6): `..` after a symlink is taken by the file
+  // system after the link, as `cat` takes it, so `pub/lnk/../key.txt` with `pub/lnk` → `secrets/sub` is the secret key
+  it("parks a read of the secret file through a link followed by ..", async () => {
+    mkdirSync(join(work, "project", "secrets", "sub"));
+    mkdirSync(join(work, "project", "pub"));
+    symlinkSync(join(work, "project", "secrets", "sub"), join(work, "project", "pub", "lnk"));
+    const session = await withLs("gate-dotdot");
+    expect(await ask(session, "gate-dotdot", "Bash", { command: "cat pub/lnk/../key.txt" })).toMatchObject({ decision: "deny", reason: expect.stringContaining("sensitivity_ceiling") });
+    expect(lastPark("gate-dotdot")).toMatchObject(gated);
+    // A Read naming `..` is refused by the path type (malformed_call); it never runs.
+    expect(await ask(session, "gate-dotdot", "Read", { file_path: `${join(work, "project", "pub", "lnk")}/../key.txt` })).toMatchObject({ decision: "deny" });
+    // Control: `..` with no link before it stays where the text says, an ordinary file read at its own class.
+    expect(await ask(session, "gate-dotdot", "Bash", { command: "cat pub/../notes.txt" })).toMatchObject({ decision: "allow" });
+  });
+
   // proves the same through a chain of links, and through a relative link
   it("follows a chain of links to the secret file", async () => {
     symlinkSync("secrets/key.txt", join(work, "project", "first.txt"));
