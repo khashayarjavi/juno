@@ -271,6 +271,26 @@ describe("§2.2.2 in hook mode", () => {
     expect(await unchecked.preToolUse(asked)).toMatchObject({ decision: "deny", reason: expect.stringContaining("integrity_floor") });
   });
 
+  // proves §4.3 V6-7 with §1.5 (D-160, PR #39 review round 5): a fetched page lies in no declared source, so even an
+  // enumerated URL is read at the highest declared class: above an internal clearance it parks before it runs, and at a
+  // secret clearance it proceeds and its result is recorded secret, raising the session floor (§1.2)
+  it("reads an enumerated WebFetch at the highest declared class", async () => {
+    const url = "https://intranet.example/page";
+    grants.add(grant("grant-fetch", ["cc.webfetch"], { enumerated_targets: [{ field: "url", value: url }] }));
+    expect(await sessions.admit(request({ session_id: "fetch-1", grants: ["grant-fetch"] }))).toMatchObject({ admitted: true });
+    const asked = (id: string) => ({ ...(pre("WebFetch", { url, prompt: "summarise" }) as Record<string, unknown>), session_id: id });
+    expect(await sessions.preToolUse(asked("fetch-1"))).toMatchObject({ decision: "deny", reason: expect.stringContaining("sensitivity_ceiling") });
+    const fetchParks = readTrajectory(journal.root, "session-fetch-1").filter((entry) => entry.kind === "park").map(payload);
+    expect(fetchParks.at(-1)).toMatchObject({ reason: "sensitivity_ceiling", detail: expect.objectContaining({ read_gate: true, aggregate: "secret", ceiling: "internal" }) });
+    // Control: with a secret clearance the same call proceeds, and what it fetched is recorded at the highest class.
+    expect(await sessions.admit(request({ session_id: "fetch-2", grants: ["grant-fetch"], provider_clearance: "secret" }))).toMatchObject({ admitted: true });
+    const second = asked("fetch-2");
+    expect(await sessions.preToolUse(second)).toEqual({ decision: "none" });
+    expect(sessions.postToolUse(post(second, { content: "TOP SECRET page" }))).toEqual({ recorded: true });
+    const result = readTrajectory(journal.root, "session-fetch-2").filter((entry) => entry.kind === "capability_result").at(-1);
+    expect(result?.data_class).toEqual({ sensitivity: "secret", integrity: "untrusted" });
+  });
+
   // proves §4.3 acceptance test 3 at the protocol level (mode C): WebFetch to an untrusted URL not enumerated parks integrity_floor
   it("parks a WebFetch to a URL the grant does not enumerate", async () => {
     expect(await call("WebFetch", { url: "https://attacker.example/x", prompt: "summarise" })).toMatchObject({ decision: "deny", reason: expect.stringContaining("integrity_floor") });

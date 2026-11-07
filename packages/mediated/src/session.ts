@@ -396,7 +396,8 @@ export class MediatedSessions {
 
     // §4.3 V6-7: a read of a source classified above the provider's clearance parks before it runs. The boundary judges it
     // at step 5, after integrity, scope and effects, so a park that cannot be overridden always wins (D-150).
-    const reads = await this.#readsSensitivity(session, mapped.paths);
+    // D-160: what a WebFetch reads lies in no declared source, so it is read at the highest declared class (§1.5).
+    const reads = mapped.unclassified === true ? highestDeclared(session) : await this.#readsSensitivity(session, mapped.paths);
 
     const constants = mapped.constants;
     const base: TaskContext = { task: { ...session.task, sensitivity_floor: session.floor }, constants, synthesis: { sensitivity: session.floor }, reversible: session.reversible, readGate: { reads, clearance: session.request.provider_clearance } };
@@ -538,7 +539,8 @@ export class MediatedSessions {
         return proposal("cc.glob", { path: synthesized(where), pattern: synthesized(pattern) }, [`${where}/**`]);
       }
       case "cc.webfetch":
-        return proposal("cc.webfetch", { url: synthesized(String(value("url") ?? "")), prompt: synthesized(String(value("prompt") ?? "")) }, []);
+        // A fetched page belongs to no declared source: read at the highest declared class, never below it (§1.5, D-160).
+        return { kind: "proposal", proposal: { capability: "cc.webfetch", arguments: { url: synthesized(String(value("url") ?? "")), prompt: synthesized(String(value("prompt") ?? "")) } }, constants: {}, paths: [], unclassified: true };
       default: {
         const command = value("command");
         if (typeof command !== "string") return { kind: "reject", reason: "malformed_call: Bash without a command" };
@@ -611,7 +613,7 @@ export class MediatedSessions {
    */
   async #readsSensitivity(session: Session, paths: readonly string[]): Promise<Sensitivity> {
     let reads: Sensitivity = "public";
-    const highest = session.request.sources.reduce<Sensitivity>((high, source) => maxSensitivity(high, source.data_class.sensitivity), "public");
+    const highest = highestDeclared(session);
     const queue = paths.map((raw) => ({ path: raw.endsWith("/**") ? raw.slice(0, -3) : raw, tree: raw.endsWith("/**") }));
     const seen = new Set<string>();
     let links = 0;
@@ -693,11 +695,18 @@ type Mapped =
       readonly proposal: unknown;
       readonly constants: TaskContext["constants"];
       readonly paths: readonly string[];
+      /** The call reads something no declared source classifies (a WebFetch): read at the highest declared class (D-160). */
+      readonly unclassified?: true;
       /** For Bash only: the whole tool input Claude Code is to run, with the rebuilt command (D-152). */
       readonly bash?: Readonly<Record<string, unknown>> & { readonly command: string };
     }
   | { readonly kind: "reject"; readonly reason: string }
   | { readonly kind: "park"; readonly reason: string; readonly detail: Record<string, unknown>; readonly overridable: boolean };
+
+/** The highest class any declared source holds: what an unclassified read counts as (§1.5; D-141, D-150, D-156, D-160). */
+function highestDeclared(session: Session): Sensitivity {
+  return session.request.sources.reduce<Sensitivity>((high, source) => maxSensitivity(high, source.data_class.sensitivity), "public");
+}
 
 /** The lister's answers that mean "there is no tree here": a file, or a path that does not exist (D-156). */
 const NO_TREE = /^(the workspace root is not a directory|cannot read the workspace root: (ENOENT|ENOTDIR))/;
