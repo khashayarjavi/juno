@@ -1,18 +1,28 @@
 # STATE
 
 ## Current increment
-**Slice 1.5 — Increment 4: hook mode for Claude Code (§4.3 mode C)** (`docs/plans/slice-1.5-build-plan.md`, Increment 4; also §2.3.2 E1, §7.8 E2, D-131's Increment 4 directives). Branch `claude/trusting-faraday-jrgos5` (this session's only pushable branch, D-176); it carries PR #41's commits unchanged (which carry PR #40's, #39's, #38's and #37's), and its PR supersedes PR #41. Spec v0.6.1. No objection open.
+**Slice 1.5 — Increment 4: hook mode for Claude Code (§4.3 mode C)** (`docs/plans/slice-1.5-build-plan.md`, Increment 4; also §2.3.2 E1, §7.8 E2, D-131's Increment 4 directives). Branch `claude/loving-brahmagupta-rp1azf` (this session's only pushable branch, D-181); it carries PR #42's commits unchanged (which carry #41's, #40's, #39's, #38's and #37's), and its PR supersedes PR #42. Spec v0.6.1. No objection open.
 
-Status (2026-11-08): **STOPPED (D-175, D-177): review round 8 (PR #42, head 232dcf5) ended DO NOT MERGE, and its finding is the class D-175 names.** Your rulings D-173 and D-174 are built, and on that head `make verify` is GREEN (1,087 unit, 108 container), CI run 42516417217 is green (`verify`, `verify-rootless`), and `make mediated-e2e` is 7 of 7 with the real Claude Code 2.1.319. Not fixed (it needs your ruling). Nothing merged; Increment 5 not started.
-- **For you (the operator):** rule on D-177's options (a), (b) or (c) (or a combination), and whether a round 9 is authorised.
-- **What round 8 found, in plain words.** The plan still lets you mount a Windows folder into WSL as the workspace, through one `/etc/fstab` line. On such a folder Linux ignores upper and lower case. JUNO's resolver does not, so `/work/project/SECRETS/key.txt` looks to JUNO like an ordinary file under `project` (internal), while the kernel opens `project/secrets/key.txt` (secret). It is round 7's case trick again, reached through a Linux path this time. It does **not** affect the setup Part E describes (`/srv/juno-work` on WSL's own file system), and a governed tool call cannot create such a mount. It was not reproduced here: the cloud machine cannot fold case and cannot run WSL.
-- **The options (D-177):**
-  - (a) JUNO refuses a workspace that is not on a case-sensitive Linux file system, or that holds a case-folding folder;
-  - (b) the plan drops the Windows-folder allowance;
-  - (c) a Windows folder is allowed only with WSL's `case=force` option, which `juno hook check` verifies.
+Status (2026-11-08, later session): **your rulings on D-177 are built (D-178 to D-182); `make verify` and review round 9 are next.** Nothing merged yet; Increment 5 not started.
+- **Your rulings, recorded:**
+  - D-178: D-177 options (a) and (b), built (below).
+  - D-179: CLAUDE.md §7's repeat rule amended as you wrote it; the round limit for Increment 4's PR is 10.
+  - D-180: the command that starts JUNO's hook service on your machine belongs to Increment 6; it is in the plan there with click-by-click steps, and not built here.
+  - D-181: review round 9 authorised; it runs on this branch's PR, which supersedes PR #42.
+- **What D-178 changes, in plain words.**
+  - **A Windows folder is never a governed workspace.** Plan §2a no longer offers the `/etc/fstab` line.
+  - **JUNO refuses it anyway.** Every session admission, and `juno hook check`, look at the workspace and every source you list. Each is refused, with a plain reason, unless it sits on ext4, btrfs or tmpfs (WSL's own file system is ext4), nothing mounted inside it is of another kind, and no folder in it ignores case (the case-folding attribute, `chattr +F`, or a folder that opens `SECRETS` for `secrets`). If JUNO cannot check, it refuses.
+  - **And at every call.** A folder could start ignoring case after admission. So at every call JUNO's path resolver now insists that each name the kernel matched is spelled exactly as its folder lists it. `project/SECRETS/key.txt` on such a folder is then outside every scope, and any read of it counts at your highest class (autopilot ruling D-182).
+  - **`juno hook check` now needs `--workspace /srv/juno-work`** (Part E step 14 updated). Part E step 12 gains a check that `/srv/juno-work` is on ext4 and has no `F` attribute.
+- **Tests.**
+  - Unit: drvfs, 9p, FUSE, xfs, overlay, a case-folding tmpfs, a non-native mount inside the workspace, a folder with the attribute, a folder whose lookups fold, and every "cannot check" case are refused; ext4 and plain tmpfs pass. Admission refuses a drvfs or 9p workspace naming the workspace and each source, and denies that session's calls.
+  - **Kernel oracle, extended:** in CI, a real ext4 made with the casefold feature is loop-mounted; the oracle sets `+F` on `project`, confirms the kernel opens `project/secrets/key.txt` for `project/SECRETS/KEY.txt`, confirms the check and admission refuse, and then compares 100 generated case spellings with what the kernel opens: JUNO's class is never lower. CI is required to provide that folder (`JUNO_CASEFOLD_REQUIRED=1`). **This cloud machine cannot fold case** (`CONFIG_UNICODE` is off), so here the oracle tests the refusal path directly.
+  - Container (`hook-separation`): the workspace is now a tmpfs and passes; a workspace on the container's overlay root is refused by the real check with exactly one line.
+- **Gap to know about (unchanged, now planned):** no command yet starts JUNO's hook service and admits sessions on your machine. It is Increment 6's (D-180).
+- **`make verify`:** running (see "make verify" below).
 
-  (a) together with (b) is the most restrictive.
-- **Reviewer's other checks:** 1–4 and 6 PASS.
+### Before this session (round 8 and its STOP, D-177)
+- **What round 8 found, in plain words.** The plan still let you mount a Windows folder into WSL as the workspace, through one `/etc/fstab` line. On such a folder Linux ignores upper and lower case. JUNO's resolver did not, so `/work/project/SECRETS/key.txt` looked to JUNO like an ordinary file under `project` (internal), while the kernel opens `project/secrets/key.txt` (secret). Not reproduced in the cloud (it cannot fold case). Your ruling (a)+(b) is D-178, above.
 - **Ruling 1 (D-173, on D-172 option (b)): Claude Code is governed only inside WSL2, as its own Linux user.**
   - **Linux paths only.** Any Windows-form path is refused before JUNO judges anything: a backslash anywhere (`\\wsl.localhost\…`, `\\?\…`, `\\server\share`, `C:\x`), a drive letter (`C:`, `c:/x`), or a leading `//`. It applies to Read, Write, Edit, Glob (path and pattern), the call's working folder, and every Bash operand. The call is stopped, cannot be overridden, and the reason says: "… is a Windows-form path. JUNO governs Claude Code only inside WSL2 and accepts only Linux absolute paths (D-173)". Your session settings are checked the same way at admission. So round 7's `secrets.\key.txt` and `SECRETS\key.txt` can no longer reach JUNO's classifier at all.
   - **No Windows-to-WSL bridge.** `juno hook install` no longer writes `wsl.exe`; the hook runs inside WSL2 as the Claude Code user.

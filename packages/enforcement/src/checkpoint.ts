@@ -145,6 +145,11 @@ export class Workspace {
     this.#to = to;
   }
 
+  /** The directory this view reads for `/work` (a host directory in hook mode, `/work` in the workload). */
+  get viewRoot(): string {
+    return this.#to;
+  }
+
   /** Every entry under `root`, with content when asked; or why it could not be taken. */
   async list(root: string, content: boolean): Promise<{ ok: true; snapshot: Snapshot } | { ok: false; reason: string }> {
     const parsedRoot = WorkPath.safeParse(root);
