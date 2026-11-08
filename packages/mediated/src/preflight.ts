@@ -123,7 +123,7 @@ export function hookPreflight(input: PreflightInput, io: PreflightIo): string[] 
   if (input.settings !== MANAGED_SETTINGS) refusals.push(`the settings file must be ${MANAGED_SETTINGS} (D-173)`);
   refusals.push(...rootOnly("the managed settings", input.settings, io));
   const text = io.readFile(input.settings);
-  let parsed: unknown = null;
+  let parsed: unknown;
   try {
     parsed = text === null ? null : JSON.parse(text);
   } catch {
