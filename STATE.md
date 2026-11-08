@@ -3,7 +3,7 @@
 ## Current increment
 **Slice 1.5 — Increment 4: hook mode for Claude Code (§4.3 mode C)** (`docs/plans/slice-1.5-build-plan.md`, Increment 4; also §2.3.2 E1, §7.8 E2, D-131's Increment 4 directives). Branch `claude/loving-brahmagupta-rp1azf` (this session's only pushable branch, D-181); it carries PR #42's commits unchanged (which carry #41's, #40's, #39's, #38's and #37's), and its PR supersedes PR #42. Spec v0.6.1. No objection open.
 
-Status (2026-11-08, later session): **your rulings on D-177 are built (D-178 to D-182); `make verify` and review round 9 are next.** Nothing merged yet; Increment 5 not started.
+Status (2026-11-08, later session): **your rulings on D-177 are built (D-178 to D-182), `make verify` GREEN, CI green; review round 9 is running.** Nothing merged yet; Increment 5 not started.
 - **Your rulings, recorded:**
   - D-178: D-177 options (a) and (b), built (below).
   - D-179: CLAUDE.md §7's repeat rule amended as you wrote it; the round limit for Increment 4's PR is 10.
@@ -19,7 +19,11 @@ Status (2026-11-08, later session): **your rulings on D-177 are built (D-178 to 
   - **Kernel oracle, extended:** in CI, a real ext4 made with the casefold feature is loop-mounted; the oracle sets `+F` on `project`, confirms the kernel opens `project/secrets/key.txt` for `project/SECRETS/KEY.txt`, confirms the check and admission refuse, and then compares 100 generated case spellings with what the kernel opens: JUNO's class is never lower. CI is required to provide that folder (`JUNO_CASEFOLD_REQUIRED=1`). **This cloud machine cannot fold case** (`CONFIG_UNICODE` is off), so here the oracle tests the refusal path directly.
   - Container (`hook-separation`): the workspace is now a tmpfs and passes; a workspace on the container's overlay root is refused by the real check with exactly one line.
 - **Gap to know about (unchanged, now planned):** no command yet starts JUNO's hook service and admits sessions on your machine. It is Increment 6's (D-180).
-- **`make verify`:** running (see "make verify" below).
+- **Proof run (2026-11-08):**
+  - `make verify: GREEN` locally on a7252dd: 1,107 unit, 109 container.
+  - `make mediated-e2e`: 7 of 7 with the real Claude Code 2.1.319, no paid model, no network. Its first run on b315690 failed 5 of 7: admission judged the workspace by the name Claude Code uses inside its container (`/workspace`), which does not exist on the host, so it judged `/` and refused. Fixed: admission judges where JUNO reads (D-182 item 8).
+  - CI run 42524540845 (b315690) **ran the real case-folded folder**: the kernel folded, the check and admission refused, and no case spelling was classified below what the kernel opens. It failed only the non-vacuity count (16 spellings opened, needed more than 20), because the generator also flipped the case of `project`, whose parent does not fold. Fixed on c4c4d21: `project` is spelled exactly and the counts raised to more than 80 opened and more than 50 case-swapped.
+  - **CI on c4c4d21 (run 42525254217): green.** `verify`: 1,107 unit (the real case-folded oracle included, required) and 109 container; `verify-rootless`: 109 of 109 container tests under the rootless daemon.
 
 ### Before this session (round 8 and its STOP, D-177)
 - **What round 8 found, in plain words.** The plan still let you mount a Windows folder into WSL as the workspace, through one `/etc/fstab` line. On such a folder Linux ignores upper and lower case. JUNO's resolver did not, so `/work/project/SECRETS/key.txt` looked to JUNO like an ordinary file under `project` (internal), while the kernel opens `project/secrets/key.txt` (secret). Not reproduced in the cloud (it cannot fold case). Your ruling (a)+(b) is D-178, above.
