@@ -2017,3 +2017,19 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
 - Applies to: Increment 4's pull request
 - Decision: this session's harness allows pushes only to `claude/friendly-lovelace-2j7h4d`, so PR #40's branch (`claude/great-goldberg-39jnb4`) cannot be updated. The branch was reset to PR #40's head (d0a144c) and carries its commits unchanged plus this session's; a new PR from it supersedes PR #40. The operator's authorisation of "review round 7 on PR #40" (D-169) is applied to that PR, which holds PR #40's whole content.
 - Reason: as D-028, D-155, D-159 and D-165; a push to any other name would be refused.
+
+## D-172 — STOP after review round 7: a Windows-spelled path can be read below its real class (Slice 1.5 Increment 4; PR #41 review round 7)
+- Date: 2026-11-08
+- Status: **STOP for the operator** (D-169: "If round 7 finds this class again, STOP and report."). Not fixed; nothing merged; Increment 5 not started.
+- Applies to: `packages/mediated/src/session.ts` (`PathMap.toWork`), `packages/mediated/src/reads.ts` (`classifyRead`), `packages/enforcement/src/canonical.ts` (D-168's `redirected`)
+- Finding (round 7, head 83f8ef3; fresh reviewer, P2 verbatim; check 5 FAIL; checks 1–4 and 6 PASS): in the operator's real setup Claude Code runs on Windows and names workspace files as `\\wsl.localhost\…` paths (plan §2a, D-130, D-141). `PathMap.toWork` maps such a path onto `/work` as text, and the classifier and scope check resolve it with the Linux resolver. Nothing accounts for what Windows does to a path before it opens it. Reproduced by the agent on this head (clearance `internal`, `project` internal, `project/secrets` secret):
+  - `Read …\project\secrets\key.txt` → parked `sensitivity_ceiling` (correct);
+  - `Read …\project\secrets.\key.txt`, `…\secrets \key.txt` (trailing space), `…\SECRETS\key.txt`, and `Glob path=…\project\secrets.` → **no decision, result recorded `internal`**. On Linux those names do not exist, so the resolver places them under `/work/project` through its existing ancestor; they are not `redirected` (D-168 compares the text with the Linux kernel's answer only).
+- Why it matters: Win32 path normalization strips a trailing `.` and trailing spaces from path components (paths not prefixed `\\?\`), and Windows lookups are usually case-insensitive. If the program Claude Code uses on Windows opens `…\secrets.\key.txt` as `…\secrets\key.txt`, the secret file is read under an `internal` clearance and recorded `internal`.
+- **Not verified:** whether Claude Code's Windows runtime and the `\\wsl.localhost` (9P) redirector actually apply those rewrites (the ext4 side is case-sensitive; the trailing `.`/space stripping happens on the Windows side before the request leaves). Nothing in the cloud session can run Windows.
+- Same class as earlier fixes (named, as CLAUDE.md §7 requires): "a read is counted below its real class": D-150, D-156, D-160, D-162, D-166; and the Windows-side counterpart of D-168 (whose oracle is the Linux kernel only; D-167's oracle does not model Windows either).
+- Restrictive options for the operator's ruling (none built):
+  - (a) **Refuse Windows spellings a Win32 open could rewrite.** For a path mapped from a Windows-form root: any component ending in `.` or a space, holding `:`, `~` (a possible 8.3 short name), `<>"|?*` or a control character, or naming a reserved device (`CON`, `NUL`, `COM1`, …), maps nowhere (outside every scope, a non-overridable park). And any component whose name exists in the same folder only in a different case is the highest class.
+  - (b) **Refuse Windows spellings altogether.** Only Linux paths inside WSL are accepted; Claude Code would have to run inside WSL. That changes plan §2a.
+  - (c) **Prove it on your machine first.** A short Windows check (Part E) that opens `\\wsl.localhost\…\secrets.\key.txt` and `…\SECRETS\key.txt`, then (a) or (b) by the result.
+- Reason: D-169; CLAUDE.md §7 STOP list.
