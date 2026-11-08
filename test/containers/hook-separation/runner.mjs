@@ -27,8 +27,8 @@ const sessions = new MediatedSessions({
 });
 // Something in the journal to try to read: a refused admission (no such grant) is journalled.
 await sessions.admit({ session_id: "probe", principal: "alireza", attendance: "gated", ttl: 60_000, grants: ["grant-missing"], budget: { tool_calls: 1, wall_clock_ms: 60_000 }, unmetered_accepted: true, provider_clearance: "internal", sources: [{ id: "w", selector: { kind: "path", prefix: "/work" }, data_class: { sensitivity: "internal", integrity: "untrusted" } }], name_map: [] });
-const service = new HookService(sessions);
-await service.listen("/var/lib/juno-hook/hook.sock", { mode: 0o660 });
+const service = new HookService(sessions, { socketMode: 0o660 });
+await service.listen("/var/lib/juno-hook/hook.sock");
 process.stdout.write(`${JSON.stringify({ ready: true, pid: process.pid })}\n`);
 process.stdin.resume();
 process.stdin.on("end", () => {

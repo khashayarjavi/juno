@@ -139,8 +139,8 @@ beforeAll(async () => {
     protectedPaths: [join(host, "checkpoints"), sockets, home],
     checkpoints: { workspace: new Workspace(execFileScript(process.execPath, []), "/work", workspace), store: new CheckpointStore(join(host, "checkpoints")) },
   });
-  service = new HookService(sessions);
-  await service.listen(socketPath, { mode: 0o660 });
+  service = new HookService(sessions, { socketMode: 0o660 });
+  await service.listen(socketPath);
   chownSync(socketPath, 0, HOOK_GID);
   const installed = await installHook(
     managedFile,
@@ -228,8 +228,8 @@ describe(`§4.3 acceptance in mode C, real Claude Code (no paid model)`, () => {
       await claude(id, [{ tool_use: { name: "Write", input: { file_path: "/workspace/project/allowed.txt", content: "would be allowed" } } }, { text: "done" }], "write the file");
       expect(existsSync(join(workspace, "project", "allowed.txt"))).toBe(false);
     } finally {
-      service = new HookService(sessions);
-      await service.listen(socketPath, { mode: 0o660 });
+      service = new HookService(sessions, { socketMode: 0o660 });
+      await service.listen(socketPath);
       chownSync(socketPath, 0, HOOK_GID);
     }
   }, 240_000);

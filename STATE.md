@@ -520,6 +520,7 @@ Nothing in the increment's code or tests waits for these: CI and the cloud sessi
 - **A Claude Code session you start on Windows is not governed** (Part E). Do not use one for work you want JUNO to govern.
 
 **Shortcuts (symlinks), D-174.** A shortcut keeps its class when the shortcut and the place it leads to lie in exactly the same sources you listed; a `node_modules/.bin` folder inside your project is the usual case. A shortcut that leads into a different source (for example from `project` into `project/secrets`), out of your sources, or outside the workspace, counts at your highest class.
+- **A cost to know:** a single read that meets more than 64 shortcuts counts at your highest class. A large `node_modules` has more than that, so `ls -R` or a Glob over a whole project that holds one is stopped under a lower clearance. Reading one file through `node_modules/.bin`, or one package folder, is not affected.
 
 When JUNO admits a Claude Code session, you list the **sources** the session may read, each with a class (`public`, `internal`, `confidential`, `secret`). JUNO counts **anything Claude reads that no source you listed matches** at the **highest class you listed**. If that class is above the session's clearance, the call is stopped before it runs. If not, it runs and its result is recorded at that class.
 
