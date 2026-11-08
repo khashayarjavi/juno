@@ -194,6 +194,20 @@ describe("§2.2.2 write: an untrusted target is permitted only inside a reversib
     expect(boundary.authorize({ ...base, canonical: plain }, input).outcome).toBe("proceed");
   });
 
+  // proves D-168 (operator ruling 2 of 2026-11-08) for scope decisions: a target whose canonical form differs from its
+  // lexical normalization is judged at the safe default, never reversible, even when the canonical form lies in the
+  // reversible workspace; the same path, not redirected, is the control
+  it("judges a write through a redirected path inside a reversible workspace as irreversible", () => {
+    const input = call("test.write", synthesized("/work/project/safe/alias/out.txt"));
+    const base: TaskContext = { task: task(), constants: CONSTANTS, synthesis: { sensitivity: "internal" }, reversible: ["/work/project/safe"] };
+    const redirected: CanonicalPaths = new Map([["/work/project/safe/alias/out.txt", { ok: true, canonical: "/work/project/safe/real/out.txt", redirected: true }]]);
+    const verdict = boundary.authorize({ ...base, canonical: redirected }, input);
+    expect(verdict.outcome === "park" ? verdict.detail.reason : verdict.outcome).toBe("integrity_floor");
+    expect(effects(verdict)).toMatchObject([{ refused: [{ argument: "to", judged_as: "irreversible", not_reversible: expect.stringContaining("not where its text says") }] }]);
+    const plain: CanonicalPaths = new Map([["/work/project/safe/alias/out.txt", { ok: true, canonical: "/work/project/safe/alias/out.txt" }]]);
+    expect(boundary.authorize({ ...base, canonical: plain }, input).outcome).toBe("proceed");
+  });
+
   // proves §8.3 with §2.2.2: an in-scope effect park is integrity_floor (which the runner never lets an override clear,
   // NON_OVERRIDABLE in packages/runner), never scope_violation (whose remedy is a grant)
   it("parks integrity_floor, the non-overridable reason, never scope_violation", () => {

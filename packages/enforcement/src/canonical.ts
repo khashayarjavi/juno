@@ -20,8 +20,27 @@ import { parseAtBoundary } from "../../contracts/src/index.js";
 /**
  * `hardLinked`: the path is an existing regular file with a link count above 1 (D-157). It is the same file as another
  * path, which may lie in any source or none, so a clearance or scope decision cannot judge it by its path.
+ * `redirected`: the canonical form (what the kernel resolves) differs from the raw path's lexical normalization in any
+ * way (operator ruling 2 of 2026-11-08, D-168). Clearance and scope decisions read it at the safe default: the highest
+ * declared class for a read (mode C's classifier), and never reversible for a write (step 4, as D-158).
  */
-export type CanonicalPath = { readonly ok: true; readonly canonical: string; readonly hardLinked?: true } | { readonly ok: false; readonly reason: string };
+export type CanonicalPath = { readonly ok: true; readonly canonical: string; readonly hardLinked?: true; readonly redirected?: true } | { readonly ok: false; readonly reason: string };
+
+/**
+ * A raw absolute path's lexical normalization (operator ruling 2 of 2026-11-08, DECISIONS.md D-168): empty and `.`
+ * components dropped, each `..` taking away the component before it as text (never above `/`), no trailing slash.
+ * Plain paths have the same canonical form; a path whose canonical form differs from it in any way (a symlink in any
+ * component, `..` after a symlink, a path that leaves `/` by `..`) is `redirected`.
+ */
+export function lexicalNormal(path: string): string {
+  const segments: string[] = [];
+  for (const segment of path.split("/")) {
+    if (segment === "" || segment === ".") continue;
+    if (segment === "..") segments.pop();
+    else segments.push(segment);
+  }
+  return "/" + segments.join("/");
+}
 /** Raw path (as the call carries it, joined to `cwd`) → its canonical form, or why it has none. */
 export type CanonicalPaths = ReadonlyMap<string, CanonicalPath>;
 
@@ -88,7 +107,15 @@ export function readResolverOutput(paths: readonly string[], stdout: string): Ca
   } catch {
     parsed = [];
   }
-  for (const item of parsed) answered.set(item.path, "canonical" in item ? (item.hard_linked === true ? { ok: true, canonical: item.canonical, hardLinked: true } : { ok: true, canonical: item.canonical }) : { ok: false, reason: item.error });
+  for (const item of parsed) {
+    if (!("canonical" in item)) {
+      answered.set(item.path, { ok: false, reason: item.error });
+      continue;
+    }
+    // D-168: whether the kernel's answer differs from the path as written, normalized as text.
+    const redirected = item.canonical !== lexicalNormal(item.path);
+    answered.set(item.path, { ok: true, canonical: item.canonical, ...(item.hard_linked === true ? { hardLinked: true as const } : {}), ...(redirected ? { redirected: true as const } : {}) });
+  }
   return new Map(paths.map((path) => [path, answered.get(path) ?? { ok: false, reason: "the resolver did not answer" }]));
 }
 

@@ -263,6 +263,17 @@ describe("§2.2.2 in hook mode", () => {
     expect(await call("Write", { file_path: join(work, "project", "fresh.txt"), content: "written" })).toEqual({ decision: "none" });
   });
 
+  // proves D-168 (operator ruling 2 of 2026-11-08) in hook mode: a Write through a symlink whose target lies inside the
+  // checkpointed workspace is still judged at the safe default (irreversible) and parks integrity_floor; the target by its
+  // own name proceeds
+  it("parks a Write through a symlink inside the checkpointed workspace", async () => {
+    mkdirSync(join(work, "project", "real"));
+    symlinkSync(join(work, "project", "real"), join(work, "project", "alias"));
+    expect(await call("Write", { file_path: join(work, "project", "alias", "out.txt"), content: "written" })).toMatchObject({ decision: "deny", reason: expect.stringContaining("integrity_floor") });
+    expect(parks().at(-1)).toMatchObject({ reason: "integrity_floor", overridable: false });
+    expect(await call("Write", { file_path: join(work, "project", "real", "out.txt"), content: "written" })).toEqual({ decision: "none" });
+  });
+
   // proves §2.2.2: with no checkpoint, the same Write is irreversible and its untrusted target parks integrity_floor
   it("parks a Write when the session has no checkpointed workspace", async () => {
     const unchecked = new MediatedSessions({ journal, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), view: new Workspace(execFileScript(process.execPath, []), "/work", work), protectedPaths: [join(dir, "checkpoints")], clock: () => now });
@@ -459,13 +470,19 @@ describe("§4.3 V6-7 on what the call will read (D-156, PR #38 review round 4)",
     expect(await ask(session, "gate-4", "Bash", { command: "ls" }, join(work, "project", "public"))).toEqual({ decision: "allow", updatedInput: { command: "/usr/bin/ls" } });
   });
 
-  // proves §1.2 with D-156: a link to a file at the clearance proceeds, and its result is recorded at the target's class
-  it("lets a link to an internal file proceed and records its result at the target's class", async () => {
+  // proves D-168 (operator ruling 2 of 2026-11-08, "refuse cleverness"), which deliberately reverses this test's D-156
+  // expectation ("a link to an internal file proceeds, recorded internal"): a link is a path the kernel resolves elsewhere
+  // than its text says, so even a link to an internal file is read at the highest declared class and parks below it;
+  // the same file by its own name keeps its class (the positive control)
+  it("reads a link to an internal file at the highest declared class, and the file by its own name at its class", async () => {
     symlinkSync(join(work, "project", "notes.txt"), join(work, "project", "alias.txt"));
     const session = await withLs("gate-5");
     const asked = { ...(pre("Read", { file_path: join(work, "project", "alias.txt") }) as Record<string, unknown>), session_id: "gate-5" };
-    expect(await session.preToolUse(asked)).toEqual({ decision: "none" });
-    expect(await session.postToolUse({ ...asked, hook_event_name: "PostToolUse", tool_response: { content: "notes" } })).toEqual({ recorded: true });
+    expect(await session.preToolUse(asked)).toMatchObject({ decision: "deny", reason: expect.stringContaining("sensitivity_ceiling") });
+    expect(lastPark("gate-5")).toMatchObject(gated);
+    const plain = { ...(pre("Read", { file_path: join(work, "project", "notes.txt") }) as Record<string, unknown>), session_id: "gate-5" };
+    expect(await session.preToolUse(plain)).toEqual({ decision: "none" });
+    expect(await session.postToolUse({ ...plain, hook_event_name: "PostToolUse", tool_response: { content: "notes" } })).toEqual({ recorded: true });
     const result = readTrajectory(journal.root, "session-gate-5").filter((entry) => entry.kind === "capability_result").at(-1);
     expect(result?.data_class).toEqual({ sensitivity: "internal", integrity: "untrusted" });
   });
@@ -477,6 +494,60 @@ describe("§4.3 V6-7 on what the call will read (D-156, PR #38 review round 4)",
     symlinkSync(join(work, "elsewhere"), join(work, "project", "public", "out"));
     const session = await withLs("gate-6");
     expect(await ask(session, "gate-6", "Glob", { pattern: "*", path: join(work, "project", "public") })).toMatchObject({ decision: "deny", reason: expect.stringContaining("sensitivity_ceiling") });
+  });
+});
+
+describe("refuse cleverness (D-168, operator ruling 2 of 2026-11-08)", () => {
+  const withLs = async (id: string): Promise<MediatedSessions> => {
+    const session = new MediatedSessions({ journal, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), view: new Workspace(execFileScript(process.execPath, []), "/work", work), protectedPaths: [join(dir, "checkpoints")], clock: () => now });
+    const nameMap = [{ name: "cat", program: "/usr/bin/cat", side_effect: "read" as const }, { name: "ls", program: "/usr/bin/ls", side_effect: "read" as const }];
+    expect(await session.admit(request({ session_id: id, name_map: nameMap }))).toMatchObject({ admitted: true });
+    return session;
+  };
+  const ask = async (session: MediatedSessions, id: string, tool: string, input: Record<string, unknown>): Promise<HookDecision> => {
+    const asked = { ...(pre(tool, input) as Record<string, unknown>), session_id: id, cwd: join(work, "project") };
+    const decision = await session.preToolUse(asked);
+    if (decision.decision !== "deny") expect(await session.postToolUse({ ...asked, hook_event_name: "PostToolUse", tool_response: {} })).toEqual({ recorded: true });
+    return decision;
+  };
+  const lastResult = (id: string) => readTrajectory(journal.root, `session-${id}`).filter((entry) => entry.kind === "capability_result").at(-1);
+  const parked = { decision: "deny", reason: expect.stringContaining("sensitivity_ceiling") };
+
+  // proves D-168's positive control: plain paths keep their registered class, written with `.`, `//`, a trailing slash on
+  // a directory, or `..` with no link before it; each proceeds below the highest clearance and is recorded internal
+  it("keeps the registered class of plain paths, however they are spelled", async () => {
+    mkdirSync(join(work, "project", "docs"));
+    writeFileSync(join(work, "project", "docs", "a.txt"), "a\n");
+    const session = await withLs("clever-1");
+    for (const command of ["cat ./notes.txt", "cat docs//a.txt", "cat docs/../notes.txt", "ls -R docs/", "ls -R ./docs//"]) {
+      expect(await ask(session, "clever-1", "Bash", { command })).toMatchObject({ decision: "allow" });
+      expect(lastResult("clever-1")?.data_class).toEqual({ sensitivity: "internal", integrity: "untrusted" });
+    }
+    // (A typed path field refuses `.`, `..`, `//` and a trailing slash outright, malformed_call; Bash operands carry them.)
+    expect(await ask(session, "clever-1", "Glob", { pattern: "*", path: join(work, "project", "docs") })).toEqual({ decision: "none" });
+    expect(lastResult("clever-1")?.data_class).toEqual({ sensitivity: "internal", integrity: "untrusted" });
+  });
+
+  // proves D-168: a symlink anywhere in a path, or anywhere inside a tree read, lands at the highest declared class even
+  // when every place it reaches is internal; so does `..` after a symlink when the kernel and the text disagree
+  // (`e/../a.txt` with `e` → `docs/sub` is `docs/a.txt` to the kernel, `a.txt` to the text)
+  it("reads a symlink by name, in a middle component, inside a tree, or before .. at the highest declared class", async () => {
+    mkdirSync(join(work, "project", "docs"));
+    mkdirSync(join(work, "project", "tree"));
+    writeFileSync(join(work, "project", "docs", "a.txt"), "a\n");
+    symlinkSync(join(work, "project", "docs"), join(work, "project", "d"));
+    symlinkSync(join(work, "project", "docs", "a.txt"), join(work, "project", "tree", "a.lnk"));
+    const session = await withLs("clever-2");
+    mkdirSync(join(work, "project", "docs", "sub"));
+    symlinkSync(join(work, "project", "docs", "sub"), join(work, "project", "e"));
+    for (const command of ["cat d/a.txt", "ls -R d", "ls -R tree", "cat e/../a.txt"]) {
+      expect(await ask(session, "clever-2", "Bash", { command })).toMatchObject(parked);
+    }
+    expect(await ask(session, "clever-2", "Read", { file_path: join(work, "project", "d", "a.txt") })).toMatchObject(parked);
+    expect(await ask(session, "clever-2", "Glob", { pattern: "*", path: join(work, "project", "tree") })).toMatchObject(parked);
+    // The same files by their own names keep their class.
+    expect(await ask(session, "clever-2", "Bash", { command: "cat docs/a.txt" })).toMatchObject({ decision: "allow" });
+    expect(lastResult("clever-2")?.data_class).toEqual({ sensitivity: "internal", integrity: "untrusted" });
   });
 });
 

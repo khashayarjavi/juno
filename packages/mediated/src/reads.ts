@@ -62,8 +62,6 @@ export function highestDeclared(sources: readonly DeclaredSource[]): Sensitivity
   return sources.reduce<Sensitivity>((high, source) => maxSensitivity(high, source.data_class.sensitivity), "public");
 }
 
-/** Symlinks a read may follow before it is read at the highest class (D-156). */
-export const MAX_READ_LINKS = 64;
 /** The lister's answers that mean "there is no tree here": a file, or a path that does not exist (D-156). */
 const NO_TREE = /^(the workspace root is not a directory|cannot read the workspace root: (ENOENT|ENOTDIR))/;
 
@@ -71,10 +69,12 @@ const NO_TREE = /^(the workspace root is not a directory|cannot read the workspa
  * THE classification function (D-162). The highest class of what `targets` read: for each target, the class of the
  * declared sources that positively match its resolved form, or the highest declared class when none does.
  *
- * - `tree`: the raw path is resolved first (symlinks followed, then `..` as the file system takes it, §2.7.1 C4, D-113). A regular file with more than one link is the
- *   highest class (D-157). The tree's root must lie inside a declared path source (so nothing under it is in no source),
- *   and every source inside the tree adds its class. Every symlink inside a tree is followed as a
- *   tree of its own (D-156). A path that cannot be resolved or listed, or too many links, is the highest class.
+ * - `tree`: the raw path is resolved first (symlinks followed, then `..` as the file system takes it, §2.7.1 C4, D-113).
+ *   Refuse cleverness (operator ruling 2 of 2026-11-08, D-168): a path whose canonical form differs from its lexical
+ *   normalization in any way is the highest class, and so is a tree that holds a symlink anywhere inside it (each is a
+ *   path the kernel resolves elsewhere than its text says). A regular file with more than one link is the highest class
+ *   (D-157). The tree's root must lie inside a declared path source (so nothing under it is in no source), and every
+ *   source inside the tree adds its class. A path that cannot be resolved or listed is the highest class.
  * - `url`: parsed; it is matched by a `url` source with exactly its origin, or by the `internet` source. A URL that does
  *   not parse, is not `http`/`https`, or carries a user name or password matches nothing.
  * - `tool_result`: matched by a `tool_result` source naming exactly that tool.
@@ -107,7 +107,6 @@ export async function classifyRead(targets: readonly ReadTarget[], context: Read
     }
   }
   const seen = new Set<string>();
-  let links = 0;
   for (let item = queue.shift(); item !== undefined; item = queue.shift()) {
     // The raw path goes to the resolver as written: `..` is resolved by the file system after the symlinks before it,
     // as the program will (D-113), never collapsed as text first (D-166, PR #40 review round 6).
@@ -117,6 +116,8 @@ export async function classifyRead(targets: readonly ReadTarget[], context: Read
     if (answer === undefined || !answer.ok) return highest;
     // D-157: a regular file with more than one link is the same file as a path in any source, or none.
     if (answer.hardLinked === true) return highest;
+    // D-168: plain paths work; a path the kernel takes elsewhere than its text says lands at the safe default.
+    if (answer.redirected === true) return highest;
     const canonical = answer.canonical;
     if (seen.has(canonical)) continue;
     seen.add(canonical);
@@ -132,19 +133,15 @@ export async function classifyRead(targets: readonly ReadTarget[], context: Read
     }
     // Positive match only: a tree's root that no declared path source contains is read at the highest class.
     if (!contained) return highest;
-    // The links inside the tree: listed without following any, then each judged as its own target's tree.
+    // What the tree holds, listed without following any link (D-136, D-156): a hard link (D-157) or a symlink anywhere
+    // inside it (D-168; before, D-156 followed each one as a tree of its own) is the highest class.
     const listed = await context.view.list(canonical, false);
     if (!listed.ok) {
       if (NO_TREE.test(listed.reason)) continue;
       return highest;
     }
     if (listed.snapshot.hardLinks.length > 0) return highest;
-    for (const entry of listed.snapshot.manifest) {
-      if (entry.type !== "symlink") continue;
-      links += 1;
-      if (links > MAX_READ_LINKS) return highest;
-      queue.push(`${canonical}/${entry.path}`);
-    }
+    if (listed.snapshot.manifest.some((entry) => entry.type === "symlink")) return highest;
   }
   return reads;
 }
