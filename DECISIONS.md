@@ -2168,3 +2168,32 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   - Any other value matches only an exactly equal enumerated value. The one relaxation the ruling names: when both are email addresses (one `@`, a local part with no whitespace, and an ASCII host name of two or more labels), the domains are compared with ASCII case folding; the local part stays exact. Autopilot ruling (restrictive): no Unicode case folding, no trailing-dot or whitespace tolerance, no subdomain, prefix or wildcard; URL hosts are not folded (only email domains are named by the ruling).
   - Enumeration still lifts only the integrity condition: an enumerated value outside `resource_scope` parks `scope_violation` (D-133, unchanged).
 - Reason: D-154; D8 (fail-closed).
+
+## D-185 — The MCP revision the gateway speaks: exactly 2025-11-25, as observed from Claude Code 2.1.319 (autopilot ruling)
+- Date: 2026-11-08
+- Status: Accepted (plan Increment 5 item 1; CLAUDE.md rule 13; restrictive reading)
+- Applies to: `packages/mediated/src/gateway.ts` (`MCP_REVISION`)
+- Observed (2026-11-08, this cloud session, the installed Claude Code 2.1.319, one stdio MCP server that logs every line; no model and no network): Claude Code first sends `server/discover` with `_meta["io.modelcontextprotocol/protocolVersion"]` = `2026-07-28`. When the server answers "method not found" (-32601), or answers it with an empty result, Claude Code falls back to `initialize` with `protocolVersion` `2025-11-25`, then sends `notifications/initialized` and `tools/list`.
+- Decision: the gateway supports exactly `2025-11-25`, the revision both Claude Code and JUNO's test server complete. It answers `server/discover` with -32601, so the 2026-07-28 path is never entered. It answers an `initialize` naming any other revision with an error. It refuses an upstream that does not answer `initialize` with `2025-11-25`. Only `initialize`, `ping`, `tools/list` and `tools/call` are offered; every other method is -32601 (no resources, prompts, completions or logging). Supporting 2026-07-28 would need its semantics read from its published text, which this session did not do. It is not needed, because Claude Code falls back.
+- Reason: the plan ("supports exactly the revisions observed … and refuses any other"); D8.
+
+## D-186 — Multi-round-trip answers and server-to-client requests are refused (plan Increment 5 item 6; autopilot ruling)
+- Date: 2026-11-08
+- Status: Accepted (restrictive reading)
+- Applies to: `packages/mediated/src/gateway.ts`, `packages/mediated/src/gateway-stdio.ts`
+- Decision:
+  - An upstream `tools/call` answer that carries `input_required`, `inputRequired` or `inputRequests` is refused. The client gets an error, nothing is passed on, and the answer is journalled as a `capability_result` with outcome `refused`.
+  - Restrictive extension: every request the upstream sends toward the client (elicitation, sampling, roots, or any other) is answered -32601 by the gateway, never forwarded, and journalled as `server_request_refused`. Under 2025-11-25 an elicitation is how an upstream asks for more input mid-call, so it carries the same unanswered provenance question as `input_required`.
+- Reason: plan item 6 (v0.6 gives no provenance design for a retried input); D8.
+
+## D-187 — How the operator defines a gateway session and its tools (autopilot ruling)
+- Date: 2026-11-08
+- Status: Accepted (restrictive readings of §4.3 mode B and §2.5)
+- Applies to: `packages/mediated/src/gateway.ts` (`GatewaySessionRequest`, `GatewayTool`), `packages/mediated/src/gateway-stdio.ts`
+- Decision:
+  - **A session** is declared like a mode-C session, without Claude Code's parts: principal, attendance, ttl, signed grants, budget (calls, wall clock), `unmetered_accepted: true`, provider clearance, sources, and the tool definitions. Admission refuses an unsigned grant, another principal's grant, a grant reaching beyond every path source, and a workspace or source D-178 refuses. A refusal is journalled at the most restrictive class. The Task has strategy `gateway`, closure `accepted` and `steer_capability: none` (§7.8 E2).
+  - **A tool** is the upstream tool's exact MCP name plus a registry entry (the operator's capability, provider `gateway.mcp`), which must pass registration review. A gateway tool may have no instruction field: it names no program, so it is a typed capability (as D-134). A tool not defined is not listed and its call is rejected (`unknown_capability`), journalled and never forwarded.
+  - **Values:** every argument is `synthesized` (untrusted), except a value exactly equal to one the operator listed for that field under `constants`, which is passed as a constant slot (§4.3).
+  - **What a call reads:** a tool may name one of its `path` fields as `reads`; the call is then classified by that path's tree, by the one classification function (D-162). A tool with no `reads` is classified as the tool result `mcp.<tool>`: the highest declared class, unless a `tool_result` source names it (D-164). This is checked against the clearance at step 5, before anything is forwarded.
+  - **The upstream** is started by `execFile(program, argv)` with no shell and an empty environment unless the operator gives one; its credentials stay there and never reach the client (§3.2). It must answer within 60 seconds and emit at most 64 MiB in a session. An exit, an unreadable line, a timeout, or an error answer rejects every waiting call; the client gets an error, never a forwarded or invented result.
+- Reason: §4.3 mode B, §2.5, §3.2; D8.
