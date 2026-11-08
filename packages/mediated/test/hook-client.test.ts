@@ -10,6 +10,7 @@ import { TEST_ANCHOR, signed } from "../../enforcement/test/test-keys.js";
 import { runHookClient } from "../src/hook-client.js";
 import { HookService } from "../src/hook-service.js";
 import { MediatedSessions, PathMap } from "../src/session.js";
+import { systemFilesystemIo } from "../src/filesystem.js";
 
 // §4.3 "Fail-closed ingress": the hook client blocks (exit 2) when the service is down, when it times out, and when its
 // answer cannot be read; and the only decisions it can print are none (no output) and Claude Code's deny (D-142).
@@ -128,7 +129,7 @@ describe("the hook service and client together (§4.3 mode C, D-142)", () => {
         revoked_at: null,
       }),
     );
-    const sessions = new MediatedSessions({ journal: JournalWriter.open(join(dir, "journal")), grants, paths: new PathMap([join(dir, "work")]), resolver: new HostPathResolver(join(dir, "work")), view: new Workspace(execFileScript(process.execPath, []), "/work", join(dir, "work")), protectedPaths: [dir + "/sock-unused"] });
+    const sessions = new MediatedSessions({ journal: JournalWriter.open(join(dir, "journal")), grants, paths: new PathMap([join(dir, "work")]), resolver: new HostPathResolver(join(dir, "work")), view: new Workspace(execFileScript(process.execPath, []), "/work", join(dir, "work")), filesystem: systemFilesystemIo(), protectedPaths: [dir + "/sock-unused"] });
     await sessions.admit({
       session_id: "s-1",
       principal: "alireza",

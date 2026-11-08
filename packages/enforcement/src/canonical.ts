@@ -77,6 +77,17 @@ const results = paths.map((path) => {
     }
     const canonicalAncestor = outside(real);
     if (canonicalAncestor === null) return { path, error: "resolves outside the resolver's view" };
+    // D-182: every name the kernel matched below the view's root must be listed, byte for byte, in its folder. On a
+    // folder that folds case (or Unicode form), realpath keeps the name as written while the kernel opens another entry.
+    {
+      let parent = to;
+      for (const name of real.slice(to.length).split("/").filter((part) => part !== "")) {
+        let listed;
+        try { listed = fs.readdirSync(parent); } catch (error) { return { path, error: "cannot be resolved: " + (error && error.code ? error.code : "error") }; }
+        if (!listed.includes(name)) return { path, error: "the kernel matched " + JSON.stringify(name) + " to an entry listed under another name: the folder folds case (D-182)" };
+        parent = parent + "/" + name;
+      }
+    }
     const rest = parts.slice(keep);
     if (rest.some((part) => part === ".." || part === "")) return { path, error: "the missing remainder holds .. or an empty component" };
     if (rest.length > 0) {

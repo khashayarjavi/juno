@@ -1,5 +1,7 @@
 import { type Stats, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { execFile } from "node:child_process";
 import { tmpdir } from "node:os";
+import { promisify } from "node:util";
 import { join, relative } from "node:path";
 import fc from "fast-check";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -9,6 +11,7 @@ import { JournalWriter, readPayload, readTrajectory } from "../../journal/src/in
 import { TEST_ANCHOR, signed } from "../../enforcement/test/test-keys.js";
 import { type DeclaredSource, classifyRead } from "../src/reads.js";
 import { MediatedSessions, PathMap, SUPPORTED_TOOLS, type SessionRequest } from "../src/session.js";
+import { type FilesystemIo, caseFoldingRefusals, systemFilesystemIo } from "../src/filesystem.js";
 
 // Operator ruling 1 of 2026-11-08 (DECISIONS.md D-167): the kernel is the oracle, not path text. This property builds
 // real directory trees in a sandbox (folders, files, relative and absolute symlinks to registered and unregistered
@@ -22,6 +25,11 @@ import { MediatedSessions, PathMap, SUPPORTED_TOOLS, type SessionRequest } from 
 // lie in the same registered source keeps that source's class, so the property now compares real classes through
 // shortcuts, not only the safe default. Extended with a fixed node_modules/.bin layout inside one source, shortcuts that
 // cross sources in every direction, and a non-vacuity count of shortcuts that kept a class below the highest.
+//
+// Operator ruling of 2026-11-08 on D-177 (DECISIONS.md D-178): extended with a case-folded folder where the platform can
+// make one (JUNO_CASEFOLD_ROOT: a folder on an ext4 made with the casefold feature, which CI provides and requires with
+// JUNO_CASEFOLD_REQUIRED=1); where it cannot (this cloud kernel has CONFIG_UNICODE off), the refusal path is tested
+// directly over a described file system.
 
 const PRINCIPAL = "alireza";
 const T0 = new Date("2026-11-08T12:00:00.000Z");
@@ -87,7 +95,7 @@ beforeAll(() => {
     paths: new PathMap([work]),
     resolver: new HostPathResolver(work),
     view,
-    protectedPaths: [state],
+    filesystem: systemFilesystemIo(), protectedPaths: [state],
     clock: () => T0,
     checkpoints: { workspace: view, store: new CheckpointStore(join(state, "checkpoints")) },
   });
@@ -427,6 +435,122 @@ describe("D-167: the kernel is the oracle for every tool in the table (§4.3 V6-
       rmSync(root, { recursive: true, force: true });
       rmSync(back, { force: true });
       rmSync(fromPub, { force: true });
+    }
+  }, 300_000);
+});
+
+const CASEFOLD_ROOT = process.env["JUNO_CASEFOLD_ROOT"] ?? "";
+const CASEFOLD_REQUIRED = process.env["JUNO_CASEFOLD_REQUIRED"] === "1";
+
+/** Every case spelling a generated mask gives a path: each letter flipped where the mask says. */
+function spell(path: string, mask: readonly boolean[]): string {
+  let index = 0;
+  let out = "";
+  for (const char of path) {
+    const flip = mask[index % Math.max(mask.length, 1)] === true;
+    index += 1;
+    out += flip ? (char === char.toUpperCase() ? char.toLowerCase() : char.toUpperCase()) : char;
+  }
+  return out;
+}
+
+describe("D-178: a case-folded folder, against the kernel where it can fold case (§4.3 V6-7, §1.5)", () => {
+  // proves D-178 and D-182: a workspace holding a case-folding folder is refused at admission and by the file-system
+  // check; and, past admission, no case spelling of a path is ever classified below what the kernel opens (the resolver
+  // refuses a name the kernel matched to an entry listed under another name). Where the platform cannot fold case, the
+  // refusal path is tested directly.
+  it("refuses a case-folding workspace, and never classifies a case spelling below what the kernel opens", async () => {
+    if (CASEFOLD_REQUIRED) expect(CASEFOLD_ROOT, "JUNO_CASEFOLD_REQUIRED=1 but no JUNO_CASEFOLD_ROOT").not.toBe("");
+    if (CASEFOLD_ROOT === "") {
+      // The refusal path, directly: a described folder with the attribute, and one whose lookups fold, are refused at
+      // the check and at admission; and every registered source in them is named.
+      const folds = (at: string): FilesystemIo => ({
+        ...systemFilesystemIo(),
+        attributes: (dirs) => Promise.resolve({ ok: true, flags: dirs.map((dir) => (dir === at ? "--------------e----F--" : "--------------e-------")) }),
+      });
+      const project = join(work, "project");
+      expect(await caseFoldingRefusals([{ what: "the workspace", path: work }], folds(project))).toEqual([expect.stringContaining(`${project} in the workspace ${work} has the case-folding attribute`)]);
+      // A described `project` whose lookups fold: any spelling of a listed name opens the listed entry.
+      const lookups: FilesystemIo = {
+        ...systemFilesystemIo(),
+        identity: (path) => {
+          const parent = path.slice(0, path.lastIndexOf("/"));
+          const name = path.slice(path.lastIndexOf("/") + 1);
+          const listed = parent === project ? readdirSync(parent).find((entry) => entry.toLowerCase() === name.toLowerCase()) : name;
+          return systemFilesystemIo().identity(join(parent, listed ?? name));
+        },
+      };
+      const probe = await caseFoldingRefusals([{ what: "the workspace", path: work }], lookups);
+      expect(probe).toEqual([expect.stringContaining("matches names without regard to case")]);
+      const refusing = new MediatedSessions({ journal, grants: new GrantStore(TEST_ANCHOR), paths: new PathMap([work]), resolver: new HostPathResolver(work), view: new Workspace(execFileScript(process.execPath, []), "/work", work), filesystem: folds(join(project, "secrets")), protectedPaths: [state], clock: () => T0 });
+      const admitted = await refusing.admit({ session_id: "casefold-described", principal: PRINCIPAL, attendance: "gated", ttl: 60_000, grants: [], budget: { tool_calls: 1, wall_clock_ms: 60_000 }, unmetered_accepted: true, provider_clearance: "secret", sources: SOURCES, name_map: NAME_MAP });
+      expect(admitted).toMatchObject({ admitted: false, failures: expect.arrayContaining([expect.stringContaining("case-folding attribute")]) as unknown });
+      return;
+    }
+    // The real kernel: `project` gets the case-folding attribute while empty, so everything made in it folds.
+    const sandbox = realpathSync(mkdtempSync(join(CASEFOLD_ROOT, "juno-casefold-")));
+    try {
+      const cfWork = join(sandbox, "work");
+      mkdirSync(join(cfWork, "project"), { recursive: true });
+      await promisify(execFile)("chattr", ["+F", "--", join(cfWork, "project")]);
+      for (const folder of ["project/secrets/sub", "project/docs", "other/pub"]) mkdirSync(join(cfWork, folder), { recursive: true });
+      writeFileSync(join(cfWork, "project", "notes.txt"), "internal\n");
+      writeFileSync(join(cfWork, "project", "docs", "guide.txt"), "internal\n");
+      writeFileSync(join(cfWork, "project", "secrets", "key.txt"), "secret\n");
+      writeFileSync(join(cfWork, "project", "secrets", "sub", "deep.txt"), "secret\n");
+      writeFileSync(join(cfWork, "other", "pub", "readme.txt"), "public\n");
+      // Positive control: the kernel really folds here.
+      expect(identity(statSync(join(cfWork, "project", "SECRETS", "KEY.txt")))).toBe(identity(statSync(join(cfWork, "project", "secrets", "key.txt"))));
+      // D-178: the check and admission refuse this workspace.
+      const io = systemFilesystemIo();
+      expect((await caseFoldingRefusals([{ what: "the workspace", path: cfWork }], io)).join(" ")).toMatch(/case-folding attribute|without regard to case/);
+      const folded = new MediatedSessions({ journal, grants: new GrantStore(TEST_ANCHOR), paths: new PathMap([cfWork]), resolver: new HostPathResolver(cfWork), view: new Workspace(execFileScript(process.execPath, []), "/work", cfWork), filesystem: io, protectedPaths: [state], clock: () => T0 });
+      const admitted = await folded.admit({ session_id: "casefold-real", principal: PRINCIPAL, attendance: "gated", ttl: 60_000, grants: [], budget: { tool_calls: 1, wall_clock_ms: 60_000 }, unmetered_accepted: true, provider_clearance: "secret", sources: SOURCES, name_map: NAME_MAP });
+      expect(admitted).toMatchObject({ admitted: false });
+      // D-182, past admission: every case spelling of every place, classified by JUNO, against what the kernel opens.
+      const classes = new Map<string, Sensitivity>();
+      const visit = (host: string, at: string): void => {
+        const stat = lstatSync(host);
+        const containing = SOURCES.filter((source) => source.selector.kind === "path" && pathWithin(at, source.selector.prefix));
+        classes.set(identity(stat), containing.length === 0 ? HIGHEST : containing.reduce<Sensitivity>((high, source) => maxSensitivity(high, source.data_class.sensitivity), "public"));
+        if (stat.isDirectory()) for (const name of readdirSync(host)) visit(join(host, name), `${at}/${name}`);
+      };
+      visit(cfWork, "/work");
+      const kernelClass = (host: string): Sensitivity | null => {
+        let root: Stats;
+        try {
+          root = statSync(host);
+        } catch {
+          return null;
+        }
+        let reads = classes.get(identity(root)) ?? HIGHEST;
+        if (root.isDirectory()) for (const name of readdirSync(host)) reads = maxSensitivity(reads, kernelClass(join(host, name)) ?? "public");
+        return reads;
+      };
+      const view = new Workspace(execFileScript(process.execPath, []), "/work", cfWork);
+      const places = ["project/secrets/key.txt", "project/secrets", "project/secrets/sub/deep.txt", "project/notes.txt", "project/docs/guide.txt", "project/docs", "project/secrets/sub/../key.txt"];
+      let opened = 0;
+      let swappedOpened = 0;
+      await fc.assert(
+        fc.asyncProperty(fc.constantFrom(...places), fc.array(fc.boolean(), { minLength: 1, maxLength: 9 }), async (place, mask) => {
+          const relativePath = spell(place, mask);
+          const kernel = kernelClass(join(cfWork, relativePath));
+          if (kernel === null) return;
+          opened += 1;
+          if (relativePath !== place) swappedOpened += 1;
+          const classified = await classifyRead([{ kind: "tree", path: `/work/${relativePath}` }], { sources: SOURCES, resolver: new HostPathResolver(cfWork), view });
+          expect(rank(classified), `${relativePath}: JUNO ${classified}, the kernel opens ${kernel}`).toBeGreaterThanOrEqual(rank(kernel));
+        }),
+        { numRuns: 100, seed: 20261178 },
+      );
+      // Not vacuous: case spellings the kernel folded were compared; and the exact spelling keeps its registered class.
+      expect(opened).toBeGreaterThan(20);
+      expect(swappedOpened).toBeGreaterThan(10);
+      expect(await classifyRead([{ kind: "tree", path: "/work/project/notes.txt" }], { sources: SOURCES, resolver: new HostPathResolver(cfWork), view })).toBe("internal");
+      expect(await classifyRead([{ kind: "tree", path: "/work/project/SECRETS/key.txt" }], { sources: SOURCES, resolver: new HostPathResolver(cfWork), view })).toBe(HIGHEST);
+      process.stdout.write(`kernel oracle, case-folded folder: ${String(opened)} spellings opened, ${String(swappedOpened)} of them case-swapped\n`);
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
     }
   }, 300_000);
 });

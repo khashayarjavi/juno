@@ -29,6 +29,7 @@ import {
 import { type JournalWriter, canonicalJson } from "../../journal/src/index.js";
 import { type Adapter, type CapabilityCall, CapabilityRegistry, RegistryEntry, loadRegistryEntry } from "../../registry/src/index.js";
 import { DeclaredSource, type ReadTarget, classifyRead } from "./reads.js";
+import { type FilesystemIo, caseFoldingRefusals } from "./filesystem.js";
 import { windowsFormReason, windowsFormRefusal } from "./paths.js";
 import { rebuildBashCommand } from "./rebuild.js";
 
@@ -166,6 +167,18 @@ export class PathMap {
     this.#roots = roots.map((root) => (root === "/" ? root : root.replace(/\/+$/, "")));
   }
 
+  /** The host workspace roots, as configured. */
+  get roots(): readonly string[] {
+    return this.#roots;
+  }
+
+  /** The host path of a `/work` path under the first root (the map's inverse for its first root), or null for a path outside `/work`. */
+  toHost(work: string): string | null {
+    const root = this.#roots[0];
+    if (root === undefined || !pathWithin(work, "/work")) return null;
+    return (root === "/" ? "" : root) + work.slice("/work".length) || "/";
+  }
+
   /** The path under `/work`, or null when it lies under no configured root or is not a Linux absolute path (then it is outside every scope). */
   toWork(path: string): string | null {
     if (windowsFormReason(path) !== null || !path.startsWith("/")) return null;
@@ -213,6 +226,12 @@ export type MediatedOptions = {
    * or the sessions refuse to start.
    */
   readonly protectedPaths: readonly string[];
+  /**
+   * How admission reads the file systems under the workspace roots and the registered sources (D-178): every admission
+   * refuses one that is not a case-sensitive Linux file system or that holds a case-folding folder. Required, so no
+   * configuration can leave the check out.
+   */
+  readonly filesystem: FilesystemIo;
 };
 
 export class MediatedError extends Error {
@@ -275,6 +294,7 @@ export class MediatedSessions {
   readonly #clock: () => Date;
   readonly #checkpoints: MediatedOptions["checkpoints"];
   readonly #view: Workspace;
+  readonly #filesystem: FilesystemIo;
   readonly #sessions = new Map<string, Session>();
   readonly #registries = new Map<string, { registry: CapabilityRegistry; boundary: EnforcementBoundary }>();
   /** Sessions whose admission was refused and journalled: task id → the refused request's name map (D-152). */
@@ -288,6 +308,7 @@ export class MediatedSessions {
     this.#clock = options.clock ?? (() => new Date());
     this.#checkpoints = options.checkpoints;
     this.#view = options.view;
+    this.#filesystem = options.filesystem;
     for (const path of [options.journal.root, ...options.protectedPaths]) {
       if (options.paths.toWork(path) !== null) {
         throw new MediatedError(`${path} is JUNO's own state and lies under a workspace root, so a tool call could reach it; move the workspace or the state (D-148)`);
@@ -337,6 +358,17 @@ export class MediatedSessions {
       const why = windowsFormReason(path);
       if (why !== null) failures.push(windowsFormRefusal("admission", why));
     }
+    // D-178: the workspace and every registered path source must be on a case-sensitive Linux file system with no
+    // case-folding folder; a Windows folder mounted into WSL (drvfs, 9p) is refused, fail-closed.
+    const located = [
+      ...this.#paths.roots.map((root) => ({ what: "the workspace", path: root })),
+      ...request.sources.flatMap((source) => {
+        if (source.selector.kind !== "path") return [];
+        const host = this.#paths.toHost(source.selector.prefix);
+        return host === null ? [] : [{ what: `source ${source.id}`, path: host }];
+      }),
+    ];
+    failures.push(...(await caseFoldingRefusals(located, this.#filesystem)));
     if (request.reversible_workspaces.length > 0 && this.#checkpoints === undefined) failures.push("no checkpoint store is configured, so no workspace can be reversible (D-136)");
     for (const entry of request.name_map) {
       if (BARRED_PROGRAMS.has(entry.name) || BARRED_PROGRAMS.has(entry.program.split("/").pop() ?? "")) failures.push(`the name map may not name ${entry.name} (D-131)`);

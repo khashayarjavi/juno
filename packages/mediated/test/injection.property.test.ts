@@ -7,6 +7,7 @@ import { GrantStore, HostPathResolver, Workspace, execFileScript, readCommandStr
 import { JournalWriter, readPayload, readTrajectory } from "../../journal/src/index.js";
 import { TEST_ANCHOR, signed } from "../../enforcement/test/test-keys.js";
 import { MediatedSessions, PathMap, type SessionRequest } from "../src/session.js";
+import { systemFilesystemIo } from "../src/filesystem.js";
 
 // Operator ruling 1 of 2026-11-07 (DECISIONS.md D-152): close the class that review rounds 1 to 3 of PR #37 each found
 // one member of. For ANY Bash tool input whose command holds shell syntax, an interpreter, or a program outside the
@@ -67,7 +68,7 @@ beforeAll(() => {
   // A forged grant: its signature no longer covers its fields, so a session naming it is refused (§3.2 C1).
   grants.add({ ...grant("grant-forged", ALL_CC), max_invocations: 9_999 });
   now = T0;
-  sessions = new MediatedSessions({ journal, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), view: new Workspace(execFileScript(process.execPath, []), "/work", work), protectedPaths: [join(dir, "checkpoints")], clock: () => now });
+  sessions = new MediatedSessions({ journal, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), view: new Workspace(execFileScript(process.execPath, []), "/work", work), filesystem: systemFilesystemIo(), protectedPaths: [join(dir, "checkpoints")], clock: () => now });
 });
 
 afterAll(() => {

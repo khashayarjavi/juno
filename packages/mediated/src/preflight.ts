@@ -1,5 +1,6 @@
 import { type Stats, lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { type FilesystemIo, caseFoldingRefusals, systemFilesystemIo } from "./filesystem.js";
 import { MANAGED_SETTINGS, hookRefusals } from "./install.js";
 
 /**
@@ -237,33 +238,44 @@ export function systemPreflightIo(): PreflightIo {
   };
 }
 
-/** `juno hook check …` (see USAGE in install.ts). Exit 0 when the separation holds, 1 refused, 2 bad usage. */
-export function runHookCheckCli(args: readonly string[], out: (text: string) => void, err: (text: string) => void, io: PreflightIo = systemPreflightIo()): Promise<number> {
+const CHECK_USAGE = "usage: juno hook check --agent-user <name> --runner-user <name> --socket <path> --client <juno-hook.js> --node <node> --state <path> [--state <path> ...] --workspace <path> [--workspace <path> ...] [--source <path> ...] [--anchor <file>] [--settings <file>]\n";
+
+/**
+ * `juno hook check …` (see USAGE in install.ts). Exit 0 when the separation holds and every workspace and source is on
+ * a case-sensitive Linux file system with no case-folding folder (D-178), 1 refused, 2 bad usage.
+ */
+export async function runHookCheckCli(args: readonly string[], out: (text: string) => void, err: (text: string) => void, io: PreflightIo = systemPreflightIo(), fsIo: FilesystemIo = systemFilesystemIo()): Promise<number> {
   const single = ["--agent-user", "--runner-user", "--socket", "--client", "--node", "--settings", "--anchor"];
+  const repeated = ["--state", "--workspace", "--source"];
   const options = new Map<string, string>();
-  const state: string[] = [];
+  const lists = new Map<string, string[]>(repeated.map((name) => [name, []]));
   for (let index = 0; index < args.length; index += 2) {
     const name = args[index] ?? "";
     const value = args[index + 1];
-    if (value === undefined || (name !== "--state" && (!single.includes(name) || options.has(name)))) {
-      err("usage: juno hook check --agent-user <name> --runner-user <name> --socket <path> --client <juno-hook.js> --node <node> --state <path> [--state <path> ...] [--anchor <file>] [--settings <file>]\n");
-      return Promise.resolve(2);
+    if (value === undefined || (!repeated.includes(name) && (!single.includes(name) || options.has(name)))) {
+      err(CHECK_USAGE);
+      return 2;
     }
-    if (name === "--state") state.push(value);
+    if (repeated.includes(name)) lists.get(name)?.push(value);
     else options.set(name, value);
   }
   const need = (name: string): string | undefined => options.get(name);
   const [agentUser, runnerUser, socket, client, node] = ["--agent-user", "--runner-user", "--socket", "--client", "--node"].map(need);
-  if (agentUser === undefined || runnerUser === undefined || socket === undefined || client === undefined || node === undefined || state.length === 0) {
-    err("usage: juno hook check --agent-user <name> --runner-user <name> --socket <path> --client <juno-hook.js> --node <node> --state <path> [--state <path> ...] [--anchor <file>] [--settings <file>]\n");
-    return Promise.resolve(2);
+  const state = lists.get("--state") ?? [];
+  const workspaces = lists.get("--workspace") ?? [];
+  const sources = lists.get("--source") ?? [];
+  // D-178: the workspace is required, so the check never passes without judging its file system.
+  if (agentUser === undefined || runnerUser === undefined || socket === undefined || client === undefined || node === undefined || state.length === 0 || workspaces.length === 0) {
+    err(CHECK_USAGE);
+    return 2;
   }
   const anchor = options.get("--anchor");
   const refusals = hookPreflight({ agentUser, runnerUser, socket, client, node, state, settings: options.get("--settings") ?? MANAGED_SETTINGS, ...(anchor === undefined ? {} : { anchor }) }, io);
+  refusals.push(...(await caseFoldingRefusals([...workspaces.map((path) => ({ what: "the workspace", path })), ...sources.map((path) => ({ what: "the source", path }))], fsIo)));
   if (refusals.length > 0) {
     err(`juno hook check: refused:\n${refusals.map((line) => `  - ${line}`).join("\n")}\n`);
-    return Promise.resolve(1);
+    return 1;
   }
-  out(`juno hook check: the Claude Code user ${agentUser} is separated from the runner ${runnerUser} as D-173 requires.\n`);
-  return Promise.resolve(0);
+  out(`juno hook check: the Claude Code user ${agentUser} is separated from the runner ${runnerUser} as D-173 requires, and the workspace is on a case-sensitive Linux file system with no case-folding folder (D-178).\n`);
+  return 0;
 }

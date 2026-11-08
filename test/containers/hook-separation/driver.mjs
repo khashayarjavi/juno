@@ -50,9 +50,13 @@ chownSync("/var/lib/juno-runner", RUNNER, RUNNER);
 mkdirSync("/var/lib/juno-hook");
 chmodSync("/var/lib/juno-hook", 0o2750);
 chownSync("/var/lib/juno-hook", RUNNER, HOOK_GROUP);
-// The workspace Claude Code works in: its own.
-mkdirSync("/srv/work", { mode: 0o755 });
+// The workspace Claude Code works in: its own, on a tmpfs the test mounts there (a case-sensitive Linux file system,
+// D-178; the container's own root is overlay, which the check refuses).
+mkdirSync("/srv/work", { recursive: true, mode: 0o755 });
+chmodSync("/srv/work", 0o755);
 chownSync("/srv/work", AGENT, AGENT);
+// A folder on the container's overlay root, for the D-178 negative control.
+mkdirSync("/srv/overlay-work", { mode: 0o755 });
 
 const results = {};
 results.install = await exit([JUNO, "hook", "install", "--socket", SOCKET, "--client", CLIENT, "--node", NODE, "--claude", "/opt/fake-claude/claude"]);
@@ -60,7 +64,7 @@ results.settings = JSON.parse(readFileSync("/etc/claude-code/managed-settings.js
 results.modes = Object.fromEntries(["/var/lib/juno-runner", "/var/lib/juno-hook", "/etc/claude-code", "/etc/claude-code/managed-settings.json"].map((path) => { const stats = statSync(path); return [path, { uid: stats.uid, gid: stats.gid, mode: (stats.mode & 0o7777).toString(8) }]; }));
 
 const check = (overrides = {}, states = ["/var/lib/juno-runner", "/var/lib/juno-runner/journal", "/var/lib/juno-runner/grants", "/var/lib/juno-runner/checkpoints"]) => {
-  const options = { "--agent-user": "juno-agent", "--runner-user": "node", "--socket": SOCKET, "--client": CLIENT, "--node": NODE, "--anchor": "/etc/juno/operator.pub", ...overrides };
+  const options = { "--agent-user": "juno-agent", "--runner-user": "node", "--socket": SOCKET, "--client": CLIENT, "--node": NODE, "--anchor": "/etc/juno/operator.pub", "--workspace": "/srv/work", ...overrides };
   const args = [JUNO, "hook", "check", ...Object.entries(options).flat()];
   for (const state of states) args.push("--state", state);
   return exit(args);
@@ -97,6 +101,8 @@ writeFileSync("/etc/group", groupFile);
 chmodSync("/etc/claude-code/managed-settings.json", 0o666);
 results.negative.settingsWritable = await check();
 chmodSync("/etc/claude-code/managed-settings.json", 0o644);
+// D-178: a workspace on a file system that is not a native case-sensitive Linux one (here the container's overlay root).
+results.negative.workspaceOnOverlay = await check({ "--workspace": "/srv/overlay-work" });
 results.recheck = await check();
 
 runner.stdin.end();

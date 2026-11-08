@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { HOOK_EVENTS, MANAGED_SETTINGS, hookEntry } from "../src/install.js";
-import { type FileFacts, type PreflightInput, type PreflightIo, account, holds, hookPreflight } from "../src/preflight.js";
+import type { FilesystemIo } from "../src/filesystem.js";
+import { type FileFacts, type PreflightInput, type PreflightIo, account, holds, hookPreflight, runHookCheckCli } from "../src/preflight.js";
 
 // D-173 (operator ruling 1 of 2026-11-08, second set): `juno hook check` refuses unless the Claude Code user is an
 // ordinary user, distinct from the runner, unable to change the managed hook settings, the hook it runs, JUNO's state,
@@ -161,5 +162,29 @@ describe("juno hook check (D-173): the Claude Code user is separated from the ru
     expect(holds(agent, file(0, 0o604, HOOK_GROUP), 4)).toBe(false);
     expect(holds(agent, file(0, 0o004), 4)).toBe(true);
     expect(holds({ name: "root", uid: 0, gids: [0] }, file(5, 0o000), 2)).toBe(true);
+  });
+
+  // proves D-178: `juno hook check` judges the workspace and every source it is given, requires a workspace, and
+  // refuses one on a Windows-mounted file system or holding a case-folding folder, with a plain reason
+  it("requires a workspace, and refuses one on a Windows mount or holding a case-folding folder (D-178)", async () => {
+    const fsIo = (fsType: string, flags = "--------------e-------"): FilesystemIo => ({
+      mountinfo: () => `20 1 0:20 / / rw - ${fsType} src rw`,
+      realpath: (path) => path,
+      list: () => [],
+      identity: () => null,
+      attributes: (dirs) => Promise.resolve({ ok: true, flags: dirs.map(() => flags) }),
+    });
+    const base = ["--agent-user", "juno-agent", "--runner-user", "juno-runner", "--socket", SOCKET, "--client", CLIENT, "--node", NODE, "--anchor", "/etc/juno/operator.pub", ...INPUT.state.flatMap((path) => ["--state", path])];
+    const run = async (args: readonly string[], fs: FilesystemIo) => {
+      const out: string[] = [];
+      const err: string[] = [];
+      const code = await runHookCheckCli(args, (text) => out.push(text), (text) => err.push(text), io(good()), fs);
+      return { code, out: out.join(""), err: err.join("") };
+    };
+    expect(await run(base, fsIo("ext4"))).toMatchObject({ code: 2, err: expect.stringContaining("--workspace <path>") });
+    expect(await run([...base, "--workspace", "/srv/juno-work"], fsIo("ext4"))).toMatchObject({ code: 0, out: expect.stringContaining("case-sensitive") });
+    const windows = await run([...base, "--workspace", "/srv/juno-work"], fsIo("drvfs"));
+    expect(windows).toMatchObject({ code: 1, err: expect.stringContaining("how WSL mounts a Windows folder") });
+    expect(await run([...base, "--workspace", "/srv/juno-work", "--source", "/srv/juno-work/project"], fsIo("ext4", "-----F"))).toMatchObject({ code: 1, err: expect.stringContaining("case-folding attribute") });
   });
 });

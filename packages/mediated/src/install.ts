@@ -170,7 +170,7 @@ export async function installHook(file: string, hook: HookCommand, client: strin
   return { installed: true, settings: result, not_controlled: NOT_CONTROLLED };
 }
 
-const USAGE = "usage: juno hook install --socket <path> --client <juno-hook.js> [--node <node>] [--claude <claude>] [--settings /etc/claude-code/managed-settings.json]\n       juno hook check --agent-user <name> --runner-user <name> --socket <path> --client <juno-hook.js> --node <node> --state <path> [--state <path> ...] [--anchor <file>] [--settings <file>]\n";
+const USAGE = "usage: juno hook install --socket <path> --client <juno-hook.js> [--node <node>] [--claude <claude>] [--settings /etc/claude-code/managed-settings.json]\n       juno hook check --agent-user <name> --runner-user <name> --socket <path> --client <juno-hook.js> --node <node> --state <path> [--state <path> ...] --workspace <path> [--workspace <path> ...] [--source <path> ...] [--anchor <file>] [--settings <file>]\n";
 
 /**
  * `juno hook install --socket <path> --client <juno-hook.js> [--node <node>] [--claude <claude>] [--settings <file>]`

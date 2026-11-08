@@ -8,6 +8,7 @@ import { JournalWriter, readPayload, readTrajectory } from "../../journal/src/in
 import { TEST_ANCHOR, signed } from "../../enforcement/test/test-keys.js";
 import { type DeclaredSource, classifyRead, isPublicInternet } from "../src/reads.js";
 import { type HookDecision, MediatedSessions, PathMap, SUPPORTED_TOOLS, type SessionRequest } from "../src/session.js";
+import { systemFilesystemIo } from "../src/filesystem.js";
 
 // Operator ruling 2 of 2026-11-07, second session (DECISIONS.md D-162): close the class "an unclassified read is counted
 // low" structurally. D-150 (a result with no authorized call), D-156 (a path or link no source classifies) and D-160 (a
@@ -100,7 +101,7 @@ beforeAll(() => {
     paths: new PathMap([work]),
     resolver: new HostPathResolver(work),
     view: new Workspace(execFileScript(process.execPath, []), "/work", work),
-    protectedPaths: [join(dir, "checkpoints")],
+    filesystem: systemFilesystemIo(), protectedPaths: [join(dir, "checkpoints")],
     clock: () => T0,
   });
 });
@@ -314,7 +315,7 @@ describe("D-162 positive controls: a read a declared source matches keeps its cl
       paths: new PathMap([work]),
       resolver: new HostPathResolver(work),
       view: new Workspace(execFileScript(process.execPath, []), "/work", work),
-      protectedPaths: [join(dir, "checkpoints")],
+      filesystem: systemFilesystemIo(), protectedPaths: [join(dir, "checkpoints")],
       clock: () => T0,
       checkpoints: { workspace: new Workspace(execFileScript(process.execPath, []), "/work", work), store: new CheckpointStore(join(dir, "checkpoints")) },
     });

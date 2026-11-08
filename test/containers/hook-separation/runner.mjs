@@ -10,6 +10,7 @@ const { JournalWriter } = await import("/app/dist/journal/src/index.js");
 const { GrantStore, HostPathResolver, Workspace, execFileScript } = await import("/app/dist/enforcement/src/index.js");
 const { MediatedSessions, PathMap } = await import("/app/dist/mediated/src/session.js");
 const { HookService } = await import("/app/dist/mediated/src/hook-service.js");
+const { systemFilesystemIo } = await import("/app/dist/mediated/src/filesystem.js");
 
 const state = "/var/lib/juno-runner";
 mkdirSync(`${state}/grants`, { mode: 0o700 });
@@ -23,7 +24,7 @@ const sessions = new MediatedSessions({
   paths: new PathMap(["/srv/work"]),
   resolver: new HostPathResolver("/srv/work"),
   view: new Workspace(execFileScript(process.execPath, []), "/work", "/srv/work"),
-  protectedPaths: [state, "/var/lib/juno-hook", "/etc/claude-code"],
+  filesystem: systemFilesystemIo(), protectedPaths: [state, "/var/lib/juno-hook", "/etc/claude-code"],
 });
 // Something in the journal to try to read: a refused admission (no such grant) is journalled.
 await sessions.admit({ session_id: "probe", principal: "alireza", attendance: "gated", ttl: 60_000, grants: ["grant-missing"], budget: { tool_calls: 1, wall_clock_ms: 60_000 }, unmetered_accepted: true, provider_clearance: "internal", sources: [{ id: "w", selector: { kind: "path", prefix: "/work" }, data_class: { sensitivity: "internal", integrity: "untrusted" } }], name_map: [] });

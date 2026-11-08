@@ -38,6 +38,8 @@ beforeAll(async () => {
       "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "SETUID", "--cap-add", "SETGID", "--cap-add", "FSETID", "--cap-add", "DAC_READ_SEARCH",
       "--security-opt", "no-new-privileges:true",
       "--mount", ["type=bind", ["source", fixtures].join("="), "target=/t", "readonly"].join(","),
+      // The workspace: a tmpfs, a case-sensitive Linux file system (D-178).
+      "--tmpfs", "/srv/work:mode=0755",
       "--entrypoint", "/usr/local/bin/node", "juno-runner:local", "/t/driver.mjs",
     ],
     { maxBuffer: 16 * 1024 * 1024, timeout: 240_000 },
@@ -103,5 +105,15 @@ describe("D-173: the Claude Code user cannot modify the hook settings or reach t
     expect(results.negative["agentIsRunner"]).toMatchObject({ code: 1, stderr: expect.stringContaining("same user") });
     expect(results.negative["agentInRunnersGroup"]).toMatchObject({ code: 1, stderr: expect.stringContaining("runner's group") });
     expect(results.negative["settingsWritable"]).toMatchObject({ code: 1, stderr: expect.stringContaining("managed settings") });
+  });
+
+  // proves D-178 against the kernel's own mount table: the check passes the workspace on a tmpfs, and refuses one on a
+  // file system that is not a native case-sensitive Linux one, with a plain reason
+  it("refuses a workspace that is not on a case-sensitive Linux file system (D-178)", () => {
+    expect(results.check.stdout).toContain("case-sensitive Linux file system");
+    expect(results.negative["workspaceOnOverlay"]?.code).toBe(1);
+    const lines = (results.negative["workspaceOnOverlay"]?.stderr ?? "").split("\n").filter((line) => line.startsWith("  - "));
+    expect(lines).toEqual([expect.stringContaining("/srv/overlay-work is on a file system of type overlay")]);
+    expect(lines[0]).toContain("D-178");
   });
 });

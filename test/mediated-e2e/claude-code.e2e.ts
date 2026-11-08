@@ -11,6 +11,7 @@ import { JournalWriter, readPayload, readTrajectory } from "../../packages/journ
 import { HookService } from "../../packages/mediated/src/hook-service.js";
 import { SYSTEM_INSTALL_IO, installHook } from "../../packages/mediated/src/install.js";
 import { MediatedSessions, PathMap } from "../../packages/mediated/src/session.js";
+import { systemFilesystemIo } from "../../packages/mediated/src/filesystem.js";
 import { TEST_ANCHOR, signed } from "../../packages/enforcement/test/test-keys.js";
 
 // §4.3 acceptance tests 1, 2 and 4 (mode C) with the REAL Claude Code binary and no paid usage (build plan Slice 1.5
@@ -136,7 +137,7 @@ beforeAll(async () => {
     grants,
     paths: new PathMap(["/workspace"]),
     resolver: new HostPathResolver(workspace), view: new Workspace(execFileScript(process.execPath, []), "/work", workspace),
-    protectedPaths: [join(host, "checkpoints"), sockets, home],
+    filesystem: systemFilesystemIo(), protectedPaths: [join(host, "checkpoints"), sockets, home],
     checkpoints: { workspace: new Workspace(execFileScript(process.execPath, []), "/work", workspace), store: new CheckpointStore(join(host, "checkpoints")) },
   });
   service = new HookService(sessions, { socketMode: 0o660 });

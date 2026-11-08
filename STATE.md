@@ -506,13 +506,15 @@ Nothing in the increment's code or tests waits for these: CI and the cloud sessi
     - `/var/lib/juno-hook` is `drwxr-s---` `juno-runner juno-hook`;
     - `/srv/juno-work` is `drwxr-xr-x` `juno-agent juno-agent`.
 
+    Then check that the workspace is on WSL's own case-sensitive file system (D-178): `stat -f -c %T /srv/juno-work` prints `ext2/ext3` (that is how `stat` names ext4), and `lsattr -d /srv/juno-work` prints a line with no `F` before the path. Anything else: stop and send the agent the output. **Never use a Windows folder (anything under `/mnt/`, or any folder you mounted from Windows) as the workspace or a source**: JUNO refuses it (D-178).
+
     `/srv/juno-work` is where governed work happens; JUNO calls it `/work` (the runner reads it, so it is not private to `juno-agent`).
 13. **Install Claude Code inside WSL, as `juno-agent`.** In the governed terminal, follow Anthropic's current Linux installation page for Claude Code (docs.claude.com → Claude Code → Set up). Do not install it from a Windows window. Check: `claude --version` prints `2.1.299` or later, and `which claude` prints a path. Send both lines to the agent.
 14. **Install JUNO's hook into the managed settings, then check the separation** (D-173). **Ubuntu** (as your admin user); replace `<claude path>` with what `which claude` printed in step 13:
     ```
     sudo /opt/node22/bin/node /opt/juno/dist/runner/src/juno.js hook install --socket /var/lib/juno-hook/hook.sock --client /opt/juno/dist/mediated/src/juno-hook.js --node /opt/node22/bin/node --claude <claude path>
     ls -l /etc/claude-code/managed-settings.json
-    sudo /opt/node22/bin/node /opt/juno/dist/runner/src/juno.js hook check --agent-user juno-agent --runner-user juno-runner --socket /var/lib/juno-hook/hook.sock --client /opt/juno/dist/mediated/src/juno-hook.js --node /opt/node22/bin/node --state /var/lib/juno-runner
+    sudo /opt/node22/bin/node /opt/juno/dist/runner/src/juno.js hook check --agent-user juno-agent --runner-user juno-runner --socket /var/lib/juno-hook/hook.sock --client /opt/juno/dist/mediated/src/juno-hook.js --node /opt/node22/bin/node --state /var/lib/juno-runner --workspace /srv/juno-work
     ```
     Check:
     - the install prints `JUNO's hook is installed in /etc/claude-code/managed-settings.json`, then the list of what it cannot control;

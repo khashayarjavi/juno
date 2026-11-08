@@ -2101,3 +2101,51 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   - (a) and (b) together are the most restrictive; (b) alone relies on the operator never adding such a mount.
 - Also from the review (not a defect): the PR description still said the real-binary re-run on the final head was pending. It was run on 232dcf5 before the review finished: 7 of 7 (recorded in STATE.md and the PR).
 - Reason: D-175; CLAUDE.md §7 STOP list.
+
+## D-178 — Operator ruling of 2026-11-08 on D-177: options (a) and (b); a workspace or source on a Windows mount or a case-folding folder is refused (Slice 1.5 Increment 4)
+- Date: 2026-11-08
+- Status: Accepted (operator ruling), built
+- Applies to: `packages/mediated/src/filesystem.ts` (new), `packages/mediated/src/session.ts` (admission), `packages/mediated/src/preflight.ts` (`juno hook check`), `docs/plans/slice-1.5-build-plan.md` §2a, STATE.md Part E steps 12 and 14, `packages/mediated/test/kernel-oracle.property.test.ts`, `.github/workflows/verify.yml`
+- Ruling, quoted: "D-177: options (a) and (b). Drop the Windows-folder workspace from the plan. At session admission and in `juno hook check`, refuse any workspace (and any registered source) that lies on a Windows-mounted file system (drvfs, 9p or any non-native mount type) or that contains a directory with the case-folding attribute; the refusal is fail-closed with a plain reason. Extend the kernel-oracle test with a case-folded directory where the platform supports it; where it does not, test the refusal path directly."
+- Decision:
+  - (b) Plan §2a's `/etc/fstab` allowance is withdrawn: a Windows folder is not supported as a governed workspace or source, by any mount.
+  - (a) Every admission checks every workspace root and every registered path source (as a host path); `juno hook check` checks every `--workspace` (now required) and `--source`. Each is refused, with a plain reason naming D-178, unless: it and every mount inside it are on ext4, btrfs or tmpfs (a tmpfs without its `casefold` option), read from `/proc/self/mountinfo`; no folder in its tree carries the case-folding attribute (`F` in `lsattr -d`, run by `execFile` with an argv array); and no folder answers a listed name with its case swapped (the kernel's own answer, by device and inode). Anything the check cannot read refuses.
+  - `MediatedOptions.filesystem` is required, so no configuration can leave the check out.
+  - The kernel oracle gains a case-folded folder: where `JUNO_CASEFOLD_ROOT` names a folder on an ext4 made with the casefold feature (CI's `verify` job makes one by loop mount and requires it with `JUNO_CASEFOLD_REQUIRED=1`), it sets `+F` on `project`, checks that the kernel folds, checks that the check and admission refuse, and compares 100 generated case spellings with what the kernel opens. Where the platform cannot fold case (this cloud kernel: `CONFIG_UNICODE` is off), the refusal path is tested directly over a described file system.
+  - The hook-separation container test now mounts the workspace as a tmpfs and adds a negative control: a workspace on the container's overlay root is refused by the real check with exactly one line.
+- Reason: the operator's ruling; D-177's finding.
+
+## D-179 — Operator change to CLAUDE.md §7's repeat rule; round limit 10 for Increment 4's PR
+- Date: 2026-11-08
+- Status: Accepted (operator change), applied to CLAUDE.md §7 step 5 and its STOP list
+- Ruling, quoted: "STOP only if a round finds a MECHANISM already fixed in an earlier round or recorded in DECISIONS.md, naming that fix. A new mechanism within an already-seen class is fixed with the most restrictive option, covered by extending the kernel-oracle or property test, recorded as an autopilot ruling, and review continues. The round limit for this PR is 10." And: "nothing else changes".
+- Decision: CLAUDE.md §7 is amended exactly so. "This PR" is read as Increment 4's PR, whichever PR number carries it (D-181).
+- Reason: the operator's change.
+
+## D-180 — Operator ruling: the command that starts JUNO's hook service on the operator's machine belongs to Increment 6
+- Date: 2026-11-08
+- Status: Accepted (operator ruling); planned, not built
+- Ruling, quoted: "The command that starts JUNO's hook service and admits a Claude Code session on the operator's machine belongs to Increment 6. Add it to the plan there, with click-by-click steps; do not build it in Increment 4."
+- Decision: plan Increment 6 now holds `juno hook serve` and `juno hook admit`, their restrictive rules, their tests and six click-by-click operator steps. Nothing of it is built in Increment 4. How Claude Code's session id is fixed before its first call is read from the binary in Increment 6 (rule 13), never assumed.
+- Reason: the operator's ruling.
+
+## D-181 — Review round 9 authorised; Increment 4 continues on this session's branch, PR #42 superseded (as D-028, D-155, D-159, D-165, D-171, D-176)
+- Date: 2026-11-08
+- Status: Accepted
+- Ruling, quoted: "Review round 9 on PR #42 is authorised. Merge Increment 4 through the gate on MERGE, then continue Increments 5–6 under the existing Slice 1.5 rules, including D-154 for Increment 5."
+- Decision: this session may push only to `claude/loving-brahmagupta-rp1azf`, so PR #42's branch (`claude/trusting-faraday-jrgos5`) cannot be updated. The branch was reset to PR #42's head (3ec192b) and carries its commits unchanged plus this session's; a new PR from it supersedes PR #42, and round 9 runs on that PR, which holds PR #42's whole content.
+- Reason: as D-028; a push to any other name would be refused.
+
+## D-182 — What D-178 leaves open, decided restrictively (autopilot ruling)
+- Date: 2026-11-08
+- Status: Accepted (autopilot ruling, CLAUDE.md §7 step 3)
+- Applies to: `packages/mediated/src/filesystem.ts`, `packages/enforcement/src/canonical.ts` (`RESOLVER_SCRIPT`)
+- Decisions, each the more restrictive reading:
+  1. **"Native" is an allowlist: ext4, btrfs, tmpfs.** xfs is refused too: its `version=ci` mode folds ASCII case for a whole file system and sets no attribute. overlay, FUSE, virtiofs, NFS, NTFS, FAT and every type not listed are refused. A tmpfs mounted with `casefold` is refused.
+  2. **A mount inside the workspace counts:** every mount point under a checked path must also pass.
+  3. **A source that does not exist yet** is judged by its nearest existing ancestor, where it would be created.
+  4. **Fail-closed reads:** an unreadable mount table, a folder that cannot be listed, attributes that cannot be read (including a missing `lsattr`), a folder name holding a line break, or a tree of more than 50,000 folders refuses; a tree is never partly checked.
+  5. **The kernel's own answer as well as the attribute:** a folder whose lookup of a listed name with its case swapped opens the same entry is refused, so folding that no attribute shows is caught.
+  6. **At every call, not only at admission.** The check is a snapshot, and a folder could start folding later (for example `chattr +F` on a new empty folder of an ext4 made with the casefold feature). So the resolver, at every call, in both modes, refuses a path in which a name the kernel matched is not listed, byte for byte, in its folder: on a folding folder `realpath` keeps the name as written while the kernel opens another entry. The path is then unresolved: outside every scope, and any read of it counts at the highest declared class (D-162). The kernel oracle's case-folded folder tests exactly this past admission.
+  7. **`juno hook check` requires `--workspace`**, so the check cannot pass without judging the workspace.
+- Reason: D8 (fail-closed); D-177's class, "a read is counted below its real class".
