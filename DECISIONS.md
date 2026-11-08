@@ -2204,3 +2204,10 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
 - Applies to: `packages/mediated/src/gateway-service.ts`, `packages/mediated/src/mcp-shim.ts`, `packages/mediated/src/juno-mcp.ts`
 - Decision: Claude Code starts a stdio MCP server as its own user, which may not write the journal or hold grants (D-173). So the gateway that judges and journals runs as the runner, served on a Unix socket the runner owns, with the same folder and mode rules as the hook's socket (D-173: the folder writable by its owner only; the socket mode at most 0660). Claude Code's MCP configuration starts `juno-mcp.js --socket <path>`, a root-owned shim using Node's built-in modules only. It decides nothing and relays lines both ways. If the socket cannot be reached, or closes, every request gets an error answer and nothing else is reached (fail-closed). One connection holds the gateway's one session; a second is refused.
 - Reason: D-173's separation; §4.3 fail-closed.
+
+## D-189 — D-073's network guard and the gateway's Unix-domain socket (as D-144)
+- Date: 2026-11-08
+- Status: Accepted (autopilot record; the guard keeps its property)
+- Applies to: `packages/runner/test/groq.test.ts` (`UNIX_SOCKET_FILES`)
+- Decision: the gateway's service and its stdio shim (D-188) use `node:net` for a Unix-domain socket only, exactly as the hook's two files do. They join D-144's list and are held to D-144's added assertions: no host, port, hostname or URL; no `createConnection`; `connect` and `listen` called only on a socket path. The guard's property is unchanged: no package source opens a network connection except the Groq adapter. Found by `make verify` (the guard failed on the two new files before they were listed).
+- Reason: CLAUDE.md rule 5 (the test is not weakened: every file it accepted before is accepted on the same terms, and the two new ones only under the stricter check); listed for the reviewer's check 2.
