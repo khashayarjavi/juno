@@ -3,7 +3,7 @@
 ## Current increment
 **Slice 1.5 — Increment 5: gateway mode for MCP (§4.3 mode B)** (`docs/plans/slice-1.5-build-plan.md`, Increment 5; §4.3, §2.3.2, §7.8 E2, §2.2.2 for `external` effects; D-154). Branch `claude/loving-brahmagupta-rp1azf`, restarted from `main` 0aa797d after PR #43 merged. Spec v0.6.1. No objection open.
 
-Status (2026-11-08): **in progress; not done.** Built and committed so far (each with tests, all green locally):
+Status (2026-11-08): **in progress; not done.** `make verify: GREEN` locally on 5a8082b (1,128 unit, 109 container). Built and committed so far:
 - **D-183:** the D-046 property test states a 30 s time budget (same assertions and runs). It timed out once under CI load on PR #43.
 - **D-154 in step 4 (D-184):** an enumerated path target matches only on its resolved path; never when unresolved or hard-linked. Other values match only exactly, except an email's domain, which is compared without regard to ASCII case.
 - **The MCP gateway core** (`packages/mediated/src/gateway.ts`, `gateway-stdio.ts`):
@@ -30,17 +30,24 @@ Status (2026-11-08): **in progress; not done.** Built and committed so far (each
   - a scripted client over the stdio transport.
 - **Observed (plan item 1, rule 13):** Claude Code 2.1.319 first sends `server/discover` (2026-07-28). When the server answers "method not found", it falls back to `initialize` `2025-11-25` (D-185).
 
+- **Also built since:** the runner-owned gateway service on its own socket, and Claude Code's stdio shim `juno-mcp.js`, which only relays and fails closed when the gateway is down (D-188, 3 tests). D-073's network guard lists the two socket files under D-144's stricter check (D-189).
+
 **Left in this increment, in order:**
-1. **Where the gateway runs.** Claude Code starts a stdio MCP server as its own user (`juno-agent`), but the gateway must run as the runner, because it writes the journal (D-173's separation). So:
-   - the gateway is served on a runner-owned Unix socket, as the hook service is;
-   - Claude Code launches a small root-owned stdio shim (like `juno-hook.js`) that relays lines to that socket, fail-closed when it is down;
-   - plus the `juno gateway` command that loads a session file, admits it and serves the socket (record as a D-number).
-2. The real-binary run (`make mediated-e2e`): Claude Code with the scripted model calls `message.send` through the shim. The unenumerated recipient parks, and the test server's record stays empty (§4.3 acceptance test 3).
-3. STATE.md: what mode B does not protect (tool descriptions, which pass through unchanged; what the upstream does with an allowed call; anything Claude Code does outside MCP).
-4. `make verify`, the PR, review, and the gate.
+1. **The hook and the gateway together (to decide restrictively, then build).** On your machine JUNO's hook (mode C) runs for every Claude Code session, and it denies any tool outside its table. So it would deny the gateway's tools (`mcp__<server>__<tool>`) before they reach the gateway.
+   - Planned restrictive reading: the hook gives "no decision" only to tools of the one gateway server that `juno hook install` names in the managed settings, because the gateway judges and journals those calls itself. Every other `mcp__` tool stays denied.
+   - To be recorded as a D-number with a test, and checked against the real binary.
+2. **Observe how Claude Code 2.1.319 names an MCP tool whose name holds a dot** (`files.read`, `message.send`) before the real-binary test relies on it (rule 13).
+3. **The `juno gateway` command:** loads a session file (session, tool definitions, upstream program and argv), admits it, and serves the socket as the runner.
+4. **The real-binary run** (`make mediated-e2e`): Claude Code with the scripted model calls `message.send` through the shim. The unenumerated recipient parks and the test server receives nothing; the enumerated recipient is delivered (§4.3 acceptance test 3).
+5. **STATE.md: what mode B does not protect.**
+   - Tool descriptions pass through unchanged.
+   - What the upstream does with an allowed call is the upstream's.
+   - JUNO does not see anything Claude Code does outside MCP and the hook.
+   - The upstream's own credentials and network are its own.
+6. `make verify`, the PR, review, and the gate.
 
 ### Merges this session
-- **PR #43 (Slice 1.5 Increment 4, supersedes #42): merged** as 0aa797d, pinned to head 39ca6af. Reviewer round 9 (fresh subagent, P2 verbatim): **MERGE**, all six checks PASS. CI on 39ca6af: run 42526418093, `verify-rootless` green on attempt 1; `verify` timed out once in an unchanged test (`enforcement.test.ts:722`, the D-046 property: 5 s budget, about 2.8 s here) and was green on attempt 2. CI on main for 0aa797d: run 42528332351 (result below once read).
+- **PR #43 (Slice 1.5 Increment 4, supersedes #42): merged** as 0aa797d, pinned to head 39ca6af. Reviewer round 9 (fresh subagent, P2 verbatim): **MERGE**, all six checks PASS. CI on 39ca6af: run 42526418093, `verify-rootless` green on attempt 1; `verify` timed out once in an unchanged test (`enforcement.test.ts:722`, the D-046 property: 5 s budget, about 2.8 s here) and was green on attempt 2. CI on main for 0aa797d: run 42528332351, **green**.
 
 ## Previous increment (Slice 1.5 Increment 4, merged as PR #43)
 **Slice 1.5 — Increment 4: hook mode for Claude Code (§4.3 mode C)** (`docs/plans/slice-1.5-build-plan.md`, Increment 4; also §2.3.2 E1, §7.8 E2, D-131's Increment 4 directives). Branch `claude/loving-brahmagupta-rp1azf` (this session's only pushable branch, D-181); it carries PR #42's commits unchanged (which carry #41's, #40's, #39's, #38's and #37's), and its PR supersedes PR #42. Spec v0.6.1. No objection open.
