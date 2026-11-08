@@ -101,17 +101,23 @@ Everything above runs in CI and cloud sessions on throwaway keys. For real use, 
 ```
 Windows (the operator's account — a trust root, like the signing key)
   ssh-agent: holds the grant-signing key; any program running as this account can ask it to sign
-  Claude Code ── PreToolUse/PostToolUse, exec form, onFailure: "block"
-       │  wsl.exe --user juno-runner --exec /usr/bin/node <juno-hook>   (Windows → Linux: works with interop off)
+  A Claude Code session started on Windows itself is NOT governed: JUNO never sees it (D-173).
+       │  the operator opens a WSL terminal (Part E) for governed work; no Windows → Linux hook bridge exists
        ▼
 WSL2 distribution (the "host" of §3.4.1)          /etc/wsl.conf (root-owned):
-  juno-runner  — no password, no sudo,               [boot] systemd=true
-     no supplementary group                          [interop] enabled=false, appendWindowsPath=false
-     ├─ JUNO runner, boundary, journal               [automount] enabled=false
-     └─ rootless Docker (its own daemon, its own     [user] default=juno-runner
-        user namespace; cgroup v2 + systemd;
+  juno-agent   — the Claude Code user: not root,     [boot] systemd=true
+     no sudo; group juno-hook only (for the socket)  [interop] enabled=false, appendWindowsPath=false
+     └─ Claude Code ── hooks from /etc/claude-code/  [automount] enabled=false
+        managed-settings.json (root-owned, 0644,
+        allowManagedHooksOnly), exec form,
+        onFailure "block": <node> <juno-hook.js> --socket /var/lib/juno-hook/hook.sock
+  juno-runner  — no password, no sudo, no supplementary group
+     ├─ JUNO runner, boundary, journal, grants, checkpoints: /var/lib/juno-runner (0700)
+     ├─ the hook socket: /var/lib/juno-hook (juno-runner:juno-hook 2750), hook.sock 0660
+     └─ rootless Docker (its own daemon, its own user namespace; cgroup v2 + systemd;
         cpu/memory/pids delegated)  ──► workload containers: no network, uid 65532, no capabilities, D-025 limits
   rootful Docker: disabled.  Linux → Windows: no channel (interop off at boot; drives not mounted).
+  `juno hook check` (as root) proves the separation before the first governed session (D-173).
 Off the host: juno-anchors (public GitHub repository, history protected; D-094, D-098)
 ```
 
@@ -119,7 +125,8 @@ Off the host: juno-anchors (public GitHub repository, history protected; D-094, 
 
 **What it does not protect — residuals (D-130):**
 1. **A kernel or WSL escape.** Anything that becomes root in the distribution's kernel, or escapes the WSL2 VM to Windows, is outside C1. This includes an escape from a rootless container to real root through a kernel bug, and an attack from the distribution on a Windows service reachable over WSL2's virtual network.
-2. **A compromised Windows account.** Any program running as the operator's Windows account can ask the agent to sign. That includes Claude Code itself and anything it runs outside JUNO's mediation (§4.3 mode C "not protected": `@`-mentions, `disableAllHooks`, harness actions with no tool call), and `wsl --user root`. Under D-130 the account is a trust root, so these are residuals, not defects; the name-map restriction below keeps JUNO's own mediated calls from reaching the agent.
+2. **A compromised Windows account.** Any program running as the operator's Windows account can ask the agent to sign, and can run `wsl --user root`. That includes a Claude Code session started on Windows, which is not governed at all (D-173). Under D-130 the account is a trust root, so these are residuals, not defects. A governed Claude Code session runs inside WSL2 as `juno-agent`, with interop off, so it has no channel to the Windows agent; the name-map restriction below keeps JUNO's own mediated calls from reaching it as well.
+3. **How Claude Code is started (D-173).** Whoever starts Claude Code chooses its environment and flags (for example `CLAUDE_CODE_MANAGED_SETTINGS_PATH`, present in 2.1.319, names another managed folder). JUNO governs the sessions the operator starts from the WSL terminal of Part E as `juno-agent`; no governed tool call can write the managed settings, the hook, JUNO's state or the socket (proven in a container, `test/containers/hook-separation.test.ts`).
 
 **Built and proven where (D-131):**
 - `make verify-rootless` (CI job `verify-rootless`, ubuntu-24.04 with systemd and cgroup v2): as `juno-runner` under the rootless daemon, `test/rootless/runner-user.test.ts` proves the user is not root, holds no supplementary group, cannot use sudo or su, cannot write, replace or remove `/etc/wsl.conf` (the stand-in) or `/etc`, cannot reach the rootful Docker socket, and that the runtime is cgroup v2 with the systemd driver and `cpu`, `memory`, `pids` delegated. Then the whole container suite runs under the rootless daemon, including the seal tests (no network, non-root, no capabilities) and `limits.test.ts`, which hits each D-025 limit.
@@ -127,7 +134,7 @@ Off the host: juno-anchors (public GitHub repository, history protected; D-094, 
 - The operator's machine: STATE.md Part E ends by running `make verify-rootless` in WSL2 as `juno-runner`.
 
 **Directives for later increments (D-131):**
-- **Increment 4:** the runner refuses to start when the container runtime reports cgroup driver `none` (rootless without cgroup v2 and systemd), because its limits would be ignored. The hook is installed as `wsl.exe --user juno-runner --exec <absolute path>` with `args`, never through a shell. The Bash name map may not contain a program that can sign or start other programs (`ssh-keygen`, `ssh-add`, `ssh`, `ssh-agent`, `wsl`, `powershell`, `pwsh`, `cmd`, `git`, any interpreter); registration review rejects one. A hook session's workspace lives inside the distribution; exposing a Windows folder needs a single root-written `/etc/fstab` entry, never automount.
+- **Increment 4:** the runner refuses to start when the container runtime reports cgroup driver `none` (rootless without cgroup v2 and systemd), because its limits would be ignored. Claude Code is governed only inside WSL2, as its own user (`juno-agent`), never as `juno-runner` and never as root; the hook is installed by `juno hook install` (as root) into `/etc/claude-code/managed-settings.json` as `<node> <client> --socket <path>`, exec form, never through a shell, and there is no `wsl.exe` bridge (D-173, which removed the bridge this line first described). JUNO accepts only Linux absolute paths; a Windows-form path is refused, not overridable (D-173). The Bash name map may not contain a program that can sign or start other programs (`ssh-keygen`, `ssh-add`, `ssh`, `ssh-agent`, `wsl`, `powershell`, `pwsh`, `cmd`, `git`, any interpreter); registration review rejects one. A hook session's workspace lives inside the distribution; exposing a Windows folder needs a single root-written `/etc/fstab` entry, never automount.
 - **Anchor push (Part D):** the scoped token lives in `juno-runner`'s own files, mode 0600, outside every grant scope and selector (§3.2).
 
 ---

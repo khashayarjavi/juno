@@ -22,6 +22,7 @@ type Results = {
   settings: Record<string, unknown>;
   modes: Record<string, { uid: number; gid: number; mode: string }>;
   check: Exit;
+  checkBeforeService: Exit;
   recheck: Exit;
   agent: Record<string, Attempt> & { identity: { uid: number; gid: number; groups: number[]; capEff: string | null }; hook: Exit };
   negative: Record<string, Exit>;
@@ -49,7 +50,7 @@ const REFUSED = [
   "write managed settings", "append to managed settings", "chmod managed settings", "remove managed settings", "rename managed settings",
   "create a managed drop-in", "create beside managed settings", "replace the managed folder",
   // What the hook runs.
-  "replace the hook client", "replace the hook client's import", "remove the hook client", "replace node",
+  "replace the hook client", "replace the hook client's import", "remove the hook client", "change the client's module type", "add a file beside the hook client", "replace node",
   // JUNO's state.
   "list the runner's state", "list the journal", "write the journal", "list the grants", "read a grant", "write a grant", "write a checkpoint",
   "remove the runner's state", "write the trust anchor", "replace the trust anchor",
@@ -94,6 +95,9 @@ describe("D-173: the Claude Code user cannot modify the hook settings or reach t
   // proves D-173: `juno hook check` passes this layout, and refuses each broken one
   it("passes juno hook check on this layout and refuses an agent that is root, is the runner, holds its group, or can write the settings", () => {
     expect(results.check).toMatchObject({ code: 0, stdout: expect.stringContaining("separated from the runner") });
+    // STATE.md Part E step 14, as it stands before the service exists: one refusal, the missing socket, and nothing else.
+    expect(results.checkBeforeService.code).toBe(1);
+    expect(results.checkBeforeService.stderr.split("\n").filter((line) => line.startsWith("  - "))).toEqual([expect.stringContaining("is not a listening socket")]);
     expect(results.recheck.code).toBe(0);
     expect(results.negative["agentIsRoot"]).toMatchObject({ code: 1, stderr: expect.stringContaining("is root") });
     expect(results.negative["agentIsRunner"]).toMatchObject({ code: 1, stderr: expect.stringContaining("same user") });

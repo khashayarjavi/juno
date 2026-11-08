@@ -1,5 +1,6 @@
 // The container test's driver (D-173), as root in a sealed container (no network; only CHOWN, SETUID, SETGID,
-// FSETID and DAC_READ_SEARCH, for setup and for the check). It builds the layout STATE.md Part E describes, installs
+// FSETID and DAC_READ_SEARCH, for setup and for the check). It builds the layout STATE.md Part E describes (JUNO's
+// code root-owned, as /opt/juno is there and /app is in this image), installs
 // JUNO's hook with the real `juno hook install`, starts the real runner as uid 1000, runs the real `juno hook check`,
 // then runs the Claude Code user's attempts as uid 1001, and the check's negative controls. Prints one JSON object.
 // Every program is started with execFile and an argument array; there is no shell.
@@ -58,6 +59,15 @@ results.install = await exit([JUNO, "hook", "install", "--socket", SOCKET, "--cl
 results.settings = JSON.parse(readFileSync("/etc/claude-code/managed-settings.json", "utf8"));
 results.modes = Object.fromEntries(["/var/lib/juno-runner", "/var/lib/juno-hook", "/etc/claude-code", "/etc/claude-code/managed-settings.json"].map((path) => { const stats = statSync(path); return [path, { uid: stats.uid, gid: stats.gid, mode: (stats.mode & 0o7777).toString(8) }]; }));
 
+const check = (overrides = {}, states = ["/var/lib/juno-runner", "/var/lib/juno-runner/journal", "/var/lib/juno-runner/grants", "/var/lib/juno-runner/checkpoints"]) => {
+  const options = { "--agent-user": "juno-agent", "--runner-user": "node", "--socket": SOCKET, "--client": CLIENT, "--node": NODE, "--anchor": "/etc/juno/operator.pub", ...overrides };
+  const args = [JUNO, "hook", "check", ...Object.entries(options).flat()];
+  for (const state of states) args.push("--state", state);
+  return exit(args);
+};
+// Part E step 14 today: before any service listens, the check refuses with exactly one line, the missing socket.
+results.checkBeforeService = await check({}, ["/var/lib/juno-runner"]);
+
 // The runner, as uid 1000 with no supplementary group.
 const runner = execFile(NODE, ["/t/as-user.mjs", String(RUNNER), String(RUNNER), "", "/t/runner.mjs"], { timeout: 120_000 }, () => undefined);
 const ready = await new Promise((resolve, reject) => {
@@ -71,12 +81,6 @@ const ready = await new Promise((resolve, reject) => {
 });
 results.runner = ready;
 
-const check = (overrides = {}) => {
-  const options = { "--agent-user": "juno-agent", "--runner-user": "node", "--socket": SOCKET, "--client": CLIENT, "--node": NODE, "--anchor": "/etc/juno/operator.pub", ...overrides };
-  const args = [JUNO, "hook", "check", ...Object.entries(options).flat()];
-  for (const state of ["/var/lib/juno-runner", "/var/lib/juno-runner/journal", "/var/lib/juno-runner/grants", "/var/lib/juno-runner/checkpoints"]) args.push("--state", state);
-  return exit(args);
-};
 results.check = await check();
 
 // The Claude Code user, as uid 1001 holding group juno-hook.

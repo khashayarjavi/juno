@@ -32,6 +32,8 @@ attempt("replace the managed folder", () => renameSync("/etc/claude-code", "/tmp
 attempt("replace the hook client", () => writeFileSync("/app/dist/mediated/src/juno-hook.js", "process.exit(0)"));
 attempt("replace the hook client's import", () => writeFileSync("/app/dist/mediated/src/hook-client.js", "export {}"));
 attempt("remove the hook client", () => unlinkSync("/app/dist/mediated/src/juno-hook.js"));
+attempt("change the client's module type", () => writeFileSync("/app/package.json", "{}"));
+attempt("add a file beside the hook client", () => writeFileSync("/app/dist/mediated/src/extra.js", "x"));
 attempt("replace node", () => openSync("/usr/local/bin/node", "w"));
 // JUNO's state.
 attempt("list the runner's state", () => readdirSync("/var/lib/juno-runner"));

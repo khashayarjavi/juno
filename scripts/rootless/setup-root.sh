@@ -114,7 +114,8 @@ appendWindowsPath=false
 enabled=false
 
 [user]
-default=$RUNNER_USER
+# D-173: a WSL terminal opens as the Claude Code user, never as the runner (STATE.md Part E).
+default=juno-agent
 CONF
 chown root:root /etc/wsl.conf
 chmod 0644 /etc/wsl.conf

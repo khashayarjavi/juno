@@ -1,15 +1,28 @@
 # STATE
 
 ## Current increment
-**Slice 1.5 — Increment 4: hook mode for Claude Code (§4.3 mode C)** (`docs/plans/slice-1.5-build-plan.md`, Increment 4; also §2.3.2 E1, §7.8 E2, D-131's Increment 4 directives). Branch `claude/friendly-lovelace-2j7h4d` (this session's only pushable branch, D-171); it carries PR #40's commits unchanged (which carry PR #39's, #38's and #37's), and its PR supersedes PR #40. Spec v0.6.1. No objection open.
+**Slice 1.5 — Increment 4: hook mode for Claude Code (§4.3 mode C)** (`docs/plans/slice-1.5-build-plan.md`, Increment 4; also §2.3.2 E1, §7.8 E2, D-131's Increment 4 directives). Branch `claude/trusting-faraday-jrgos5` (this session's only pushable branch, D-176); it carries PR #41's commits unchanged (which carry PR #40's, #39's, #38's and #37's), and its PR supersedes PR #41. Spec v0.6.1. No objection open.
 
-Status (2026-11-08): **STOPPED (D-169, D-172): review round 7 (PR #41, head 83f8ef3) ended DO NOT MERGE, and its finding is the class D-169 names.** Not fixed (it needs your ruling). Nothing merged; Increment 5 not started.
-- **For you (the operator):** rule on D-172's options (a), (b) or (c), and whether a round 8 is authorised.
-- **What round 7 found, in plain words.** On your machine Claude Code runs on Windows and names files as `\\wsl.localhost\…` paths. Windows tidies some spellings before opening them: it drops a trailing `.` or space from a folder or file name, and usually ignores upper/lower case. JUNO checks the path the way Linux reads it, where `secrets.` or `SECRETS` is simply a folder that does not exist. So `Read …\project\secrets.\key.txt` (or `…\SECRETS\key.txt`) got no objection from JUNO under an `internal` clearance, and was recorded as `internal`. If Windows opens it as `secrets\key.txt`, the secret key was read as ordinary. I reproduced JUNO's side; whether Windows' path to WSL really does the rewrite cannot be tested in the cloud.
-- **The options (D-172):** (a) refuse those Windows spellings (a name ending in `.` or a space, `:`, `~`, reserved names like `CON`; a case mismatch counts at your highest class); (b) accept only Linux paths, so Claude Code runs inside WSL; (c) check on your machine first, then (a) or (b).
-- **Reviewer's other checks:** 1–4 and 6 PASS. It also noted that the PR did not yet state a `make mediated-e2e` result for this head: it is **6 of 6 with the real Claude Code 2.1.319 on 83f8ef3** (run in this session).
-- **CI on 83f8ef3 (run 42499026980): green** (`verify` and `verify-rootless`).
+Status (2026-11-08, second set of rulings): **your rulings D-173, D-174 and D-175 are built; review round 8 next (authorised once, D-175).** Nothing merged yet; Increment 5 not started.
+- **Ruling 1 (D-173, on D-172 option (b)): Claude Code is governed only inside WSL2, as its own Linux user.**
+  - **Linux paths only.** Any Windows-form path is refused before JUNO judges anything: a backslash anywhere (`\\wsl.localhost\…`, `\\?\…`, `\\server\share`, `C:\x`), a drive letter (`C:`, `c:/x`), or a leading `//`. It applies to Read, Write, Edit, Glob (path and pattern), the call's working folder, and every Bash operand. The call is stopped, cannot be overridden, and the reason says: "… is a Windows-form path. JUNO governs Claude Code only inside WSL2 and accepts only Linux absolute paths (D-173)". Your session settings are checked the same way at admission. So round 7's `secrets.\key.txt` and `SECRETS\key.txt` can no longer reach JUNO's classifier at all.
+  - **No Windows-to-WSL bridge.** `juno hook install` no longer writes `wsl.exe`; the hook runs inside WSL2 as the Claude Code user.
+  - **Hooks live only in root-owned managed settings.** `juno hook install` must run as root and writes only `/etc/claude-code/managed-settings.json` (the Linux path, read from Claude Code 2.1.319 itself). It refuses your user settings, a project's and a local one. It also sets `allowManagedHooksOnly`, so another hook in a user's or project's settings does not run beside JUNO's.
+  - **`juno hook check` (new).** Run as root before the first governed session. It refuses unless: the Claude Code user is not root, not the runner and holds none of the runner's groups; the managed settings and every folder above them are root's alone; node and the hook client are root's alone; JUNO's journal, grants and checkpoints are closed to the Claude Code user; and the socket is the runner's, reachable by the Claude Code user but not changeable by it.
+  - **Container test (`test/containers/hook-separation.test.ts`), the kernel's own answer.** One sealed container, built the way Part E builds your machine. JUNO's real install, real hook service and real check run in it, and then, as the Claude Code user, 32 attempts are each refused by the kernel. The attempts: write, append, chmod, remove or rename the managed settings; add a drop-in; replace the hook client, its import or its folder's files; replace node; list, read or write the journal, grants or checkpoints; remove the runner's state; change the trust anchor; chmod or remove the socket or its folder; signal the runner or read its memory. Positive controls: it can read its settings and the public anchor, and the real hook client reaches JUNO and gets JUNO's answer. `juno hook check` passes that layout and refuses four broken ones (the agent is root, is the runner, is in the runner's group, or can write the settings).
+  - **With the real Claude Code 2.1.319 (`make mediated-e2e`, 7 of 7):** Claude Code now runs as its own user (1001), with the hooks only in a read-only managed-settings folder, and reaches the socket only through its group. New case: the Claude Code user's own settings and the project's both set `disableAllHooks` and add an allow-everything hook. JUNO's hook still ran: the write outside the grant was denied and journalled. (Limit of that proof: it shows JUNO's managed hook won; it does not separately prove Claude Code read the user's file.)
+  - **Plan §2a, Part E and Part F are rewritten** (below): governed work happens in a WSL terminal, and a **Claude Code session started on Windows itself is not governed**.
+- **Ruling 2 (D-174, refines D-168): a shortcut that stays inside one source keeps that source's class.**
+  - "The same source" is read strictly. The lexical place and the kernel's place must lie in exactly the same set of your sources. Sources nest: a shortcut from `project` into `project/secrets` changes the set, so it counts at your highest class.
+  - Inside a folder that is read, each shortcut is judged the same way and followed. A loop, a broken shortcut, or more than 64 shortcuts counts at your highest class, and so does a hard link (unchanged). A redirected tree with one of your sources inside it also counts at your highest class.
+  - Writes are unchanged: a write through a shortcut is still never treated as undoable.
+  - **Two D-168 tests have their expectation reversed on purpose.** Each named a shortcut that stays inside `project`. Each is kept, and each is paired with a crossing shortcut of the same shape that still parks. New tests cover a `node_modules/.bin` layout: links into a package, two links to one file, a folder alias. They keep `internal`, while a `.bin` link out of your sources is stopped.
+  - **Kernel oracle, extended.** It now has a fixed `node_modules/.bin` layout and shortcuts crossing sources in every direction: into and out of `secrets`, from `other/pub` into `project` and back, and to unregistered and outside places. On the fixed seed: 100 generated paths, 75 opened something, 20 kept a class below your highest, 3 of those through a shortcut (so the refinement is really exercised). JUNO's class was never below the class of what the kernel opened.
+  - **Mutation checks (run, then reverted).** (1) Classifying a redirected path by its text instead of the kernel's place: **the oracle fails on its own**, a shortcut into `secrets` read as `internal`. (2) Removing the same-source-set comparison: the oracle still passes, because JUNO classifies by the kernel's place, which is never below the kernel. Only the explicit crossing tests fail. So the set comparison is the extra margin your ruling asks for, and those tests guard it.
+- **Gap to know about (not new, now stated plainly):** no command yet starts JUNO's hook service and admits sessions on your machine. The service, the admission and the hook exist and are tested (unit, container, real binary). Parts E and F prepare the machine. Until such a command exists, governed Claude Code sessions run only in the tests.
+- **`make verify`:** see "make verify" below. Review round 8 next; a repeat of the "read counted below its real class" class is a STOP (D-175).
 
+### Earlier in this increment (first set of 2026-11-08 rulings, round 7)
 Before the STOP, this session built the operator's rulings of 2026-11-08 (D-167 to D-171):
 - **Ruling 1, the kernel as oracle (D-167).** A new property test builds real folder trees in a sandbox: folders, files, shortcuts (symlinks) to registered, unregistered, outside and missing places, and hard links. It walks generated paths through them mixing `..`, `.`, `//`, trailing slashes and shortcuts in any order. For each path it asks the kernel what it really opens (device and inode) and which registered sources that file lies in, and checks, for every tool in JUNO's table and at three clearances, that JUNO's class is never lower, that a call above the clearance is always stopped, and that no result is recorded lower. On the fixed seed: 100 trees and paths, 78 opened something real, 16 plain paths kept a registered class below the highest, every path tool really ran in some case. **It passes on this branch.** Replay against earlier heads: see "Oracle replay" below.
 - **Ruling 2, refuse cleverness (D-168, deliberate).** If the kernel's answer for a path differs in any way from the path's text tidied up (`.` and `//` dropped, `..` taken as text), the read counts at the highest class you declared. So any shortcut in a path, a shortcut anywhere inside a folder that is read, or a `..` after a shortcut that lands somewhere else, is read at your highest class; a write through one is never treated as undoable. **Plain paths work; tricks land at the safe default.**
@@ -89,11 +102,11 @@ Before round 6: **the operator's rulings of 2026-11-07 (third set) were built (D
 In plain words, JUNO's hook governs every **tool call** Claude Code makes. It does not govern:
 1. **Anything Claude Code does without a tool call:** its own memory, and the content of a file you `@`-mention if Claude does not then read it with a tool. JUNO's install turns direct `@`-insertion off (D-139), so a mentioned file is read through the Read tool, which JUNO judges.
 2. **A file or symlink changed between JUNO's check and Claude Code's use of it.** Claude Code, not JUNO, performs the effect, so D-121's writer protection does not apply in this mode. Keep the workspace out of reach of anything else.
-3. **A configuration that bypasses the hook:** a run started with `--settings '{"disableAllHooks": true}'`, settings of higher precedence that turn hooks off, managed settings that allow only managed hooks, or **another PreToolUse hook in a different settings file (a project's included) that changes a call after JUNO judged it**. JUNO refuses to install into project or local settings, or beside another PreToolUse hook in the same file (D-148), and the install prints these limits. The remedy is managed settings with `allowManagedHooksOnly`.
+3. **How Claude Code is started (D-173).** JUNO governs a session only when you start Claude Code in the WSL terminal of Part E, as `juno-agent`, with the hooks in the root-owned managed settings. Whoever starts Claude Code chooses its environment and flags. So a session started on Windows itself, or by another program, or with a variable that points Claude Code at another managed-settings folder (`CLAUDE_CODE_MANAGED_SETTINGS_PATH`, present in 2.1.319), is **not governed**: JUNO never sees it. What JUNO does guarantee is that no governed tool call can change any of this. The managed settings, the hook, JUNO's state and the socket are out of the Claude Code user's reach; the container test proves it with the kernel. Hooks in a user's or a project's settings do not run beside JUNO's (`allowManagedHooksOnly`), and in the real-binary test a user's and a project's `disableAllHooks` did not turn JUNO off.
 4. **A shell function named with a program's absolute path.** JUNO hands Claude Code the command rebuilt with the program's absolute path (D-152), so `PATH` and aliases no longer choose the program. Bash still lets a startup file define `function /usr/bin/cat { … }`, which would run instead. Keep that shell's startup files free of functions.
 5. **Context ownership and steering** (§7.8: a hook session's `steer_capability` is `none`), and the text of tool descriptions Claude Code reads.
 6. **Tokens and money:** Claude Code's own limits govern them; you accept that when a session is admitted (`unmetered`).
-7. **Everything mode A does not protect**, plus D-130's residuals: a kernel or WSL escape, and a compromised Windows account. Claude Code runs as your Windows user, which can ask your agent to sign.
+7. **Everything mode A does not protect**, plus D-130's residuals: a kernel or WSL escape, and a compromised Windows account (it can ask your agent to sign, and can start WSL as root). A governed Claude Code runs inside WSL2 as `juno-agent`, with interop off, so it has no channel to Windows or to your signing agent (D-173).
 8. **A hard link made after JUNO's check.** JUNO now detects hard links (D-157): a file with more than one name is read at the highest class you declared, and a write through one is never treated as undoable (D-158). Symlinks are followed and judged by their target. A link created between JUNO's check and Claude Code's use is the gap in item 2.
 9. **A public-looking web name that leads to a private server**, if you list the public internet as a source (D-164). JUNO does not look names up, so `wiki.yourcompany.com` counts as the public internet. List exact sites instead if your intranet uses such names (Part F). Without a web source, every fetched page counts at your highest class.
 
@@ -332,7 +345,8 @@ Nothing in the increment's code or tests waits for these: CI and the cloud sessi
 
 **Now:** tell the agent "Parts A–C done", plus the `.pub` line (Part C step 4). Part E follows once this increment is merged.
 
-**Part E — WSL2 for the runner (D-130, D-131; plan §2a).** Do this after Parts A–C and after this increment is merged. It takes about 45 minutes.
+**Part E — WSL2 for the runner and for governed Claude Code work (D-130, D-131, D-173; plan §2a).** Do this after Parts A–C and after this increment is merged. It takes about an hour.
+- **The rule (D-173):** JUNO governs Claude Code **only when it runs inside WSL2**, as its own Linux user `juno-agent`, started from the WSL terminal this part sets up. **A Claude Code session you start on Windows itself (PowerShell, a Windows terminal, a Windows editor) is not governed at all: JUNO never sees it.** Use Windows-native Claude Code only for work you would be content to do without JUNO.
 - Boxes marked **PowerShell** go in PowerShell (*as administrator* only where it says so).
 - Boxes marked **Ubuntu** go in the Ubuntu window. Paste each box whole and press Enter.
 - If a check does not show what it says, stop and send the agent the last 15 lines on screen.
@@ -416,26 +430,44 @@ Nothing in the increment's code or tests waits for these: CI and the cloud sessi
    - the last line contains `cpu`, `memory` and `pids`.
 
    If it says `none` instead of `systemd`, stop and tell the agent: the limits would not be enforced. Type `exit` to go back to your admin user.
-9. **Switch off interop and drive mounting** (D-130, D-131). Only root can change this file. **Ubuntu** (as your admin user):
+9. **Create the Claude Code user, `juno-agent`, and the socket group, `juno-hook`** (D-173). `juno-agent` is the only user Claude Code runs as. It gets no password and no sudo, and its only extra group is `juno-hook`, which lets it reach JUNO's socket and nothing else. **Ubuntu** (as your admin user):
    ```
-   printf '[boot]\nsystemd=true\n\n[interop]\nenabled=false\nappendWindowsPath=false\n\n[automount]\nenabled=false\n\n[user]\ndefault=juno-runner\n' | sudo tee /etc/wsl.conf
+   sudo groupadd --system juno-hook
+   sudo useradd --create-home --user-group --shell /bin/bash juno-agent
+   sudo usermod -aG juno-hook juno-agent
+   sudo passwd -l juno-agent
+   id juno-agent
+   id juno-runner
+   ```
+   Check:
+   - the `juno-agent` line lists exactly two groups, `juno-agent` and `juno-hook`;
+   - the `juno-runner` line still ends with `groups=NNNN(juno-runner)`: one group, and not `juno-hook`.
+10. **Switch off interop and drive mounting, and open WSL as `juno-agent`** (D-130, D-131, D-173). Only root can change this file. **Ubuntu** (as your admin user):
+   ```
+   printf '[boot]\nsystemd=true\n\n[interop]\nenabled=false\nappendWindowsPath=false\n\n[automount]\nenabled=false\n\n[user]\ndefault=juno-agent\n' | sudo tee /etc/wsl.conf
    sudo chown root:root /etc/wsl.conf
    sudo chmod 0644 /etc/wsl.conf
    ```
    Then, in **PowerShell**:
    - run `wsl --shutdown` and wait 10 seconds;
    - check that `wsl --list --running` says there are no running distributions;
-   - open Ubuntu again. You are now `juno-runner`, the default user.
+   - open Ubuntu again (Start menu → **Ubuntu 24.04**). This is your **governed terminal**: it opens as `juno-agent`.
 
-   To act as your admin user later, run `wsl -d Ubuntu-24.04 -u <your admin name>` in PowerShell. Checks, in **Ubuntu**:
+   To act as another user later, run one of these in PowerShell:
+   - `wsl -d Ubuntu-24.04 -u juno-runner` for the runner;
+   - `wsl -d Ubuntu-24.04 -u <your admin name>` for your admin user.
+
+   Checks, in the governed terminal:
+   - `whoami` prints `juno-agent`;
    - `ls /mnt/c` prints `No such file or directory`;
    - `echo "[$WSL_INTEROP]"` prints `[]`;
-   - `sudo -n true` fails, saying a password is required or that `juno-runner` is not in the sudoers file;
+   - `sudo -n true` fails, saying a password is required or that `juno-agent` is not in the sudoers file;
    - `echo x >> /etc/wsl.conf` prints `Permission denied`.
 
    And in **PowerShell** (a normal window): `wsl.exe -d Ubuntu-24.04 --user juno-runner --exec /usr/bin/id` prints a line starting `uid=` with `(juno-runner)`. That proves Windows can still start JUNO's programs with interop off.
-10. **Run JUNO's rootless checks on your own machine.** **Ubuntu** (as `juno-runner`):
+11. **Run JUNO's rootless checks on your own machine.** Open a runner terminal: in PowerShell, `wsl -d Ubuntu-24.04 -u juno-runner`. Then:
     ```
+    cd ~
     git clone https://github.com/khashayarjavi/juno.git ~/juno
     cd ~/juno
     npm ci
@@ -444,13 +476,50 @@ Nothing in the increment's code or tests waits for these: CI and the cloud sessi
     Check: after 10 to 20 minutes the last line is `make verify-rootless: GREEN`. That run proves, on your machine:
     - the user, sudo, group and `/etc/wsl.conf` checks;
     - that Docker is rootless with the limits enforceable;
-    - every container seal test, including the CPU, memory and process limits.
+    - every container seal test, including the CPU, memory and process limits;
+    - the separation test of D-173, in a container.
 
     Send the agent the summary lines, or the last 15 lines if it is not green.
+12. **A root-owned copy of JUNO, its folders, and the governed workspace** (D-173). Root must never run code another user can change, and the hook Claude Code runs must be root's. **Ubuntu** (as your admin user):
+    ```
+    sudo git clone https://github.com/khashayarjavi/juno.git /opt/juno
+    cd /opt/juno
+    sudo env PATH=/opt/node22/bin:$PATH npm ci --ignore-scripts
+    sudo env PATH=/opt/node22/bin:$PATH npx tsc -p tsconfig.build.json
+    sudo install -d -o juno-runner -g juno-runner -m 0700 /var/lib/juno-runner
+    sudo install -d -o juno-runner -g juno-hook -m 2750 /var/lib/juno-hook
+    sudo install -d -o juno-agent -g juno-agent -m 0755 /srv/juno-work
+    ls -ld /opt/juno /opt/juno/dist/mediated/src /var/lib/juno-runner /var/lib/juno-hook /srv/juno-work
+    ```
+    Check, in that last listing:
+    - `/opt/juno` and its `dist/mediated/src` start `drwxr-xr-x` and name `root root`;
+    - `/var/lib/juno-runner` is `drwx------` `juno-runner juno-runner`;
+    - `/var/lib/juno-hook` is `drwxr-s---` `juno-runner juno-hook`;
+    - `/srv/juno-work` is `drwxr-xr-x` `juno-agent juno-agent`.
+
+    `/srv/juno-work` is where governed work happens; JUNO calls it `/work` (the runner reads it, so it is not private to `juno-agent`).
+13. **Install Claude Code inside WSL, as `juno-agent`.** In the governed terminal, follow Anthropic's current Linux installation page for Claude Code (docs.claude.com → Claude Code → Set up). Do not install it from a Windows window. Check: `claude --version` prints `2.1.299` or later, and `which claude` prints a path. Send both lines to the agent.
+14. **Install JUNO's hook into the managed settings, then check the separation** (D-173). **Ubuntu** (as your admin user); replace `<claude path>` with what `which claude` printed in step 13:
+    ```
+    sudo /opt/node22/bin/node /opt/juno/dist/runner/src/juno.js hook install --socket /var/lib/juno-hook/hook.sock --client /opt/juno/dist/mediated/src/juno-hook.js --node /opt/node22/bin/node --claude <claude path>
+    ls -l /etc/claude-code/managed-settings.json
+    sudo /opt/node22/bin/node /opt/juno/dist/runner/src/juno.js hook check --agent-user juno-agent --runner-user juno-runner --socket /var/lib/juno-hook/hook.sock --client /opt/juno/dist/mediated/src/juno-hook.js --node /opt/node22/bin/node --state /var/lib/juno-runner
+    ```
+    Check:
+    - the install prints `JUNO's hook is installed in /etc/claude-code/managed-settings.json`, then the list of what it cannot control;
+    - the `ls` line starts `-rw-r--r--` and names `root root`;
+    - **today** the check prints `refused:` with **exactly one** line, saying `/var/lib/juno-hook/hook.sock is not a listening socket`. The command that starts JUNO's hook service on your machine is not built yet (see "Gap to know about" above). Any other line is a real problem: stop and send the agent the output. Once the service exists, the same check must print `separated from the runner`.
 
 **Part D's token, once Part E is done:** it goes in a file only `juno-runner` can read (mode 0600), outside every grant scope (§3.2). Increment 4 says exactly where, when the runner first runs on your machine.
 
-**Part F — what Claude Code may read, web pages included (Increment 4, D-162, D-164).** Do this when you admit your first Claude Code session to JUNO. It takes about 10 minutes.
+**Part F — governed work, and what Claude Code may read (Increment 4, D-162, D-164, D-173, D-174).** Do this when you admit your first Claude Code session to JUNO. It takes about 10 minutes.
+
+**Where governed work happens (D-173).** Only in the governed terminal of Part E (Start menu → **Ubuntu 24.04**, which opens as `juno-agent`), with the project in `/srv/juno-work`. Start Claude Code there with `cd /srv/juno-work` and then `claude`.
+- Every path Claude names is then a Linux path such as `/srv/juno-work/project/notes.txt`, which JUNO knows as `/work/project/notes.txt`.
+- **A Windows-form path is always refused,** even inside a governed session: a backslash, a drive letter like `C:`, or a `\\wsl.localhost\…` name. The call is stopped and the reason says so.
+- **A Claude Code session you start on Windows is not governed** (Part E). Do not use one for work you want JUNO to govern.
+
+**Shortcuts (symlinks), D-174.** A shortcut keeps its class when the shortcut and the place it leads to lie in exactly the same sources you listed; a `node_modules/.bin` folder inside your project is the usual case. A shortcut that leads into a different source (for example from `project` into `project/secrets`), out of your sources, or outside the workspace, counts at your highest class.
 
 When JUNO admits a Claude Code session, you list the **sources** the session may read, each with a class (`public`, `internal`, `confidential`, `secret`). JUNO counts **anything Claude reads that no source you listed matches** at the **highest class you listed**. If that class is above the session's clearance, the call is stopped before it runs. If not, it runs and its result is recorded at that class.
 
