@@ -1,33 +1,39 @@
 import { execFile } from "node:child_process";
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
+import { runHookCheckCli } from "./preflight.js";
 
 /**
  * `juno hook install` (spec §4.3 "Fail-closed ingress": a configuration in which a hook failure lets a call proceed is
- * refused at setup; build plan Slice 1.5 Increment 4 item 2; DECISIONS.md D-139, D-143).
+ * refused at setup; build plan Slice 1.5 Increment 4 item 2; DECISIONS.md D-139, D-143, D-173).
  *
  * It writes JUNO's hook for PreToolUse, PostToolUse and PostToolUseFailure, matcher `*`, in exec form (`command` plus
- * `args`, no shell), with `onFailure: "block"` and an explicit `timeout`, and sets `CLAUDE_CODE_DISABLE_FILE_MENTIONS=1`
- * (D-139), into the user's (or a managed) settings file. It refuses:
- *   - a project or local settings file (Claude Code ignores the file-mentions variable there, and a project can change it);
+ * `args`, no shell), with `onFailure: "block"` and an explicit `timeout`, sets `CLAUDE_CODE_DISABLE_FILE_MENTIONS=1`
+ * (D-139) and `allowManagedHooksOnly: true` (D-173), into Claude Code's root-owned managed settings file on Linux,
+ * `/etc/claude-code/managed-settings.json` (read from the 2.1.319 binary, D-173). It refuses:
+ *   - any other settings file: the user's, a project's or a local one (the Claude Code user could rewrite those, D-173);
+ *   - to run as anyone but root (only root can write the managed settings, and so only root can change them, D-173);
  *   - Claude Code older than 2.1.299, asked by `execFile(claude, ["--version"])`;
  *   - any configuration the result would hold that lacks exec form, `onFailure: "block"` or a timeout, or that turns
  *     hooks off (`disableAllHooks`).
- * It says, and does not hide, what it cannot control.
+ * There is no Windows-to-WSL bridge: Claude Code is governed only when it runs inside WSL2, as its own Linux user, and
+ * the hook runs as that user (D-173). It says, and does not hide, what it cannot control.
  */
+
+/** Claude Code's managed settings file on Linux (and so in WSL2), as the 2.1.319 binary names it (D-173). */
+export const MANAGED_SETTINGS = "/etc/claude-code/managed-settings.json";
 
 export const MINIMUM_CLAUDE_CODE = "2.1.299";
 export const HOOK_EVENTS = ["PreToolUse", "PostToolUse", "PostToolUseFailure"] as const;
 export const HOOK_TIMEOUT_SECONDS = 30;
 
 export const NOT_CONTROLLED = [
-  "a run started with --settings '{\"disableAllHooks\": true}', or settings with higher precedence that turn hooks off",
+  "a Claude Code session that does not run inside WSL2 as the Claude Code user: a Windows-native session is not governed at all, because JUNO never sees it (D-173)",
+  "how Claude Code is started: whoever starts it chooses its environment and flags, so a session started with CLAUDE_CODE_MANAGED_SETTINGS_PATH naming another folder, with --settings '{\"disableAllHooks\": true}' where Claude Code honours that over managed settings, or by another program, is not governed; start governed sessions only from the WSL terminal of STATE.md Part E (D-173)",
   "anything Claude Code does without a tool call: its own memory, and an @-mention Claude does not follow with a file tool",
   "a file or symlink changed between JUNO's check and Claude Code's use of it: Claude Code, not JUNO, performs the effect",
-  "managed settings that allow only managed hooks, if JUNO's hook is not among them",
   "a shell function named with a program's absolute path (bash allows `function /usr/bin/cat { ...; }`): JUNO hands Claude Code the command rebuilt with the program's absolute path, so PATH and aliases no longer choose the program, but such a function in the shell's startup files still would; keep those files free of functions (D-150, D-152)",
-  "a PreToolUse hook in another settings file (a project's .claude/settings.json included) that changes a call after JUNO judged it; managed settings with allowManagedHooksOnly prevent that",
+  "a hook in a user's or a project's settings file, where Claude Code does not honour allowManagedHooksOnly (JUNO sets it, D-173)",
 ];
 
 export type HookCommand = { readonly command: string; readonly args: readonly string[] };
@@ -56,6 +62,7 @@ export function versionAtLeast(version: string, minimum: string = MINIMUM_CLAUDE
 export function hookRefusals(settings: Record<string, unknown>, client: string): string[] {
   const refusals: string[] = [];
   if (settings["disableAllHooks"] === true) refusals.push("disableAllHooks is true: no hook would run");
+  if (settings["allowManagedHooksOnly"] !== true) refusals.push("allowManagedHooksOnly is not true: a hook in a user's or a project's settings could change a call after JUNO judged it (D-173)");
   const env = settings["env"];
   if (typeof env !== "object" || env === null || (env as Record<string, unknown>)["CLAUDE_CODE_DISABLE_FILE_MENTIONS"] !== "1") {
     refusals.push("CLAUDE_CODE_DISABLE_FILE_MENTIONS is not 1: @-mentioned files would reach the model with no tool call (D-139)");
@@ -82,19 +89,20 @@ export function hookRefusals(settings: Record<string, unknown>, client: string):
   return refusals;
 }
 
-/** A user or managed settings file; never a project's or a local one (D-143). */
-export function settingsFileRefusal(file: string, home: string = homedir()): string | null {
-  const absolute = resolve(file);
-  if (basename(absolute) === "managed-settings.json") return null;
-  if (absolute === join(home, ".claude", "settings.json")) return null;
-  return `${file} is not the user's settings file (${join(home, ".claude", "settings.json")}) or a managed-settings.json; project and local settings are refused (D-143)`;
+/** Only the managed settings file; never the user's, a project's or a local one (D-143, narrowed by D-173). */
+export function settingsFileRefusal(file: string, managed: string = MANAGED_SETTINGS): string | null {
+  if (resolve(file) === managed) return null;
+  return `${file} is not Claude Code's managed settings file (${managed}); the user's, project and local settings are refused, because the Claude Code user could change them (D-173)`;
 }
 
 export type InstallIo = {
   readonly claudeVersion: () => Promise<string>;
   readonly readSettings: (file: string) => string | null;
   readonly writeSettings: (file: string, text: string) => void;
-  readonly home: string;
+  /** The managed settings file this install may write: MANAGED_SETTINGS, except in tests. */
+  readonly managedSettings: string;
+  /** The effective uid the install runs as: it refuses anything but root (D-173). */
+  readonly uid: number;
 };
 
 export const SYSTEM_INSTALL_IO = (claude: string): InstallIo => ({
@@ -103,12 +111,16 @@ export const SYSTEM_INSTALL_IO = (claude: string): InstallIo => ({
       execFile(claude, ["--version"], { timeout: 30_000 }, (error, stdout) => (error === null ? resolveVersion(stdout) : reject(error)));
     }),
   readSettings: (file) => (existsSync(file) ? readFileSync(file, "utf8") : null),
+  // Root writes it, so root owns it; readable by everyone (the Claude Code user must read it), writable by no one else.
   writeSettings: (file, text) => {
+    mkdirSync(dirname(file), { recursive: true, mode: 0o755 });
     const temporary = join(dirname(file), `.${basename(file)}.juno-${String(process.pid)}`);
-    writeFileSync(temporary, text, { encoding: "utf8", flag: "wx", mode: 0o600 });
+    writeFileSync(temporary, text, { encoding: "utf8", flag: "wx", mode: 0o644 });
+    chmodSync(temporary, 0o644);
     renameSync(temporary, file);
   },
-  home: homedir(),
+  managedSettings: MANAGED_SETTINGS,
+  uid: typeof process.geteuid === "function" ? process.geteuid() : -1,
 });
 
 export type InstallResult = { readonly installed: true; readonly settings: Record<string, unknown>; readonly not_controlled: readonly string[] } | { readonly installed: false; readonly refusals: readonly string[] };
@@ -116,8 +128,9 @@ export type InstallResult = { readonly installed: true; readonly settings: Recor
 /** Installs JUNO's hook into `file`, or refuses and changes nothing. */
 export async function installHook(file: string, hook: HookCommand, client: string, io: InstallIo): Promise<InstallResult> {
   const refusals: string[] = [];
-  const where = settingsFileRefusal(file, io.home);
+  const where = settingsFileRefusal(file, io.managedSettings);
   if (where !== null) refusals.push(where);
+  if (io.uid !== 0) refusals.push("juno hook install must run as root: only root may write the managed settings, so that the Claude Code user cannot change them (D-173)");
   let version = "";
   try {
     version = await io.claudeVersion();
@@ -150,50 +163,49 @@ export async function installHook(file: string, hook: HookCommand, client: strin
     hooks[event] = [...others, hookEntry(hook)];
   }
   const env = { ...(typeof settings["env"] === "object" && settings["env"] !== null ? (settings["env"] as Record<string, unknown>) : {}), CLAUDE_CODE_DISABLE_FILE_MENTIONS: "1" };
-  const result = { ...settings, hooks, env };
+  const result = { ...settings, hooks, env, allowManagedHooksOnly: true };
   const check = hookRefusals(result, client);
   if (check.length > 0) return { installed: false, refusals: check };
   io.writeSettings(file, `${JSON.stringify(result, null, 2)}\n`);
   return { installed: true, settings: result, not_controlled: NOT_CONTROLLED };
 }
 
+const USAGE = "usage: juno hook install --socket <path> --client <juno-hook.js> [--node <node>] [--claude <claude>] [--settings /etc/claude-code/managed-settings.json]\n       juno hook check --agent-user <name> --runner-user <name> --socket <path> --client <juno-hook.js> --node <node> --state <path> [--state <path> ...] [--anchor <file>] [--settings <file>]\n";
+
 /**
- * `juno hook install --settings <file> --socket <path> --client <juno-hook.js> [--node <node>] [--claude <claude>]
- *  [--wsl-distro <name> --wsl-user <user>]` (D-143). With `--wsl-distro`, the hook runs from Windows into WSL2 as
- * `wsl.exe -d <distro> --user <user> --exec <node> <client> --socket <path>` (D-130, D-131). Exit 0 installed, 1 refused, 2 bad usage.
+ * `juno hook install --socket <path> --client <juno-hook.js> [--node <node>] [--claude <claude>] [--settings <file>]`
+ * (D-143, D-173): as root, into the managed settings file; the hook runs `<node> <client> --socket <path>` as the
+ * Claude Code user, inside WSL2. `juno hook check` is preflight.ts. Exit 0 installed or checked, 1 refused, 2 bad usage.
  */
 export async function runHookInstallCli(args: readonly string[], out: (text: string) => void, err: (text: string) => void, ioFor: (claude: string) => InstallIo = SYSTEM_INSTALL_IO): Promise<number> {
   const [command, ...rest] = args;
-  const names = ["--settings", "--socket", "--client", "--node", "--claude", "--wsl-distro", "--wsl-user"];
+  if (command === "check") return runHookCheckCli(rest, out, err);
+  const names = ["--settings", "--socket", "--client", "--node", "--claude"];
   const options = new Map<string, string>();
   for (let index = 0; index < rest.length; index += 2) {
     const name = rest[index] ?? "";
     const value = rest[index + 1];
     if (!names.includes(name) || value === undefined || options.has(name)) {
-      err("usage: juno hook install --settings <file> --socket <path> --client <juno-hook.js> [--node <node>] [--claude <claude>] [--wsl-distro <name> --wsl-user <user>]\n");
+      err(USAGE);
       return 2;
     }
     options.set(name, value);
   }
-  const settings = options.get("--settings");
   const socket = options.get("--socket");
   const client = options.get("--client");
-  const distro = options.get("--wsl-distro");
-  const user = options.get("--wsl-user");
-  if (command !== "install" || settings === undefined || socket === undefined || client === undefined || (distro === undefined) !== (user === undefined)) {
-    err("usage: juno hook install --settings <file> --socket <path> --client <juno-hook.js> [--node <node>] [--claude <claude>] [--wsl-distro <name> --wsl-user <user>]\n");
+  if (command !== "install" || socket === undefined || client === undefined) {
+    err(USAGE);
     return 2;
   }
+  const io = ioFor(options.get("--claude") ?? "claude");
+  const settings = options.get("--settings") ?? io.managedSettings;
   const node = options.get("--node") ?? process.execPath;
-  const hook: HookCommand =
-    distro !== undefined && user !== undefined
-      ? { command: "wsl.exe", args: ["-d", distro, "--user", user, "--exec", node, client, "--socket", socket] }
-      : { command: node, args: [client, "--socket", socket] };
-  const result = await installHook(settings, hook, client, ioFor(options.get("--claude") ?? "claude"));
+  const hook: HookCommand = { command: node, args: [client, "--socket", socket] };
+  const result = await installHook(settings, hook, client, io);
   if (!result.installed) {
     err(`juno hook install: refused:\n${result.refusals.map((line) => `  - ${line}`).join("\n")}\n`);
     return 1;
   }
-  out(`JUNO's hook is installed in ${settings}.\nWhat it cannot control:\n${result.not_controlled.map((line) => `  - ${line}`).join("\n")}\n`);
+  out(`JUNO's hook is installed in ${settings}.\nNext: juno hook check, as root, before the first governed session.\nWhat it cannot control:\n${result.not_controlled.map((line) => `  - ${line}`).join("\n")}\n`);
   return 0;
 }

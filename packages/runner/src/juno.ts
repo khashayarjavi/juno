@@ -20,6 +20,6 @@ else if (command === "runtime" && args[0] === "check") {
   process.exitCode = refusal === null ? 0 : 1;
 } else if (command === "hook") process.exitCode = await runHookInstallCli(args, (text) => process.stdout.write(text), (text) => process.stderr.write(text));
 else {
-  process.stderr.write("usage: juno grant sign|verify ... | juno journal check ... | juno checkpoint restore ... | juno hook install ... | juno runtime check\n");
+  process.stderr.write("usage: juno grant sign|verify ... | juno journal check ... | juno checkpoint restore ... | juno hook install ... | juno hook check ... | juno runtime check\n");
   process.exitCode = 2;
 }
