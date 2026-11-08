@@ -2197,3 +2197,10 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   - **What a call reads:** a tool may name one of its `path` fields as `reads`; the call is then classified by that path's tree, by the one classification function (D-162). A tool with no `reads` is classified as the tool result `mcp.<tool>`: the highest declared class, unless a `tool_result` source names it (D-164). This is checked against the clearance at step 5, before anything is forwarded.
   - **The upstream** is started by `execFile(program, argv)` with no shell and an empty environment unless the operator gives one; its credentials stay there and never reach the client (§3.2). It must answer within 60 seconds and emit at most 64 MiB in a session. An exit, an unreadable line, a timeout, or an error answer rejects every waiting call; the client gets an error, never a forwarded or invented result.
 - Reason: §4.3 mode B, §2.5, §3.2; D8.
+
+## D-188 — Where the gateway runs: the runner serves it on a socket; Claude Code starts a stdio shim that only relays (autopilot ruling)
+- Date: 2026-11-08
+- Status: Accepted (restrictive reading of plan Increment 5 item 2 under D-173)
+- Applies to: `packages/mediated/src/gateway-service.ts`, `packages/mediated/src/mcp-shim.ts`, `packages/mediated/src/juno-mcp.ts`
+- Decision: Claude Code starts a stdio MCP server as its own user, which may not write the journal or hold grants (D-173). So the gateway that judges and journals runs as the runner, served on a Unix socket the runner owns, with the same folder and mode rules as the hook's socket (D-173: the folder writable by its owner only; the socket mode at most 0660). Claude Code's MCP configuration starts `juno-mcp.js --socket <path>`, a root-owned shim using Node's built-in modules only. It decides nothing and relays lines both ways. If the socket cannot be reached, or closes, every request gets an error answer and nothing else is reached (fail-closed). One connection holds the gateway's one session; a second is refused.
+- Reason: D-173's separation; §4.3 fail-closed.
