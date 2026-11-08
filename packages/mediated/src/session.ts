@@ -29,6 +29,7 @@ import {
 import { type JournalWriter, canonicalJson } from "../../journal/src/index.js";
 import { type Adapter, type CapabilityCall, CapabilityRegistry, RegistryEntry, loadRegistryEntry } from "../../registry/src/index.js";
 import { DeclaredSource, type ReadTarget, classifyRead } from "./reads.js";
+import { windowsFormReason, windowsFormRefusal } from "./paths.js";
 import { rebuildBashCommand } from "./rebuild.js";
 
 /**
@@ -150,24 +151,29 @@ const BashFields = z.strictObject({
   run_in_background: z.boolean().optional(),
 });
 
-/** Maps the operator's workspace root, in each spelling the harness may use, onto the capability namespace (D-141). */
+/**
+ * Maps the operator's workspace root onto the capability namespace (D-141). Linux absolute paths only (D-173): a root in
+ * any other form is refused when the map is built, and a Windows-form path never maps (the session refuses it first).
+ */
 export class PathMap {
   readonly #roots: readonly string[];
 
   constructor(roots: readonly string[]) {
-    this.#roots = roots.map((root) => root.replace(/[\\/]+$/, ""));
+    for (const root of roots) {
+      const windows = windowsFormReason(root);
+      if (windows !== null || !root.startsWith("/")) throw new MediatedError(`workspace root ${JSON.stringify(root)} is not a Linux absolute path; JUNO accepts only Linux paths (D-173)`);
+    }
+    this.#roots = roots.map((root) => (root === "/" ? root : root.replace(/\/+$/, "")));
   }
 
-  /** The path under `/work`, or null when it lies under no configured root (then it is outside every scope). */
+  /** The path under `/work`, or null when it lies under no configured root or is not a Linux absolute path (then it is outside every scope). */
   toWork(path: string): string | null {
+    if (windowsFormReason(path) !== null || !path.startsWith("/")) return null;
     for (const root of this.#roots) {
-      const windows = root.includes("\\") || /^[A-Za-z]:/.test(root);
-      const candidate = windows ? path.replace(/\//g, "\\") : path;
-      const sameRoot = windows ? candidate.toLowerCase().startsWith(root.toLowerCase()) : candidate.startsWith(root);
-      if (!sameRoot) continue;
-      const rest = candidate.slice(root.length);
-      if (rest !== "" && !rest.startsWith(windows ? "\\" : "/")) continue;
-      const mapped = "/work" + rest.replace(/\\/g, "/");
+      if (!path.startsWith(root)) continue;
+      const rest = path.slice(root.length);
+      if (rest !== "" && !rest.startsWith("/")) continue;
+      const mapped = "/work" + rest;
       return mapped === "/work/" ? "/work" : mapped;
     }
     return null;
@@ -319,6 +325,17 @@ export class MediatedSessions {
       if (source.selector.kind === "tool_result" && Object.hasOwn(TOOLS, source.selector.tool)) {
         failures.push(`source ${source.id} classifies results of ${source.selector.tool}, a tool JUNO judges by what it reads; only a tool outside the table may be declared (D-164)`);
       }
+    }
+    // D-173: Linux paths only, in the operator's configuration too: a backslash in a source, a reversible workspace or a
+    // grant's scope is how a Windows path is spelled (restrictive; mode A's path type is unchanged, D-173).
+    const configured = [
+      ...request.sources.flatMap((source) => (source.selector.kind === "path" ? [source.selector.prefix] : [])),
+      ...request.reversible_workspaces,
+      ...request.grants.flatMap((grantId) => this.#grants.signed(grantId)?.resource_scope.flatMap((selector) => (selector.kind === "path" ? [selector.prefix] : [])) ?? []),
+    ];
+    for (const path of configured) {
+      const why = windowsFormReason(path);
+      if (why !== null) failures.push(windowsFormRefusal("admission", why));
     }
     if (request.reversible_workspaces.length > 0 && this.#checkpoints === undefined) failures.push("no checkpoint store is configured, so no workspace can be reversible (D-136)");
     for (const entry of request.name_map) {
@@ -563,6 +580,18 @@ export class MediatedSessions {
     };
     const synthesized = (v: unknown): unknown => ({ class: "synthesized", value: v });
     const outside = (key: string): Mapped => ({ kind: "park", reason: "scope_violation", detail: { tool: input.tool_name, field: key, outside_workspace: true }, overridable: false });
+    // D-173: Claude Code is governed only inside WSL2; a Windows-form path anywhere a path is named is refused, fail-closed,
+    // before it is mapped, with a reason that says so. Never overridable: no remedy makes a Windows path a Linux one.
+    const windows = (key: string, given: unknown): Mapped | null => {
+      const why = typeof given === "string" ? windowsFormReason(given) : null;
+      return why === null ? null : { kind: "park", reason: "scope_violation", detail: { tool: input.tool_name, field: key, windows_path: true, why: windowsFormRefusal(key, why) }, overridable: false };
+    };
+    for (const key of ["file_path", "path", "pattern"]) {
+      const refused = windows(key, value(key));
+      if (refused !== null) return refused;
+    }
+    const refusedCwd = windows("cwd", input.cwd);
+    if (refusedCwd !== null) return refusedCwd;
     switch (tool.capability) {
       case "cc.read": {
         const filePath = path("file_path");
@@ -606,6 +635,9 @@ export class MediatedSessions {
         // so the boundary judges the file the harness will act on. One that maps nowhere is outside every scope (D-147).
         const argv: string[] = [];
         for (const element of reading.argv) {
+          // D-173: every operand, absolute or not (`C:x`, `C:/x`, a single-quoted `'a\\b'`).
+          const refusedOperand = windows("argv", element);
+          if (refusedOperand !== null) return refusedOperand;
           if (!element.startsWith("/")) {
             argv.push(element);
             continue;
@@ -659,7 +691,8 @@ export class MediatedSessions {
     session.rejections = 0;
     // §4.3 V6-3: a park denies the call with its reason and is journalled; the remedy applies to the retry.
     this.#append(session.task.id, "park", this.#class(session), SESSION_ACTOR, { reason, overridable, mode: "hook", answer: "deny", ...detail });
-    return deny(`JUNO parked this call: ${reason}. ${overridable ? "The operator may remedy it, and the call can then be retried." : "This cannot be overridden (§8.3)."}`);
+    const why = typeof detail["why"] === "string" && detail["windows_path"] === true ? ` ${detail["why"]}.` : "";
+    return deny(`JUNO parked this call: ${reason}.${why} ${overridable ? "The operator may remedy it, and the call can then be retried." : "This cannot be overridden (§8.3)."}`);
   }
 
   /** An injected Bash command from a session whose admission was refused: recorded against it, never overridable (D-152). */

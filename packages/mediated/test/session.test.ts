@@ -93,7 +93,8 @@ beforeEach(async () => {
   sessions = new MediatedSessions({
     journal,
     grants,
-    paths: new PathMap([work, "\\\\wsl.localhost\\Ubuntu-24.04" + work.replace(/\//g, "\\")]),
+    // D-173: Linux paths only; the `\\wsl.localhost` spelling of the root (D-141) is gone, and the map refuses one.
+    paths: new PathMap([work]),
     resolver: new HostPathResolver(work), view: new Workspace(execFileScript(process.execPath, []), "/work", work), protectedPaths: [join(dir, "checkpoints")],
     clock: () => now,
     checkpoints: { workspace: new Workspace(execFileScript(process.execPath, []), "/work", work), store: new CheckpointStore(join(dir, "checkpoints")) },
@@ -652,5 +653,84 @@ describe("§4.3 sensitivity (V6-7), subagents, results and the rejection limit",
   // proves §4.3: a session not admitted, or input JUNO cannot read, is denied (fail-closed)
   it("denies calls from a session that was never admitted", async () => {
     expect(await sessions.preToolUse({ ...(pre("Read", { file_path: join(work, "project", "notes.txt") }) as Record<string, unknown>), session_id: "unknown" })).toMatchObject({ decision: "deny" });
+  });
+});
+
+describe("D-173 (operator ruling on D-172, option b): Claude Code is governed only inside WSL2; JUNO accepts only Linux absolute paths", () => {
+  const WINDOWS_FORMS = (): readonly string[] => [
+    "\\\\wsl.localhost\\Ubuntu-24.04" + join(work, "project", "notes.txt").replace(/\//g, "\\"),
+    "\\\\wsl$\\Ubuntu-24.04" + join(work, "project", "notes.txt").replace(/\//g, "\\"),
+    "\\\\?\\C:\\project\\notes.txt",
+    "\\\\.\\C:\\project\\notes.txt",
+    "\\\\server\\share\\notes.txt",
+    "//server/share/notes.txt",
+    "//?/C:/project/notes.txt",
+    "C:\\project\\notes.txt",
+    "c:/project/notes.txt",
+    "C:notes.txt",
+    join(work, "project") + "\\secrets.\\key.txt",
+    join(work, "project", "secrets") + "\\key.txt",
+  ];
+
+  // proves D-173: every Windows spelling of a path a tool names is refused, not overridable, with a reason that says so; nothing reaches the classifier as an allowed read
+  it("refuses a Windows-form path in Read, Write, Edit and Glob, fail-closed, with a clear reason", async () => {
+    for (const path of WINDOWS_FORMS()) {
+      for (const [tool, input] of [
+        ["Read", { file_path: path }],
+        ["Write", { file_path: path, content: "x" }],
+        ["Edit", { file_path: path, old_string: "a", new_string: "b" }],
+        ["Glob", { pattern: "*", path }],
+      ] as const) {
+        const decision = await sessions.preToolUse(pre(tool, input));
+        expect(decision, `${tool} ${path}`).toMatchObject({ decision: "deny", reason: expect.stringContaining("Windows-form path") });
+        expect(decision).toMatchObject({ reason: expect.stringContaining("only inside WSL2") });
+        expect(decision).toMatchObject({ reason: expect.stringContaining("cannot be overridden") });
+      }
+    }
+    const recorded = parks();
+    expect(recorded.length).toBe(WINDOWS_FORMS().length * 4);
+    expect(recorded.every((park) => park["reason"] === "scope_violation" && park["overridable"] === false && park["windows_path"] === true)).toBe(true);
+    // Nothing was authorized, so no result can be recorded against any of these calls.
+    expect(entries().filter((entry) => entry.kind === "capability_result")).toEqual([]);
+  });
+
+  // proves D-173: a Glob pattern with a backslash or a drive letter is refused the same way
+  it("refuses a Glob pattern in Windows form", async () => {
+    for (const pattern of ["secrets\\*", "C:*"]) {
+      expect(await sessions.preToolUse(pre("Glob", { pattern, path: join(work, "project") }))).toMatchObject({ decision: "deny", reason: expect.stringContaining("Windows-form path") });
+    }
+  });
+
+  // proves D-173: a Bash operand in Windows form is refused, absolute or not, and so is a Windows-form working directory
+  it("refuses a Windows-form Bash operand or working directory", async () => {
+    for (const command of ["cat 'C:\\project\\notes.txt'", "cat C:/project/notes.txt", "cat C:notes.txt", "cat '\\\\wsl.localhost\\Ubuntu-24.04\\work\\notes.txt'", "cat //server/share/notes.txt", "cat 'secrets\\key.txt'"]) {
+      const decision = await sessions.preToolUse(pre("Bash", { command }));
+      expect(decision, command).toMatchObject({ decision: "deny", reason: expect.stringContaining("Windows-form path") });
+    }
+    const cwd = "\\\\wsl.localhost\\Ubuntu-24.04" + join(work, "project").replace(/\//g, "\\");
+    expect(await sessions.preToolUse(pre("Bash", { command: "cat notes.txt" }, { cwd }))).toMatchObject({ decision: "deny", reason: expect.stringContaining("cwd") });
+    expect(await sessions.preToolUse(pre("Read", { file_path: join(work, "project", "notes.txt") }, { cwd: "C:\\Users\\me" }))).toMatchObject({ decision: "deny", reason: expect.stringContaining("Windows-form path") });
+  });
+
+  // proves D-173 (positive control): the same files by their Linux paths are judged as before
+  it("still judges the same files by their Linux paths", async () => {
+    expect(await call("Read", { file_path: join(work, "project", "notes.txt") })).toEqual({ decision: "none" });
+    expect(await call("Bash", { command: "cat notes.txt" })).toMatchObject({ decision: "allow" });
+    expect(await sessions.preToolUse(pre("Read", { file_path: join(work, "project", "secrets", "key.txt") }))).toMatchObject({ decision: "deny", reason: expect.stringContaining("sensitivity_ceiling") });
+  });
+
+  // proves D-173: the operator's configuration is Linux paths too; a backslash in a source prefix is refused at admission
+  it("refuses at admission a source written with a backslash", async () => {
+    const refused = await sessions.admit(request({ session_id: "windows-source", sources: [{ id: "project", selector: { kind: "path", prefix: "/work/project\\secrets" }, data_class: { sensitivity: "internal", integrity: "untrusted" } }] }));
+    expect(refused).toMatchObject({ admitted: false, failures: expect.arrayContaining([expect.stringContaining("Windows-form path")]) });
+  });
+
+  // proves D-173: a workspace root in Windows form is refused when the map is built (D-141's second spelling is gone)
+  it("refuses a Windows-form workspace root", () => {
+    for (const root of ["\\\\wsl.localhost\\Ubuntu-24.04\\home\\me\\work", "C:\\work", "c:/work", "//server/share", "relative/work", "/home/me\\work"]) {
+      expect(() => new PathMap([root]), root).toThrow(/Linux/);
+    }
+    expect(new PathMap([work]).toWork(join(work, "project"))).toBe("/work/project");
+    expect(new PathMap([work]).toWork(work + "\\project")).toBeNull();
   });
 });
