@@ -3,7 +3,16 @@
 ## Current increment
 **Slice 1.5 — Increment 4: hook mode for Claude Code (§4.3 mode C)** (`docs/plans/slice-1.5-build-plan.md`, Increment 4; also §2.3.2 E1, §7.8 E2, D-131's Increment 4 directives). Branch `claude/trusting-faraday-jrgos5` (this session's only pushable branch, D-176); it carries PR #41's commits unchanged (which carry PR #40's, #39's, #38's and #37's), and its PR supersedes PR #41. Spec v0.6.1. No objection open.
 
-Status (2026-11-08, second set of rulings): **your rulings D-173, D-174 and D-175 are built; review round 8 next (authorised once, D-175).** Nothing merged yet; Increment 5 not started.
+Status (2026-11-08): **STOPPED (D-175, D-177): review round 8 (PR #42, head 232dcf5) ended DO NOT MERGE, and its finding is the class D-175 names.** Your rulings D-173 and D-174 are built, and on that head `make verify` is GREEN (1,087 unit, 108 container), CI run 42516417217 is green (`verify`, `verify-rootless`), and `make mediated-e2e` is 7 of 7 with the real Claude Code 2.1.319. Not fixed (it needs your ruling). Nothing merged; Increment 5 not started.
+- **For you (the operator):** rule on D-177's options (a), (b) or (c) (or a combination), and whether a round 9 is authorised.
+- **What round 8 found, in plain words.** The plan still lets you mount a Windows folder into WSL as the workspace, through one `/etc/fstab` line. On such a folder Linux ignores upper and lower case. JUNO's resolver does not, so `/work/project/SECRETS/key.txt` looks to JUNO like an ordinary file under `project` (internal), while the kernel opens `project/secrets/key.txt` (secret). It is round 7's case trick again, reached through a Linux path this time. It does **not** affect the setup Part E describes (`/srv/juno-work` on WSL's own file system), and a governed tool call cannot create such a mount. It was not reproduced here: the cloud machine cannot fold case and cannot run WSL.
+- **The options (D-177):**
+  - (a) JUNO refuses a workspace that is not on a case-sensitive Linux file system, or that holds a case-folding folder;
+  - (b) the plan drops the Windows-folder allowance;
+  - (c) a Windows folder is allowed only with WSL's `case=force` option, which `juno hook check` verifies.
+
+  (a) together with (b) is the most restrictive.
+- **Reviewer's other checks:** 1–4 and 6 PASS.
 - **Ruling 1 (D-173, on D-172 option (b)): Claude Code is governed only inside WSL2, as its own Linux user.**
   - **Linux paths only.** Any Windows-form path is refused before JUNO judges anything: a backslash anywhere (`\\wsl.localhost\…`, `\\?\…`, `\\server\share`, `C:\x`), a drive letter (`C:`, `c:/x`), or a leading `//`. It applies to Read, Write, Edit, Glob (path and pattern), the call's working folder, and every Bash operand. The call is stopped, cannot be overridden, and the reason says: "… is a Windows-form path. JUNO governs Claude Code only inside WSL2 and accepts only Linux absolute paths (D-173)". Your session settings are checked the same way at admission. So round 7's `secrets.\key.txt` and `SECRETS\key.txt` can no longer reach JUNO's classifier at all.
   - **No Windows-to-WSL bridge.** `juno hook install` no longer writes `wsl.exe`; the hook runs inside WSL2 as the Claude Code user.
@@ -20,7 +29,7 @@ Status (2026-11-08, second set of rulings): **your rulings D-173, D-174 and D-17
   - **Kernel oracle, extended.** It now has a fixed `node_modules/.bin` layout and shortcuts crossing sources in every direction: into and out of `secrets`, from `other/pub` into `project` and back, and to unregistered and outside places. On the fixed seed: 100 generated paths, 75 opened something, 20 kept a class below your highest, 3 of those through a shortcut (so the refinement is really exercised). JUNO's class was never below the class of what the kernel opened.
   - **Mutation checks (run, then reverted).** (1) Classifying a redirected path by its text instead of the kernel's place: **the oracle fails on its own**, a shortcut into `secrets` read as `internal`. (2) Removing the same-source-set comparison: the oracle still passes, because JUNO classifies by the kernel's place, which is never below the kernel. Only the explicit crossing tests fail. So the set comparison is the extra margin your ruling asks for, and those tests guard it.
 - **Gap to know about (not new, now stated plainly):** no command yet starts JUNO's hook service and admits sessions on your machine. The service, the admission and the hook exist and are tested (unit, container, real binary). Parts E and F prepare the machine. Until such a command exists, governed Claude Code sessions run only in the tests.
-- **`make verify`:** see "make verify" below. Review round 8 next; a repeat of the "read counted below its real class" class is a STOP (D-175).
+- **`make verify`:** GREEN on 232dcf5 (see "make verify" below).
 
 ### Earlier in this increment (first set of 2026-11-08 rulings, round 7)
 Before the STOP, this session built the operator's rulings of 2026-11-08 (D-167 to D-171):
@@ -817,6 +826,8 @@ Everything is in `packages/runner/` unless named. Every test names the section i
 - **Operator:** the Windows steps (Increment 2, "Operator steps", Parts A–C, then Part E for WSL2). The code does not wait for them.
 
 ## make verify
+Local, 2026-11-08 on 232dcf5 (PR #42): **GREEN** (1,087 unit, 108 container; the 36 new container tests are D-173's separation test). CI on 232dcf5 (run 42516417217): `verify` success, `verify-rootless` success. `make mediated-e2e` on 232dcf5: 7 of 7, Claude Code 2.1.319. One earlier local run on e62b723 (before 232dcf5) was RED on `groq.test.ts` "lets the hook's files use node:net for a Unix-domain socket only": `HookService.listen` had gained an options argument, which that guard test's pinned call shape refuses; fixed in the code (the socket mode moved to the constructor), the test unchanged.
+
 Local, 2026-11-04 on this branch (PR #35): **GREEN** (829 unit, 69 container), after pointing the session's Docker daemon at `mirror.gcr.io` (Docker Hub 429). CI on 8057fe2 (run 41887176162): `verify` success, `verify-rootless` success.
 
 Earlier: local, 2026-11-03 on this branch (documents only since `main`): **RED on this host only for Docker Hub** (`429 Too Many Requests` pulling `node:22-bookworm-slim` for the container images) after typecheck, lint and 697 of 697 unit tests passed. CI `verify` on the PR head decides. Earlier: local GREEN on 5ee1594 (697 unit, 51 container); GREEN on 83c7e2e and 73100df (D-085, D-086).
