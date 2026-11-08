@@ -3,9 +3,41 @@
 ## Current increment
 **Slice 1.5 — Increment 5: gateway mode for MCP (§4.3 mode B)** (`docs/plans/slice-1.5-build-plan.md`, Increment 5; §4.3, §2.3.2, §7.8 E2, §2.2.2 for `external` effects; D-154). Branch `claude/loving-brahmagupta-rp1azf`, restarted from `main` 0aa797d after PR #43 merged. Spec v0.6.1. No objection open.
 
-Status (2026-11-08): **started.** Nothing built yet beyond the items below.
-- **Observed (plan item 1, rule 13):** Claude Code 2.1.319, started with one stdio MCP server, first sends `server/discover` with `_meta` protocol version `2026-07-28`; when the server answers "method not found", it falls back to `initialize` with protocol version `2025-11-25`, then `notifications/initialized` and `tools/list`. The gateway will speak exactly `2025-11-25` and refuse `server/discover` (D-185, to be recorded when built).
-- **Next steps:** D-183 (the D-046 property test's time budget, below); D-154 in step 4 (enumerated targets on the resolved path; exact non-path values, email domain case-insensitive); `juno-gateway` over stdio JSON-RPC; the test MCP server (`files.read`, `message.send`); the plan's tests; then review and the gate.
+Status (2026-11-08): **in progress; not done.** Built and committed so far (each with tests, all green locally):
+- **D-183:** the D-046 property test states a 30 s time budget (same assertions and runs). It timed out once under CI load on PR #43.
+- **D-154 in step 4 (D-184):** an enumerated path target matches only on its resolved path; never when unresolved or hard-linked. Other values match only exactly, except an email's domain, which is compared without regard to ASCII case.
+- **The MCP gateway core** (`packages/mediated/src/gateway.ts`, `gateway-stdio.ts`):
+  - one admitted Task per session (`steer_capability: none`);
+  - operator tool definitions (typed capabilities that pass registration review);
+  - every `tools/call` judged by the boundary, with untrusted arguments and operator constants;
+  - the read gate before anything is forwarded;
+  - parks and rejections answered `isError: true`, journalled, and never forwarded;
+  - responses journalled as untrusted and raising the floor;
+  - the upstream started by `execFile`;
+  - MCP `2025-11-25` only (D-185);
+  - `input_required` answers and server-to-client requests refused (D-186);
+  - session and tool definitions as D-187 describes.
+- **The test MCP server** (`test/mcp/test-server.mjs`, test-only). It records everything it receives, so a test can prove a parked call never reached it.
+- **Tests** (`packages/mediated/test/gateway.test.ts`, 14):
+  - an out-of-scope argument parks and is never received;
+  - acceptance test 3: an unenumerated untrusted recipient parks `integrity_floor`, and the enumerated one is delivered with an untrusted body;
+  - a read above the clearance parks before forwarding;
+  - only defined tools are listed, and others are rejected;
+  - E2;
+  - a forged grant is refused;
+  - fail-closed: upstream unreachable, boundary unable to judge, malformed upstream result, other protocol revisions, before admission;
+  - `input_required` and elicitation are refused;
+  - a scripted client over the stdio transport.
+- **Observed (plan item 1, rule 13):** Claude Code 2.1.319 first sends `server/discover` (2026-07-28). When the server answers "method not found", it falls back to `initialize` `2025-11-25` (D-185).
+
+**Left in this increment, in order:**
+1. **Where the gateway runs.** Claude Code starts a stdio MCP server as its own user (`juno-agent`), but the gateway must run as the runner, because it writes the journal (D-173's separation). So:
+   - the gateway is served on a runner-owned Unix socket, as the hook service is;
+   - Claude Code launches a small root-owned stdio shim (like `juno-hook.js`) that relays lines to that socket, fail-closed when it is down;
+   - plus the `juno gateway` command that loads a session file, admits it and serves the socket (record as a D-number).
+2. The real-binary run (`make mediated-e2e`): Claude Code with the scripted model calls `message.send` through the shim. The unenumerated recipient parks, and the test server's record stays empty (§4.3 acceptance test 3).
+3. STATE.md: what mode B does not protect (tool descriptions, which pass through unchanged; what the upstream does with an allowed call; anything Claude Code does outside MCP).
+4. `make verify`, the PR, review, and the gate.
 
 ### Merges this session
 - **PR #43 (Slice 1.5 Increment 4, supersedes #42): merged** as 0aa797d, pinned to head 39ca6af. Reviewer round 9 (fresh subagent, P2 verbatim): **MERGE**, all six checks PASS. CI on 39ca6af: run 42526418093, `verify-rootless` green on attempt 1; `verify` timed out once in an unchanged test (`enforcement.test.ts:722`, the D-046 property: 5 s budget, about 2.8 s here) and was green on attempt 2. CI on main for 0aa797d: run 42528332351 (result below once read).
