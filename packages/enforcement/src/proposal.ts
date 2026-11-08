@@ -82,4 +82,9 @@ export type TaskContext = {
    * `irreversible`.
    */
   readonly reversible?: readonly string[];
+  /**
+   * Mediated modes only (§4.3 V6-7, D-150): the class of what the call would read, and the session provider's declared
+   * clearance. Judged at step 5, after integrity, scope and effects, so a park that cannot be overridden always wins.
+   */
+  readonly readGate?: { readonly reads: Sensitivity; readonly clearance: Sensitivity };
 };

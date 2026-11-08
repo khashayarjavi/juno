@@ -118,12 +118,30 @@ describe("the one host (D-072, D-073)", () => {
       const src = join(repoRoot, "packages", pkg, "src");
       for (const file of readdirSync(src, { recursive: true }).map(String)) {
         if (!file.endsWith(".ts")) continue;
-        if (network.test(readFileSync(join(src, file), "utf8")) && `${pkg}/${file}` !== "runner/groq.ts") offenders.push(`${pkg}/${file}`);
+        const source = readFileSync(join(src, file), "utf8");
+        const name = `${pkg}/${file}`;
+        // D-144: the mode-C hook's two files use node:net for a Unix-domain socket only (local IPC, build plan Slice 1.5
+        // Increment 4); they are held to that below. Anything else that matches is network code and fails.
+        const unixSocketOnly = UNIX_SOCKET_FILES.has(name) && !/\bfetch\(|node:https?\b|node:tls\b|node:dgram\b|\bundici\b|WebSocket/.test(source);
+        if (network.test(source) && name !== "runner/groq.ts" && !unixSocketOnly) offenders.push(name);
       }
     }
     expect(offenders).toEqual([]);
   });
+
+  // proves D-073 with D-144: the hook's socket files open no network connection: no host, port or URL, and they connect
+  // and listen only on a socket path
+  it("lets the hook's files use node:net for a Unix-domain socket only", () => {
+    for (const name of UNIX_SOCKET_FILES) {
+      const source = readFileSync(join(repoRoot, "packages", name.replace("/", "/src/")), "utf8");
+      expect(source, name).not.toMatch(/\b(port|host|hostname)\s*:|https?:\/\/|createConnection|\.listen\(\s*\d|connect\(\s*[\d{]/);
+      for (const call of source.match(/\b(connect|listen)\([^)]*\)/g) ?? []) expect(call, name).toMatch(/^(connect\(socketPath\)|listen\(path, |listen\(path: string\))/);
+    }
+  });
 });
+
+/** The mode-C hook's Unix-domain socket files (D-144). */
+const UNIX_SOCKET_FILES: ReadonlySet<string> = new Set(["mediated/hook-service.ts", "mediated/hook-client.ts"]);
 
 describe("the profile (§13.1, D-073)", () => {
   // proves §13.1 / D-072: the Groq profile is a valid Provider Capability Profile for openai/gpt-oss-120b, with its settings captured

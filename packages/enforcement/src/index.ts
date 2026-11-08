@@ -8,3 +8,5 @@ export * from "./canonical.js";
 export * from "./signature.js";
 export * from "./sshsig.js";
 export * from "./checkpoint.js";
+export * from "./command-string.js";
+export * from "./runtime.js";

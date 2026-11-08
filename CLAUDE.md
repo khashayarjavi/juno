@@ -124,7 +124,13 @@ LOOP — repeat until the current slice's plan is complete or a STOP fires:
    the PR number and docs/session-prompts.md's review prompt (P2)
    verbatim, plus, for Increment 5, a re-check of D-052 to D-054 in
    packages/enforcement. The reviewer changes no code. If it says
-   DO NOT MERGE, fix every FAIL, push, and review again. Max 3 rounds.
+   DO NOT MERGE, fix every FAIL, push, and review again. Rounds continue
+   while each round's findings are new and fixed, up to a maximum of 5
+   (operator change, D-157); for PR #42's increment (Increment 4) the
+   maximum is 10 (operator change, D-179). A finding that is a new
+   mechanism within an already-seen class is fixed with the most
+   restrictive option, covered by extending the kernel-oracle or
+   property test, recorded as an autopilot ruling, and review continues.
 6. Merge gate (the repo has no branch protection; this gate replaces it):
    a. The reviewer said MERGE on the current head, and no objection is open.
    b. Read the CI verify result for the PR's current head commit SHA
@@ -159,7 +165,11 @@ STOP (write the reason into STATE.md, commit, push, then report) if:
 - the restrictive reading would make a §18 acceptance test impossible;
 - any choice would let a model-authored value reach an instruction
   field, or make a non-overridable park overridable;
-- three review rounds still end DO NOT MERGE;
+- five review rounds (ten for Increment 4) still end DO NOT MERGE;
+- before that limit, a round finds a MECHANISM already fixed in an
+  earlier round or recorded in DECISIONS.md (name that fix). A new
+  mechanism within an already-seen class is not a STOP (step 5;
+  operator change, D-179);
 - you cannot merge for lack of permission (mark the PR ready first);
 - you hit a usage limit (save state; the next session resumes here).
 

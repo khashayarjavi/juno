@@ -40,6 +40,18 @@ jobs:
             exit 1
           fi
 
+      # The kernel oracle's case-folded folder (DECISIONS.md D-178): an ext4 made with the casefold feature, mounted by
+      # loop, owned by the test user. JUNO_CASEFOLD_REQUIRED makes the oracle fail if this folder is missing.
+      - name: A case-folding folder for the kernel oracle (D-178)
+        run: |
+          truncate -s 64M "$RUNNER_TEMP/casefold.img"
+          sudo mkfs.ext4 -q -F -O casefold "$RUNNER_TEMP/casefold.img"
+          sudo mkdir -p /mnt/juno-casefold
+          sudo mount -o loop "$RUNNER_TEMP/casefold.img" /mnt/juno-casefold
+          sudo chown "$(id -u):$(id -g)" /mnt/juno-casefold
+          echo "JUNO_CASEFOLD_ROOT=/mnt/juno-casefold" >> "$GITHUB_ENV"
+          echo "JUNO_CASEFOLD_REQUIRED=1" >> "$GITHUB_ENV"
+
       - name: make verify
         run: make verify
 

@@ -9,14 +9,38 @@ import { parseAtBoundary } from "../../contracts/src/index.js";
  * Step 4 judges every path on its canonical form: symlinks resolved against the volume the effect will touch. A path
  * that does not exist yet is resolved through its longest existing ancestor: the ancestor is canonicalized and must lie
  * in scope, and the missing remainder must hold no `..`, no symlink and no empty component. A path that cannot be
- * resolved (a symlink loop, a permission error, a remainder that fails those conditions) is outside scope.
+ * resolved (a symlink loop, a permission error, a remainder that fails those conditions) is outside scope. An existing
+ * regular file with a link count above 1 is reported `hardLinked` (D-157).
  *
  * Resolution runs where the effect runs, by an operator-fixed program the model never names: the workload image's own
  * node with `RESOLVER_SCRIPT`. It is not in any capability's program enum; the boundary's caller runs it before the
  * boundary judges, and the boundary judges only what it returned.
  */
 
-export type CanonicalPath = { readonly ok: true; readonly canonical: string } | { readonly ok: false; readonly reason: string };
+/**
+ * `hardLinked`: the path is an existing regular file with a link count above 1 (D-157). It is the same file as another
+ * path, which may lie in any source or none, so a clearance or scope decision cannot judge it by its path.
+ * `redirected`: the canonical form (what the kernel resolves) differs from the raw path's lexical normalization in any
+ * way (operator ruling 2 of 2026-11-08, D-168). Clearance and scope decisions read it at the safe default: the highest
+ * declared class for a read (mode C's classifier), and never reversible for a write (step 4, as D-158).
+ */
+export type CanonicalPath = { readonly ok: true; readonly canonical: string; readonly hardLinked?: true; readonly redirected?: true } | { readonly ok: false; readonly reason: string };
+
+/**
+ * A raw absolute path's lexical normalization (operator ruling 2 of 2026-11-08, DECISIONS.md D-168): empty and `.`
+ * components dropped, each `..` taking away the component before it as text (never above `/`), no trailing slash.
+ * Plain paths have the same canonical form; a path whose canonical form differs from it in any way (a symlink in any
+ * component, `..` after a symlink, a path that leaves `/` by `..`) is `redirected`.
+ */
+export function lexicalNormal(path: string): string {
+  const segments: string[] = [];
+  for (const segment of path.split("/")) {
+    if (segment === "" || segment === ".") continue;
+    if (segment === "..") segments.pop();
+    else segments.push(segment);
+  }
+  return "/" + segments.join("/");
+}
 /** Raw path (as the call carries it, joined to `cwd`) → its canonical form, or why it has none. */
 export type CanonicalPaths = ReadonlyMap<string, CanonicalPath>;
 
@@ -53,6 +77,17 @@ const results = paths.map((path) => {
     }
     const canonicalAncestor = outside(real);
     if (canonicalAncestor === null) return { path, error: "resolves outside the resolver's view" };
+    // D-182: every name the kernel matched below the view's root must be listed, byte for byte, in its folder. On a
+    // folder that folds case (or Unicode form), realpath keeps the name as written while the kernel opens another entry.
+    {
+      let parent = to;
+      for (const name of real.slice(to.length).split("/").filter((part) => part !== "")) {
+        let listed;
+        try { listed = fs.readdirSync(parent); } catch (error) { return { path, error: "cannot be resolved: " + (error && error.code ? error.code : "error") }; }
+        if (!listed.includes(name)) return { path, error: "the kernel matched " + JSON.stringify(name) + " to an entry listed under another name: the folder folds case (D-182)" };
+        parent = parent + "/" + name;
+      }
+    }
     const rest = parts.slice(keep);
     if (rest.some((part) => part === ".." || part === "")) return { path, error: "the missing remainder holds .. or an empty component" };
     if (rest.length > 0) {
@@ -61,14 +96,18 @@ const results = paths.map((path) => {
       }
     }
     const tail = rest.filter((part) => part !== ".");
-    return { path, canonical: tail.length === 0 ? canonicalAncestor : (canonicalAncestor === "/" ? "" : canonicalAncestor) + "/" + tail.join("/") };
+    const canonical = tail.length === 0 ? canonicalAncestor : (canonicalAncestor === "/" ? "" : canonicalAncestor) + "/" + tail.join("/");
+    if (rest.length > 0) return { path, canonical };
+    // D-157: a regular file with more than one link is the same file under another name, so its class is not its path's.
+    let stat; try { stat = fs.statSync(real); } catch (error) { return { path, error: "cannot be resolved: " + (error && error.code ? error.code : "error") }; }
+    return stat.isFile() && stat.nlink > 1 ? { path, canonical, hard_linked: true } : { path, canonical };
   }
   return { path, error: "no ancestor exists" };
 });
 process.stdout.write(JSON.stringify(results));
 `;
 
-const ResolverOutput = z.array(z.union([z.strictObject({ path: z.string(), canonical: z.string() }), z.strictObject({ path: z.string(), error: z.string() })]));
+const ResolverOutput = z.array(z.union([z.strictObject({ path: z.string(), canonical: z.string(), hard_linked: z.literal(true).optional() }), z.strictObject({ path: z.string(), error: z.string() })]));
 
 /** Reads the resolver's output for `paths`. Anything unreadable, or a path it did not answer, is unresolved (fail-closed). */
 export function readResolverOutput(paths: readonly string[], stdout: string): CanonicalPaths {
@@ -79,7 +118,15 @@ export function readResolverOutput(paths: readonly string[], stdout: string): Ca
   } catch {
     parsed = [];
   }
-  for (const item of parsed) answered.set(item.path, "canonical" in item ? { ok: true, canonical: item.canonical } : { ok: false, reason: item.error });
+  for (const item of parsed) {
+    if (!("canonical" in item)) {
+      answered.set(item.path, { ok: false, reason: item.error });
+      continue;
+    }
+    // D-168: whether the kernel's answer differs from the path as written, normalized as text.
+    const redirected = item.canonical !== lexicalNormal(item.path);
+    answered.set(item.path, { ok: true, canonical: item.canonical, ...(item.hard_linked === true ? { hardLinked: true as const } : {}), ...(redirected ? { redirected: true as const } : {}) });
+  }
   return new Map(paths.map((path) => [path, answered.get(path) ?? { ok: false, reason: "the resolver did not answer" }]));
 }
 
@@ -110,6 +157,32 @@ export class WorkloadPathResolver implements PathResolver {
         file: "docker",
         args: ["compose", "-f", composeFile, "-p", project, "run", "--rm", "--no-deps", "-T", "--entrypoint", WORKLOAD_NODE, service, ...resolverArgs("/work", "/work", paths)],
       });
+      return readResolverOutput(paths, result.exitCode === 0 ? result.stdout.toString("utf8") : "");
+    } catch (error: unknown) {
+      const reason = `the resolver did not run: ${error instanceof Error ? error.message : String(error)}`;
+      return new Map(paths.map((path) => [path, { ok: false, reason }]));
+    }
+  }
+}
+
+/**
+ * Resolves on this host, by the same operator-fixed script, with the workspace's host directory standing for `/work`
+ * (D-141). Hook and gateway modes use it: there the harness performs the effect on the host's files, so the paths are
+ * resolved where it acts. (Unit tests of mode A use it too, over a directory standing for the work volume.)
+ */
+export class HostPathResolver implements PathResolver {
+  readonly #root: string;
+  readonly #node: string;
+
+  constructor(root: string, node: string = process.execPath) {
+    this.#root = root;
+    this.#node = node;
+  }
+
+  async resolve(paths: readonly string[]): Promise<CanonicalPaths> {
+    if (paths.length === 0) return new Map();
+    try {
+      const result = await executeOutbound({ file: this.#node, args: resolverArgs("/work", this.#root, paths) });
       return readResolverOutput(paths, result.exitCode === 0 ? result.stdout.toString("utf8") : "");
     } catch (error: unknown) {
       const reason = `the resolver did not run: ${error instanceof Error ? error.message : String(error)}`;

@@ -1573,3 +1573,580 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   - **Outcome.** The workspace is listed after the write and compared with the manifest. `restored` only when they are identical; `failed`, with the reason, otherwise. Either way it is journalled.
   - **CLI:** `juno checkpoint restore --journal <dir> --checkpoints <dir> --compose <file> --project <name> --principal <operator> <task> <checkpoint>`. It prints the outcome as JSON. Exit 0 restored, 1 not, 2 bad usage.
 - Reason: §2.2.2's "restoring that checkpoint is an operator action recorded in the journal".
+
+## D-139 — Increment 4: the Claude Code hooks reference re-read; differences from plan §1.1 (Slice 1.5 Increment 4)
+- Date: 2026-11-05
+- Status: Accepted (plan Increment 4 item 1; autopilot rulings, restrictive, where marked)
+- Applies to: Slice 1.5 Increment 4 (hook mode)
+- Sources read on 2026-11-05 (rule 13; SHA-256 of the fetched Markdown, first 16 hex digits):
+  - https://code.claude.com/docs/en/hooks.md: `54d66bf143d888ac` (the plan read `524960c086d43f6e`);
+  - …/headless.md: `62359e4f8585a404`;
+  - …/env-vars.md: `a28b5288f8855f54`;
+  - …/settings.md: `448f49ae3a98bdf9`;
+  - Claude Code in the cloud session: 2.1.318.
+- **Unchanged from plan §1.1, checked point by point:**
+  1. Hooks fail open by default.
+  2. `onFailure: "block"` on a `command` or `http` hook blocks the action when the hook fails or times out (v2.1.295 or later).
+  3. Exec form (`command` plus `args`) spawns "with no shell involved".
+  4. PreToolUse decisions are `allow`, `deny`, `ask` and `defer`, with precedence `deny` > `defer` > `ask` > `allow`. A `deny` reason is shown to Claude. Exit 0 with no output is no decision ("staying silent doesn't approve it").
+  5. `defer` works only in `-p` mode.
+  6. PostToolUse cannot block; the tool has already run.
+  7. Subagents fire the same hooks, with `agent_id` and `agent_type`.
+  8. `disableAllHooks` exists, and `--settings '{"disableAllHooks": true}'` overrides project and local settings.
+  9. `tool_input.file_path` is always absolute for `Write`, `Edit` and `Read`.
+  10. `ANTHROPIC_BASE_URL` and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` exist.
+- **New since the plan, and how JUNO reads it:**
+  - **`CLAUDE_CODE_DISABLE_FILE_MENTIONS=1`** (v2.1.299 or later; honoured in the shell, user or managed settings, ignored in project and local settings). With it, `@`-mentioned files are not inserted; Claude gets the paths "with a note to read them using its file tools", and "your matching PreToolUse hooks run". **Restrictive ruling:**
+    - `juno hook install` writes this variable into the settings file it installs into, and refuses a project or local settings file (where Claude Code ignores it);
+    - the minimum Claude Code version becomes **2.1.299**, not 2.1.295;
+    - §4.3's "not protected" row for `@`-mentions then shrinks to "a mention Claude does not follow up with a file tool reads nothing".
+  - **`updatedInput`** (PreToolUse) can replace a tool's input, and **`updatedToolOutput`** (PostToolUse) can replace what Claude sees. **JUNO never emits either:** a hook that rewrote calls would make what JUNO judged differ from what runs. Tests assert that no decision JUNO emits carries them.
+  - **On Windows, exec form needs a real executable** (`.cmd` and `.bat` shims cannot be spawned). The hook's `command` is `wsl.exe` (D-131), which is one.
+- Reason: plan Increment 4 item 1 and rule 13. Each new feature is either used to close a gap, fail-closed, or never emitted.
+
+## D-140 — The §2.3.2 command-string reader (Slice 1.5 Increment 4)
+- Date: 2026-11-05
+- Status: Accepted (applies §2.3.2 and D-105; autopilot rulings, restrictive, where marked)
+- Applies to: Slice 1.5 Increment 4 onward (`packages/enforcement/src/command-string.ts`)
+- Decision: `readCommandString(text, nameMap)` splits a Bash command string by §2.3.2's grammar, with no shell, and either parks (`integrity_floor`, with a reason) or returns the program path from the operator's name map and the argv.
+  - **As the spec lists:** spaces and tabs separate words. A single-quoted word is literal. A double-quoted word may contain none of `$`, `` ` ``, `\`, `!`. Outside single quotes, `| & ; < > ( ) $ ` \ { }`, a newline and (D-105) `#` park. Also parked: an unquoted `* ? [ ]`, a leading `~`, a leading `NAME=value` on the first word, and a name not in the map. `PATH` is never read.
+  - **Restrictive readings:**
+    - an unquoted `!` parks (bash's negation keyword and history character);
+    - a carriage return parks like a newline;
+    - double quotes may not hide any character that parks outside them (`#`, `|`, …);
+    - an unterminated quote parks;
+    - a keyword or builtin parks **whatever its quoting**, in any position (`cat 'eval'` parks), using bash 5's reserved words and builtins, `echo`, `printf`, `test`, `true` and `kill` included;
+    - an absolute path as the program parks unless the name map has that exact string as a key.
+- Reason: §2.3.2 V6-5. Where it says "any of these", the reader admits less, never more.
+
+## D-141 — Mode C: the Claude Code session, its tools, paths and decisions (Slice 1.5 Increment 4)
+- Date: 2026-11-05
+- Status: Accepted (applies §4.3, §2.3.2, §2.2.2 and §7.8 E2; autopilot rulings, restrictive, where marked)
+- Applies to: Slice 1.5 Increment 4 onward (`packages/mediated/src/session.ts`, `packages/mediated/definitions/claude-code/`)
+- Decision:
+  - **The session is a Task (§4.3 V6-6):**
+    - id `session-<session_id>`, objective "operator session via claude-code", strategy `hook`, `closure_mode: accepted`, no criterion, `steer_capability: none` (§7.8 E2), `native`;
+    - budgets: tool calls (as turns) and wall clock are enforced, and tokens and currency are journalled as `unmetered`. Admission requires `unmetered_accepted: true`.
+    - **Restrictive:** admission refuses a grant that is unsigned, belongs to another principal, or reaches beyond the declared sources (§5.4 check 4).
+  - **Tools.** Claude Code's `Read`, `Glob`, `Write`, `Edit` and `WebFetch` map to operator-authored typed entries (D-134) in `packages/mediated/definitions/claude-code/`:
+    - read: `cc.read`, `cc.glob`;
+    - write: `cc.write`, `cc.edit` (`file_path` the target; contents and strings payloads);
+    - external: `cc.webfetch` (`url` the target).
+
+    The harness adapter plans a no-op invocation that is never run (Claude Code performs the effect). It passes §2.4.
+
+    **Restrictive:**
+    - a tool input field JUNO does not know is a `malformed_call`;
+    - a Glob pattern that is absolute, starts with `~` or holds `..` is a `malformed_call`;
+    - `Grep` has no definition, because its pattern is a regular expression (an instruction under §2.2), and is denied as `unknown_capability`, as is any other tool.
+  - **Bash** goes through `readCommandString` (D-140) and the operator's name map to `cc.bash`: a `shell.run`-shaped entry whose enum holds the name map's programs, with the surfaces from `shell.run`'s definition, and program floor `untrusted`.
+    - The untrusted floor applies **only in this mediated registry** (§2.3.2), and only after registration review passes every member with the interpreter test.
+    - **Restrictive:** the D-131 barred names (signing, launching and interpreter programs) are refused at admission. (As first built every member had to be `read`; D-146 replaced that with a declared effect per program.)
+    - The working directory is the hook's `cwd`, untrusted. A command string the operator listed is read the same way, but its words become `constant` slots at `operator` integrity (§4.3).
+  - **Paths.** Paths are mapped onto `/work` from the operator's workspace roots (WSL or Windows spelling). A path under no root is outside every scope and parks `scope_violation`, not overridable. Canonical forms come from `HostPathResolver`, the same resolver script on the host where the harness acts.
+  - **The read gate (§4.3 V6-7).** A call that reads parks `sensitivity_ceiling` before it runs when what it reads is above the session provider's declared clearance:
+    - `Read`, `Edit` and Bash operands read the file;
+    - a `Glob` reads its tree;
+    - a `Write` reads nothing.
+
+    **Restrictive:** a path in no declared source counts at the highest declared class.
+  - **Decisions.** Proceed answers no decision (exit 0, empty), so Claude Code's own permission rules still apply. Park and reject answer `deny` with the reason; a park is journalled with `answer: deny` and the same `overridable` rule as mode A. Nothing emits `allow`, `ask`, `defer`, `updatedInput` or `updatedToolOutput`. Three consecutive rejections park `rejection_limit`, counted per session.
+  - **Results.** PostToolUse and PostToolUseFailure are journalled as `capability_result` against the authorized call (by `tool_use_id`): `untrusted`, at the class of what the call read, raising the session floor. A result with no authorized call is marked `without_authorized_call`. When a call is asked while an earlier authorized call has no result, the gap is journalled (`result_missing`) and that call is denied.
+  - **Writes** use Increment 3's checkpoints on the host workspace. Session `reversible_workspaces` are checkpointed at admission, with the same scripts run by the host's node; a session whose workspace cannot be checkpointed is not admitted. Without one, a write's untrusted target parks `integrity_floor`.
+- Reason: §4.3's rules for mode C, each choice fail-closed.
+
+## D-142 — The mode-C service and the `juno-hook` client (Slice 1.5 Increment 4)
+- Date: 2026-11-05
+- Status: Accepted (applies §4.3 "Fail-closed ingress" and V6-3)
+- Applies to: Slice 1.5 Increment 4 onward (`packages/mediated/src/hook-service.ts`, `hook-client.ts`, `juno-hook.ts`)
+- Decision:
+  - **The service** listens on a Unix-domain socket on the runner's host, in a directory only the runner's user can reach. Each connection carries one request line, `{event, input}`, and gets one answer line. Requests are judged one at a time in arrival order, so a session's calls and results are journalled in order. Unreadable requests, unknown events and internal failures answer a denial.
+  - **The client** uses Node's built-in modules only. It reads the hook input from standard input and asks the service with a timeout (default 10 s).
+    - It accepts only `{decision: "none"}`, which it turns into exit 0 with no output, and `{decision: "deny", reason}`, which it turns into Claude Code's PreToolUse deny JSON with exit 0. For PostToolUse it accepts only `{recorded: true}`.
+    - **Everything else exits 2** with the reason on standard error, which blocks the call: an unreachable service, a timeout, a malformed or unknown answer (`allow`, `ask`, `defer`, extra keys), a missing newline, unreadable input, a missing or invalid `--socket` / `--timeout-ms`, or any exception.
+    - It never prints `allow`, `ask`, `defer`, `updatedInput` or `updatedToolOutput`. Claude Code's own `onFailure: "block"` (D-139) covers the client crashing or hanging.
+- Reason: §4.3: "A hook or gateway that cannot reach the boundary, times out, or gets no explicit decision must block the call."
+
+## D-143 — `juno hook install` (Slice 1.5 Increment 4)
+- Date: 2026-11-05
+- Status: Accepted (applies §4.3 "refused at setup" and D-139; autopilot rulings, restrictive, where marked)
+- Applies to: Slice 1.5 Increment 4 onward (`packages/mediated/src/install.ts`; `juno hook install`)
+- Decision:
+  - **What it writes.** For each of `PreToolUse`, `PostToolUse` and `PostToolUseFailure`: matcher `*`, `type: command`, exec form (`command` plus `args`), `onFailure: "block"`, `timeout: 30`. Plus `env.CLAUDE_CODE_DISABLE_FILE_MENTIONS = "1"` (D-139). Other settings and other hooks are kept; an earlier JUNO entry is replaced. The file is written to a temporary name, then renamed, mode 0600.
+  - **Under WSL2** (`--wsl-distro` and `--wsl-user`) the command is `wsl.exe -d <distro> --user <user> --exec <node> <client> --socket <path>` (D-130, D-131). `wsl.exe` is a real executable, as exec form requires on Windows (D-139).
+  - **Refused, and nothing written:**
+    - a settings file that is not the user's (`~/.claude/settings.json`) or a `managed-settings.json` (restrictive: project and local files are refused, because Claude Code ignores the file-mentions variable there and a project can change them);
+    - Claude Code older than 2.1.299 (from `claude --version`, run by `execFile`), or a version that cannot be read;
+    - a settings file that is not a JSON object;
+    - any result without JUNO's hook on all three events, in exec form, with `onFailure: "block"` and a timeout, with the variable set, and without `disableAllHooks: true`. The same check, `hookRefusals`, is what the tests run against shell form, missing `onFailure` and missing timeouts.
+  - **It prints what it cannot control:** a run that disables hooks; harness actions without a tool call; files changed between JUNO's check and Claude Code's use; managed settings that allow only managed hooks.
+- Reason: §4.3: "A configuration in which a hook failure lets a call proceed is a misconfiguration and is refused at setup."
+
+## D-144 — D-073's network guard and the hook's Unix-domain socket (Slice 1.5 Increment 4)
+- Date: 2026-11-05
+- Status: Accepted (autopilot record; the guard keeps its property and gains a check)
+- Applies to: `packages/runner/test/groq.test.ts` (D-073's guard)
+- Decision: the plan's mode C uses a **local socket** between the hook client and the boundary service (plan §2 topology, Increment 4). In Node that is `node:net`, which D-073's guard reads as network code. Its property, "no package source opens a network connection except the Groq adapter", is kept as written for every file, with this one change:
+  - `mediated/hook-service.ts` and `mediated/hook-client.ts` may import `node:net` (and nothing else from its list: no `fetch`, `http(s)`, `tls`, `dgram`, `undici` or `WebSocket`);
+  - a **new assertion** requires those two files to name no host, port, hostname or URL, to use no `createConnection`, and to call `connect` and `listen` only on a socket path (`connect(socketPath)`, `listen(path, …)`).
+
+  Correction (PR #37 review round 1): the two hook files would have failed the guard before; they are the only files it now accepts that it refused before, and only under the new check. The new check reads text, so it is backed by behaviour: the client and the service refuse any socket that is not an absolute path (a bare number would make Node open TCP, D-148).
+- Reason: CLAUDE.md rule 5 forbids weakening a test. The guard's intent (no egress except the provider) is unchanged and now proven for the new files too. This is listed in the PR for the reviewer's check 2.
+
+## D-145 — `make mediated-e2e`: §4.3's acceptance in mode C with the real Claude Code binary (Slice 1.5 Increment 4)
+- Date: 2026-11-05
+- Status: Accepted (applies plan §4 and D-092)
+- Applies to: `test/mediated-e2e/`, `vitest.mediated.config.ts`, `make mediated-e2e`
+- Decision:
+  - **Where.** Cloud sessions only, never `make verify` or CI (D-092). The binary is the session's own installation (`/opt/claude-code`), mounted read-only, never added to the repository, the lockfile or an image. The test records its version (2.1.318 on 2026-11-05).
+  - **Isolation.** Claude Code runs in `-p` mode in the runner image with:
+    - `--network none`, `--cap-drop ALL`, `no-new-privileges`, uid 1000;
+    - the scripted Messages API server on the container's loopback (`ANTHROPIC_BASE_URL=http://127.0.0.1:18765`);
+    - a random `ANTHROPIC_API_KEY` that is not a key;
+    - `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`;
+    - a fresh `HOME`, so the operator's login is never read.
+
+    No request can reach a paid endpoint, and the test asserts that every request was to `/v1/messages`.
+  - **The scripted server** answers each `POST /v1/messages` with the next scripted turn as a streamed message: `message_start`, a `text` or `tool_use` block with its delta, `message_delta` with the stop reason, `message_stop`. That sequence was observed to work with the real binary on 2026-11-05 (rule 13: the binary is the proof). It records every request.
+  - **JUNO** runs in the test process: `MediatedSessions` and `HookService` on a Unix socket mounted into the container. The hook is installed by `installHook` into the fresh home's `.claude/settings.json`, exactly as the operator's command does, so the run also proves the install's output is what Claude Code obeys. Sessions are admitted before Claude Code starts, by passing `--session-id`.
+  - **What it proves** (2026-11-05: 5 of 5):
+    - **§4.3 test 1:** a Write outside the grant is denied, the file does not exist, the journal has the `scope_violation` park with `answer: deny`, and the model's next request carries JUNO's reason.
+    - **§4.3 test 2:** after reading a planted file, `cat notes.txt; sh -c 'touch …'` parks `integrity_floor` (not overridable) and nothing runs.
+    - **§4.3 test 4 (mode C):** a forged grant is not honoured; the session's admission is refused and journalled, and no call runs.
+  - **Fail-closed with the real binary.** With JUNO's service down, a write JUNO would allow is blocked: the client exits 2 and the hook has `onFailure: "block"`. A positive control shows the same kind of write happening while the service is up.
+  - **Claude Code's own permission rules** run with `--permission-mode acceptEdits`, so JUNO's hook is the only thing that can stop a file edit. Every denial above is JUNO's.
+  - **Mode A's parts** of tests 2 and 4 stay in `make verify`.
+- Reason: plan §4: "if Claude Code cannot run against it, Increment 4 stops and reports". It can, so no stop.
+
+## D-146 — Effect per program in hook mode (§2.3.2 V6-10) (Slice 1.5 Increment 4)
+- Date: 2026-11-05
+- Status: Accepted (applies §2.3.2 V6-10; autopilot rulings, restrictive, where marked)
+- Applies to: Slice 1.5 Increment 4 onward (`packages/mediated/definitions/programs.json`, the session's Bash registry)
+- Decision:
+  - **Declared effects.** Each name-map member declares its `side_effect`. The operator-authored list `packages/mediated/definitions/programs.json` gives each program's minimum effect and its flag surface:
+    - `cat` and `ls` are `read`, with surfaces from `shell.run`'s definition;
+    - `rm` is `write`, with a code-free surface of `-f`, `-r`, `-R`, `-d`, `-v` and their long forms, `--one-file-system`, `--preserve-root`, `--help`, `--version`, `--` and operands. **Restrictive:** the prompting flags and `--no-preserve-root` are left out, so they are undeclared and rejected (§2.3.1 rule 6).
+  - **Registration review** refuses a member declared lower than its program's minimum (ranked read < write < external < irreversible), and a program not on the list.
+  - **"A call takes the effect of the member it runs":** members are registered as one capability per declared effect (`cc.bash.read`, `cc.bash.write`, …), each passing the interpreter test, and a Bash call goes to its member's capability. So `rm x` is judged as a `write`: with no checkpointed workspace its untrusted operand parks `integrity_floor`; inside one it proceeds. `cat x` is a read and proceeds. Grants select these capabilities by name.
+- Reason: §2.3.2 V6-10 and the plan's Increment 4 tests.
+
+## D-147 — Absolute Bash operands are mapped like any host path (Slice 1.5 Increment 4; PR #37 review round 1)
+- Date: 2026-11-05
+- Status: Accepted (fixes a review finding)
+- Applies to: `packages/mediated/src/session.ts` (Bash mapping)
+- Decision: every absolute operand of a Bash command is a host path, as a `Read`'s `file_path` is. It is mapped onto `/work` through the workspace roots before the boundary judges it; an operand under no root parks `scope_violation` (not overridable), as it would for a `Read`. Relative operands stay relative to the mapped `cwd`.
+- Before this, `rm /work/project/notes.txt` was judged as the workspace's file while Claude Code would act on the host's literal `/work/...`. That was a mismatch between what JUNO judged and what runs. A test now proves `/work/...` is denied and the workspace's own host path proceeds.
+- Reason: §2.7.1 C4: scope is judged on the path "the effect will touch".
+
+## D-148 — JUNO's own state lies outside every mediated scope; local socket only (Slice 1.5 Increment 4; PR #37 review round 1)
+- Date: 2026-11-05
+- Status: Accepted (plan Increment 4 item 10; autopilot rulings, restrictive)
+- Applies to: `packages/mediated` (sessions, service, client, install)
+- Decision:
+  - **Protected paths.** `MediatedSessions` requires `protectedPaths`: the checkpoint store, the trust anchor, the hook's socket directory, and Claude Code's settings files. The journal's root is always added. If any lies under a workspace root, in any spelling the path map knows, the sessions refuse to start. So no grant can ever reach JUNO's state or the hook's own configuration, and a tool call naming any of them maps nowhere and parks `scope_violation`.
+  - **Absolute socket paths only.** The client, the service and `juno hook install` refuse a socket that is not an absolute path. Node would read a bare number as a TCP port.
+  - **No other PreToolUse hook in the same file.** `juno hook install` refuses a settings file that already holds another PreToolUse hook, which could change a call (`updatedInput`) after JUNO judged it. Hooks in other settings files, a project's included, cannot be seen from the user file. The install now says so in its "cannot control" list and names the remedy: managed settings with `allowManagedHooksOnly`.
+- Reason: plan Increment 4 item 10 ("a tool call naming them parks `scope_violation`, so Claude Code cannot edit its way out of the hook"), and §4.3 fail-closed.
+
+## D-149 — A runner refuses a container runtime that would ignore the workload's limits (D-131's Increment 4 directive)
+- Date: 2026-11-05
+- Status: Accepted (builds D-131's directive)
+- Applies to: `packages/enforcement/src/runtime.ts`, `RunnerOptions.containerRuntime`, `juno runtime check`
+- Decision:
+  - **The rule.** `runtimeRefusal` refuses cgroup driver `none` (or empty), any cgroup version other than 1 or 2, and a rootless runtime not on cgroup v2 with the `systemd` driver. Those are the cases in which Docker documents that the limit flags are ignored.
+  - **The probe.** `probeContainerRuntime` reads `docker info` by `execFile`.
+  - **The runner.** A `Runner` given `containerRuntime` refuses to start on a refused runtime. Every container test that starts real workloads through a runner now passes the probe (`test/containers/write.test.ts`).
+  - **The operator's check.** `juno runtime check` prints the runtime and exits 1 on a refusal.
+  - **Not yet wired at start-up.** JUNO's host runner is still a library (D-065), with no start-up command of its own. The real-use start-up that later wires it must pass the probe; this is recorded so that it cannot be missed.
+- Reason: D-025's limits are only real if the runtime enforces them; a silent ignore would be fail-open.
+
+## D-150 — The mode-C read gate is the boundary's step 5; Bash program lookup by the shell is a residual (Slice 1.5 Increment 4; PR #37 review round 2)
+- Date: 2026-11-05
+- Status: Accepted (fixes review findings; the restrictive reading)
+- Applies to: `packages/enforcement/src/boundary.ts` (step 5), `packages/mediated/src/session.ts`, `install.ts`
+- Decision:
+  - **Order.** The read gate of §4.3 V6-7 is judged inside the boundary, at step 5, after step 3 (integrity), step 4 (scope and §2.2.2 effects) and before the capability's own sensitivity ceiling. The session passes `TaskContext.readGate = { reads, clearance }`. A call that would park `integrity_floor` or `scope_violation` is recorded as that park, never as an overridable `sensitivity_ceiling`. The gate's own park is `sensitivity_ceiling` with `read_gate: true`, and the journal holds one `capability_call` record with the verdict.
+  - **Before this**, the gate ran before the boundary. Then `rm` of a secret file, or an Edit of one, was recorded as an overridable `sensitivity_ceiling` instead of `integrity_floor` (§2.2.2, §8.3), and a read outside the grant instead of `scope_violation` (§8.2 A2). Nothing ran either way, but the record and the answer to Claude were wrong. That is the downgrade CLAUDE.md §7 STOPs for, so it was fixed at the root. Tests reproduce each case.
+  - **A result with no authorized call** is recorded at the highest class any declared source holds (§1.5), not at the provider's clearance.
+  - **Residual, recorded (not protected in mode C):** JUNO judges a Bash command's program through the operator's name map, but Claude Code's shell finds the program through its own `PATH`, aliases and functions. JUNO cannot rewrite the call (D-139: no `updatedInput`). `juno hook install` and STATE.md say so, with the remedy: keep the shell's startup files free of aliases and functions for mapped names.
+- Reason: §2.7's order and §2.7.1 D5's principle that no later check may turn a non-overridable park into a retryable one.
+
+## D-151 — In mode C a Bash command is judged first; STOP after three review rounds (Slice 1.5 Increment 4; PR #37 review round 3)
+- Date: 2026-11-05
+- Status: Accepted (fixes the round-3 finding); **STOP for the operator** (CLAUDE.md §7: three review rounds ended DO NOT MERGE)
+- Applies to: `packages/mediated/src/session.ts` (PreToolUse order)
+- Decision:
+  - **Order (§2.7.1 D5, §2.7 steps 3 then 4, §2.7.1 D4).** A Bash call's command string is its one instruction value. It is read by `readCommandString` before anything else is checked: unknown tool-input fields, the session's tool-call budget, the working directory's mapping, the missing-result check. So an injected command parks `integrity_floor` (not overridable) whatever else is wrong with the call.
+    - Before this, an extra field (Claude Code's Bash really has `dangerouslyDisableSandbox`) made it a retryable `malformed_call`;
+    - a working directory outside the workspace made it `scope_violation`;
+    - a spent budget made it an overridable `budget_exceeded`.
+
+    Nothing ran in any case. Tests reproduce all three.
+  - **Recorded:** WebFetch's `prompt` (text sent to the fetching model) is declared a `payload` `data` field. An unlisted URL parks first anyway. To revisit with Increment 5's first real `external` capability.
+  - **STOP.** Review rounds 1, 2 and 3 of PR #37 each ended DO NOT MERGE.
+    - Every finding has been fixed on the branch (D-147 to D-151), with tests.
+    - `make verify` is GREEN and `make mediated-e2e` is 5 of 5.
+    - The round-3 fix is not reviewed; a fourth round needs the operator's authorisation (as D-103, D-106 and D-127 gave before).
+    - Nothing was merged.
+- Reason: §2.7.1 D5: "a wrapped or broken value must not turn a non-overridable park into a retryable rejection"; CLAUDE.md §7's STOP list.
+
+## D-152 — Operator rulings 1 and 2 of 2026-11-07: the injected-command class is closed by a property; what runs is what was judged (Slice 1.5 Increment 4)
+- Date: 2026-11-07
+- Status: Accepted (operator rulings; changes D-139's "JUNO never emits `updatedInput`" for Bash only)
+- Applies to: `packages/mediated/src/session.ts`, `rebuild.ts`, `hook-client.ts`, `install.ts`; tests `injection.property.test.ts`, `rebuild.test.ts`, `test/mediated-e2e/claude-code.e2e.ts`
+- Ruling 1, quoted: "Close the class, then review. Three rounds found the same class: another defect in a call made an injected command look retryable. Before any review, add a property test for hook mode: for any Bash tool input whose command contains shell syntax, an interpreter, or a program outside the name map, combined with any subset of other defects (extra or missing input fields, cwd outside the workspace, spent budget, missing grant, sensitive read, malformed fields), the outcome is a non-overridable integrity_floor park, recorded as such, and the command never runs. Keep the hand-written tests. Then a FOURTH review round on PR #37 is authorised."
+- Ruling 2, quoted: "What runs is what was judged. When JUNO allows a Bash call, the hook returns "allow" with updatedInput whose command is rebuilt from what JUNO judged: the name map's absolute program path, then each argument single-quoted (a ' inside becomes '\''). Prove with a property test that JUNO's own strict reader parses the rebuilt command back to exactly the judged program and argv, for arbitrary arguments, including quotes, spaces, newlines and leading dashes. This is a string built for another program's shell, not a shell JUNO runs; record any lint exemption narrowly (one function, named in the config) as an operator change. If Claude Code's current hooks reference does not honour updatedInput for Bash, STOP and report."
+- Decision (ruling 1):
+  - **The command is judged from the least of the input that names it.** `preToolUse` first reads only `session_id`, `hook_event_name`, `tool_name` and `tool_input.command`. If the session is admitted, or its admission was refused and journalled, the command is read against that session's name map before anything else: before the rest of the input is parsed, before the session's state (TTL-failed included), the budget, unknown or mistyped fields, the working directory, a missing result, grants, scope or the read gate.
+  - **A session whose admission was refused** records the park against its refused trajectory (`admitted: false`, class `secret`/`untrusted`, as the refusal itself), using the refused request's name map. A session id JUNO never saw has no Task to record against: the call is denied, not recorded.
+  - **The property** (`injection.property.test.ts`, 150 runs, fixed seed): commands from four generators (shell syntax in any position; a leading `~`, an assignment or a keyword/builtin; an interpreter or unmapped program by name or path; a random unmapped name), each filtered to ones the strict reader refuses, so it is never vacuous. Defects, any subset: an extra tool-input field; missing `cwd`, `tool_use_id` or `description`; `cwd` outside the workspace; the call or wall-clock budget spent; no grant, a grant without Bash, a revoked, expired or forged grant; a read of a `secret` source; mistyped `cwd`, `tool_use_id`, `agent_id`, `timeout`, `description`, `run_in_background`, extra hook fields; a missing result; TTL expiring now or already expired. Asserted: the answer is exactly the non-overridable deny; exactly one record is added, a `park` with `integrity_floor`, `overridable: false`, the command; no call record, no rebuilt command; a later result for that call is recorded as one with no authorized call. **Control:** the same defects with `cat notes.txt` are never recorded as `integrity_floor`.
+  - **What it found.** Run against PR #37's round-3 head, the property fails on three more members of the class, each now fixed: a session already failed by its TTL (plain deny, unrecorded); a mistyped hook field such as `agent_id` (plain deny, unrecorded); a refused admission (plain deny, unrecorded).
+  - Bash's other fields must now have Claude Code's types (`description` string, `timeout` positive integer, `run_in_background` boolean), because they are passed on in `updatedInput`; otherwise `malformed_call` (after the command is judged).
+- Decision (ruling 2):
+  - **Hooks reference re-read 2026-11-07** (`https://code.claude.com/docs/en/hooks.md`, 289,847 bytes, sha256 `55757f0fbe69bc20bb184c53c41f9d606e15bb4f8c3cd2a9b088c06b4357b906`). PreToolUse decision control: "`updatedInput` | Modifies the tool's input parameters before execution. Replaces the entire input object, so include unchanged fields alongside modified ones. Claude Code evaluates permission rules and a Bash command's auto-background eligibility against the input your hook returns, not the input Claude sent. Combine with `"allow"` to auto-approve". And: "Deny and ask rules are still evaluated regardless of what the hook returns." Bash is honoured; the one exception is a Monitor command under a `Bash` matcher, and JUNO's matcher is `*`, under which "`allow` and `updatedInput` apply" (a Monitor call is `unknown_capability` to JUNO and is denied anyway). **The STOP does not fire.** Claude Code 2.1.319 is installed in this session.
+  - **The answer.** A Bash call the boundary proceeds is answered `{ decision: "allow", updatedInput }`: the whole Bash input with `command` replaced. Every other proceed is still no decision. The client prints Claude Code's `allow` JSON only for `tool_name: "Bash"` and only when `updatedInput` is an object with a string `command` and no field but `command`, `description`, `timeout`, `run_in_background`; anything else is a doubt (exit 2).
+  - **The rebuild** (`rebuildBashCommand`, the only place a command string is built): the name map's absolute program path (plain path characters only, no `..`), then each judged argument single-quoted. Absolute operands stay the host paths the harness will touch (the boundary judged their `/work` mapping, D-147). The command is read back by the strict reader before it is handed out and must give exactly the judged program and argv; an argument with a NUL (execve cannot carry one) or anything that does not read back makes the call `malformed_call`, decided before the boundary, so no proceed is recorded for it. The rebuilt command is journalled (`note`, `type: "updated_input"`, with the call's `call_seq`) before it is handed out.
+  - **Lint.** `juno/no-shell` checks `execFile` calls; the rebuild is not one, so **no exemption was needed and the lint rule and its config are unchanged.**
+  - **Proof.** `rebuild.test.ts`: 2,000-run properties that any judged argv (quotes, spaces, tabs, newlines, CR, leading dashes, backslashes, `$`, backticks, globs, non-ASCII, arbitrary binary strings) reads back exactly; that for any argv the rebuild either refuses or reads back exactly; and that every command the strict reader accepts rebuilds to one that reads back the same. `make mediated-e2e`: the model asks for `show -n "it's a note.txt"`, where `show` exists only in JUNO's name map; the real Claude Code prints the numbered file, so it ran `/usr/bin/cat '-n' 'it'"'"'s a note.txt'`.
+  - **Residual, narrowed (D-150):** `PATH` and aliases no longer choose the program. Bash still lets a startup file define a function named with an absolute path (`function /usr/bin/cat { …; }`, checked 2026-11-07: it hijacks the quoted and unquoted path alike). `juno hook install` says so.
+  - **`allow` skips Claude Code's own permission prompt for that Bash call**; Claude Code's deny and ask rules still apply (quoted above).
+- Reason: the operator's rulings; §2.3.2, §2.7.1 D5, §4.3, §8.3.
+
+## D-153 — The rebuilt command writes a `'` as `'"'"'`, not `'\''` (autopilot ruling)
+- Date: 2026-11-07
+- Status: Accepted (autopilot ruling, CLAUDE.md §7 step 3: the reading that keeps the reader strict)
+- Applies to: `packages/mediated/src/rebuild.ts`
+- Decision: ruling 2 asks for two things that cannot both hold for an argument containing `'`: the escape `'\''`, and a proof that "JUNO's own strict reader parses the rebuilt command back to exactly the judged program and argv … including quotes". §2.3.2 makes the strict reader park on `\` outside single quotes, so `'it'\''s'` never reads back. Loosening the reader to accept `\'` would loosen what the model may write too, against §2.3.2's text. The rebuild therefore writes `'` as `'"'"'` (close the single quote, a double-quoted `'`, reopen), which §2.3.2 allows, which the unchanged reader reads back exactly, and which is the same word to the shell (checked with bash 2026-11-07: `printf '%s\n' 'it'"'"'s` prints `it's`). The test pins both facts: the operator's form is refused by the reader, the chosen form reads back.
+- Reason: CLAUDE.md §7 step 3 (more restrictive reading); spec §2.3.2 is read-only.
+
+## D-154 — Operator ruling 3 of 2026-11-07, for Increment 5: enumerated targets (recorded now, built in Increment 5)
+- Date: 2026-11-07
+- Status: Accepted (operator ruling; settles two items carried from PR #36's review)
+- Applies to: Increment 5 (`enumerated_targets` matching in step 4; the first real `external` capability)
+- Ruling, quoted: "For Increment 5: enumerated targets match on the resolved path; a non-path destination (an email address, a URL host) matches only an exact enumerated value (email domain compared case-insensitively), and an untrusted destination not enumerated parks. Nothing looser."
+- Decision: in Increment 5, an enumerated value for a `path` target is compared with the target's canonical (resolved) path, never as typed (closes D-133's carried gap); a non-path destination matches only an exactly equal enumerated value, except that an email address's domain part is compared case-insensitively; an `untrusted` destination with no matching enumerated value parks `integrity_floor` (§2.2.2), and nothing broader (no prefix, wildcard, subdomain or local-part case folding) is ever accepted.
+- Reason: the operator's ruling.
+
+## D-155 — Increment 4 continues on this session's branch; PR #37 is superseded (as D-028, D-099)
+- Date: 2026-11-07
+- Status: Accepted
+- Applies to: Increment 4's pull request
+- Decision: this session's harness allows pushes only to `claude/serene-fermat-clg2xb`, so PR #37's branch (`claude/vigilant-heisenberg-uko6on`) cannot be updated. The new PR from `claude/serene-fermat-clg2xb` carries PR #37's 16 commits unchanged plus this session's, and supersedes PR #37. The operator's authorisation of "a FOURTH review round on PR #37" is applied to that PR, which holds PR #37's whole content.
+- Reason: as D-028; a push to any other name would be refused.
+
+## D-156 — The mode-C read gate judges what the call will read: resolved paths, links inside a tree, and directory listings; STOP after review round 4 (Slice 1.5 Increment 4; PR #38 review round 4)
+- Date: 2026-11-07
+- Status: Accepted (fixes the round-4 finding; restrictive readings where marked); **STOP for the operator** (CLAUDE.md §7: the authorised fourth round ended DO NOT MERGE)
+- Applies to: `packages/mediated/src/session.ts` (`#readsSensitivity`, Bash read paths, the required `view` option), `hook-service.ts` (comment)
+- Finding (round 4, head b8e6e6a, CI run 42337337431 green): the §4.3 V6-7 read gate classified the path **as typed**, before resolution. With `project/link.txt` a symlink to `project/secrets/key.txt` (`secret`, clearance `internal`), `Read link.txt` got no decision and Bash `cat link.txt` got `allow`, so Claude Code read the secret; the result was then journalled as `internal` and the session floor was not raised (§1.2). Also: `ls -R` with no operand listed the names under `secrets/` while `Glob **/*` from the same place parked.
+- Decision:
+  - **Resolved, as the effect will touch (§2.7.1 C4).** Every read path is resolved by the same resolver the boundary uses before it is classified. A path that cannot be resolved, or whose resolved form lies in no declared source, is read at the highest declared class (restrictive, as D-141).
+  - **Trees follow their links.** A tree read (`Glob`'s path; every Bash operand) counts every source under or around its resolved directory, then lists the directory with the checkpoint lister, which never follows a symlink (D-136), and judges each symlink inside it as a tree read of its own resolved target, recursively. More than 64 links, a listing that fails for any reason except "this is a file" or "this does not exist", or more than the lister's bounds (2,000 entries, 8 MiB) → the highest declared class (restrictive).
+  - **Bash reads (restrictive reading of "what a call reads").** Every operand is read as a tree (a file's tree is the file; a directory's is everything `ls -R` could list), and with no operand the working directory's tree (`ls` lists it). Flags are words before `--` that start with `-`; anything else is an operand, so a flag's separate value is also judged as a read (stricter, never looser).
+  - **`MediatedOptions.view` is required:** the host workspace as the lister sees it. The read gate no longer depends on a checkpoint store being configured.
+  - **The result's class follows** (`call.reads` is now the resolved class), so a read through a link is recorded at its target's class and raises the session floor.
+  - **Tests** (`session.test.ts`, "§4.3 V6-7 on what the call will read"): a link to the secret file by Read, Bash `cat` and Edit; a chain of two links, one relative; a link to the secrets inside a directory, by Glob, `ls -R` and `ls` of the link; `ls`, `ls -R` and `ls secrets` from the project; a link to an internal file proceeds and its result is recorded `internal`; a link leaving every source is read at the highest class. On round 4's code, 5 of the 6 fail; the sixth is the positive control.
+  - **Documentation drift fixed:** `hook-service.ts`'s header now names the Bash `allow`. D-141's and D-142's "never `allow`/`updatedInput`" are superseded by D-152 for a Bash proceed only, as D-139's is.
+  - **Residual, recorded (not protected in mode C, nor in mode A; superseded by D-157, which detects hard links):** a **hard link** inside a lower-class source to a file of a higher-class source is the same file under another path; sources are classified by path (§3.2 selectors), so JUNO judges it by the path it is read through. Keep hard links out of the workspace, or keep higher-class files on a different file system from the workspace (hard links cannot cross file systems).
+  - **STOP.** The operator authorised one more round (round 4); it ended DO NOT MERGE. Its finding is fixed here with tests, but a fifth round needs the operator's authorisation (CLAUDE.md §7 STOP list; as D-151). Nothing was merged; Increment 5 is not started.
+- Reason: §4.3 V6-7 ("a call that would read a source classified above the provider's declared clearance parks before it runs"), §2.7.1 C4, §1.2, §1.5; CLAUDE.md §7.
+
+## D-157 — Operator rulings of 2026-11-07 (second set): review round 5 authorised; hard links are detected (amends D-156); review-round limit (CLAUDE.md §7)
+- Date: 2026-11-07
+- Status: Accepted (operator rulings)
+- Applies to: PR #38's content (Increment 4); `packages/enforcement/src/canonical.ts` (`RESOLVER_SCRIPT`, `CanonicalPath`), `checkpoint.ts` (`SNAPSHOT_SCRIPT`, `Snapshot.hardLinks`), `packages/mediated/src/session.ts` (`#readsSensitivity`); `CLAUDE.md` §7 steps 5 and STOP
+- Ruling 1, quoted: "Review round 5 on PR #38 is authorised."
+- Ruling 2, quoted: "Hard links are detected, not left to the operator (amends D-156): when JUNO resolves a path for a clearance or scope decision, a regular file with a link count above 1 counts at the highest sensitivity class the operator declared, like anything JUNO cannot determine. A test creates a hard link to a file in a higher-class source and shows the read is judged at the highest class; a positive control shows an ordinary file is unaffected. Update STATE.md's limitation text accordingly."
+- Ruling 3, quoted: "Standing change to CLAUDE.md §7 (operator change; change nothing else): review rounds continue while each round's findings are new and fixed, up to a maximum of 5. STOP before the limit if a round finds a defect of a class already fixed in an earlier round of the same PR or recorded in DECISIONS.md, and name the earlier fix."
+- Decision (ruling 2):
+  - **The resolver reports it.** `RESOLVER_SCRIPT` (the one resolver for scope, run in the workload in mode A and on the host in modes C/B) stats every path that exists in full after `realpath(3)`; a regular file with `nlink > 1` is answered `{ canonical, hard_linked: true }`, read as `CanonicalPath.hardLinked`. A directory (whose link count is always above 1) and a path that does not exist yet are not. A stat that fails is "cannot be resolved" (fail-closed).
+  - **The lister reports it inside a tree.** `SNAPSHOT_SCRIPT` names every regular file with `nlink > 1` in a separate `hard_links` list. The manifest is unchanged, so checkpoint ids and restore comparisons are unchanged.
+  - **Clearance (§4.3 V6-7).** The mode-C read gate reads a hard-linked file at the highest declared class, whether it is read by name (Read, Edit, a Bash operand, through a symlink too) or inside a tree (Glob, `ls -R`, any Bash operand naming a directory). The result is recorded at that class (D-156's `call.reads`), so it raises the session floor.
+  - **As ruled, the other name does not matter:** two names for one `internal` file are read at the highest class too, because JUNO cannot see the other name by path. (A pnpm-style `node_modules` of hard links therefore reads at the highest class; keep it out of a workspace whose clearance is below the highest declared class.)
+  - **Scope.** Step 4 receives the same answer. In mode A every result is already recorded at the highest class any task source declares (D-063), so a hard link cannot lower a mode-A read's class. Where step 4 itself depends on the file (a `write`'s reversibility), D-158 applies.
+  - **Tests.** `session.test.ts` "§4.3 V6-7 and hard links": a hard link in an `internal` folder to the `secret` key is parked `sensitivity_ceiling` (`read_gate`, aggregate `secret`) by Read and Bash `cat`, and as part of Glob and `ls -R` of its folder; Edit is denied. **Positive control:** an ordinary file in the same folder proceeds by Read, `cat` and Glob, with its result recorded `internal`. Plus: two names for an `internal` file are read at the highest class. `canonical.test.ts`: the resolver reports a hard link by name and through a symlink, not an ordinary file, a directory or a missing path. `checkpoint.test.ts`: the lister names the hard link and the checkpoint id is unchanged. **On the previous code, 6 of these fail; both positive controls pass.**
+  - **STATE.md's limitation 8 is replaced:** a hard link is now detected. What remains is the general check-then-use gap (limitation 2): a link made after JUNO's check and before Claude Code's use is not seen.
+- Decision (ruling 3): `CLAUDE.md` §7 step 5's "Max 3 rounds" and the STOP "three review rounds still end DO NOT MERGE" are replaced by the operator's text; nothing else in CLAUDE.md is changed. Rounds are counted per PR content: PR #38 carries PR #37's rounds 1 to 3 and its own round 4 (D-155), so the round authorised by ruling 1 is round 5, the last under the new limit.
+- Reason: the operator's rulings.
+
+## D-158 — A write through a hard-linked file is never reversible (autopilot ruling)
+- Date: 2026-11-07
+- Status: Accepted (autopilot ruling, CLAUDE.md §7 step 3: the more restrictive reading)
+- Applies to: `packages/enforcement/src/boundary.ts` (`effectOf`, step 4's `write` row), modes A and C
+- Question: ruling 2 of D-157 applies to "a clearance or scope decision", and says the file "counts at the highest sensitivity class". Step 4's `write` row (§2.2.2) has no sensitivity class to raise; it asks whether the target "lies in a reversible workspace".
+- Decision: a `write` target that resolves to a hard-linked regular file is judged `irreversible` ("is a file with more than one link"), so an untrusted target parks `integrity_floor` (not overridable) unless enumerated.
+  - **Why it is not reversible (checked in the code):** `RESTORE_SCRIPT` removes a file and creates it again, so it restores the workspace's name only; the same file's other name, possibly outside every checkpoint, keeps the write. §2.2.2: "a scope is reversible when a checkpoint of its full content is taken … and restoring that checkpoint" undoes the effect; through a hard link it does not.
+  - **Tests:** `effects.test.ts` (the boundary: the hard-linked target parks `integrity_floor` as `irreversible`; the same path without the link proceeds) and `session.test.ts` "§2.2.2 in hook mode" (a Write to a hard-linked file inside the checkpointed workspace parks `integrity_floor`, not overridable; a Write to an ordinary new file proceeds). Both fail on the previous code.
+- Reason: CLAUDE.md §7 step 3; §2.2.2's definition of a reversible workspace; D-157's "like anything JUNO cannot determine" (step 4 already treats a target with no canonical path as `irreversible`).
+
+## D-159 — Increment 4 continues on this session's branch; PR #38 is superseded (as D-028, D-155)
+- Date: 2026-11-07
+- Status: Accepted
+- Applies to: Increment 4's pull request
+- Decision: this session's harness allows pushes only to `claude/dazzling-einstein-75mver`, so PR #38's branch (`claude/serene-fermat-clg2xb`) cannot be updated. The branch was fast-forwarded to PR #38's head (40ded2b) and carries its commits unchanged plus this session's; a new PR from it supersedes PR #38. The operator's authorisation of "review round 5 on PR #38" is applied to that PR, which holds PR #38's whole content.
+- Reason: as D-028 and D-155; a push to any other name would be refused.
+
+## D-160 — A WebFetch is read at the highest declared class; STOP after review round 5 (Slice 1.5 Increment 4; PR #39 review round 5)
+- Date: 2026-11-07
+- Status: Accepted (fixes the round-5 finding; the restrictive reading); **STOP for the operator** (CLAUDE.md §7 as amended by D-157: round 5 is the limit, and its finding is of a class already fixed)
+- Applies to: `packages/mediated/src/session.ts` (WebFetch mapping, `highestDeclared`, the read gate's input)
+- Finding (round 5, head b842080, CI run 42340291289 green; check 5 FAIL): a WebFetch named no path read, so the §4.3 V6-7 read gate judged it `public`. An enumerated URL (an intranet page, say) proceeded under an `internal` clearance, and its result was journalled `public` without raising the session floor (§1.2). D-141's read-gate list left WebFetch out, so the choice was recorded nowhere.
+- Decision: a fetched page lies in no declared source, so a WebFetch is read at the highest class any declared source holds (§1.5: an unclassified source is treated as `secret`/`untrusted`; the same reading as D-141, D-150 and D-156). Above the clearance it parks `sensitivity_ceiling` at step 5 (after step 4, so a URL not enumerated still parks `integrity_floor` first, D-150); at or below it the call proceeds and the result is recorded at that class. Test (`session.test.ts`, "reads an enumerated WebFetch at the highest declared class"): with an enumerated URL and clearance `internal` it parks (`read_gate`, aggregate `secret`); with clearance `secret` it proceeds and its result is recorded `secret`. It fails on round 5's code.
+- **Same class as an earlier fix (named, as CLAUDE.md §7 requires):** "a read JUNO cannot classify is counted below the highest declared class", fixed for a result with no authorized call in D-150 (PR #37 round 2) and for a path or link that names no declared source in D-156 (PR #38 round 4).
+- **STOP.** Round 5 ended DO NOT MERGE. Round 5 is the maximum under D-157's limit, and its finding repeats a fixed class; either fires the STOP. The fix is on the branch with a test; it is not reviewed. Nothing was merged; Increment 5 is not started.
+- Reason: §4.3 V6-7, §1.5, §1.2; CLAUDE.md §7 (D-157).
+
+## D-161 — Operator ruling 1 of 2026-11-07 (third set): the CLAUDE.md §7 change recorded in D-157 is the operator's own
+- Date: 2026-11-07
+- Status: Accepted (operator ruling)
+- Applies to: `CLAUDE.md` §7 (review-round limit of 5; STOP when a round repeats a fixed class), as recorded in D-157 ruling 3
+- Ruling, quoted: "The CLAUDE.md §7 change recorded in D-157 is confirmed as the operator's own ruling."
+- Decision: nothing to change; this answers the round-5 reviewer's note that asked for the confirmation.
+- Reason: the operator's ruling.
+
+## D-162 — Operator ruling 2 of 2026-11-07 (third set): the class "an unclassified read is counted low" is closed structurally: one classification function and one tool table (Slice 1.5 Increment 4)
+- Date: 2026-11-07
+- Status: Accepted (operator ruling; built with tests)
+- Applies to: `packages/mediated/src/reads.ts` (new: `classifyRead`, `DeclaredSource`, `ReadTarget`), `packages/mediated/src/session.ts` (`TOOLS`, `SUPPORTED_TOOLS`, `#classify`, `postToolUse`, `SessionRequest.sources`), `hook-service.ts`; test `packages/mediated/test/reads.property.test.ts`
+- Ruling, quoted: "Close the "unclassified read counted low" class structurally (D-150, D-156, D-160 were instances): One classification function decides the class of anything read. It returns the highest class the operator declared unless a registered source POSITIVELY matches the resolved target (path after symlink and hard-link rules, URL, tool result). Every supported tool declares, in one table, what it reads. A tool with no entry, or a read the table does not cover, is classified by that function as unknown, so the highest class. Property test: for every tool in the table, generated reads of unregistered paths, symlinks, hard links, URLs and tool results are judged and recorded at the highest declared class, and stopped before running when above the session's clearance; a positive control with a registered source keeps its registered class. In STATE.md's operator setup, add a step explaining that web fetches count at the highest class unless the operator registers URL sources (for example the public internet as public), and how."
+- Decision:
+  - **One function.** `classifyRead(targets, { sources, resolver, view })` is the only code that turns a read into a class. Both the PreToolUse read gate (§4.3 V6-7, judged by the boundary at step 5, D-150) and the PostToolUse record of a result with no authorized call call it. The old `#readsSensitivity`, the WebFetch `unclassified` flag and the inline "highest class" in `postToolUse` are gone.
+  - **Read targets:** `tree` (a path and everything under it), `url`, `tool_result` (a named tool's result), `unknown`. An empty list (a tool claiming to read nothing) is the highest class: no tool is trusted to read nothing.
+  - **Positive match only.** A `tree` must resolve (symlinks followed, §2.7.1 C4), must not be a hard-linked file (D-157), and its resolved root must lie inside a declared path source; every declared source inside the tree adds its class; every symlink inside the tree is followed as its own tree (D-156, at most 64; a failed listing or the lister's bounds is the highest class). **New, a tightening:** before, a tree whose root no source contained still counted as classified when any declared source lay inside it (a link to `/work/other`, with only `/work/other/pub` declared `public`, was read as `public`). A `url` matches a `url` source with exactly its origin, or the `internet` source (D-164). A `tool_result` matches a `tool_result` source naming exactly that tool. Anything else is the highest declared class.
+  - **One table.** `TOOLS` in `session.ts` holds, for each supported tool, its capability, its known input fields and a `reads` function given the values JUNO judged (paths already mapped to `/work`, constants resolved). `SUPPORTED_TOOLS` is its key list. A tool not in it is `unknown_capability` (denied), and its result, having no authorized call, is classified as a `tool_result`, so the highest class unless declared. A value `reads` cannot describe (not a string, not a list of strings) is an `unknown` read.
+  - **What each tool reads (the table):** Read, Write and Edit: their `file_path` as a tree (D-164); Glob: its `path` as a tree; WebFetch: its `url`; Bash: every operand as a tree, or the working directory's tree with no operand (D-156).
+  - **Sources.** `SessionRequest.sources` now take `DeclaredSource`: a grant `ResourceSelector` (only `path` ones match a read), or `{ kind: "url", origin }`, `{ kind: "internet" }`, `{ kind: "tool_result", tool }`. Grants are unchanged, so no signed grant's bytes change.
+  - **`postToolUse` is now async** (it awaits the classifier); the hook service awaits it.
+  - **Property test** (`reads.property.test.ts`, fixed seed): for each of Read, Glob, Write, Edit and Bash, 30 runs of a generated fixture (a hard link to a secret, unclassified or ordinary file; a symlink by name or inside a tree to a place no source declares, partly declared, outside the workspace, or dangling; a hard link inside a tree); for WebFetch, 60 generated URLs with no URL source, an origin source for another origin, sub-domain, port or scheme, or the internet source with a private, special-use, IP-literal, non-default-port, credentialed or non-http URL. Each runs in a session below the highest class (must be denied; a result reported anyway is recorded as one with no authorized call at the highest class; a read-gate park records aggregate = highest) and in one at it (stopped for another reason, never the read gate, or it runs and its result is recorded at the highest class). The read-gate path ran for Read, Glob, Bash and WebFetch (asserted, so not vacuous); Write and Edit are always stopped earlier (D-158, scope). For every tool in the table and other tool names, 100 results with no authorized call are recorded at the highest class, even with a `tool_result` source for another tool. A test fails if the table gains a tool without a generated case. 1,000 generated unregistered URLs are classified highest by `classifyRead` directly. **Positive controls:** Read, Glob, Bash `cat`/`ls -R` of declared files proceed below the highest clearance and are recorded `internal`; Write and Edit in a checkpointed workspace likewise; a WebFetch from a declared origin or under the internet source is recorded `public`; a declared `tool_result` for `TodoWrite` is recorded `public`.
+  - **Run against round 5's code (8e34562), 10 of the 16 new tests fail**, and the property found three more members of the class there: (1) a Read naming a directory that holds a hard link was counted at the directory's class; (2) a symlink inside a tree to a directory only partly declared (`/work/other` with `/work/other/pub` declared) was counted at the declared part's class, so `cat`/`ls` and Glob of it got `allow`/no decision under an `internal` clearance; (3) a Write's result was recorded `public`, as Write was declared to read nothing. All three are closed by the table and the function above.
+- Reason: the operator's ruling; §4.3 V6-7, §1.5, §1.2, §2.7.1 C4.
+
+## D-163 — Operator ruling 3 of 2026-11-07 (third set): review round 6 on PR #39's content is authorised, after D-162
+- Date: 2026-11-07
+- Status: Accepted (operator ruling)
+- Applies to: Increment 4's pull request; CLAUDE.md §7 step 5 (beyond D-157's limit of 5, for this one round)
+- Ruling, quoted: "Review round 6 on PR #39 is authorised, after (2) is built. If round 6 finds this class again, STOP and report." And: "Merge Increment 4 through the gate on MERGE, then continue Increments 5–6 under the existing Slice 1.5 rules, including D-154 for Increment 5."
+- Decision: round 6 runs on the PR that carries PR #39's content (D-165). A round-6 finding of the class closed by D-162 is a STOP. On MERGE, the §7 gate applies unchanged.
+- Reason: the operator's ruling.
+
+## D-164 — What D-162 leaves open, decided restrictively (autopilot ruling)
+- Date: 2026-11-07
+- Status: Accepted (autopilot ruling, CLAUDE.md §7 step 3: the more restrictive reading)
+- Applies to: `packages/mediated/src/reads.ts` (`isPublicInternet`, `UrlSourceSelector`, `ToolResultSourceSelector`), `session.ts` (`TOOLS`, admission)
+- Decisions:
+  1. **"The public internet" (`{ kind: "internet" }`)** matches an `http`/`https` URL on its default port, with no user name or password, whose host is a DNS name of at least two labels under an alphabetic (or `xn--`) top-level label, is not an IP address (the URL parser writes every IPv4 spelling as dotted decimal; IPv6 is bracketed), and is not `localhost` or under `local`, `internal`, `intranet`, `corp`, `home`, `lan`, `private`, `localdomain`, `home.arpa`, `arpa`, `test`, `example`, `invalid`, `onion` or `alt`. Anything doubtful is not "the internet", so it stays at the highest class. **Residual, told to the operator:** JUNO does not resolve names, so a public-looking name that leads to an intranet (`wiki.mycompany.com`) is "internet" to this rule; an operator with such names should declare exact origins instead.
+  2. **A URL source names one origin exactly** (`https://docs.example.com`, written as the URL parser writes it); no sub-domains, prefixes or wildcards. `http` and `https` are different origins.
+  3. **A `tool_result` source may name only a tool outside the table.** A supported tool's result is classified by what its call read; a result from one with no authorized call bypassed JUNO's decision and stays at the highest class (D-150). Admission refuses a `tool_result` source naming a supported tool.
+  4. **Every path a tool names is read as a tree** (Read, Write, Edit included). A file's tree is the file; what Claude Code does with a directory handed to Read is not JUNO's to know, so it counts everything the directory holds (found by the property: D-162 item (1)).
+  5. **A Write reads the file it writes.** JUNO does not rely on Claude Code's Write result not carrying the content it replaced, so the result is recorded at that file's class, and a Write to a file above the clearance is judged by the read gate too (after steps 1 to 4, D-150).
+  6. **Non-path resource selectors** (`repo`, `host`, `record`) declared as sources match no read; a `host` source does not match a URL (only `url` and `internet` do).
+- Reason: CLAUDE.md §7 step 3; §1.5 ("an unclassified source is treated as `secret`/`untrusted`"); §4.3 V6-7.
+
+## D-165 — Increment 4 continues on this session's branch; PR #39 is superseded (as D-028, D-155, D-159)
+- Date: 2026-11-07
+- Status: Accepted
+- Applies to: Increment 4's pull request
+- Decision: this session's harness allows pushes only to `claude/great-goldberg-39jnb4`, so PR #39's branch (`claude/dazzling-einstein-75mver`) cannot be updated. The branch was reset to PR #39's head (8e34562) and carries its commits unchanged plus this session's; a new PR from it supersedes PR #39. The operator's authorisation of "review round 6 on PR #39" (D-163) is applied to that PR, which holds PR #39's whole content.
+- Reason: as D-028, D-155 and D-159; a push to any other name would be refused.
+
+## D-166 — The read classifier resolves `..` as the file system does; STOP after review round 6 (Slice 1.5 Increment 4; PR #40 review round 6)
+- Date: 2026-11-07
+- Status: Accepted (fixes the round-6 finding); **STOP for the operator** (D-163: "If round 6 finds this class again, STOP and report.")
+- Applies to: `packages/mediated/src/reads.ts` (`classifyRead`)
+- Finding (round 6, head 09e232e, CI run 42383941901 green; check 5 FAIL): `classifyRead` collapsed `..` in a path **as text** (`operandPath`) before resolving it, while the scope check hands the raw path to the resolver and lets the file system take `..` after the symlinks before it (D-113). With `pub/lnk` a symlink to `secrets/sub`, Bash `cat pub/lnk/../key.txt` was classified as `pub/key.txt` (`internal`), got `allow` under an `internal` clearance, `cat` printed `secrets/key.txt`, and the result was journalled `internal`. The text-first handling dates from D-156's `#readsSensitivity` and was carried into D-162's function unchanged; no decision recorded it. (A Read naming `..` is refused `malformed_call` by the path type, so it never ran; the reviewer's Read probe is not reproduced with a raw `..`.)
+- Decision: the classifier passes the **raw** absolute path (`rawOperandPath`, the same reading the boundary's scope paths use, D-113) to the resolver, so `..` is resolved by `realpath(3)` after the links before it, exactly as the program will. A raw path not under `/work` is the highest class; a missing remainder holding `..` is refused by the resolver and so is the highest class too.
+- Tests: `session.test.ts` "parks a read of the secret file through a link followed by .." (Bash `cat pub/lnk/../key.txt` parks `sensitivity_ceiling`, aggregate `secret`; the Read is denied; control: `cat pub/../notes.txt` is allowed); the D-162 property gains the fixture `link_then_dotdot` (`<link to secrets/sub>/../key.txt`) for every tool in the table. On round 6's code both fail (the property's counterexample is exactly this fixture for Bash); both pass now.
+- **Same class as earlier fixes (named, as CLAUDE.md §7 requires):** "a read JUNO cannot place is counted below the highest declared class / below its real class": D-150 (PR #37 round 2), D-156 (PR #38 round 4), D-160 (PR #39 round 5), and D-162 (the structural closure this round reviewed).
+- **STOP.** D-163 made a repeat of this class in round 6 a STOP. The fix is on the branch with tests; it is not reviewed. Nothing was merged; Increment 5 is not started.
+- Reason: §4.3 V6-7, §2.7.1 C4 ("symlinks resolved against the volume the effect will touch"), D-113; the operator's ruling D-163.
+
+## D-167 — Operator ruling 1 of 2026-11-08: the kernel is the test oracle for reads, not path text (Slice 1.5 Increment 4)
+- Date: 2026-11-08
+- Status: Accepted (operator ruling; built with tests)
+- Applies to: `packages/mediated/test/kernel-oracle.property.test.ts` (new); every tool in `TOOLS` (`packages/mediated/src/session.ts`)
+- Ruling, quoted: "Kernel oracle. Replace path-text reasoning as the test standard: a property test builds real directory trees in a sandbox (folders, symlinks to registered and unregistered places, hard links, and paths mixing .., ., //, trailing slashes and symlinks in any order). For each generated path and each tool in the table, it compares JUNO's classification and decision with the identity (device and inode) of what the kernel actually opens for that path, and with the classes of the registered sources that identity falls under. Any disagreement where JUNO's class is lower fails. Keep all existing tests."
+- Decision:
+  - **The sandbox.** A temporary directory holding only `work` (the workspace: `project` internal, `project/secrets` secret, `other/pub` public, `other` unregistered) and `outside` (beyond the workspace). The journal and checkpoint store live in a separate directory, so the oracle can scan the sandbox whole.
+  - **Generated trees (fast-check, fixed seed 20261108, 100 runs).** A run folder placed in a registered or unregistered place (`project`, `project/docs`, `project/secrets`, `other`, `other/pub`), holding 2 to 12 nodes made in order: folders, files, symlinks (relative or absolute) to any node so far or to a fixed registered, unregistered, outside or missing place, and hard links to a registered, unregistered or outside file or to a node.
+  - **Generated paths.** A walk of 1 to 7 steps from the run folder; each step is `..`, `.`, an empty component (`//`) or an entry the kernel lists where the walk really is (so it hops through symlinks and `..` as a program's path would); a quarter of paths end with `/`. The walk never climbs above the sandbox.
+  - **The oracle.** `stat(2)` on the path exactly as a program passes it: nothing (it fails), a file's identity, or, for a folder, the identity of everything under it following every symlink (a superset of what any tool reads). Each identity's class comes from a scan of the sandbox that never follows a link: the highest class of every place it lies (a place in no declared source, the outside included, is the highest class, §1.5; a hard link collects the classes of all its names). An identity the scan never saw is the highest class.
+  - **What is compared, for each path:** `classifyRead` on the path (the one classification function, D-162) is never below the oracle; and for each tool in the table (Read, Glob, Write, Edit, Bash as `cat`, `ls -R` and `cat --`, WebFetch as a `file://` URL of the same place), in a session at each clearance (`public`, `internal`, `secret`): the call is denied whenever the oracle is above the clearance, and the recorded result is never below the oracle, whether JUNO allowed the call or not.
+  - **Not vacuous (asserted):** at least half the paths open something (78 of 100 on the fixed seed); plain paths keep a registered class below the highest (16); every path tool ran in some case. A test fails if the table gains a tool without a call. A fixed test shows the oracle reads identities, not text (a link to the key is secret, `<link>/../key.txt` is secret, a hard link to an unregistered file is the highest class, a missing path and a file with a trailing slash open nothing).
+  - **Grant:** scope `/work/project` and `/work/other/pub`, exactly the declared path sources (§5.4 check 4 refuses one beyond them); the run folder is a reversible workspace when in scope, so Write and Edit can run.
+  - All existing tests are kept. One expectation is reversed by ruling 2, not by this one (D-168).
+- Result: see D-168 for the code it runs against, and STATE.md for the replay against the earlier heads.
+- Reason: the operator's ruling; §4.3 V6-7, §1.5, §1.2, §2.7.1 C4.
+
+## D-168 — Operator ruling 2 of 2026-11-08: refuse cleverness; a path the kernel resolves elsewhere than its text says is read at the highest declared class (Slice 1.5 Increment 4)
+- Date: 2026-11-08
+- Status: Accepted (operator ruling; built with tests; deliberate)
+- Applies to: `packages/enforcement/src/canonical.ts` (`lexicalNormal`, `CanonicalPath.redirected`, `readResolverOutput`), `boundary.ts` (`effectOf`), `packages/mediated/src/reads.ts` (`classifyRead`); modes A and C
+- Ruling, quoted: "Refuse cleverness. For clearance and scope decisions, if a path's canonical location (kernel-resolved) differs from its lexical normalization in any way, the read counts at the highest class the operator declared. A positive control shows ordinary paths keep their registered class. Record that this is deliberate: plain paths work; tricks land at the safe default."
+- **Deliberate, as ruled: plain paths work; tricks land at the safe default.** JUNO no longer tries to work out the class of what a symlink or a `..` after one reaches. It notices that the kernel's answer is not the path's text, and treats the read as the highest class the operator declared. The cost is accepted: a workspace that uses symlinks (a `node_modules/.bin`, say) is read at the highest class wherever a read meets one.
+- Decision (readings marked as the restrictive ones are recorded in D-170):
+  - **Detected once, where every path is resolved.** `readResolverOutput` (the one reader of the resolver's answer, modes A and C) compares each canonical path with the raw path's lexical normalization (`lexicalNormal`: empty and `.` components dropped, `..` removing the component before it as text, never above `/`, no trailing slash) and marks a difference `redirected`. Plain spellings (`./x`, `a//b`, `dir/`, `a/../b` with no link before the `..`) are not redirected; neither is `<link>/..` when the kernel and the text land on the same place.
+  - **Clearance (mode C, the read gate and every recorded result):** `classifyRead` returns the highest declared class for a redirected tree root, and for a tree that holds a symlink anywhere inside it (D-170 2). D-156's following of each link inside a tree, and its 64-link limit, are removed: they can no longer change the answer.
+  - **Scope (step 4, modes A and C):** a `write` target that is redirected is judged `irreversible` ("resolves to …, not where its text says"), so an untrusted one parks `integrity_floor` (not overridable) unless enumerated, as D-158 does for a hard link (D-170 3). Scope membership is still judged on the canonical path (§2.7.1 C4).
+  - **Positive controls:** the resolver does not mark `.`, `//`, a trailing slash on a folder, `..` without a link before it, or a new file (`canonical.test.ts`); `cat ./notes.txt`, `cat docs//a.txt`, `cat docs/../notes.txt`, `ls -R docs/`, `ls -R ./docs//` and a Glob of `docs` proceed under an `internal` clearance and are recorded `internal`; the same file by its own name keeps its class (`session.test.ts`); the D-162 positive controls are unchanged and pass; the kernel-oracle property finds 16 plain paths kept below the highest class.
+  - **Tests that now land at the safe default:** a link by name, a link in a middle component, a link inside a tree (`ls -R`, Glob), and `e/../a.txt` with `e` → `docs/sub`, all to internal places, park `sensitivity_ceiling` under an `internal` clearance; a Write through a symlink into the checkpointed workspace parks `integrity_floor`, while the target by its own name proceeds; the boundary judges a redirected write target irreversible (`effects.test.ts`).
+  - **One existing expectation reversed, on purpose (kept, made stricter, renamed):** `session.test.ts` "lets a link to an internal file proceed and records its result at the target's class" (D-156) asserted that a link to `notes.txt` proceeds and is recorded `internal`. Ruling 2 says exactly the opposite. The test now asserts the link parks at the highest class, and that `notes.txt` by its own name proceeds and is recorded `internal`. One exact-shape assertion in `canonical.test.ts` (a hard link reached through a symlink) now also states `redirected: true`. No test was deleted or skipped.
+- Reason: the operator's ruling; §1.5 ("an unclassified source is treated as `secret`/`untrusted`"), §4.3 V6-7, §2.2.2, §2.7.1 C4.
+
+## D-169 — Operator ruling 3 of 2026-11-08: review round 7 on PR #40's content is authorised once, after rulings 1 and 2
+- Date: 2026-11-08
+- Status: Accepted (operator ruling)
+- Applies to: Increment 4's pull request; CLAUDE.md §7 step 5 (beyond D-157's limit, for this one round)
+- Ruling, quoted: "Review round 7 on PR #40 is authorised once (1) and (2) are built. If round 7 finds this class again, STOP and report." And: "Merge Increment 4 through the gate on MERGE, then continue Increments 5–6 under the existing Slice 1.5 rules, including D-154 for Increment 5."
+- Decision: round 7 runs on the PR that carries PR #40's content (D-171). A round-7 finding of the class "a read is counted below its real class" (D-150, D-156, D-160, D-162, D-166) is a STOP. On MERGE, the §7 gate applies unchanged.
+- Reason: the operator's ruling.
+
+## D-170 — What ruling 2 (D-168) leaves open, decided restrictively (autopilot ruling)
+- Date: 2026-11-08
+- Status: Accepted (autopilot ruling, CLAUDE.md §7 step 3: the more restrictive reading)
+- Applies to: `canonical.ts`, `boundary.ts`, `reads.ts`
+- Decisions:
+  1. **"Lexical normalization"** is the path's text with empty and `.` components dropped and each `..` removing the component before it, never above `/`, and no trailing slash: the same reading as `operandPath` in `scope.ts`, applied to the raw absolute path the resolver is asked about (D-113). A path is redirected when the canonical form differs from that in any character.
+  2. **A symlink inside a tree read is redirected too.** Each entry under a folder is a path the tool may read; a symlink entry's canonical location differs from its lexical one by definition. So a tree that holds a symlink anywhere is the highest class, whether or not the tool would follow it (`ls -R` does not; JUNO does not rely on it).
+  3. **"Scope decisions".** Scope membership was already judged on the kernel's answer (§2.7.1 C4), which is the safe one. Where step 4 depends on the path itself, a write's reversibility, a redirected target is never reversible (as D-158 for a hard link; ruling 2's "highest class" has no meaning for a reversibility row). In mode A every result is already recorded at the highest class any task source declares (D-063), so a mode-A read cannot be counted lower; nothing else changes there.
+  4. **Typed path fields** (Read, Write, Edit, Glob) already refuse `.`, `..`, `//` and a trailing slash as `malformed_call` (`grant.ts`, `AbsolutePath`); only Bash operands carry those spellings to the classifier.
+- Reason: CLAUDE.md §7 step 3; D8 fail-closed; D-157 and D-158 (the same phrase "a clearance or scope decision" read the same way).
+
+## D-171 — Increment 4 continues on this session's branch; PR #40 is superseded (as D-028, D-155, D-159, D-165)
+- Date: 2026-11-08
+- Status: Accepted
+- Applies to: Increment 4's pull request
+- Decision: this session's harness allows pushes only to `claude/friendly-lovelace-2j7h4d`, so PR #40's branch (`claude/great-goldberg-39jnb4`) cannot be updated. The branch was reset to PR #40's head (d0a144c) and carries its commits unchanged plus this session's; a new PR from it supersedes PR #40. The operator's authorisation of "review round 7 on PR #40" (D-169) is applied to that PR, which holds PR #40's whole content.
+- Reason: as D-028, D-155, D-159 and D-165; a push to any other name would be refused.
+
+## D-172 — STOP after review round 7: a Windows-spelled path can be read below its real class (Slice 1.5 Increment 4; PR #41 review round 7)
+- Date: 2026-11-08
+- Status: **STOP for the operator** (D-169: "If round 7 finds this class again, STOP and report."). Not fixed; nothing merged; Increment 5 not started.
+- Applies to: `packages/mediated/src/session.ts` (`PathMap.toWork`), `packages/mediated/src/reads.ts` (`classifyRead`), `packages/enforcement/src/canonical.ts` (D-168's `redirected`)
+- Finding (round 7, head 83f8ef3; fresh reviewer, P2 verbatim; check 5 FAIL; checks 1–4 and 6 PASS): in the operator's real setup Claude Code runs on Windows and names workspace files as `\\wsl.localhost\…` paths (plan §2a, D-130, D-141). `PathMap.toWork` maps such a path onto `/work` as text, and the classifier and scope check resolve it with the Linux resolver. Nothing accounts for what Windows does to a path before it opens it. Reproduced by the agent on this head (clearance `internal`, `project` internal, `project/secrets` secret):
+  - `Read …\project\secrets\key.txt` → parked `sensitivity_ceiling` (correct);
+  - `Read …\project\secrets.\key.txt`, `…\secrets \key.txt` (trailing space), `…\SECRETS\key.txt`, and `Glob path=…\project\secrets.` → **no decision, result recorded `internal`**. On Linux those names do not exist, so the resolver places them under `/work/project` through its existing ancestor; they are not `redirected` (D-168 compares the text with the Linux kernel's answer only).
+- Why it matters: Win32 path normalization strips a trailing `.` and trailing spaces from path components (paths not prefixed `\\?\`), and Windows lookups are usually case-insensitive. If the program Claude Code uses on Windows opens `…\secrets.\key.txt` as `…\secrets\key.txt`, the secret file is read under an `internal` clearance and recorded `internal`.
+- **Not verified:** whether Claude Code's Windows runtime and the `\\wsl.localhost` (9P) redirector actually apply those rewrites (the ext4 side is case-sensitive; the trailing `.`/space stripping happens on the Windows side before the request leaves). Nothing in the cloud session can run Windows.
+- Same class as earlier fixes (named, as CLAUDE.md §7 requires): "a read is counted below its real class": D-150, D-156, D-160, D-162, D-166; and the Windows-side counterpart of D-168 (whose oracle is the Linux kernel only; D-167's oracle does not model Windows either).
+- Restrictive options for the operator's ruling (none built):
+  - (a) **Refuse Windows spellings a Win32 open could rewrite.** For a path mapped from a Windows-form root: any component ending in `.` or a space, holding `:`, `~` (a possible 8.3 short name), `<>"|?*` or a control character, or naming a reserved device (`CON`, `NUL`, `COM1`, …), maps nowhere (outside every scope, a non-overridable park). And any component whose name exists in the same folder only in a different case is the highest class.
+  - (b) **Refuse Windows spellings altogether.** Only Linux paths inside WSL are accepted; Claude Code would have to run inside WSL. That changes plan §2a.
+  - (c) **Prove it on your machine first.** A short Windows check (Part E) that opens `\\wsl.localhost\…\secrets.\key.txt` and `…\SECRETS\key.txt`, then (a) or (b) by the result.
+- Reason: D-169; CLAUDE.md §7 STOP list.
+
+## D-173 — Operator ruling 1 of 2026-11-08 (second set), on D-172: option (b); Claude Code is governed only inside WSL2, as its own Linux user (Slice 1.5 Increment 4)
+- Date: 2026-11-08
+- Status: Accepted (operator ruling; built with tests)
+- Applies to: `packages/contracts/src/grant.ts` (`AbsolutePath`), `packages/mediated/src/paths.ts` (new: `windowsFormReason`), `session.ts` (`PathMap`, `#map`), `install.ts`, `preflight.ts` (new: `juno hook check`), `hook-service.ts`; `test/containers/hook-separation.test.ts` (new); `test/mediated-e2e/`; plan §2a; STATE.md Parts E and F
+- Ruling, quoted: "D-172: option (b). Claude Code is governed only when it runs inside WSL2. JUNO accepts only Linux absolute paths; any Windows-form path (drive letters, backslashes, \\wsl.localhost, \\?\, UNC) is refused fail-closed with a clear reason. The Claude Code process runs as a different Linux user from the runner, cannot write JUNO's journal, grants, socket permissions or hook configuration (hooks live in root-owned managed settings), and is not root. Remove the Windows-to-WSL hook bridge from the plan. Rewrite the operator setup (Parts E and F) for this: a WSL terminal for governed work, and a plain statement that a Windows-native Claude Code session is not governed. Add a container test proving the Claude Code user cannot modify the hook settings or reach the runner's state."
+- Decision (readings marked restrictive are autopilot rulings, CLAUDE.md §7 step 3):
+  - **Windows-form paths are refused everywhere a path enters JUNO.** A path is Windows-form when it holds a backslash anywhere, starts with a drive letter and `:` (`C:`, `c:/x`, `C:x`), or starts with `//` (a UNC or `\\?\` path written with forward slashes; restrictive: Linux reads a leading `//` as `/`, but no Linux tool needs it). That covers `\\wsl.localhost\…`, `\\?\…`, `\\.\…` and `\\server\share`.
+    - In a hook call (Read, Write, Edit, Glob path, the call's `cwd`, every Bash operand): the call parks `scope_violation`, **not overridable**, and the denial says "… is a Windows-form path; JUNO governs Claude Code only inside WSL2 and accepts only Linux absolute paths (D-173)". Restrictive: a Windows path is never valid, so no operator remedy could make it so; this is the same answer as a path outside the namespace (D-147). A Bash operand is checked whether or not it is absolute, so `C:x`, `C:/x` and a single-quoted `'a\b'` are refused too.
+    - In configuration: `PathMap` refuses a workspace root that is not a Linux absolute path, and session admission refuses a source prefix, a reversible workspace or a grant scope with a backslash (restrictive: a backslash is legal in a Linux file name, but the ruling lists backslashes). The `\\wsl.localhost` spelling is removed from `PathMap` (D-141's second spelling). Mode A's `AbsolutePath` is not changed: its registration conformance check delivers a canary holding a backslash through every path field byte for byte (§2.4), and that test is not weakened; mode A never receives a path from Claude Code.
+  - **The hook bridge is removed.** `juno hook install` no longer takes `--wsl-distro`/`--wsl-user`, and never writes `wsl.exe`. The hook runs as the Claude Code user: `<node> <client> --socket <path>`, exec form.
+  - **Hooks live in root-owned managed settings only.** `juno hook install` writes only `/etc/claude-code/managed-settings.json` (the Linux managed-settings path, read from the 2.1.319 binary itself, rule 13) and refuses the user's, a project's or a local settings file (this replaces D-143's "user or managed"). It refuses unless it runs as root, and it sets `allowManagedHooksOnly: true` (present in 2.1.319), so a PreToolUse hook in a user's or a project's settings does not run (closes "What mode C does not protect" item 3's other-hook case where Claude Code honours the setting).
+  - **`juno hook check` (new) proves the separation before use.** Run as root with the agent's and the runner's user names, the socket, the client, node and JUNO's state paths. It refuses unless every one holds, judging each path with POSIX permission rules for the agent's uid and every group it holds (from `/etc/passwd` and `/etc/group`):
+    1. the agent is not root, is not the runner, and holds none of the runner's groups; the runner is not root;
+    2. the managed settings file, the folder and every ancestor are owned by root and not writable by group or others; the file holds JUNO's fail-closed hook (D-143's checks), `allowManagedHooksOnly: true` and not `disableAllHooks`; the drop-in folder `managed-settings.d` is absent or empty (restrictive: a drop-in file JUNO did not write could change hooks);
+    3. node and the client's folder, every file in it, and every ancestor are owned by root and not writable by group or others (otherwise the agent could replace the hook with one that allows everything);
+    4. each state path (journal, grants, checkpoints) is owned by the runner, and the agent can neither read, write nor search it; the trust anchor is not writable by the agent (it is public, D-116);
+    5. the socket's folder is owned by the runner and the agent can search but not write it; the socket is owned by the runner (so the agent cannot change its mode) and the agent can connect.
+    ACLs are not read (a residual of the check, not of the setup: the container test is the kernel's own answer, and Part E sets no ACL).
+  - **The service sets its socket's mode.** `HookService.listen(path, { mode })` refuses a socket folder writable by group or others (someone else could replace the socket), and sets the socket's mode after it listens (0660 in real use: the agent reaches it through the socket folder's group, set up in Part E).
+  - **Container test (`test/containers/hook-separation.test.ts`).** In one sealed container (no network, all capabilities dropped but CHOWN, SETUID, SETGID for setup) the real `juno hook install` writes the managed settings as root; the runner (uid 1000, no supplementary group) runs JUNO's real `HookService` and journal; `juno hook check` passes; then the Claude Code user (uid 1001, a different user, group `juno-hook` only for the socket) tries, and the kernel refuses: to write, replace, rename or remove the managed settings, to create a drop-in, to read or write the journal, the grants and the checkpoints, to change the socket's mode or remove it, to replace the hook client, and to signal the runner or read its environment. Positive control: it connects and gets JUNO's answer. Negative controls: `juno hook check` refuses when the agent is root, is the runner, holds the runner's group, or can write the settings.
+  - **A Windows-native Claude Code session is not governed.** It is not a residual JUNO can narrow: JUNO never sees it. STATE.md Parts E and F say so plainly.
+- Residuals recorded (not defects): whoever starts Claude Code chooses its environment and flags, so a session started with `CLAUDE_CODE_MANAGED_SETTINGS_PATH` (present in 2.1.319) naming another folder, or by another program, is not governed; the protection is that no governed tool call can write the configuration, and that the operator starts governed sessions only from the WSL terminal of Part E.
+- Reason: the operator's ruling; §4.3 (fail-closed ingress, "refused at setup"), §3.2 C1, §3.4.1; D8.
+
+## D-174 — Operator ruling 2 of 2026-11-08 (second set): a shortcut that stays inside one registered source keeps that source's class (refines D-168) (Slice 1.5 Increment 4)
+- Date: 2026-11-08
+- Status: Accepted (operator ruling; built with tests)
+- Applies to: `packages/mediated/src/reads.ts` (`classifyRead`); `packages/mediated/test/kernel-oracle.property.test.ts`, `session.test.ts`
+- Ruling, quoted: "Refinement of D-168 (refuse cleverness): a path whose kernel-resolved location and its lexical path both lie inside the SAME registered source keeps that source's class. Only a shortcut that leaves its source, or reaches anything unregistered, counts at the highest class. Extend the kernel-oracle test with shortcuts inside one source (e.g. a node_modules/.bin layout) and shortcuts crossing sources; JUNO's class must never be lower than the class of what the kernel opens."
+- Decision (restrictive readings, autopilot rulings):
+  - **"The same registered source"** is read as: the set of declared path sources containing the lexical location equals, exactly, the set containing the kernel-resolved location, and is not empty. Sources nest (`project` internal holds `project/secrets` secret), so "both inside `project`" is not enough: a shortcut from `project/a` into `project/secrets` changes the set ({project} → {project, secrets}) and counts at the highest class. Equal sets give the same class by construction, so the class kept is never lower than the class of the place the kernel opens.
+  - **Inside a tree read**, each symlink is judged the same way, and is followed: its own lexical location (the entry's path as the tree's text names it) and its target must have equal source sets; when the target is a folder, everything under the target is judged as reached through the link (the lexical location of `link/x` is `<link's lexical path>/x`), recursively. A loop, more than 64 links followed for one read, or a link that cannot be resolved is the highest class (restrictive, as D-156's limit).
+  - **Unchanged:** a hard link is the highest class (D-157); a path or tree no declared source contains is the highest class; a redirected write target is never reversible (D-170 3: the ruling speaks of class; reversibility stays restrictive, and D-121's writer never follows a link in mode A).
+  - **The oracle** (D-167) gains a fixed layout and generated shortcuts: a `node_modules/.bin` layout inside `project` (file links to `../pkg/bin/x`, a folder link `node_modules/alias` → `pkg`), shortcuts that cross from `project` into `project/secrets`, from `other/pub` into `project`, from `project/secrets` into `project`, and into unregistered and outside places. Positive controls: a same-source shortcut keeps `internal` and runs under an `internal` clearance. The property is unchanged: JUNO's class is never below the class of what the kernel opens.
+  - **Tests whose expectation changes, on purpose (kept):** D-168's tests that a link to an internal file, a link in a middle component, a link inside a tree and `e/../a.txt` (with `e` → `docs/sub`) park at the highest class all named shortcuts that stay inside `project`. Under this ruling they keep `internal`. Each is kept, its expectation reversed to the ruling's, and paired with a crossing shortcut of the same shape that still parks. Nothing is deleted or skipped.
+- Reason: the operator's ruling; §1.5, §4.3 V6-7, §2.7.1 C4.
+
+## D-175 — Operator ruling 3 of 2026-11-08 (second set): review round 8 authorised once, after D-173 and D-174
+- Date: 2026-11-08
+- Status: Accepted (operator ruling)
+- Applies to: Increment 4's pull request; CLAUDE.md §7 step 5 (beyond D-157's limit, for this one round)
+- Ruling, quoted: "Review round 8 on PR #41 is authorised once (1) and (2) are built. STOP if it finds the same class again." And: "Merge Increment 4 through the gate on MERGE, then continue Increments 5–6 under the existing Slice 1.5 rules, including D-154 for Increment 5."
+- Decision: round 8 runs on the PR that carries PR #41's content (D-176). A round-8 finding of the class "a read is counted below its real class" (D-150, D-156, D-160, D-162, D-166, D-172) is a STOP. On MERGE, the §7 gate applies unchanged.
+- Reason: the operator's ruling.
+
+## D-176 — Increment 4 continues on this session's branch; PR #41 is superseded (as D-028, D-155, D-159, D-165, D-171)
+- Date: 2026-11-08
+- Status: Accepted
+- Applies to: Increment 4's pull request
+- Decision: this session's harness allows pushes only to `claude/trusting-faraday-jrgos5`, so PR #41's branch (`claude/friendly-lovelace-2j7h4d`) cannot be updated. The branch was reset to PR #41's head (1ff969b) and carries its commits unchanged plus this session's; a new PR from it supersedes PR #41. The authorisation of "review round 8 on PR #41" (D-175) is applied to that PR, which holds PR #41's whole content.
+- Reason: as D-028; a push to any other name would be refused.
+
+## D-177 — STOP after review round 8: on a case-insensitive file system a read can be counted below its real class (Slice 1.5 Increment 4; PR #42 review round 8)
+- Date: 2026-11-08
+- Status: **STOP for the operator** (D-175: "STOP if it finds the same class again"). Not fixed; nothing merged; Increment 5 not started.
+- Applies to: `packages/enforcement/src/canonical.ts` (the resolver, libc `realpath`), `packages/mediated/src/reads.ts` (`classifyTree`), `docs/plans/slice-1.5-build-plan.md` §2a line 137 (the Increment 4 directive "exposing a Windows folder needs a single root-written `/etc/fstab` entry", kept by this session's D-173 rewrite), DECISIONS.md D-130/D-131.
+- Finding (round 8, head 232dcf5; fresh reviewer, P2 verbatim; checks 1–4 and 6 PASS; check 5 FAIL): the plan still allows the workspace to be a Windows folder mounted into WSL2 by `/etc/fstab` (drvfs). Folders created on the Windows side are case-insensitive to Linux lookups. JUNO's resolver does not correct case: `realpath` returns `/work/project/SECRETS/key.txt` as written, so it is not `redirected`, its source set is `{project}`, and it is classified and recorded `internal`, while the kernel opens `project/secrets/key.txt`, which is `secret`. That is round 7's `SECRETS\key.txt` (D-172) reached through a Linux path; D-173's refusal of Windows-form paths does not catch it. Nothing checks the workspace's file-system type or case sensitivity, and no decision or residual records it. The kernel oracle (D-167) runs only on case-sensitive file systems.
+- **Not reproduced:** the cloud kernel has no case-folding support and nothing here runs WSL. The agent agrees with the reasoning: `realpath` canonicalizes symlinks and `.`/`..` only, never the case of a name. The agent adds one point of its own: ext4 also has per-folder case folding (`chattr +F`, on a file system made with the casefold feature), so a check on the file-system type alone would not close the class.
+- **Does not affect the layout STATE.md Part E prescribes** (`/srv/juno-work` on the distribution's own ext4, made by WSL without the casefold feature, so that, as far as the agent knows, `+F` cannot be set there); and governed tool calls cannot create a mount. It is the plan's allowance that leaves the class open.
+- Same class as earlier fixes, named as CLAUDE.md §7 requires: "a read is counted below its real class" (D-150, D-156, D-160, D-162, D-166, D-172).
+- Restrictive options for the operator's ruling (none built):
+  - (a) **Refuse a case-insensitive workspace.** At admission (and in `juno hook check`), refuse a workspace root, or any folder under it, that is not on a known case-sensitive Linux file system type (ext4, xfs, btrfs, tmpfs) or that holds a case-folding folder (ext4 `+F`); drvfs and 9p are refused outright.
+  - (b) **Withdraw the Windows-folder allowance.** Remove the `/etc/fstab` line from plan §2a and say Windows folders are not supported as governed workspaces (only folders on the distribution's own file system).
+  - (c) **Allow drvfs only with `case=force`**, checked by `juno hook check` from `/proc/self/mountinfo`.
+  - (a) and (b) together are the most restrictive; (b) alone relies on the operator never adding such a mount.
+- Also from the review (not a defect): the PR description still said the real-binary re-run on the final head was pending. It was run on 232dcf5 before the review finished: 7 of 7 (recorded in STATE.md and the PR).
+- Reason: D-175; CLAUDE.md §7 STOP list.
+
+## D-178 — Operator ruling of 2026-11-08 on D-177: options (a) and (b); a workspace or source on a Windows mount or a case-folding folder is refused (Slice 1.5 Increment 4)
+- Date: 2026-11-08
+- Status: Accepted (operator ruling), built
+- Applies to: `packages/mediated/src/filesystem.ts` (new), `packages/mediated/src/session.ts` (admission), `packages/mediated/src/preflight.ts` (`juno hook check`), `docs/plans/slice-1.5-build-plan.md` §2a, STATE.md Part E steps 12 and 14, `packages/mediated/test/kernel-oracle.property.test.ts`, `.github/workflows/verify.yml`
+- Ruling, quoted: "D-177: options (a) and (b). Drop the Windows-folder workspace from the plan. At session admission and in `juno hook check`, refuse any workspace (and any registered source) that lies on a Windows-mounted file system (drvfs, 9p or any non-native mount type) or that contains a directory with the case-folding attribute; the refusal is fail-closed with a plain reason. Extend the kernel-oracle test with a case-folded directory where the platform supports it; where it does not, test the refusal path directly."
+- Decision:
+  - (b) Plan §2a's `/etc/fstab` allowance is withdrawn: a Windows folder is not supported as a governed workspace or source, by any mount.
+  - (a) Every admission checks every workspace root and every registered path source (as a host path); `juno hook check` checks every `--workspace` (now required) and `--source`. Each is refused, with a plain reason naming D-178, unless: it and every mount inside it are on ext4, btrfs or tmpfs (a tmpfs without its `casefold` option), read from `/proc/self/mountinfo`; no folder in its tree carries the case-folding attribute (`F` in `lsattr -d`, run by `execFile` with an argv array); and no folder answers a listed name with its case swapped (the kernel's own answer, by device and inode). Anything the check cannot read refuses.
+  - `MediatedOptions.filesystem` is required, so no configuration can leave the check out.
+  - The kernel oracle gains a case-folded folder: where `JUNO_CASEFOLD_ROOT` names a folder on an ext4 made with the casefold feature (CI's `verify` job makes one by loop mount and requires it with `JUNO_CASEFOLD_REQUIRED=1`), it sets `+F` on `project`, checks that the kernel folds, checks that the check and admission refuse, and compares 100 generated case spellings with what the kernel opens. Where the platform cannot fold case (this cloud kernel: `CONFIG_UNICODE` is off), the refusal path is tested directly over a described file system.
+  - The hook-separation container test now mounts the workspace as a tmpfs and adds a negative control: a workspace on the container's overlay root is refused by the real check with exactly one line.
+- Reason: the operator's ruling; D-177's finding.
+
+## D-179 — Operator change to CLAUDE.md §7's repeat rule; round limit 10 for Increment 4's PR
+- Date: 2026-11-08
+- Status: Accepted (operator change), applied to CLAUDE.md §7 step 5 and its STOP list
+- Ruling, quoted: "STOP only if a round finds a MECHANISM already fixed in an earlier round or recorded in DECISIONS.md, naming that fix. A new mechanism within an already-seen class is fixed with the most restrictive option, covered by extending the kernel-oracle or property test, recorded as an autopilot ruling, and review continues. The round limit for this PR is 10." And: "nothing else changes".
+- Decision: CLAUDE.md §7 is amended exactly so. "This PR" is read as Increment 4's PR, whichever PR number carries it (D-181).
+- Reason: the operator's change.
+
+## D-180 — Operator ruling: the command that starts JUNO's hook service on the operator's machine belongs to Increment 6
+- Date: 2026-11-08
+- Status: Accepted (operator ruling); planned, not built
+- Ruling, quoted: "The command that starts JUNO's hook service and admits a Claude Code session on the operator's machine belongs to Increment 6. Add it to the plan there, with click-by-click steps; do not build it in Increment 4."
+- Decision: plan Increment 6 now holds `juno hook serve` and `juno hook admit`, their restrictive rules, their tests and six click-by-click operator steps. Nothing of it is built in Increment 4. How Claude Code's session id is fixed before its first call is read from the binary in Increment 6 (rule 13), never assumed.
+- Reason: the operator's ruling.
+
+## D-181 — Review round 9 authorised; Increment 4 continues on this session's branch, PR #42 superseded (as D-028, D-155, D-159, D-165, D-171, D-176)
+- Date: 2026-11-08
+- Status: Accepted
+- Ruling, quoted: "Review round 9 on PR #42 is authorised. Merge Increment 4 through the gate on MERGE, then continue Increments 5–6 under the existing Slice 1.5 rules, including D-154 for Increment 5."
+- Decision: this session may push only to `claude/loving-brahmagupta-rp1azf`, so PR #42's branch (`claude/trusting-faraday-jrgos5`) cannot be updated. The branch was reset to PR #42's head (3ec192b) and carries its commits unchanged plus this session's; a new PR from it supersedes PR #42, and round 9 runs on that PR, which holds PR #42's whole content.
+- Reason: as D-028; a push to any other name would be refused.
+
+## D-182 — What D-178 leaves open, decided restrictively (autopilot ruling)
+- Date: 2026-11-08
+- Status: Accepted (autopilot ruling, CLAUDE.md §7 step 3)
+- Applies to: `packages/mediated/src/filesystem.ts`, `packages/enforcement/src/canonical.ts` (`RESOLVER_SCRIPT`)
+- Decisions, each the more restrictive reading:
+  1. **"Native" is an allowlist: ext4, btrfs, tmpfs.** xfs is refused too: its `version=ci` mode folds ASCII case for a whole file system and sets no attribute. overlay, FUSE, virtiofs, NFS, NTFS, FAT and every type not listed are refused. A tmpfs mounted with `casefold` is refused.
+  2. **A mount inside the workspace counts:** every mount point under a checked path must also pass.
+  3. **A source that does not exist yet** is judged by its nearest existing ancestor, where it would be created.
+  4. **Fail-closed reads:** an unreadable mount table, a folder that cannot be listed, attributes that cannot be read (including a missing `lsattr`), a folder name holding a line break, or a tree of more than 50,000 folders refuses; a tree is never partly checked.
+  5. **The kernel's own answer as well as the attribute:** a folder whose lookup of a listed name with its case swapped opens the same entry is refused, so folding that no attribute shows is caught.
+  6. **At every call, not only at admission.** The check is a snapshot, and a folder could start folding later (for example `chattr +F` on a new empty folder of an ext4 made with the casefold feature). So the resolver, at every call, in both modes, refuses a path in which a name the kernel matched is not listed, byte for byte, in its folder: on a folding folder `realpath` keeps the name as written while the kernel opens another entry. The path is then unresolved: outside every scope, and any read of it counts at the highest declared class (D-162). The kernel oracle's case-folded folder tests exactly this past admission.
+  7. **`juno hook check` requires `--workspace`**, so the check cannot pass without judging the workspace.
+  8. **Admission judges where JUNO reads.** The workspace checked is the read view's directory (the files JUNO's resolver and read gate actually open), plus every configured workspace root that exists on this machine; each source is checked under the view's directory. In real use (Part E) they are one folder, `/srv/juno-work`. Found by `make mediated-e2e`, where Claude Code names `/workspace` inside its container while JUNO reads the host folder bound there: the first build checked the name, which does not exist on the host, so it judged `/` (and refused, fail-closed).
+- Reason: D8 (fail-closed); D-177's class, "a read is counted below its real class".

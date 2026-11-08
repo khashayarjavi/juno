@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -37,6 +37,13 @@ beforeAll(() => {
   symlinkSync("nowhere", join(dir, "work/project/dangling"));
   // A symlink then `..`: physically this is /work/project/sub/.. = /work/project, lexically it would be /work/project/x.
   symlinkSync("sub/file.txt", join(dir, "work/project/to-file"));
+  // D-168: a link one level deeper, so `deep/..` is `sub` to the kernel and `project` to the text.
+  mkdirSync(join(dir, "work/project/sub/deeper"));
+  symlinkSync("sub/deeper", join(dir, "work/project/deep"));
+  // D-157: a second name for a file outside the view, and its own link to it.
+  writeFileSync(join(dir, "outside", "secret.txt"), "s");
+  linkSync(join(dir, "outside", "secret.txt"), join(dir, "work/project/hard.txt"));
+  symlinkSync("hard.txt", join(dir, "work/project/to-hard"));
 });
 afterAll(() => {
   rmSync(dir, { recursive: true, force: true });
@@ -97,5 +104,53 @@ describe("the canonical form of a path (§2.7.1 C4, D-113)", () => {
     expect(await canonical("relative/x")).toBeNull();
     expect(readResolverOutput(["/work/a"], "not json").get("/work/a")).toMatchObject({ ok: false });
     expect(readResolverOutput(["/work/a", "/work/b"], JSON.stringify([{ path: "/work/a", canonical: "/work/a" }])).get("/work/b")).toMatchObject({ ok: false });
+  });
+});
+
+describe("hard links (D-157, operator ruling of 2026-11-07, amends D-156)", () => {
+  // proves D-157: a regular file with a link count above 1 is reported as such, by name or through a symlink to it
+  it("reports a regular file with more than one link, by name and through a symlink", async () => {
+    expect((await resolve(["/work/project/hard.txt"])).get("/work/project/hard.txt")).toEqual({ ok: true, canonical: "/work/project/hard.txt", hardLinked: true });
+    // Through a symlink it is also `redirected` (D-168): its canonical form is not its text.
+    expect((await resolve(["/work/project/to-hard"])).get("/work/project/to-hard")).toEqual({ ok: true, canonical: "/work/project/hard.txt", hardLinked: true, redirected: true });
+  });
+
+  // proves D-157's positive control: an ordinary file, a directory (always more than one link) and a missing path are not
+  it("does not report an ordinary file, a directory or a path that does not exist yet", async () => {
+    const paths = ["/work/project/sub/file.txt", "/work/project/sub", "/work/project/new.txt"];
+    const answers = await resolve(paths);
+    for (const path of paths) expect(answers.get(path)).toEqual({ ok: true, canonical: path });
+  });
+});
+
+describe("refuse cleverness (D-168, operator ruling 2 of 2026-11-08)", () => {
+  // proves D-168: a path whose canonical form differs from its lexical normalization in any way is reported redirected:
+  // a symlink by name, in a middle component, in a chain, and `..` after a symlink
+  it.each([
+    ["/work/project/inner", "/work/project/sub"],
+    ["/work/project/inner/file.txt", "/work/project/sub/file.txt"],
+    ["/work/project/chain/file.txt", "/work/project/sub/file.txt"],
+    ["/work/project/to-file", "/work/project/sub/file.txt"],
+    ["/work/project/deep/../file.txt", "/work/project/sub/file.txt"],
+    ["/work/project/inner/a/b/new.txt", "/work/project/sub/a/b/new.txt"],
+    ["/work/project/./inner//file.txt", "/work/project/sub/file.txt"],
+  ])("reports %s as redirected", async (path, target) => {
+    expect((await resolve([path])).get(path)).toEqual({ ok: true, canonical: target, redirected: true });
+  });
+
+  // proves D-168's positive control: plain paths, with `.`, `//`, a trailing slash on a directory, or `..` with no link
+  // before it, are not redirected, so they keep their registered class
+  it.each([
+    ["/work/project/sub/file.txt", "/work/project/sub/file.txt"],
+    ["/work/project/./sub//file.txt", "/work/project/sub/file.txt"],
+    ["/work/project/sub/", "/work/project/sub"],
+    ["/work/project//sub/./", "/work/project/sub"],
+    ["/work/project/sub/../sub/file.txt", "/work/project/sub/file.txt"],
+    ["/work/project/sub/new.txt", "/work/project/sub/new.txt"],
+    // `..` after a link, where the kernel and the text agree on the place: nothing differs, so nothing is refused.
+    ["/work/project/inner/../sub/file.txt", "/work/project/sub/file.txt"],
+    ["/work/project/chain/..", "/work/project"],
+  ])("does not report %s", async (path, target) => {
+    expect((await resolve([path])).get(path)).toEqual({ ok: true, canonical: target });
   });
 });

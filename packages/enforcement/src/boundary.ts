@@ -152,6 +152,8 @@ export type ParkDetail =
       readonly ceiling: Sensitivity;
       /** When the capability's ceiling was met: each remaining candidate grant and its lower `max_sensitivity` (D-046). */
       readonly grants: readonly { readonly grant: string; readonly max_sensitivity: Sensitivity }[];
+      /** Mediated modes (§4.3 V6-7, D-150): the park is the read gate's: `aggregate` is what the call reads, `ceiling` the provider's clearance. */
+      readonly read_gate?: true;
     }
   | {
       readonly reason: "adapter_quarantined";
@@ -503,7 +505,8 @@ type JudgedEffect =
 /**
  * A `write` is reversible only when every target of the call is a path whose canonical form lies inside one of the
  * task's reversible workspaces (§2.2.2: "only if the scope lies in a reversible workspace"; D-135, restrictive): a
- * target that is not a path, or a path with no canonical form, makes it `irreversible`.
+ * target that is not a path, or a path with no canonical form, makes it `irreversible`; so does a hard-linked file (D-158),
+ * and a path whose canonical form differs from its lexical normalization (D-168).
  */
 function effectOf(entry: RegistryEntry, call: CapabilityCall, canonical: CanonicalPaths, reversible: readonly string[]): JudgedEffect {
   const { side_effect: effect } = entry.capability;
@@ -516,6 +519,12 @@ function effectOf(entry: RegistryEntry, call: CapabilityCall, canonical: Canonic
     if (raw === undefined) return { kind: "irreversible", not_reversible: `${argument} is not a path` };
     const answer = canonical.get(raw);
     if (answer === undefined || !answer.ok) return { kind: "irreversible", not_reversible: `${argument} has no canonical path` };
+    // D-158: a hard-linked file is the same file under a name the checkpoint may not hold, and a restore replaces the
+    // workspace's name only, so a write through it is not undone by the restore: never reversible.
+    if (answer.hardLinked === true) return { kind: "irreversible", not_reversible: `${answer.canonical} is a file with more than one link` };
+    // D-168 (operator ruling 2 of 2026-11-08): a target the kernel resolves elsewhere than its text says (a symlink in any
+    // component, `..` after one) is judged at the safe default: a write through it is never reversible.
+    if (answer.redirected === true) return { kind: "irreversible", not_reversible: `${raw} resolves to ${answer.canonical}, not where its text says` };
     if (!reversible.some((root) => pathWithin(answer.canonical, root))) {
       return { kind: "irreversible", not_reversible: `${answer.canonical} lies in no reversible workspace of the task` };
     }
@@ -734,6 +743,13 @@ export class EnforcementBoundary {
     const permitted = effects.filter((candidate) => candidate.refused.length === 0).map((candidate) => candidate.grant);
     if (permitted.length === 0) {
       return park({ reason: "integrity_floor", violations: [], grants: [], effects: effects.map(({ grant, refused }) => ({ grant: grant.id, refused })) });
+    }
+
+    // Step 5, mediated modes (§4.3 V6-7, D-150): a read above the session provider's clearance parks before it runs. It is
+    // judged here, after steps 3 and 4, so an integrity_floor or scope_violation park is never turned into this one.
+    const gate = context.readGate;
+    if (gate !== undefined && compareSensitivity(gate.reads, gate.clearance) > 0) {
+      return park({ reason: "sensitivity_ceiling", aggregate: gate.reads, ceiling: gate.clearance, grants: [], read_gate: true });
     }
 
     // Step 5: the capability's ceiling, then each remaining candidate's lower ceiling.

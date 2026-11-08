@@ -57,7 +57,7 @@ import {
   routable,
   verificationScope,
 } from "./admission.js";
-import { type CheckpointStore, ManifestEntry, type Workspace, checkpointId } from "../../enforcement/src/index.js";
+import { type CheckpointStore, type ContainerRuntime, ManifestEntry, type Workspace, checkpointId, runtimeRefusal } from "../../enforcement/src/index.js";
 import { type RestoreOutcome, restoreCheckpoint } from "./restore.js";
 import { MAX_PINNED_FILES, PIN_HASH_BATCH, type Pin, changedPins, filesToHash, parseHashes, parseListing, pinsOf, within } from "./pins.js";
 import { type BudgetAxis, NO_SPEND, type Spend, exhaustedAxes, overrunAxes } from "./budget.js";
@@ -126,6 +126,12 @@ export type RunnerOptions = {
    * before its first turn.
    */
   readonly checkpoints?: { readonly workspace: Workspace; readonly store: CheckpointStore };
+  /**
+   * The container runtime the workloads run on, as `probeContainerRuntime` reports it (D-131, D-149). When given, a
+   * runtime that would ignore the workload's limits stops the runner from starting. Every runner that starts real
+   * workloads passes it.
+   */
+  readonly containerRuntime?: ContainerRuntime;
 };
 
 /** How the runner anchors journal heads off the host (§3.4.1, D-122). */
@@ -363,6 +369,10 @@ export class Runner {
     this.#sources = options.sources;
     this.#clock = options.clock ?? (() => new Date());
     this.#verifier = options.verifierIdentity ?? VERIFIER_ACTOR;
+    if (options.containerRuntime !== undefined) {
+      const refusal = runtimeRefusal(options.containerRuntime);
+      if (refusal !== null) throw new RunnerError(`the runner will not start: ${refusal}`);
+    }
     this.#resolver = options.resolver;
     this.#checkpoints = options.checkpoints;
     this.#anchoring = options.anchoring;

@@ -166,3 +166,10 @@ describe("juno checkpoint restore (D-138)", () => {
     expect(await runCheckpointCli(["restore", "task-1"], bad.io, hostWorkspace)).toBe(2);
   });
 });
+
+describe("the runner refuses a runtime that would ignore the workload's limits (D-131, D-149)", () => {
+  // proves D-131's Increment 4 directive: given cgroup driver none, the runner does not start
+  it("does not start on cgroup driver none", () => {
+    expect(() => h.runner([], { containerRuntime: { cgroupDriver: "none", cgroupVersion: "1", rootless: true } })).toThrow(/will not start.*cgroup driver "none"/);
+  });
+});
