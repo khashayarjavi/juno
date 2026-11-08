@@ -528,24 +528,25 @@ describe("D-178: a case-folded folder, against the kernel where it can fold case
         return reads;
       };
       const view = new Workspace(execFileScript(process.execPath, []), "/work", cfWork);
-      const places = ["project/secrets/key.txt", "project/secrets", "project/secrets/sub/deep.txt", "project/notes.txt", "project/docs/guide.txt", "project/docs", "project/secrets/sub/../key.txt"];
+      // Places below `project`, the folding folder; `project` itself is spelled exactly, as its parent does not fold.
+      const places = ["secrets/key.txt", "secrets", "secrets/sub/deep.txt", "notes.txt", "docs/guide.txt", "docs", "secrets/sub/../key.txt"];
       let opened = 0;
       let swappedOpened = 0;
       await fc.assert(
         fc.asyncProperty(fc.constantFrom(...places), fc.array(fc.boolean(), { minLength: 1, maxLength: 9 }), async (place, mask) => {
-          const relativePath = spell(place, mask);
+          const relativePath = `project/${spell(place, mask)}`;
           const kernel = kernelClass(join(cfWork, relativePath));
           if (kernel === null) return;
           opened += 1;
-          if (relativePath !== place) swappedOpened += 1;
+          if (relativePath !== `project/${place}`) swappedOpened += 1;
           const classified = await classifyRead([{ kind: "tree", path: `/work/${relativePath}` }], { sources: SOURCES, resolver: new HostPathResolver(cfWork), view });
           expect(rank(classified), `${relativePath}: JUNO ${classified}, the kernel opens ${kernel}`).toBeGreaterThanOrEqual(rank(kernel));
         }),
         { numRuns: 100, seed: 20261178 },
       );
       // Not vacuous: case spellings the kernel folded were compared; and the exact spelling keeps its registered class.
-      expect(opened).toBeGreaterThan(20);
-      expect(swappedOpened).toBeGreaterThan(10);
+      expect(opened).toBeGreaterThan(80);
+      expect(swappedOpened).toBeGreaterThan(50);
       expect(await classifyRead([{ kind: "tree", path: "/work/project/notes.txt" }], { sources: SOURCES, resolver: new HostPathResolver(cfWork), view })).toBe("internal");
       expect(await classifyRead([{ kind: "tree", path: "/work/project/SECRETS/key.txt" }], { sources: SOURCES, resolver: new HostPathResolver(cfWork), view })).toBe(HIGHEST);
       process.stdout.write(`kernel oracle, case-folded folder: ${String(opened)} spellings opened, ${String(swappedOpened)} of them case-swapped\n`);
