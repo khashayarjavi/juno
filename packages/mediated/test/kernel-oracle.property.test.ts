@@ -17,6 +17,11 @@ import { MediatedSessions, PathMap, SUPPORTED_TOOLS, type SessionRequest } from 
 // JUNO's classification and decision with the identity (device and inode) of what the kernel actually opens for that
 // path, and with the classes of the registered sources that identity falls under. Any disagreement where JUNO's class
 // is lower than the kernel's fails. proves §4.3 V6-7, §1.5, §1.2, §2.7.1 C4
+//
+// Operator ruling 2 of 2026-11-08, second set (D-174, refining D-168): a shortcut whose text and kernel-resolved place
+// lie in the same registered source keeps that source's class, so the property now compares real classes through
+// shortcuts, not only the safe default. Extended with a fixed node_modules/.bin layout inside one source, shortcuts that
+// cross sources in every direction, and a non-vacuity count of shortcuts that kept a class below the highest.
 
 const PRINCIPAL = "alireza";
 const T0 = new Date("2026-11-08T12:00:00.000Z");
@@ -162,7 +167,7 @@ const scenario = fc.record({
 type Scenario = typeof scenario extends fc.Arbitrary<infer T> ? T : never;
 
 /** Fixed places a generated link or hard link can reach: registered, unregistered, outside the workspace, or missing. */
-const LINK_PLACES = ["project", "project/notes.txt", "project/docs", "project/secrets", "project/secrets/key.txt", "project/secrets/sub", "other", "other/plain.txt", "other/pub", "other/pub/readme.txt", "OUTSIDE", "OUTSIDE/host.txt", "project/missing.txt"];
+const LINK_PLACES = ["project", "project/notes.txt", "project/docs", "project/docs/guide.txt", "project/secrets", "project/secrets/key.txt", "project/secrets/sub", "other", "other/plain.txt", "other/pub", "other/pub/readme.txt", "OUTSIDE", "OUTSIDE/host.txt", "project/missing.txt"];
 const HARD_PLACES = ["project/notes.txt", "project/secrets/key.txt", "project/secrets/sub/deep.txt", "other/plain.txt", "other/pub/readme.txt", "OUTSIDE/host.txt"];
 const place = (name: string): string => (name.startsWith("OUTSIDE") ? join(box, "outside", name.slice("OUTSIDE".length)) : join(work, name));
 
@@ -245,11 +250,20 @@ const CALLS: Readonly<Record<string, (built: ReturnType<typeof build>) => readon
   WebFetch: (b) => [{ url: `file://${b.host}`, prompt: "summarise" }],
 };
 
-type Tally = { proceeded: Map<string, number>; keptBelowHighest: number; compared: number; opened: number };
+type Tally = { proceeded: Map<string, number>; keptBelowHighest: number; keptThroughShortcut: number; compared: number; opened: number };
 
 async function check(s: Scenario, tally: Tally): Promise<void> {
   const built = build(s);
   try {
+    await compareAt(built, s.home === "other" ? [] : [toWork(built.runRoot) ?? "/work"], tally);
+  } finally {
+    rmSync(built.runRoot, { recursive: true, force: true });
+  }
+}
+
+/** Compares JUNO with the kernel for one path: its classification, and every tool's decision and record at each clearance. */
+async function compareAt(built: { readonly runRoot: string; readonly host: string; readonly fromProject: string }, reversible: readonly string[], tally: Tally): Promise<void> {
+  {
     const classes = identityClasses();
     const kernel = oracle(built.host, classes);
     tally.compared += 1;
@@ -260,12 +274,15 @@ async function check(s: Scenario, tally: Tally): Promise<void> {
     const classified = asWork === null ? HIGHEST : await classifyRead([{ kind: "tree", path: asWork }], { sources: SOURCES, resolver: new HostPathResolver(work), view });
     if (kernel !== null) {
       expect(rank(classified), `classifyRead(${built.host}) = ${classified}, the kernel opens ${kernel}`).toBeGreaterThanOrEqual(rank(kernel));
-      if (classified === kernel && rank(kernel) < rank(HIGHEST)) tally.keptBelowHighest += 1;
+      if (classified === kernel && rank(kernel) < rank(HIGHEST)) {
+        tally.keptBelowHighest += 1;
+        // D-174: a path the kernel resolves elsewhere than its text, kept below the highest class (a same-source shortcut).
+        const answer = asWork === null ? undefined : (await new HostPathResolver(work).resolve([asWork])).get(asWork);
+        if (answer?.ok === true && answer.redirected === true) tally.keptThroughShortcut += 1;
+      }
     }
-    // JUNO's decision and record, for every tool in the table, in a session at each clearance.
-    const workRoot = toWork(built.runRoot) ?? "/work";
-    // The run folder is a reversible workspace when it lies in the grant's scope, so a Write or Edit there can run.
-    const reversible = s.home === "other" ? [] : [workRoot];
+    // JUNO's decision and record, for every tool in the table, in a session at each clearance. The run folder is a
+    // reversible workspace when it lies in the grant's scope, so a Write or Edit there can run.
     for (const clearance of CLEARANCES) {
       const id = `oracle-${String(runs)}-${clearance}`;
       const request: SessionRequest = {
@@ -279,7 +296,7 @@ async function check(s: Scenario, tally: Tally): Promise<void> {
         provider_clearance: clearance,
         sources: SOURCES,
         name_map: NAME_MAP,
-        reversible_workspaces: reversible,
+        reversible_workspaces: [...reversible],
       };
       const admitted = await sessions.admit(request);
       expect(admitted, JSON.stringify(admitted)).toMatchObject({ admitted: true });
@@ -301,8 +318,6 @@ async function check(s: Scenario, tally: Tally): Promise<void> {
         }
       }
     }
-  } finally {
-    rmSync(built.runRoot, { recursive: true, force: true });
   }
 }
 
@@ -336,7 +351,7 @@ describe("D-167: the kernel is the oracle for every tool in the table (§4.3 V6-
     }
   });
 
-  const tally: Tally = { proceeded: new Map(), keptBelowHighest: 0, compared: 0, opened: 0 };
+  const tally: Tally = { proceeded: new Map(), keptBelowHighest: 0, keptThroughShortcut: 0, compared: 0, opened: 0 };
 
   // proves D-167: for generated trees and paths, JUNO never classifies, lets run below the clearance, or records a read
   // below the class of what the kernel opens
@@ -355,6 +370,63 @@ describe("D-167: the kernel is the oracle for every tool in the table (§4.3 V6-
     expect(tally.compared).toBe(100);
     expect(tally.opened).toBeGreaterThan(50);
     expect(tally.keptBelowHighest).toBeGreaterThan(5);
+    // D-174: generated shortcuts inside one source kept their class, so the property compared real classes through them.
+    expect(tally.keptThroughShortcut).toBeGreaterThan(0);
+    process.stdout.write(`kernel oracle: ${String(tally.compared)} paths, ${String(tally.opened)} opened, ${String(tally.keptBelowHighest)} kept below the highest, ${String(tally.keptThroughShortcut)} of them through a shortcut\n`);
     for (const tool of ["Read", "Glob", "Write", "Edit", "Bash"]) expect(tally.proceeded.get(tool) ?? 0, tool).toBeGreaterThan(0);
   });
+
+  // proves D-174 on a fixed layout, against the kernel: a node_modules/.bin layout inside `project` (file links into a
+  // package, two links to one file, a folder alias, `..` through the alias) keeps `internal`; shortcuts that cross from
+  // `project` into `project/secrets`, from `project/secrets` into `project`, from `other/pub` into `project`, from
+  // `project` into `other/pub`, and into unregistered and outside places, are never below what the kernel opens
+  it("never judges a node_modules/.bin layout or a cross-source shortcut below what the kernel opens", async () => {
+    const fixed: Tally = { proceeded: new Map(), keptBelowHighest: 0, keptThroughShortcut: 0, compared: 0, opened: 0 };
+    const root = join(work, "project", "fixed-layout");
+    const nm = join(root, "node_modules");
+    mkdirSync(join(nm, ".bin"), { recursive: true });
+    mkdirSync(join(nm, "pkg", "bin"), { recursive: true });
+    writeFileSync(join(nm, "pkg", "bin", "tool.js"), "tool\n");
+    writeFileSync(join(nm, "pkg", "package.json"), "{}\n");
+    symlinkSync("../pkg/bin/tool.js", join(nm, ".bin", "tool"));
+    symlinkSync("../pkg/bin/tool.js", join(nm, ".bin", "tool-again"));
+    symlinkSync("pkg", join(nm, "alias"));
+    // Crossing shortcuts, each in its own folder so a tree read of one does not hide another.
+    const cross = join(root, "cross");
+    mkdirSync(cross);
+    symlinkSync(place("project/secrets"), join(cross, "to-secrets"));
+    symlinkSync(place("project/secrets/key.txt"), join(cross, "to-key"));
+    symlinkSync(place("project/secrets/sub"), join(cross, "to-sub"));
+    symlinkSync(place("other/pub"), join(cross, "to-pub"));
+    symlinkSync(place("other/plain.txt"), join(cross, "to-unregistered"));
+    symlinkSync(place("OUTSIDE/host.txt"), join(cross, "to-outside"));
+    const back = join(work, "project", "secrets", "fixed-back");
+    symlinkSync(place("project/notes.txt"), back);
+    const fromPub = join(work, "other", "pub", "fixed-into-project");
+    symlinkSync(place("project/docs"), fromPub);
+    const at = (host: string) => ({ runRoot: root, host, fromProject: relative(join(work, "project"), host) || "." });
+    try {
+      const same = [join(nm, ".bin", "tool"), join(nm, ".bin"), nm, join(nm, "alias", "package.json"), join(nm, "alias"), `${join(nm, "alias")}/../pkg/bin/tool.js`, `${join(nm, ".bin", "tool-again")}`];
+      const crossing = [join(cross, "to-secrets"), join(cross, "to-key"), `${join(cross, "to-sub")}/../key.txt`, join(cross, "to-pub"), join(cross, "to-unregistered"), join(cross, "to-outside"), cross, back, fromPub, join(fromPub, "guide.txt")];
+      for (const host of [...same, ...crossing]) await compareAt(at(host), [], fixed);
+      // The same-source shortcuts kept `internal`: positive controls that the refinement is live, not the safe default.
+      const view = new Workspace(execFileScript(process.execPath, []), "/work", work);
+      for (const host of same) {
+        const asWork = toWork(host) ?? "";
+        expect(await classifyRead([{ kind: "tree", path: asWork }], { sources: SOURCES, resolver: new HostPathResolver(work), view }), host).toBe("internal");
+      }
+      // Each crossing shortcut is the highest class.
+      for (const host of crossing) {
+        const asWork = toWork(host) ?? "";
+        expect(await classifyRead([{ kind: "tree", path: asWork }], { sources: SOURCES, resolver: new HostPathResolver(work), view }), host).toBe(HIGHEST);
+      }
+      // Four of the seven are paths the kernel resolves elsewhere than their text (.bin/tool, .bin/tool-again, alias,
+      // alias/package.json); the two folders only hold links, and alias/../pkg/... lands where its text says.
+      expect(fixed.keptThroughShortcut).toBe(4);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(back, { force: true });
+      rmSync(fromPub, { force: true });
+    }
+  }, 300_000);
 });

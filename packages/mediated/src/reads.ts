@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { ResourceSelector, type Sensitivity, Sensitivity as SensitivitySchema, Integrity as IntegritySchema, Ref, maxSensitivity, pathWithin } from "../../contracts/src/index.js";
-import { type PathResolver, type Workspace, rawOperandPath } from "../../enforcement/src/index.js";
+import { type PathResolver, type Workspace, lexicalNormal, rawOperandPath } from "../../enforcement/src/index.js";
 
 /**
  * What anything a mode-C call reads is classified as (spec §4.3 V6-7, §1.5, §1.2, §2.7.1 C4; operator ruling of
@@ -106,8 +106,9 @@ export async function classifyRead(targets: readonly ReadTarget[], context: Read
         return highest;
     }
   }
-  const seen = new Set<string>();
-  for (let item = queue.shift(); item !== undefined; item = queue.shift()) {
+  // D-174: one budget of links followed for the whole call.
+  const walk: TreeWalk = { links: 0 };
+  for (const item of queue) {
     // The raw path goes to the resolver as written: `..` is resolved by the file system after the symlinks before it,
     // as the program will (D-113), never collapsed as text first (D-166, PR #40 review round 6).
     const raw = rawOperandPath("/", item);
@@ -116,32 +117,74 @@ export async function classifyRead(targets: readonly ReadTarget[], context: Read
     if (answer === undefined || !answer.ok) return highest;
     // D-157: a regular file with more than one link is the same file as a path in any source, or none.
     if (answer.hardLinked === true) return highest;
-    // D-168: plain paths work; a path the kernel takes elsewhere than its text says lands at the safe default.
-    if (answer.redirected === true) return highest;
-    const canonical = answer.canonical;
-    if (seen.has(canonical)) continue;
-    seen.add(canonical);
-    let contained = false;
-    for (const source of context.sources) {
-      if (source.selector.kind !== "path") continue;
-      if (pathWithin(canonical, source.selector.prefix)) {
-        contained = true;
-        reads = maxSensitivity(reads, source.data_class.sensitivity);
-      } else if (pathWithin(source.selector.prefix, canonical)) {
-        reads = maxSensitivity(reads, source.data_class.sensitivity);
-      }
-    }
-    // Positive match only: a tree's root that no declared path source contains is read at the highest class.
-    if (!contained) return highest;
-    // What the tree holds, listed without following any link (D-136, D-156): a hard link (D-157) or a symlink anywhere
-    // inside it (D-168; before, D-156 followed each one as a tree of its own) is the highest class.
-    const listed = await context.view.list(canonical, false);
-    if (!listed.ok) {
-      if (NO_TREE.test(listed.reason)) continue;
-      return highest;
-    }
-    if (listed.snapshot.hardLinks.length > 0) return highest;
-    if (listed.snapshot.manifest.some((entry) => entry.type === "symlink")) return highest;
+    const tree = await classifyTree(lexicalNormal(raw), answer.canonical, answer.redirected === true, context, walk, []);
+    if (tree === null) return highest;
+    reads = maxSensitivity(reads, tree);
+  }
+  return reads;
+}
+
+/** At most this many symlinks are followed for one call's reads; beyond it the read is the highest class (D-174, as D-156's limit). */
+export const MAX_LINKS_FOLLOWED = 64;
+
+type TreeWalk = { links: number };
+
+/** The ids of the declared path sources that contain `path`, sorted: the place's source set (D-174). */
+function sourceSet(path: string, sources: readonly DeclaredSource[]): string {
+  return sources
+    .filter((source) => source.selector.kind === "path" && pathWithin(path, source.selector.prefix))
+    .map((source) => source.id)
+    .sort()
+    .join("\u0000");
+}
+
+/** Whether a declared path source lies strictly inside `path`. */
+function sourceInside(path: string, sources: readonly DeclaredSource[]): boolean {
+  return sources.some((source) => source.selector.kind === "path" && source.selector.prefix !== path && pathWithin(source.selector.prefix, path));
+}
+
+/**
+ * The class of the tree a path names, or null for "the highest declared class". `lexical` is where the path's text
+ * says it is, `canonical` where the kernel resolves it (D-113, D-166).
+ *
+ * Refuse cleverness, refined (operator ruling 2 of 2026-11-08, second set; D-174, refining D-168): a path the kernel
+ * resolves elsewhere than its text keeps its class only when its lexical and its kernel-resolved locations lie in
+ * exactly the same, non-empty, set of declared path sources (restrictive: sources nest, so "both inside `project`" is
+ * not enough when one is also inside `project/secrets`). Then it is classified as the place the kernel opens, which by
+ * that equality is the class of the place its text names. A redirected tree with a source strictly inside either
+ * location is the highest class (restrictive: what lies under one need not lie in the same sources under the other).
+ * Inside the tree, each symlink is judged the same way, with its lexical location under the tree's lexical root, and a
+ * symlink to a folder is followed as a tree of its own; a loop, a link that cannot be resolved, or more than
+ * MAX_LINKS_FOLLOWED links is the highest class. A hard link anywhere is the highest class (D-157).
+ */
+async function classifyTree(lexical: string, canonical: string, redirected: boolean, context: ReadContext, walk: TreeWalk, chain: readonly string[]): Promise<Sensitivity | null> {
+  const sources = context.sources;
+  const here = sourceSet(canonical, sources);
+  // Positive match only: a place no declared path source contains is read at the highest class (§1.5).
+  if (here === "") return null;
+  if (redirected && (sourceSet(lexical, sources) !== here || sourceInside(lexical, sources) || sourceInside(canonical, sources))) return null;
+  let reads: Sensitivity = "public";
+  for (const source of sources) {
+    if (source.selector.kind !== "path") continue;
+    if (pathWithin(canonical, source.selector.prefix) || pathWithin(source.selector.prefix, canonical)) reads = maxSensitivity(reads, source.data_class.sensitivity);
+  }
+  // What the tree holds, listed without following any link (D-136, D-156).
+  const listed = await context.view.list(canonical, false);
+  if (!listed.ok) return NO_TREE.test(listed.reason) ? reads : null;
+  if (listed.snapshot.hardLinks.length > 0) return null;
+  for (const entry of listed.snapshot.manifest) {
+    if (entry.type !== "symlink") continue;
+    walk.links += 1;
+    if (walk.links > MAX_LINKS_FOLLOWED) return null;
+    const at = `${canonical}/${entry.path}`;
+    const answer = (await context.resolver.resolve([at])).get(at);
+    if (answer === undefined || !answer.ok || answer.hardLinked === true) return null;
+    const target = answer.canonical;
+    // A link to this folder or any folder above it on the way here (this tree's, or one reached through a link) is a loop.
+    if ([...chain, canonical].some((folder) => pathWithin(folder, target))) return null;
+    const inner = await classifyTree(`${lexical}/${entry.path}`, target, true, context, walk, [...chain, canonical]);
+    if (inner === null) return null;
+    reads = maxSensitivity(reads, inner);
   }
   return reads;
 }
