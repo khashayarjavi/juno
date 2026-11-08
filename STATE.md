@@ -1,6 +1,16 @@
 # STATE
 
 ## Current increment
+**Slice 1.5 — Increment 5: gateway mode for MCP (§4.3 mode B)** (`docs/plans/slice-1.5-build-plan.md`, Increment 5; §4.3, §2.3.2, §7.8 E2, §2.2.2 for `external` effects; D-154). Branch `claude/loving-brahmagupta-rp1azf`, restarted from `main` 0aa797d after PR #43 merged. Spec v0.6.1. No objection open.
+
+Status (2026-11-08): **started.** Nothing built yet beyond the items below.
+- **Observed (plan item 1, rule 13):** Claude Code 2.1.319, started with one stdio MCP server, first sends `server/discover` with `_meta` protocol version `2026-07-28`; when the server answers "method not found", it falls back to `initialize` with protocol version `2025-11-25`, then `notifications/initialized` and `tools/list`. The gateway will speak exactly `2025-11-25` and refuse `server/discover` (D-185, to be recorded when built).
+- **Next steps:** D-183 (the D-046 property test's time budget, below); D-154 in step 4 (enumerated targets on the resolved path; exact non-path values, email domain case-insensitive); `juno-gateway` over stdio JSON-RPC; the test MCP server (`files.read`, `message.send`); the plan's tests; then review and the gate.
+
+### Merges this session
+- **PR #43 (Slice 1.5 Increment 4, supersedes #42): merged** as 0aa797d, pinned to head 39ca6af. Reviewer round 9 (fresh subagent, P2 verbatim): **MERGE**, all six checks PASS. CI on 39ca6af: run 42526418093, `verify-rootless` green on attempt 1; `verify` timed out once in an unchanged test (`enforcement.test.ts:722`, the D-046 property: 5 s budget, about 2.8 s here) and was green on attempt 2. CI on main for 0aa797d: run 42528332351 (result below once read).
+
+## Previous increment (Slice 1.5 Increment 4, merged as PR #43)
 **Slice 1.5 — Increment 4: hook mode for Claude Code (§4.3 mode C)** (`docs/plans/slice-1.5-build-plan.md`, Increment 4; also §2.3.2 E1, §7.8 E2, D-131's Increment 4 directives). Branch `claude/loving-brahmagupta-rp1azf` (this session's only pushable branch, D-181); it carries PR #42's commits unchanged (which carry #41's, #40's, #39's, #38's and #37's), and its PR supersedes PR #42. Spec v0.6.1. No objection open.
 
 Status (2026-11-08, later session): **your rulings on D-177 are built (D-178 to D-182), `make verify` GREEN, CI green; review round 9 is running.** Nothing merged yet; Increment 5 not started.

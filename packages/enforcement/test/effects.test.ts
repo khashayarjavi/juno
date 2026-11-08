@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type DataClass, type SideEffect, Task, type TrajectoryEntry } from "../../contracts/src/index.js";
 import { JournalWriter, canonicalJson } from "../../journal/src/index.js";
 import { type Adapter, type CapabilityCall, CapabilityRegistry, RegistryEntry } from "../../registry/src/index.js";
-import { type ArgumentSource, type CanonicalPaths, EnforcementBoundary, GrantStore, type TaskContext, type Verdict, operandPath } from "../src/index.js";
+import { type ArgumentSource, type CanonicalPath, type CanonicalPaths, EnforcementBoundary, GrantStore, type TaskContext, type Verdict, operandPath } from "../src/index.js";
 import { TEST_ANCHOR, signed } from "./test-keys.js";
 
 // §2.2.2 (v0.6, A1) and §2.7.1 "Effects": step 4 applies the effect table to target fields (D-135). The capabilities
@@ -115,9 +115,9 @@ function setUp(...grantRecords: Record<string, unknown>[]): void {
 }
 
 /** The context the runner gives: canonical paths as if the content held no symlinks, and the task's reversible roots. */
-function judge(input: unknown, reversible: readonly string[] = [], grantIds?: readonly string[]): Verdict {
+function judge(input: unknown, reversible: readonly string[] = [], grantIds?: readonly string[], resolve?: (raw: string) => CanonicalPath): Verdict {
   const base: TaskContext = { task: task(grantIds), constants: CONSTANTS, synthesis: { sensitivity: "internal" }, reversible };
-  const canonical: CanonicalPaths = new Map(boundary.pathsToResolve(base, input).map((path) => [path, { ok: true, canonical: operandPath("/", path) }]));
+  const canonical: CanonicalPaths = new Map(boundary.pathsToResolve(base, input).map((path) => [path, resolve?.(path) ?? { ok: true, canonical: operandPath("/", path) }]));
   return boundary.authorize({ ...base, canonical }, input);
 }
 
@@ -270,6 +270,45 @@ describe("§2.2.2 external and irreversible: an untrusted target must be enumera
     const verdict = judge(call("test.send", synthesized("ops@example.com")), [], ["grant-a", "grant-b"]);
     expect(verdict).toMatchObject({ outcome: "proceed", authorization: { grant: "grant-b" } });
     expect([grants.invocations("grant-a"), grants.invocations("grant-b")]).toEqual([0, 1]);
+  });
+});
+
+describe("D-154 (operator ruling): enumerated targets match on the resolved path; other values only exactly, an email's domain case-insensitively", () => {
+  const ENUMERATED = "/work/project/a.txt";
+  const resolvesTo = (canonical: string, extra: Partial<{ hardLinked: true; redirected: true }> = {}) => (): CanonicalPath => ({ ok: true, canonical, ...extra });
+
+  // proves D-154: a path target is matched by its canonical path, never as typed
+  it("matches a path target on its resolved path, not its text", () => {
+    setUp(grant({ enumerated_targets: [{ field: "to", value: ENUMERATED }] }));
+    // Typed as the enumerated value, but the kernel resolves it elsewhere: parks.
+    expect(effects(judge(call("test.delete", synthesized(ENUMERATED)), [], undefined, resolvesTo("/work/project/other.txt", { redirected: true })))).toMatchObject([{ refused: [{ argument: "to" }] }]);
+    // Typed otherwise, resolved to the enumerated path: matches.
+    expect(judge(call("test.delete", synthesized("/work/project/link")), [], undefined, resolvesTo(ENUMERATED, { redirected: true })).outcome).toBe("proceed");
+  });
+
+  // proves D-154 with D-157: a path that did not resolve, or a hard-linked file, never matches
+  it("never matches an unresolved path or a hard-linked file", () => {
+    setUp(grant({ enumerated_targets: [{ field: "to", value: ENUMERATED }] }));
+    expect(judge(call("test.delete", synthesized(ENUMERATED)), [], undefined, () => ({ ok: false, reason: "cannot be resolved" })).outcome).toBe("park");
+    expect(effects(judge(call("test.delete", synthesized(ENUMERATED)), [], undefined, resolvesTo(ENUMERATED, { hardLinked: true })))).toMatchObject([{ refused: [{ argument: "to" }] }]);
+  });
+
+  // proves D-154: an email address's domain is compared case-insensitively; the local part, subdomains and anything else stay exact
+  it("compares an email address's domain case-insensitively and nothing else", () => {
+    setUp(grant({ enumerated_targets: [{ field: "to", value: "ops@example.com" }] }));
+    expect(judge(call("test.send", synthesized("ops@EXAMPLE.Com"))).outcome).toBe("proceed");
+    for (const value of ["OPS@example.com", "ops@sub.example.com", "ops@example.com.", " ops@example.com", "ops@example.co", "ops@exаmple.com"]) {
+      expect(effects(judge(call("test.send", synthesized(value)))), value).toMatchObject([{ refused: [{ argument: "to", value }] }]);
+    }
+  });
+
+  // proves D-154: a URL or any other non-path destination matches only an exactly equal value (no host case folding, prefix or wildcard)
+  it("matches a URL only exactly", () => {
+    setUp(grant({ enumerated_targets: [{ field: "to", value: "https://hooks.example.com/notify" }] }));
+    expect(judge(call("test.send", synthesized("https://hooks.example.com/notify"))).outcome).toBe("proceed");
+    for (const value of ["https://HOOKS.example.com/notify", "https://hooks.example.com/notify/x", "https://hooks.example.com/", "https://evil.hooks.example.com/notify"]) {
+      expect(judge(call("test.send", synthesized(value))).outcome, value).toBe("park");
+    }
   });
 });
 

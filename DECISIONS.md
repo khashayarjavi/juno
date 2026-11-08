@@ -2150,3 +2150,21 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   7. **`juno hook check` requires `--workspace`**, so the check cannot pass without judging the workspace.
   8. **Admission judges where JUNO reads.** The workspace checked is the read view's directory (the files JUNO's resolver and read gate actually open), plus every configured workspace root that exists on this machine; each source is checked under the view's directory. In real use (Part E) they are one folder, `/srv/juno-work`. Found by `make mediated-e2e`, where Claude Code names `/workspace` inside its container while JUNO reads the host folder bound there: the first build checked the name, which does not exist on the host, so it judged `/` (and refused, fail-closed).
 - Reason: D8 (fail-closed); D-177's class, "a read is counted below its real class".
+
+## D-183 — The D-046 property test states its time budget (Slice 1.5 Increment 5)
+- Date: 2026-11-08
+- Status: Accepted
+- Applies to: `packages/enforcement/test/enforcement.test.ts` ("proceeds exactly when the call meets both the capability's and the grant's bounds")
+- Decision: the test gets an explicit 30-second budget instead of vitest's 5-second default. Its 120 synchronous runs take about 2.8 s on a quiet machine; under CI load the default was exceeded once (run 42526418093, attempt 1, on PR #43's head 39ca6af, a head that changed only STATE.md), and the re-run was green. No assertion, input or run count changes, so the test is not weakened (CLAUDE.md rule 5); other property tests in the repository already state their budgets.
+- Reason: a test that fails by load and not by behaviour gives the merge gate no information.
+
+## D-184 — D-154 built: how an enumerated target is compared (Slice 1.5 Increment 5)
+- Date: 2026-11-08
+- Status: Accepted (builds the operator's ruling D-154; restrictive readings marked autopilot ruling)
+- Applies to: `packages/enforcement/src/boundary.ts` (`enumeratedMatches`, step 4's effect refusals), `packages/enforcement/test/effects.test.ts`
+- Decision:
+  - A target field the boundary resolves as a path (a `path` field, or an argv operand) matches an enumerated value only when its canonical path equals that value exactly. Typing the enumerated text is not enough: a path whose canonical form is elsewhere parks.
+  - Autopilot ruling (restrictive): a path that did not resolve, or that is a hard-linked file (D-157: its path does not name it alone), matches nothing.
+  - Any other value matches only an exactly equal enumerated value. The one relaxation the ruling names: when both are email addresses (one `@`, a local part with no whitespace, and an ASCII host name of two or more labels), the domains are compared with ASCII case folding; the local part stays exact. Autopilot ruling (restrictive): no Unicode case folding, no trailing-dot or whitespace tolerance, no subdomain, prefix or wildcard; URL hosts are not folded (only email domains are named by the ruling).
+  - Enumeration still lifts only the integrity condition: an enumerated value outside `resource_scope` parks `scope_violation` (D-133, unchanged).
+- Reason: D-154; D8 (fail-closed).
