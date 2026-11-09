@@ -13,6 +13,7 @@ import { MCP_REVISION, McpGateway, type Upstream } from "../../mediated/src/gate
 import { type GatewayCliIo, runGatewayCli } from "../../mediated/src/gateway-cli.js";
 import { GatewayService } from "../../mediated/src/gateway-service.js";
 import { HookService } from "../../mediated/src/hook-service.js";
+import { HookAdmissionService, type HookServeIo, runHookAdmitCli, runHookServeCli } from "../../mediated/src/hook-serve.js";
 import { MediatedSessions, PathMap } from "../../mediated/src/session.js";
 import { ENTRY_POINTS } from "../src/entry-points.js";
 import { runRunnerMain } from "../src/runner-main.js";
@@ -266,6 +267,38 @@ const COMMAND_PROBES: Readonly<Record<string, CommandProbe>> = {
     socket: true,
     admitted: (layer) => expect(layer.sessions().map((session) => [session.id, session.mode])).toEqual([["gateway-probe", "gateway"]]),
   },
+  "hook.serve": {
+    run: async (implementation, host, paths) => {
+      const at = { ...fx, ...paths };
+      const said: string[] = [];
+      const control = join(at.sockets, "admit.sock");
+      const sessionFile = join(fx.dir, "hook-session.json");
+      writeFileSync(sessionFile, JSON.stringify({ session: hookRequest("probe"), grants: [] }), { mode: 0o644 });
+      let admitting: Promise<number> | null = null;
+      const io: HookServeIo = {
+        host,
+        filesystem: systemFilesystemIo(),
+        runtime: () => Promise.resolve({ cgroupDriver: "systemd", cgroupVersion: "2", rootless: true }),
+        // Once it serves, the operator admits a session through the admission socket, then it stops.
+        ready: () => {
+          admitting = runHookAdmitCli(["--control", control, sessionFile], { out: (text) => said.push(text), err: (text) => said.push(text) });
+        },
+        stopped: async () => {
+          await admitting;
+        },
+        out: (text) => said.push(text),
+        err: (text) => said.push(text),
+      };
+      const code = await (implementation as typeof runHookServeCli)(["--socket", at.socket, "--control", control, "--journal", at.journal, "--anchor", at.anchor, "--workspace", at.work, "--checkpoints", join(fx.dir, "checkpoints")], io);
+      return { code, said: said.join("") };
+    },
+    loosenState: () => {
+      mkdirSync(join(fx.dir, "checkpoints"), { mode: 0o777 });
+      chmodSync(join(fx.dir, "checkpoints"), 0o777);
+    },
+    socket: true,
+    admitted: (layer) => expect(layer.sessions().map((session) => [session.id, session.mode])).toEqual([["session-probe", "hook"]]),
+  },
   "runner.process": {
     run: (implementation, host, paths) => {
       const at = { ...fx, ...paths };
@@ -380,6 +413,15 @@ const CLASS_PROBES: Readonly<Record<string, ClassProbe>> = {
   "class.Runner": { build: async (layer) => Promise.resolve(runnerOn(layer)), state: [] },
   "class.MediatedSessions": { build: async (layer) => Promise.resolve(sessionsOn(layer)), state: [] },
   "class.McpGateway": { build: async (layer) => Promise.resolve(gatewayOn(layer)), state: [] },
+  "class.HookAdmissionService": {
+    build: async (layer, socket = fx.socket) => {
+      const service = new HookAdmissionService(SessionLayer.genuine(layer) ? sessionsOn(layer) : ({ layer } as unknown as MediatedSessions), grantsOf());
+      await service.listen(socket);
+      await service.close();
+      return service;
+    },
+    state: [{ what: "the socket", path: join("<dir>", "sock", "service.sock"), kind: "socket" }],
+  },
   "class.HookService": {
     build: async (layer, socket = fx.socket) => {
       const service = new HookService(SessionLayer.genuine(layer) ? sessionsOn(layer) : ({ layer } as unknown as MediatedSessions));

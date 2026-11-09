@@ -159,6 +159,23 @@ export function verifyTrustAnchor(path: string, host: HostIo): { readonly ok: tr
   }
 }
 
+/**
+ * The start-up check's own rules for one file a running service is asked to read later (a session file handed to the
+ * hook service, and the grant files it names; D-196): absolute, not inside or overlapping any of `workspaces` or the
+ * capability namespace, and changeable by no one but root and this process. The same code `startupCheck` runs.
+ */
+export function laterFileRefusals(what: string, path: string, workspaces: readonly string[], host: HostIo): string[] {
+  if (!path.startsWith("/")) return [`${what} ${path} is not an absolute path`];
+  const refusals: string[] = [];
+  const real = resolved(path, host);
+  if ([path, real].some((candidate) => pathsOverlap(candidate, WORK_NAMESPACE))) refusals.push(`${what} ${path} lies in the capability namespace ${WORK_NAMESPACE}, which grants can name (§3.2, §3.4.1)`);
+  for (const root of workspaces) {
+    if (pathsOverlap(real, resolved(root, host)) || pathsOverlap(path, root)) refusals.push(`${what} ${path} is JUNO's own state and overlaps the workspace ${root}, so a tool call could reach it; move the workspace or the state (D-148, D-194)`);
+  }
+  refusals.push(...changeableRefusals(what, path, "file", host));
+  return refusals;
+}
+
 /** Why someone other than root or this process could change `path` (empty: no one could). */
 function changeableRefusals(what: string, path: string, kind: "file" | "dir" | "socket" | "journal" | "anchor", host: HostIo): string[] {
   const refusals: string[] = [];

@@ -5,7 +5,7 @@ import type { CapabilityRegistry } from "../../registry/src/index.js";
 import { EnforcementBoundary } from "./boundary.js";
 import type { GrantStore } from "./grants.js";
 import { type TrustAnchor } from "./signature.js";
-import { type HostIo, type ServiceName, type StartupSpec, StartupRefused, socketRefusals, startupCheck, systemHostIo } from "./startup.js";
+import { type HostIo, type ServiceName, type StartupSpec, StartupRefused, laterFileRefusals, socketRefusals, startupCheck, systemHostIo } from "./startup.js";
 
 /**
  * THE session layer (operator ruling D-193; DECISIONS.md D-194). Every mode (JUNO's own loop, the Claude Code hook, the
@@ -197,6 +197,19 @@ export class SessionLayer {
     const refusals = socketRefusals("the socket", path, this.#host);
     if ((mode & 0o007) !== 0 || (mode & ~0o660) !== 0) refusals.push("the socket's mode may give at most read and write to its owner and group (D-173)");
     if (refusals.length > 0) throw new SessionLayerError(refusals.join("; "));
+  }
+
+  /**
+   * Why a file this running service is asked to read later (a session file, a grant file) must be refused: the start-up
+   * check's own rules, against this layer's workspaces and host (D-196). Empty when it may be read.
+   */
+  fileRefusals(what: string, path: string): string[] {
+    return laterFileRefusals(what, path, this.#spec.workspaces, this.#host);
+  }
+
+  /** Reads a file `fileRefusals` accepted, through this layer's host. */
+  readFile(path: string): string {
+    return this.#host.readFile(path);
   }
 
   now(): number {
