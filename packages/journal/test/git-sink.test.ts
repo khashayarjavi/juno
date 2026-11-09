@@ -63,6 +63,27 @@ describe("§3.4.1: the git anchor destination (D-122)", () => {
     await expect(sink.append(anchorOf("task-git", { ...head(1), hash: `sha256:${"f".repeat(64)}` }, new Date(), key.privateKey))).rejects.toBeInstanceOf(AnchorExistsError);
   });
 
+  // proves §3.4.1 with two services of one runner (the hook and the gateway, D-198, D-199): each anchors through its own
+  // clone of the same repository at the same time; every anchor reaches the destination, and none is forced
+  it("lets two clones anchor to the same repository at once, without forcing", async () => {
+    const other = join(dir, "clone-gateway");
+    await git(["clone", "--quiet", remote, other]);
+    const hook = new GitAnchorSink({ clone });
+    const gateway = new GitAnchorSink({ clone: other });
+    for (let round = 0; round < 3; round += 1) {
+      await Promise.all([
+        hook.append(anchorOf("task-hook", head(10 + round), new Date(), key.privateKey)),
+        gateway.append(anchorOf("task-gateway", head(20 + round), new Date(), key.privateKey)),
+      ]);
+    }
+    const reader = join(dir, "reader-both");
+    await git(["clone", "--quiet", remote, reader]);
+    expect((readAnchorDirectory(reader, taskDigest("task-hook")) as { seq: number }[]).map((anchor) => anchor.seq)).toEqual([10, 11, 12]);
+    expect((readAnchorDirectory(reader, taskDigest("task-gateway")) as { seq: number }[]).map((anchor) => anchor.seq)).toEqual([20, 21, 22]);
+    // Each clone lists what the destination holds, the other service's anchors included.
+    expect(((await hook.list(taskDigest("task-gateway"))) as { seq: number }[]).map((anchor) => anchor.seq)).toEqual([20, 21, 22]);
+  });
+
   // proves §3.4.1: the destination refuses a push that rewrites or deletes history, so the host cannot undo an anchor
   it("is protected against force-push and deletion at the destination", async () => {
     expect((await git(["-C", clone, "reset", "--quiet", "--hard", "HEAD~1"])).exitCode).toBe(0);

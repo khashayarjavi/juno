@@ -168,6 +168,17 @@ describe("juno gateway serve (D-191)", () => {
     expect(existsSync(join(work, "project", ".journal"))).toBe(false);
   });
 
+  // proves D-198: the anchoring options it advertises are accepted, `--git` and `--anchor-interval` included, and the
+  // anchoring options are required
+  it("accepts every anchoring option it advertises, and requires the journal key and the anchor clone", async () => {
+    expect(await runGatewayCli(args({ "--git": "/usr/bin/git", "--anchor-interval": "30" }), io())).toBe(0);
+    for (const option of ["--journal-key", "--anchors"]) {
+      const without = args().filter((_value, index, all) => all[index] !== option && all[index - 1] !== option);
+      expect(await runGatewayCli(without, io()), option).toBe(2);
+    }
+    expect(await runGatewayCli(args({ "--anchor-interval": "0" }), io())).toBe(2);
+  });
+
   // proves D-191: without a grant, a socket or the serve verb it is bad usage
   it("is bad usage without every required option", async () => {
     const without = args().filter((_value, index, all) => all[index] !== "--grant" && all[index - 1] !== "--grant");

@@ -8,14 +8,16 @@ Status (2026-11-09): **both documents written; PR, review and the merge gate nex
 - `docs/evidence/slice-1.5.md`: what Slice 1.5 proves (each property with its § and its test), what each mode does not protect (§4.3), and every residual recorded during the slice, in plain words.
 - From the PR #48 reviewer's non-blocking notes: the real-binary test now covers all three forged grants; your journal check runs against a fresh clone of `juno-anchors`; two cosmetic leftovers are removed.
 
-**Left, in order:** PR; CI green on its head; review (CLAUDE.md §7 step 5); the merge gate; record the merge; STOP and report.
+- **PR [khashayarjavi/juno#49](https://github.com/khashayarjavi/juno/pull/49).** Review round 1 (head f1b780d; CI green): **DO NOT MERGE**; checks 1–6 PASS, the two document checks FAIL. Every finding is fixed (D-199 item 8). The ones that mattered: the guide had you sign a grant that covers no Claude Code tool, so your first session would have been denied every call; and `juno gateway serve` refused its own `--git` option (a bug from PR #48). Both now have tests.
+
+**Left, in order:** CI green on the new head; review round 2 (CLAUDE.md §7 step 5, limit 5); the merge gate; record the merge; STOP and report.
 
 ### Merges this session (2026-11-09, this session)
 - **PR #48 (Slice 1.5 Increment 6, supersedes #47): merged** as f323720, pinned to head 085158f.
   - Reviewer round 1 (fresh subagent, P2 verbatim): **MERGE**. All six checks PASS. Non-blocking notes: the journal-check line names the runner's own clone (the setup document now uses a fresh clone); the real-binary test covered one forgery of three (now three); two cosmetic leftovers (removed).
   - CI on 085158f: run 42690687897, `verify` and `verify-rootless` green.
-  - CI on main for f323720: run 42692280432 (see "Merges recorded").
-  - Locally: `make verify` GREEN (1,297 unit, 118 container); `make mediated-e2e` 13/13 with the real Claude Code 2.1.321 (15/15 after the follow-up added the two other forgeries).
+  - CI on main for f323720: run 42692280432, `verify` and `verify-rootless` **green**.
+  - Locally: `make verify` GREEN (1,297 unit, 118 container); `make mediated-e2e` 13/13 with the real Claude Code 2.1.321 (15/15 after the follow-up added the two other forgeries; `make verify` 1,300 unit, 118 container on the round-1 fixes).
   - PR #47 is left open and untouched; #48 carried its commits unchanged.
 
 ## Previous increment (Slice 1.5 Increment 6, merged as PR #48)
@@ -474,6 +476,8 @@ Status: **D-129's STOP is lifted by your ruling (e) (D-130). The WSL2 plan secti
     - diagnostics are printed on failure.
 
 ### Operator steps (Windows) — the first point that needs your hands
+> **Superseded by `docs/operator-setup.md`** (D-199). Use that document, not the steps below, which are kept as the history of Increment 2. In particular, Part D's token below is replaced by a deploy key that you never paste anywhere, and Part E step 12 must use `make build`.
+
 Nothing in the increment's code or tests waits for these: CI and the cloud sessions use throwaway keys and the stand-in anchor container. These steps set up real use. Do them in order. Each part ends with a check that tells you it worked. Commands go in **PowerShell**: press the Windows key, type `PowerShell`, and press Enter. When a step says *as administrator*, right-click "Windows PowerShell" and choose **Run as administrator** instead.
 
 **Part A — prerequisites (once).**
@@ -705,7 +709,7 @@ Nothing in the increment's code or tests waits for these: CI and the cloud sessi
     - the `ls` line starts `-rw-r--r--` and names `root root`;
     - **today** the check prints `refused:` with **exactly one** line, saying `/var/lib/juno-hook/hook.sock is not a listening socket`. The command that starts JUNO's hook service on your machine is not built yet (see "Gap to know about" above). Any other line is a real problem: stop and send the agent the output. Once the service exists, the same check must print `separated from the runner`.
 
-**Part D's token, once Part E is done:** it goes in a file only `juno-runner` can read (mode 0600), outside every grant scope (§3.2). Increment 4 says exactly where, when the runner first runs on your machine.
+**Part D's token:** superseded. The push key is a deploy key made by `juno-runner` (`docs/operator-setup.md` Part D, D-199); do not create a token.
 
 **Part F — governed work, and what Claude Code may read (Increment 4, D-162, D-164, D-173, D-174).** Do this when you admit your first Claude Code session to JUNO. It takes about 10 minutes.
 
@@ -914,6 +918,10 @@ Status: **Slice 1.2 complete. Part 1 (PR #19), the interface fix (PR #20), Part 
 **Slice 1.1 — real-model evidence (complete).** Parts 1 to 4 merged (PR #12, #13, #16, #17; STATE record PR #18). Report: `docs/evidence/slice-1.1.md`.
 
 ## Merges recorded (CLAUDE.md §7 step 6)
+- **Slice 1.5 Increment 6 (D-195 to D-198), PR #48** (https://github.com/khashayarjavi/juno/pull/48; supersedes #47):
+  - Head 085158fbcc15a347a0d912a8e9cd21907d2858f6. PR CI run 42690687897 succeeded on that head: `verify` (job 129409304434) and `verify-rootless` (job 129409304938).
+  - Merged as merge commit f323720f8aaa606e72b812b7eba5e8386ff8a76a, pinned to the head SHA. CI on `main` for the merge commit: run 42692280432 (event `push`), `verify` and `verify-rootless` both success.
+  - Reviewer verdict: round 1 MERGE on 085158f; all six checks PASS.
 - **Slice 1.5 Increment 3 (D-132 to D-138), PR #36** (https://github.com/khashayarjavi/juno/pull/36):
   - Head dd485b4ae81d2427149a6e34c31603b5d0630648. PR CI run 41970251969 succeeded on that head: `verify` (job 127056565401) and `verify-rootless` (job 127056565115).
   - Merged as merge commit 5951e574fb8b96f4294dcf222a04ea36356c4472, pinned to the head SHA. CI on `main` for the merge commit: run 41970658311 (event `push`), `verify` and `verify-rootless` both success.
@@ -1019,7 +1027,7 @@ Local, 2026-11-04 on this branch (PR #35): **GREEN** (829 unit, 69 container), a
 Earlier: local, 2026-11-03 on this branch (documents only since `main`): **RED on this host only for Docker Hub** (`429 Too Many Requests` pulling `node:22-bookworm-slim` for the container images) after typecheck, lint and 697 of 697 unit tests passed. CI `verify` on the PR head decides. Earlier: local GREEN on 5ee1594 (697 unit, 51 container); GREEN on 83c7e2e and 73100df (D-085, D-086).
 
 ## For the operator
-- **Now:** the Windows steps under "Current increment" (signing key in the Windows agent, one signed grant, and the public `juno-anchors` with its protection and push token). You may close PR #29 (superseded by PR #30) and PR #32 (superseded by this session's PR).
+- **Now:** follow `docs/operator-setup.md` from the top, part by part; it is the one document for setting JUNO up (D-199). Older step lists in this file are history. You may close PR #29 (superseded by PR #30) and PR #32 (superseded by this session's PR).
 - **Known limit (D-124):** the runner's "cannot write the trust anchor" check does not work on Windows, where it would refuse to start (fail-closed). The runner runs on Linux in Slice 1.5.
 - **Carried note:** CLAUDE.md §1 and §7 step 1 still name `spec/slice-1-build-plan.md`, not `docs/plans/slice-1.5-build-plan.md` (reviewer notes on PR #28 and PR #30). Left as is: CLAUDE.md is yours to change.
 

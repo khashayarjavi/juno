@@ -1,0 +1,14 @@
+{
+  "id": "grant-operator-first",
+  "principal": "alireza",
+  "capability_selector": { "capabilities": ["cc.read", "cc.glob", "cc.write", "cc.edit", "cc.bash.read"] },
+  "resource_scope": [{ "kind": "path", "prefix": "/work/project" }],
+  "data_class_bounds": { "max_sensitivity": "internal", "min_integrity": "untrusted" },
+  "issuance": "preissued",
+  "issued_by": "alireza",
+  "issued_at": "2026-11-09T00:00:00.000Z",
+  "expires_at": "2026-12-31T00:00:00.000Z",
+  "max_invocations": 200,
+  "attenuation_parent": null,
+  "revoked_at": null
+}

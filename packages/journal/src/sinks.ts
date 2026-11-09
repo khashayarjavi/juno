@@ -138,8 +138,8 @@ export function readAnchorDirectory(dir: string, task: string): unknown[] {
  * The real destination (§3.4.1 v0.6.1, D-094, D-098): the operator's public `juno-anchors` repository, through a local
  * clone the runner alone uses (outside the capability namespace and the journal). Each anchor is one new file, one
  * commit, one push; the repository's protection refuses any push that rewrites or deletes history, so nothing the
- * host holds can replace an anchor already pushed. The push credential is git's own (the operator's credential helper,
- * scoped to that repository alone); the runner never reads it. A file that already exists is refused here, before
+ * host holds can replace an anchor already pushed. The push credential is git's own: the runner's deploy key for that
+ * repository alone (docs/operator-setup.md Part D, D-199); the runner never reads it. A file that already exists is refused here, before
  * anything is committed.
  */
 export class GitAnchorSink implements AnchorSink {
@@ -158,7 +158,7 @@ export class GitAnchorSink implements AnchorSink {
   }
 
   async append(anchor: Anchor): Promise<void> {
-    await this.#run(["pull", "--ff-only", "--quiet"]);
+    await this.#run(["pull", "--rebase", "--quiet"]);
     const relative = anchorPath(anchor.task, anchor.seq);
     const path = join(this.#clone, relative);
     mkdirSync(join(this.#clone, anchor.task), { recursive: true });
@@ -170,14 +170,32 @@ export class GitAnchorSink implements AnchorSink {
     }
     await this.#run(["add", "--", relative]);
     await this.#run(["commit", "--quiet", "-m", `anchor ${relative}`, "--", relative]);
-    await this.#run(["push", "--quiet"]);
+    await this.#push();
+  }
+
+  /**
+   * Pushes, never forcing. Another service of the same runner (the hook and the gateway each anchor, D-198) may have
+   * pushed since this clone pulled; the destination then refuses the push as not a fast-forward. The clone's own
+   * unpushed commits each add a new file, so they are replayed onto what the destination holds and pushed again, up to
+   * three times (D-199). Nothing already pushed is rewritten: the destination refuses that whatever the host holds.
+   */
+  async #push(): Promise<void> {
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        await this.#run(["push", "--quiet"]);
+        return;
+      } catch (error: unknown) {
+        if (attempt >= 3) throw error;
+        await this.#run(["pull", "--rebase", "--quiet"]);
+      }
+    }
   }
 
   async list(task: string): Promise<unknown[]> {
-    await this.#run(["pull", "--ff-only", "--quiet"]);
     // D-198: an anchor committed in the clone but never pushed (a push that failed before a restart) is not off the
     // host. Push first, so what is listed is what the destination holds; a push that fails fails the listing.
-    await this.#run(["push", "--quiet"]);
+    await this.#run(["pull", "--rebase", "--quiet"]);
+    await this.#push();
     return readAnchorDirectory(this.#clone, task);
   }
 }

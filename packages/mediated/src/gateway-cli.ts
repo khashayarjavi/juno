@@ -89,7 +89,7 @@ function refused(io: GatewayCliIo, refusals: readonly string[]): number {
 /** Admits the session and serves it; returns the exit code once stopped (or at once, when refused). */
 export async function runGatewayCli(args: readonly string[], io: GatewayCliIo): Promise<number> {
   const [command, ...rest] = args;
-  const single = ["--session", "--socket", "--journal", "--anchor", "--workspace", "--journal-key", "--anchors", "--anchor-interval"];
+  const single = ["--session", "--socket", "--journal", "--anchor", "--workspace", "--journal-key", "--anchors", "--anchor-interval", "--git"];
   const options = new Map<string, string>();
   const grantFiles: string[] = [];
   for (let index = 0; index < rest.length; index += 2) {

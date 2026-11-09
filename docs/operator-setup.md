@@ -2,7 +2,7 @@
 
 This is the one document for setting JUNO up on your own machine. It collects every step from STATE.md (Parts A to F) and the steps Slice 1.5 added, in the order to do them. Do the parts in order. Every part ends with a **Check**: if a check does not show what it says, stop there and send the agent the last 15 lines on your screen.
 
-**You never paste a secret anywhere.** Some steps create a credential; they are marked **Creates a credential**. A passphrase is only ever typed into the program that asks for it, on your own machine. Only *public* keys are ever copied: into GitHub, or into a message to the agent. If any step seems to ask you to paste a private key, a passphrase or a token into a website, a chat or a file, stop: that step is wrong.
+**You never paste a secret anywhere.** Every step that creates a credential is marked **Creates a credential**. A password, passphrase or sign-in code is only ever typed or pasted into the program on your own machine that asked for it. Only *public* keys are ever copied: into GitHub, or into a message to the agent. If any step seems to ask you to paste a private key, a passphrase or a token into a website, a chat or a file, stop: that step is wrong.
 
 What the setup gives you, in plain words:
 - A **grant-signing key** that Windows keeps (Part B). JUNO honours only grants signed with it.
@@ -64,17 +64,23 @@ What this protects, and what it does not: Windows' agent never hands out the key
 
 A grant is a signed permission: "this principal may use these capabilities, on these paths, until this time". JUNO honours nothing else.
 
-1. Open `$env:USERPROFILE\juno\docs\examples\grant.example.json` in Notepad and read it. Change only what its comments name (for example the expiry time). Save.
+1. Copy the example grant for Claude Code sessions and open it. **PowerShell:**
+   ```
+   Copy-Item $env:USERPROFILE\juno\docs\examples\grant-claude-code.example.json $env:USERPROFILE\my-grant.json
+   notepad $env:USERPROFILE\my-grant.json
+   ```
+   It lets the session read, list, write and edit files under `/work/project` (that is `/srv/juno-work/project`) and run the read-only programs your session file names, at most 200 times. In Notepad change only two values: `issued_at`, to today's date (keep the form `2026-11-09T00:00:00.000Z`), and `expires_at`, to the last day it should be valid. Save with **Ctrl+S** and close Notepad.
 2. Sign it. **PowerShell**, in `$env:USERPROFILE\juno`:
    ```
-   node dist\runner\src\juno.js grant sign --ssh-key $env:USERPROFILE\.ssh\juno_grant.pub docs\examples\grant.example.json --out $env:USERPROFILE\signed-grant.json
+   cd $env:USERPROFILE\juno
+   node dist\runner\src\juno.js grant sign --ssh-key $env:USERPROFILE\.ssh\juno_grant.pub $env:USERPROFILE\my-grant.json --out $env:USERPROFILE\signed-grant.json
    ```
    It prints `signed grant written to ...`. If it fails with "agent", repeat Part B step 3.
 3. Verify it:
    ```
    node dist\runner\src\juno.js grant verify --anchor $env:USERPROFILE\.ssh\juno_grant.pub $env:USERPROFILE\signed-grant.json
    ```
-4. Optional, to see forgery fail: copy `signed-grant.json` to `forged.json`, open the copy in Notepad, change `"max_invocations": 10` to `11`, save, and run step 3 on `forged.json`. It must print `invalid`. Then delete `forged.json`.
+4. Optional, to see forgery fail: copy `signed-grant.json` to `forged.json`, open the copy in Notepad, change `"max_invocations": 200` to `201`, save, and run step 3 on `forged.json`. It must print `invalid`. Then delete `forged.json`.
 
 **Check:** step 3 prints `valid`.
 
@@ -93,7 +99,8 @@ Part E comes before Part D because Part D's push key is made inside WSL.
    ```
    wsl --install -d Ubuntu-24.04
    ```
-   An Ubuntu window opens and asks for a new UNIX user name and password. Choose your own: this is your **admin** user, with sudo. JUNO never runs as it.
+   **Creates a credential:** your admin user's password.
+   An Ubuntu window opens and asks for a new UNIX user name and password. Choose your own and type the password when it asks (it does not show what you type): this is your **admin** user, with sudo. JUNO never runs as it.
    **Check** (PowerShell): `wsl --list --verbose` shows `Ubuntu-24.04` with `VERSION` `2`.
 2. **Turn on systemd.** In the Ubuntu window:
    ```
@@ -207,7 +214,8 @@ Part E comes before Part D because Part D's push key is made inside WSL.
     wsl -d Ubuntu-24.04 -u root --exec /usr/bin/ls -l /etc/juno/operator.pub
     ```
     **Check:** the last line starts `-r--r--r--` and names `root root`; and `wsl -d Ubuntu-24.04 -u root --exec /usr/bin/cat /etc/juno/operator.pub` prints the same `ssh-ed25519 ...` line as `Get-Content $env:USERPROFILE\.ssh\juno_grant.pub`.
-14. **Install Claude Code inside WSL, as `juno-agent`.** In the governed terminal, follow Anthropic's current Linux installation page for Claude Code (docs.claude.com → Claude Code → Set up). Do not install it from a Windows window.
+14. **Install Claude Code inside WSL, as `juno-agent`, and sign in.** In the governed terminal, follow Anthropic's current Linux installation page for Claude Code (docs.claude.com → Claude Code → Set up). Do not install it from a Windows window.
+    **Creates a credential:** Claude Code's sign-in, stored in `juno-agent`'s own home. Start `claude` once in the governed terminal. Interop is off, so it cannot open a browser for you: it prints a web address. Open that address in your Windows browser, sign in to your Claude account there, and paste the code the page shows back into the governed terminal, where `claude` is waiting for it. Then type `/exit`.
     **Check:** `claude --version` prints `2.1.299` or later, and `which claude` prints a path. Note that path for the next step.
 15. **Install JUNO's hook into Claude Code's managed settings.** Admin terminal; replace `<claude path>` with what `which claude` printed:
     ```
@@ -215,6 +223,8 @@ Part E comes before Part D because Part D's push key is made inside WSL.
     ls -l /etc/claude-code/managed-settings.json
     ```
     **Check:** the install prints `JUNO's hook is installed in /etc/claude-code/managed-settings.json`, then a list of what it cannot control; the `ls` line starts `-rw-r--r--` and names `root root`. (The full separation check comes in Part G, once the hook service runs.)
+
+**Check for Part E as a whole:** steps 10, 11, 12 and 15 each showed what they say: the governed terminal opens as `juno-agent` with no Windows drives, `make verify-rootless` is GREEN on your machine, the folders have the owners and modes listed, and the hook is installed in root's managed settings.
 
 ## Part D — the public anchor repository `juno-anchors` (about 20 minutes)
 
@@ -236,7 +246,11 @@ JUNO copies a fingerprint of its journal to this repository at least once a minu
    cat ~/.ssh/juno_anchors.pub
    ```
    It has no passphrase because the service pushes on its own; the file is readable by `juno-runner` alone. The last line printed starts `ssh-ed25519` and ends `juno-anchors-push`: that is the **public** half.
-4. **Give the public half to the repository, with write access.** On `juno-anchors`: **Settings → Deploy keys → Add deploy key**. Title: `juno-runner`. Key: select the whole `ssh-ed25519 ... juno-anchors-push` line in the runner terminal (drag with the mouse; in the Ubuntu window, selecting copies) and paste it into the Key box. Tick **Allow write access**. Click **Add key**.
+4. **Give the public half to the repository, with write access.** First copy it to the Windows clipboard. **PowerShell** (normal):
+   ```
+   wsl -d Ubuntu-24.04 -u juno-runner --exec /usr/bin/cat /home/juno-runner/.ssh/juno_anchors.pub | Set-Clipboard
+   ```
+   Then on `juno-anchors`: **Settings → Deploy keys → Add deploy key**. Title: `juno-runner`. Click in the Key box and press **Ctrl+V**: it shows one line starting `ssh-ed25519` and ending `juno-anchors-push`. (If it shows anything else, for example `BEGIN OPENSSH PRIVATE KEY`, stop: that is the private half; clear the box and tell the agent.) Tick **Allow write access**. Click **Add key**.
 5. **Clone it for the runner.** Runner terminal; replace `<you>` with your GitHub user name:
    ```
    ssh -T git@github.com
@@ -289,7 +303,7 @@ A `sources` list with folders and the web looks like this:
    nano /var/lib/juno-runner/session.json
    ```
    In nano, change only what the file's comments name: put the UUID `uuidgen` printed into `session_id`; set `sources` and `provider_clearance` as you decided in Part F; keep `grants` as `grant-operator-first` unless you signed another. Save with **Ctrl+O**, Enter, and leave with **Ctrl+X**.
-3. **Start the service.** Runner terminal:
+3. **Start the service.** **Creates a credential:** on its first start the service makes JUNO's journal key (`/var/lib/juno-runner/journal-key`, readable by `juno-runner` only), which signs every anchor. It is not your grant-signing key, and you never handle it. Runner terminal:
    ```
    mkdir -p ~/.config/systemd/user
    cp /opt/juno/docs/examples/juno-hook.service ~/.config/systemd/user/juno-hook.service
@@ -308,8 +322,9 @@ A `sources` list with folders and the web looks like this:
    /opt/node22/bin/node /opt/juno/dist/runner/src/juno.js hook admit --control /var/lib/juno-runner/admit.sock /var/lib/juno-runner/session.json
    ```
    **Check:** it prints `admitted session-<your UUID>`, a line `Start Claude Code for it with: claude --session-id <your UUID>`, and a line starting `Check its journal with:`. Keep that last line.
-6. **Work, governed.** In the governed terminal:
+6. **Work, governed.** In the governed terminal, make the project folder your grant covers (once) and go to it:
    ```
+   mkdir -p /srv/juno-work/project
    cd /srv/juno-work
    ```
    then run the `claude --session-id ...` line from step 5. Ask Claude to write a file outside your grant (for example `/srv/juno-work/outside.txt` if your grant covers only `/work/project`).
@@ -327,17 +342,32 @@ A session JUNO did not admit is denied every call. Each new Claude Code session 
 
 ## Part H — optional: govern an MCP server through JUNO's gateway (mode B)
 
-Only if you want Claude Code to use an MCP server (a tool server such as a mail or ticket system) under JUNO's control. The gateway needs a definition of each tool the server offers; writing those is not click-by-click work. **Ask the agent to write the gateway session file for your server** (it uses `docs/plans/slice-1.5-build-plan.md` Increment 5 and D-187), then:
+Only if you want Claude Code to use an MCP server (a tool server such as a mail or ticket system) under JUNO's control. The gateway needs a definition of each tool the server offers; writing those is not click-by-click work. **Ask the agent to write the gateway session file for your server and the grant to sign for it** (D-187, D-191). Sign that grant as in Part C and copy it in as in Part G step 1. Then:
 
-1. Admin terminal, once (it adds the gateway to the managed settings; replace `<claude path>` as in Part E step 15):
+1. **Add the gateway to Claude Code's managed settings.** Admin terminal (replace `<claude path>` as in Part E step 15):
    ```
    sudo /opt/node22/bin/node /opt/juno/dist/runner/src/juno.js hook install --socket /var/lib/juno-hook/hook.sock --client /opt/juno/dist/mediated/src/juno-hook.js --node /opt/node22/bin/node --claude <claude path> --gateway juno --shim /opt/juno/dist/mediated/src/juno-mcp.js --gateway-socket /var/lib/juno-hook/gateway.sock
    ```
-2. Runner terminal, with the session file the agent wrote at `/var/lib/juno-runner/gateway-session.json` and its signed grant in `/var/lib/juno-runner/grants/`:
+   **Check:** it also prints `JUNO's gateway relay juno is the only MCP server Claude Code loads`.
+2. **Tell the hook service about the gateway** (without this, the hook denies every MCP call). Runner terminal:
    ```
-   /opt/node22/bin/node /opt/juno/dist/runner/src/juno.js gateway serve --session /var/lib/juno-runner/gateway-session.json --socket /var/lib/juno-hook/gateway.sock --journal /var/lib/juno-runner/gateway-journal --anchor /etc/juno/operator.pub --workspace /srv/juno-work --journal-key /var/lib/juno-runner/journal-key --anchors /var/lib/juno-runner/juno-anchors --grant /var/lib/juno-runner/grants/<grant file>
+   sed -i 's| --protect /home/juno-agent$| --protect /home/juno-agent --gateway juno|' ~/.config/systemd/user/juno-hook.service
+   systemctl --user daemon-reload
+   systemctl --user restart juno-hook.service
+   grep -c -- '--gateway juno' ~/.config/systemd/user/juno-hook.service
    ```
-   **Check:** it prints `juno gateway: session gateway-<id> admitted; serving /var/lib/juno-hook/gateway.sock`. Then Part G step 4's `hook check`, with ` --gateway juno --shim /opt/juno/dist/mediated/src/juno-mcp.js --gateway-socket /var/lib/juno-hook/gateway.sock` added, must print `separated from the runner`.
+   **Check:** the last line prints `1`, and `systemctl --user status juno-hook.service --no-pager` shows `active (running)`. Admit your Claude Code session again (Part G step 5): a restart forgets admitted sessions.
+3. **A clone of `juno-anchors` of the gateway's own** (the hook service keeps using its clone; both push to the same repository safely, D-199). Runner terminal (replace `<you>`):
+   ```
+   git clone git@github.com:<you>/juno-anchors.git /var/lib/juno-runner/juno-anchors-gateway
+   ```
+4. **Start the gateway.** Runner terminal, with the session file the agent wrote at `/var/lib/juno-runner/gateway-session.json` and its signed grant in `/var/lib/juno-runner/grants/`:
+   ```
+   /opt/node22/bin/node /opt/juno/dist/runner/src/juno.js gateway serve --session /var/lib/juno-runner/gateway-session.json --socket /var/lib/juno-hook/gateway.sock --journal /var/lib/juno-runner/gateway-journal --anchor /etc/juno/operator.pub --workspace /srv/juno-work --journal-key /var/lib/juno-runner/journal-key --anchors /var/lib/juno-runner/juno-anchors-gateway --git /usr/bin/git --grant /var/lib/juno-runner/grants/<grant file>
+   ```
+   **Check:** it prints `juno gateway: session gateway-<id> admitted; serving /var/lib/juno-hook/gateway.sock`. Leave this terminal open; **Ctrl+C** stops the gateway (it anchors what is pending as it stops).
+5. **Check the separation with the gateway.** Admin terminal: Part G step 4's `hook check`, with ` --gateway juno --shim /opt/juno/dist/mediated/src/juno-mcp.js --gateway-socket /var/lib/juno-hook/gateway.sock` added at the end.
+   **Check:** it prints `separated from the runner` and `JUNO's gateway relay juno is the only MCP server Claude Code can load`.
 
 ## When something goes wrong
 
