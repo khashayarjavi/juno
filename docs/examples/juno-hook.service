@@ -3,12 +3,19 @@
 #   systemctl --user daemon-reload && systemctl --user enable --now juno-hook.service
 # It runs as juno-runner (never root, never juno-agent). It refuses to start, and says why in
 # `journalctl --user -u juno-hook.service`, whenever the shared start-up check refuses (D-194).
+# It anchors its journal to the operator's juno-anchors clone with /usr/bin/git, at most a minute apart and once more
+# when it stops (§3.4.1, D-198); git pushes with juno-runner's own deploy key (docs/operator-setup.md, Part D).
 [Unit]
 Description=JUNO hook service (governs Claude Code's tool calls)
+# Rootless Docker answers the runtime check (D-131); start after it.
+After=docker.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/node /opt/juno/dist/runner/src/juno.js hook serve --socket /var/lib/juno-hook/hook.sock --control /var/lib/juno-runner/admit.sock --journal /var/lib/juno-runner/journal --anchor /etc/juno/operator.pub --workspace /srv/juno-work --checkpoints /var/lib/juno-runner/checkpoints --protect /etc/claude-code --protect /home/juno-agent
+# A user service does not read ~/.bashrc: name rootless Docker's socket (%t is /run/user/<uid>) and node's folder here.
+Environment=DOCKER_HOST=unix://%t/docker.sock
+Environment=PATH=/opt/node22/bin:/usr/bin:/bin
+ExecStart=/opt/node22/bin/node /opt/juno/dist/runner/src/juno.js hook serve --socket /var/lib/juno-hook/hook.sock --control /var/lib/juno-runner/admit.sock --journal /var/lib/juno-runner/journal --anchor /etc/juno/operator.pub --journal-key /var/lib/juno-runner/journal-key --anchors /var/lib/juno-runner/juno-anchors --anchor-interval 60 --git /usr/bin/git --workspace /srv/juno-work --checkpoints /var/lib/juno-runner/checkpoints --protect /etc/claude-code --protect /home/juno-agent
 Restart=no
 UMask=0077
 

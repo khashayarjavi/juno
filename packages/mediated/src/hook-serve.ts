@@ -198,10 +198,13 @@ export async function runHookAdmitCli(args: readonly string[], io: { readonly ou
   } catch (error: unknown) {
     return refused(io, "admit", [`the hook service at ${control} is not reachable: ${error instanceof Error ? error.message : String(error)}`]);
   }
-  const parsed = z.union([z.object({ admitted: z.literal(true), task_id: z.string() }), z.object({ admitted: z.literal(false), failures: z.array(z.string()) })]).safeParse(answer);
+  const parsed = z.union([z.object({ admitted: z.literal(true), task_id: z.string(), check: z.object({ journal: z.string(), anchors: z.string(), key: z.string() }).optional() }), z.object({ admitted: z.literal(false), failures: z.array(z.string()) })]).safeParse(answer);
   if (!parsed.success) return refused(io, "admit", ["the hook service's answer could not be read"]);
   if (!parsed.data.admitted) return refused(io, "admit", parsed.data.failures);
   const sessionId = parsed.data.task_id.replace(/^session-/, "");
   io.out(`admitted ${parsed.data.task_id}\nStart Claude Code for it with: claude --session-id ${sessionId}\n`);
+  const check = parsed.data.check;
+  // §3.4.1 (D-198): the line that checks this session's journal against the anchors pushed to juno-anchors.
+  if (check !== undefined) io.out(`Check its journal with: node /opt/juno/dist/runner/src/juno.js journal check --journal ${check.journal} --anchors ${check.anchors} --key ${check.key} ${parsed.data.task_id}\n`);
   return 0;
 }

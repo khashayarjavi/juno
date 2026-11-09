@@ -109,6 +109,8 @@ describe("juno hook serve and juno hook admit (plan Increment 6, D-180, D-196)",
       expect(JSON.parse(early.stdout)).toMatchObject({ hookSpecificOutput: { permissionDecision: "deny", permissionDecisionReason: expect.stringContaining("not admitted") } });
       expect(await runHookAdmitCli(["--control", join(sockets, "admit.sock"), join(dir, "state", "session.json")], quiet)).toBe(0);
       expect(said.join("")).toContain(`claude --session-id ${SESSION}`);
+      // §3.4.1 (D-198): it prints the operator's journal check for this session, with the paths the service uses.
+      expect(said.join("")).toContain(`journal check --journal ${join(dir, "state", "journal")} --anchors ${join(dir, "state", "juno-anchors")} --key ${join(dir, "state", "journal-key", "journal-key.pub.pem")} session-${SESSION}`);
       const read = await runHookClient(pre("Read", { file_path: join(work, "project", "notes.txt") }), hookSocket);
       expect(read).toMatchObject({ exitCode: 0, stdout: "" });
       // Claude Code reports the read's result, as it does after every call it ran (plan item 8).

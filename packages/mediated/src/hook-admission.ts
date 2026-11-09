@@ -63,7 +63,7 @@ export class HookAdmissionService {
   }
 
   /** Admits the session the file names, or says every reason why not. */
-  async admitFile(path: string): Promise<{ readonly admitted: true; readonly task_id: string } | { readonly admitted: false; readonly failures: readonly string[] }> {
+  async admitFile(path: string): Promise<{ readonly admitted: true; readonly task_id: string; readonly check?: { readonly journal: string; readonly anchors: string; readonly key: string } } | { readonly admitted: false; readonly failures: readonly string[] }> {
     const refusals = this.#layer.fileRefusals("the session file", path);
     if (refusals.length > 0) return { admitted: false, failures: refusals };
     let file: z.output<typeof HookSessionFile>;
@@ -102,7 +102,13 @@ export class HookAdmissionService {
       await this.#sessions.refuse(file.session, failures);
       return { admitted: false, failures };
     }
-    return this.#sessions.admit(file.session);
+    const admitted = await this.#sessions.admit(file.session);
+    if (!admitted.admitted) return admitted;
+    // The operator's check of this session's journal against the anchors (§3.4.1, D-198): the paths this service uses.
+    const at = (what: string): string | undefined => this.#layer.spec.state.find((item) => item.what === what)?.path;
+    const keys = at("the journal key folder");
+    const anchors = at("the anchor repository clone");
+    return keys === undefined || anchors === undefined ? admitted : { ...admitted, check: { journal: this.#layer.root, anchors, key: `${keys}/journal-key.pub.pem` } };
   }
 
   #serve(socket: Socket): void {
