@@ -8,7 +8,6 @@ import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { GrantStore, WorkloadPathResolver } from "../../packages/enforcement/src/index.js";
 import { TEST_ANCHOR, signed } from "../../packages/enforcement/test/test-keys.js";
-import { testAnchoring } from "../../packages/runner/test/anchor-sink.js";
 import { readPayload, readTrajectory } from "../../packages/journal/src/index.js";
 import { CapabilityRegistry, WorkloadExecFileAdapter } from "../../packages/registry/src/index.js";
 import { SCRIPTED_PROFILE_FILE, loadProviderProfile } from "../../packages/runner/src/profile.js";
@@ -83,7 +82,6 @@ beforeAll(async () => {
     providers: [provider],
     sources: [{ id: "project", selector: { kind: "path", prefix: "/work/project" }, data_class: { sensitivity: "internal", integrity: "untrusted" } }],
     resolver: new WorkloadPathResolver({ composeFile, project, service: "workload" }),
-    anchoring: testAnchoring(),
   });
   const admission = runner.admit({
     id: "task-options",

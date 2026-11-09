@@ -35,9 +35,13 @@ test:
 test-watch:
 	npx vitest
 
+# The capability definitions the built code loads at run time (the hook sessions' tool table, the program list, shell.run)
+# go beside it, where `dist/<package>/src/*.js` finds them as the sources do (DECISIONS.md D-197).
 build:
 	rm -rf dist
 	npx tsc -p tsconfig.build.json
+	cp -R packages/mediated/definitions dist/mediated/definitions
+	cp -R packages/registry/definitions dist/registry/definitions
 
 # Production dependencies, installed on the host for COPY into images (D-001).
 stage:

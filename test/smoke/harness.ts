@@ -14,7 +14,6 @@ import { type GroqProvider } from "../../packages/runner/src/groq.js";
 import type { Provider } from "../../packages/runner/src/provider.js";
 import { Runner } from "../../packages/runner/src/runner.js";
 import { TEST_ANCHOR, signed } from "../../packages/enforcement/test/test-keys.js";
-import { testAnchoring } from "../../packages/runner/test/anchor-sink.js";
 
 // The `make smoke` harness (Slice 1.1; DECISIONS.md D-072, D-073). The runner
 // runs on the host (D-065) and every capability call runs in a fresh workload
@@ -292,7 +291,7 @@ export async function runScenario(scenario: Scenario, index: number, groq: GroqP
       for (const item of options.grants ?? [grant("grant-main", Date.now())]) grants.add(item);
       const provider = options.provider ?? groq;
       if (provider.profile !== groq.profile) throw new Error("a scenario's provider must serve the Groq profile");
-      const runner = new Runner({ resolver: new WorkloadPathResolver({ composeFile, project, service: "workload" }), layer, registry: options.registry ?? standardRegistry(), grants, providers: [provider], sources: SOURCES, clock: options.clock ?? (() => new Date()), anchoring: testAnchoring() });
+      const runner = new Runner({ resolver: new WorkloadPathResolver({ composeFile, project, service: "workload" }), layer, registry: options.registry ?? standardRegistry(), grants, providers: [provider], sources: SOURCES, clock: options.clock ?? (() => new Date()) });
       runners.push(runner);
       return runner;
     },

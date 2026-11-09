@@ -1,6 +1,80 @@
 # STATE
 
 ## Current increment
+**Slice 1.5 — Increment 6: §4.3's Slice 1.5 acceptance, end to end** (`docs/plans/slice-1.5-build-plan.md`, Increment 6; §4.3 "Acceptance for Slice 1.5", §18 tests 1–5 as regression, §3.4.5, §3.4.1; D-180). Branch `claude/practical-volta-hjzfmz` (this session's only pushable branch); it carries PR #47's commits from `claude/blissful-gates-7hljw0` unchanged, and its PR supersedes PR #47. Spec v0.6.1. No objection open.
+
+Status (2026-11-09, this session): **items 1 to 6 built (D-195 to D-198); review and the merge gate are next.** `make verify: GREEN` locally (1,297 unit, 118 container); `make mediated-e2e` 13/13 with the real Claude Code 2.1.321.
+- **D-198, every mode's journal is anchored (item 5).** §3.4.1 anchors "the journal"; until now only JUNO's own loop did.
+  - The anchoring moved from the runner into the shared session layer, so every mode gets it the same way. No service can open its journal without an anchor destination and a journal key of its own; the operator's signing key is refused as the journal key.
+  - Every session records the interval and the journal key, and is anchored when it starts. A hook or gateway session that cannot be anchored is not admitted. Before each call it is anchored again once the interval (default one minute) has passed; **a session whose fingerprint cannot be copied off the host stops for good**, and every later call is denied.
+  - Refusals and calls from sessions never admitted are anchored too. A running service anchors everything pending once a minute and once more when it stops.
+  - `juno hook serve` and `juno gateway serve` take `--journal-key`, `--anchors` (the clone of `juno-anchors`), `--anchor-interval` and `--git` (default `/usr/bin/git`). The start-up check judges all of them like the rest of JUNO's state.
+  - Found and fixed on the way: the git destination could count an anchor that was committed but never pushed (it now pushes before it lists); a session refused for a forged grant file left no journal record (it is now journalled like every refused admission); the example systemd unit named the wrong node and could not reach rootless Docker.
+  - The entry-point test checks, for every registered mode, that its journal is anchored, that it stops when it cannot be, and that no service starts without anchoring.
+- **The acceptance run (item 5).** `test/acceptance/slice-1.5.test.ts` runs §4.3 tests 1–4 in the same `make verify` as §18 tests 1–5 (`test/acceptance/acceptance.test.ts`). Each runs through the commands you will run, reads the journal back and explains it from the journal alone (§3.4.5), and checks the chain against the anchors held by the stand-in anchor container (§3.4.1):
+  1. mode C, through `juno hook serve`, `juno hook admit` and the real hook client: a write outside the grant is denied (`scope_violation`), journalled, and not written;
+  2. mode C: after a planted file is read, `cat notes.txt; sh -c '…'` parks `integrity_floor` (not overridable) and nothing runs; mode A is §18 test 2 in the same run;
+  3. mode B, through `juno gateway serve` and the real shim: an unenumerated recipient parks `integrity_floor` and the test server never receives it; the enumerated one is delivered;
+  4. modes A and C: a tampered grant, one signed by another key, and an unsigned one are each refused at admission and journalled; nothing runs.
+  - **The real-binary parts** (`make mediated-e2e`, this cloud session): the real Claude Code 2.1.321 runs against the service `juno hook serve` started, each session admitted with `juno hook admit` from a session file and signed grant files. It covers tests 1, 2 and 4 in mode C and test 3 in mode B. The service anchors with the real git into a local repository standing in for `juno-anchors`, and the last test runs your `juno journal check` for every session against a fresh clone of it: all agree, nothing unanchored. No paid model is called: the model's turns are scripted (D-002, D-145).
+  - The sealed container test also runs the real `juno hook serve` and stops it; your journal check then passes (hook-separation 41/41).
+- **Operator steps (item 6).** They are below under "Operator steps for Increment 6", and they will move, with Parts A–F, into one document, `docs/operator-setup.md`, in the follow-up PR that finishes Slice 1.5.
+
+**Left in this increment, in order:**
+1. Open the PR (superseding #47), CI green on its head, review rounds (CLAUDE.md §7 step 5), the merge gate (step 6).
+2. Then, to finish Slice 1.5 (operator instruction of 2026-11-09): `docs/operator-setup.md` (every operator step, Parts A–F and the new ones, click by click) and `docs/evidence/slice-1.5.md` (what Slice 1.5 proves, what each mode does not protect, every residual), through the same gate; then STOP and report.
+
+### Operator steps for Increment 6 (after Part E; superseded by `docs/operator-setup.md` once merged)
+These assume Parts A–E are done. They need the anchor repository of Part D, now with a **deploy key** made by `juno-runner` instead of a token (the docs PR records why).
+1. Runner terminal (PowerShell: `wsl -d Ubuntu-24.04 -u juno-runner`). Copy the example session file and edit what its comments name: `cp /opt/juno/docs/examples/session.example.json /var/lib/juno-runner/session.json`, then `nano /var/lib/juno-runner/session.json`. Put a fresh UUID from `uuidgen` in `session_id`.
+2. Install and start the service: copy `/opt/juno/docs/examples/juno-hook.service` to `~/.config/systemd/user/`, then `systemctl --user daemon-reload` and `systemctl --user enable --now juno-hook.service`. Check: `systemctl --user status juno-hook.service` shows `active (running)`.
+3. Admin terminal: Part E step 14's `juno hook check`, adding `--anchor /etc/juno/operator.pub`. Check: it prints `separated from the runner` and `case-sensitive Linux file system`.
+4. Runner terminal: `node /opt/juno/dist/runner/src/juno.js hook admit --control /var/lib/juno-runner/admit.sock /var/lib/juno-runner/session.json`. Check: it prints `admitted`, the `claude --session-id` line and the `Check its journal with:` line.
+5. Governed terminal: `cd /srv/juno-work`, start Claude Code with the printed line, and ask it to write outside the grant. Check: JUNO blocks it.
+6. Runner terminal: `systemctl --user stop juno-hook.service`, then run the printed journal check line. Check: `"ok": true` and `"unanchored": 0`.
+
+## Previous increment work log (Increment 6, earlier session)
+Status (2026-11-09): **items 1 to 4 built (D-195 to D-197); items 5 and 6 left.** `make verify: GREEN` locally (1,268 unit, 112 container). Draft PR [khashayarjavi/juno#47](https://github.com/khashayarjavi/juno/pull/47) open for CI.
+- **D-197, item 4, the container test.** The real `juno hook serve` and `juno hook admit`, run from the runner image as the runner, admit your session. The real hook client, as the Claude Code user, gets an allowed read and a denied out-of-grant write, both journalled. The command refuses to start on a workspace D-178 refuses. The Claude Code user cannot reach the admission socket. Container hook-separation: 40/40.
+  - **Found and fixed by it:** the built code the operator runs (`/opt/juno/dist`) lacked the JSON capability definitions, so it could never admit a hook session. Earlier tests ran the TypeScript sources and missed it. `make build` now copies them.
+- **D-195:** the start-up check now refuses state not yet created when the folder that would hold it is shared, sticky bit or not. The gateway now forwards the boundary's judged copy of each call.
+- **D-196: `juno hook serve` and `juno hook admit`.**
+  - Claude Code 2.1.319 has `--session-id <uuid>`, and the real-binary test already uses it, so you choose the session's id in the session file. No objection.
+  - `juno hook serve` runs through the shared start-up check and session layer, and refuses a container runtime that ignores limits. It serves the hook socket and an admission socket only the runner can reach.
+  - `juno hook admit` asks the service to admit your session file. The service reads that file and its grant files itself, under the start-up check's rules, and checks every grant's signature before storing it.
+  - Example files: `docs/examples/session.example.json` and `docs/examples/juno-hook.service`.
+  - The entry-point test covers the new command and its admission socket (63 tests).
+  - The new functional test runs §4.3 test 1 through the commands and the real hook client: an in-grant read is allowed, and an out-of-grant write is denied and journalled. It also covers each kind of file refusal, the runtime refusal, and a workspace JUNO cannot check.
+  - **Found and fixed by that test:** a forged grant with the real grant's id had been stored, unverified, and then blocked the real grant.
+
+**Left in this increment, in order (plan Increment 6):**
+1. Restrictive follow-ups from round 2's non-blocking notes (to be recorded as D-195):
+   - The start-up check should refuse an owned folder that does not exist yet (the journal, for example) when the nearest existing folder is shared, meaning writable by group or others, even with the sticky bit. Someone could create the folder between the check and the open.
+   - The gateway should forward the arguments exactly as the boundary judged them.
+2. Read from the installed Claude Code binary how a session id is fixed before the first tool call (CLAUDE.md rule 13). If the binary offers no way, record an objection; do not guess.
+3. Build `juno hook serve` and `juno hook admit <session file>`, with the systemd user unit and the example session file. `juno hook serve` runs as the runner, goes through the shared start-up check and session layer, and is registered in the entry-point registry so the entry-point test covers it.
+4. Container test. The real `juno hook serve` runs as the runner, `juno hook admit` admits a session, and the real hook client runs as `juno-agent`. It must show:
+   - an allowed read, journalled;
+   - a denied out-of-grant write, journalled;
+   - a refusal to start on a workspace D-178 refuses.
+5. **Next, first: anchor every mode's journal (planned as D-198, autopilot ruling, restrictive).** §3.4.1 anchors "the journal", not only the own loop's. Today only the `Runner` anchors; hook and gateway journals are not anchored. The plan's acceptance needs every test to "check the chain against the latest anchor".
+   - Move the anchoring (sink, journal key, interval, anchor at start and at most one interval apart, a session whose head cannot be anchored stops) from `Runner` into the shared session layer, so every mode gets it the same way.
+   - `juno hook serve` and `juno gateway serve` then take a journal key and the anchor destination.
+   - Extend the entry-point test so that a mode that does not anchor fails.
+   Then: run §4.3 acceptance tests 1–4 together with §18 tests 1–5 in one `make verify`. Each test reads the journal back (§3.4.5) and checks the chain against the latest anchor (§3.4.1). The real-binary parts run in one `make mediated-e2e`, against the service the new command started.
+6. Write the operator steps (plan Increment 6) into STATE.md. Then the PR, review and merge gate, and STATE.md records Slice 1.5 complete.
+
+### Merges this session (2026-11-09, later session)
+- **PR #46 (Slice 1.5 Increment 5, supersedes #45): merged** as 34d7439, pinned to head fa0dbf8.
+  - Reviewer round 2 (fresh subagent, P2 verbatim, plus the D-052 to D-054 re-check): **MERGE**. All six checks and the re-check PASS.
+  - CI on fa0dbf8: run 42645073474, `verify` and `verify-rootless` green.
+  - CI on main for 34d7439: run 42647256375, **green**.
+  - Locally: `make verify` GREEN (1,246 unit, 109 container); `make mediated-e2e` 12/12 with the real Claude Code 2.1.319.
+- **Round 2's non-blocking notes**, kept for Increment 6 (item 1 above). Neither is a gap in the documented setup:
+  - A journal folder not yet created under a shared sticky folder could be created by another user between the check and the open. The documented setup uses 0700 runner folders.
+  - The gateway forwards the parsed arguments rather than the judged copy. They hold the same values.
+
+## Previous increment (Slice 1.5 Increment 5, merged as PR #46)
 **Slice 1.5 — Increment 5: gateway mode for MCP (§4.3 mode B)** (`docs/plans/slice-1.5-build-plan.md`, Increment 5; §4.3, §2.3.2, §7.8 E2, §2.2.2 for `external` effects; D-154). Branch `claude/blissful-gates-7hljw0` (this session's only pushable branch); it carries PR #45's commits from `claude/jolly-maxwell-s3mk53` unchanged, and its PR supersedes PR #45. Spec v0.6.1. No objection open.
 
 Status (2026-11-09, later session): **your ruling D-193 is built (D-194); review round 2 is next.** Nothing merged yet.

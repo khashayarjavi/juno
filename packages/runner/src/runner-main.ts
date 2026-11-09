@@ -1,4 +1,4 @@
-import { type HostIo, SessionLayer, StartupRefused, type StartupSpec } from "../../enforcement/src/index.js";
+import { type Anchoring, type HostIo, SessionLayer, StartupRefused, type StartupSpec, anchoringState, gitAnchoring } from "../../enforcement/src/index.js";
 import { type RunnerConfig, parseRunnerConfig } from "./config.js";
 
 /**
@@ -10,11 +10,17 @@ import { type RunnerConfig, parseRunnerConfig } from "./config.js";
  * class on that layer (D-065).
  */
 
-export type RunnerMainIo = { readonly host: HostIo; readonly out: (text: string) => void; readonly err: (text: string) => void };
+export type RunnerMainIo = {
+  readonly host: HostIo;
+  readonly out: (text: string) => void;
+  readonly err: (text: string) => void;
+  /** Tests only: the anchoring to use in place of the configured journal key and clone (both are still judged). */
+  readonly anchoring?: Anchoring;
+};
 
 /** What the runner asks the shared start-up check to judge (D-194). */
 export function runnerStartupSpec(config: RunnerConfig): StartupSpec {
-  return { service: "runner", journal: config.journalDir, workspaces: [config.workDir], state: [], anchor: config.trustAnchor };
+  return { service: "runner", journal: config.journalDir, workspaces: [config.workDir], state: anchoringState(config.anchoring, { pushes: false }), anchor: config.trustAnchor };
 }
 
 /** Returns the exit code: 0 ready, 1 refused. */
@@ -28,7 +34,7 @@ export function runRunnerMain(env: unknown, io: RunnerMainIo): number {
   }
   let layer: SessionLayer;
   try {
-    layer = SessionLayer.open(runnerStartupSpec(config), { host: io.host });
+    layer = SessionLayer.open(runnerStartupSpec(config), { host: io.host, anchoring: io.anchoring ?? ((root) => gitAnchoring(config.anchoring, root)) });
   } catch (error: unknown) {
     io.err(`juno-runner: ${error instanceof StartupRefused ? error.message : error instanceof Error ? error.message : String(error)}\n`);
     return 1;

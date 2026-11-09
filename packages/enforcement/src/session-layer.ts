@@ -1,11 +1,24 @@
 import { realpathSync } from "node:fs";
 import { type Budget, type DataClass, pathWithin } from "../../contracts/src/index.js";
-import { type EntryDraft, JournalWriter, type JournalWriterOptions, canonicalJson } from "../../journal/src/index.js";
+import {
+  AnchorExistsError,
+  type AnchorSink,
+  type EntryDraft,
+  type JournalKey,
+  JournalWriter,
+  type JournalWriterOptions,
+  anchorOf,
+  canonicalJson,
+  contentAddress,
+  sameKey,
+  taskDigest,
+  verifyTrajectory,
+} from "../../journal/src/index.js";
 import type { CapabilityRegistry } from "../../registry/src/index.js";
 import { EnforcementBoundary } from "./boundary.js";
 import type { GrantStore } from "./grants.js";
 import { type TrustAnchor } from "./signature.js";
-import { type HostIo, type ServiceName, type StartupSpec, StartupRefused, socketRefusals, startupCheck, systemHostIo } from "./startup.js";
+import { type HostIo, type ServiceName, type StartupSpec, StartupRefused, laterFileRefusals, socketRefusals, startupCheck, systemHostIo } from "./startup.js";
 
 /**
  * THE session layer (operator ruling D-193; DECISIONS.md D-194). Every mode (JUNO's own loop, the Claude Code hook, the
@@ -45,6 +58,32 @@ export const NON_OVERRIDABLE_PARKS: ReadonlySet<string> = new Set(["integrity_fl
 export const REFUSED_ADMISSION_CLASS: DataClass = { sensitivity: "secret", integrity: "untrusted" };
 
 export type SessionMode = "own_loop" | "hook" | "gateway";
+
+/**
+ * How a layer copies its journal's heads off the host (§3.4.1, v0.6 C1; D-122; D-198). Every layer has one: §3.4.1
+ * anchors "the journal", so every mode's journal is anchored the same way, here.
+ */
+export type Anchoring = {
+  readonly sink: AnchorSink;
+  /** The runner's own key for anchors; never the operator's grant-signing key (§3.4.1 V6-4). */
+  readonly journalKey: JournalKey;
+  /** At most this long passes between anchors of a running session; it is recorded in the session's journal. */
+  readonly intervalMs: number;
+};
+
+/** The journal key's fingerprint, as the `anchoring` note records it. */
+export function journalKeyFingerprint(key: JournalKey): string {
+  return contentAddress(new Uint8Array(key.publicKey.export({ type: "spki", format: "der" })));
+}
+
+/** Why a layer's anchoring is refused before anything is opened (D-198); empty when it may be used. */
+export function anchoringRefusals(anchoring: Anchoring | undefined): string[] {
+  if (anchoring === undefined || anchoring === null) return ["no anchor destination and journal key were given; every mode's journal is anchored off the host (§3.4.1, D-198)"];
+  const refusals: string[] = [];
+  if (!Number.isSafeInteger(anchoring.intervalMs) || anchoring.intervalMs < 1) refusals.push("the anchoring interval must be a positive whole number of milliseconds (§3.4.1)");
+  if (anchoring.journalKey?.privateKey?.asymmetricKeyType !== "ed25519" || anchoring.journalKey.privateKey.type !== "private") refusals.push("the journal key must be an Ed25519 private key (§3.4.1)");
+  return refusals;
+}
 
 const MODE_OF_SERVICE: Readonly<Record<ServiceName, SessionMode>> = { runner: "own_loop", hook: "hook", gateway: "gateway" };
 
@@ -88,8 +127,16 @@ export class SessionLayer {
   readonly #clock: () => Date;
   readonly #sessions = new Map<string, GovernedSession>();
   readonly #workspaces: readonly { readonly path: string; readonly real: string }[];
+  readonly #anchoring: Anchoring;
+  /** Per journal record: the seq last anchored and when (§3.4.1, D-122, D-198). */
+  readonly #anchored = new Map<string, { seq: number; at: number }>();
+  /** Every record this layer wrote, with the class of its last entry (an `anchor_failed` note is recorded at it). */
+  readonly #written = new Map<string, DataClass>();
+  /** Anchoring runs one at a time, so two anchors of one record never race. */
+  #anchorQueue: Promise<unknown> = Promise.resolve();
+  #timer: ReturnType<typeof setInterval> | null = null;
 
-  private constructor(token: symbol, spec: StartupSpec, anchor: TrustAnchor | null, host: HostIo, clock: () => Date, journal: JournalWriterOptions) {
+  private constructor(token: symbol, spec: StartupSpec, anchor: TrustAnchor | null, host: HostIo, clock: () => Date, journal: JournalWriterOptions, anchoring: Anchoring) {
     // Only `open` holds the token, so no code can make a layer without the start-up check (D-194).
     if (token !== OPENED_BY_CHECK) throw new SessionLayerError("a session layer is made only by SessionLayer.open, after the shared start-up check (D-194)");
     this.#spec = spec;
@@ -97,6 +144,7 @@ export class SessionLayer {
     this.#host = host;
     this.#clock = clock;
     this.#workspaces = spec.workspaces.map((path) => ({ path, real: realOrGiven(path) }));
+    this.#anchoring = anchoring;
     this.#journal = JournalWriter.open(spec.journal, journal);
   }
 
@@ -104,14 +152,30 @@ export class SessionLayer {
    * Runs the shared start-up check for `spec` and, only if it passes, opens the journal and returns the layer. Throws
    * `StartupRefused` with every refusal otherwise, having opened nothing.
    */
-  static open(spec: StartupSpec, options: { readonly host?: HostIo; readonly clock?: () => Date; readonly journal?: JournalWriterOptions } = {}): SessionLayer {
+  static open(spec: StartupSpec, options: { readonly anchoring: Anchoring | ((journalRoot: string) => Anchoring); readonly host?: HostIo; readonly clock?: () => Date; readonly journal?: JournalWriterOptions }): SessionLayer {
     const host = options.host ?? systemHostIo();
     const checked = startupCheck(spec, host);
-    if (!checked.ok) {
-      for (const listener of OBSERVERS) listener({ spec, refusals: checked.refusals, layer: null });
-      throw new StartupRefused(spec.service, checked.refusals);
+    const refuse = (refusals: readonly string[]): never => {
+      for (const listener of OBSERVERS) listener({ spec, refusals, layer: null });
+      throw new StartupRefused(spec.service, refusals);
+    };
+    if (!checked.ok) refuse(checked.refusals);
+    // D-198: every mode's journal is anchored (§3.4.1), so a layer without an anchor destination and a journal key of its
+    // own is refused like any other start-up refusal. A factory (the services' real key and clone) runs only once the
+    // check has passed, so nothing is created for a refused start. The journal key is never the operator's.
+    const given = (options as { readonly anchoring?: Anchoring | ((journalRoot: string) => Anchoring) } | undefined)?.anchoring;
+    let anchoring: Anchoring | undefined;
+    try {
+      anchoring = typeof given === "function" ? given(spec.journal) : given;
+    } catch (error: unknown) {
+      refuse([`the journal key or the anchor destination could not be opened: ${error instanceof Error ? error.message : String(error)} (§3.4.1, D-198)`]);
     }
-    const layer = new SessionLayer(OPENED_BY_CHECK, Object.freeze({ ...spec, workspaces: [...spec.workspaces], state: spec.state.map((item) => ({ ...item })) }), checked.anchor, host, options.clock ?? (() => new Date()), options.journal ?? {});
+    const refusals = anchoringRefusals(anchoring);
+    if (refusals.length === 0 && anchoring !== undefined && checked.ok && checked.anchor !== null && sameKey(anchoring.journalKey.publicKey, checked.anchor)) {
+      refusals.push("the journal key is the operator's grant-signing key; the runner must hold its own (§3.4.1 V6-4)");
+    }
+    if (refusals.length > 0 || anchoring === undefined || !checked.ok) return refuse(refusals);
+    const layer = new SessionLayer(OPENED_BY_CHECK, Object.freeze({ ...spec, workspaces: [...spec.workspaces], state: spec.state.map((item) => ({ ...item })) }), checked.anchor, host, options.clock ?? (() => new Date()), options.journal ?? {}, anchoring);
     for (const listener of OBSERVERS) listener({ spec, refusals: [], layer });
     return layer;
   }
@@ -199,6 +263,19 @@ export class SessionLayer {
     if (refusals.length > 0) throw new SessionLayerError(refusals.join("; "));
   }
 
+  /**
+   * Why a file this running service is asked to read later (a session file, a grant file) must be refused: the start-up
+   * check's own rules, against this layer's workspaces and host (D-196). Empty when it may be read.
+   */
+  fileRefusals(what: string, path: string): string[] {
+    return laterFileRefusals(what, path, this.#spec.workspaces, this.#host);
+  }
+
+  /** Reads a file `fileRefusals` accepted, through this layer's host. */
+  readFile(path: string): string {
+    return this.#host.readFile(path);
+  }
+
   now(): number {
     return this.#clock().getTime();
   }
@@ -206,7 +283,99 @@ export class SessionLayer {
   /** A journal record outside any session (the runner's and registry's own records). */
   append(taskId: string, kind: EntryDraft["kind"], dataClass: DataClass, payload: unknown, options: RecordOptions): number {
     const draft: EntryDraft = { kind, actor: options.actor, provider: options.provider ?? null, data_class: dataClass, cost: options.cost ?? NO_COST };
-    return this.#journal.append(taskId, draft, encoder.encode(canonicalJson(payload))).seq;
+    const seq = this.#journal.append(taskId, draft, encoder.encode(canonicalJson(payload))).seq;
+    this.#written.set(taskId, dataClass);
+    return seq;
+  }
+
+  /** How this layer anchors (§3.4.1, D-198). */
+  get anchoring(): Anchoring {
+    return this.#anchoring;
+  }
+
+  /** The `anchoring` note every session records before its first anchor: the interval and the journal key (§3.4.1). */
+  anchoringNote(): { readonly type: "anchoring"; readonly interval_ms: number; readonly journal_key: string } {
+    return { type: "anchoring", interval_ms: this.#anchoring.intervalMs, journal_key: journalKeyFingerprint(this.#anchoring.journalKey) };
+  }
+
+  /**
+   * Copies one journal record's head off the host (§3.4.1, D-122, D-198): signed with the journal key, appended to the
+   * destination. Nothing new since the last anchor: nothing to do. When the destination already holds an anchor at this
+   * seq (a restart), it counts only if it names the same head. A failure is journalled (`anchor_failed`, at `dataClass`
+   * or the class of the record's last entry) and answers false. Anchors run one at a time.
+   */
+  anchorHead(recordId: string, dataClass?: DataClass): Promise<boolean> {
+    const run = this.#anchorQueue.then(() => this.#anchorNow(recordId, dataClass));
+    this.#anchorQueue = run.catch(() => undefined);
+    return run;
+  }
+
+  async #anchorNow(recordId: string, dataClass: DataClass | undefined): Promise<boolean> {
+    const verdict = verifyTrajectory(this.#journal.root, recordId);
+    if (!verdict.ok) return false;
+    const head = verdict.head;
+    if (head === null) return true;
+    if (this.#anchored.get(recordId)?.seq === head.seq) return true;
+    const now = this.#clock();
+    const anchor = anchorOf(recordId, head, now, this.#anchoring.journalKey.privateKey);
+    try {
+      try {
+        await this.#anchoring.sink.append(anchor);
+      } catch (error: unknown) {
+        if (!(error instanceof AnchorExistsError)) throw error;
+        const stored = (await this.#anchoring.sink.list(taskDigest(recordId))).find((item) => (item as { seq?: unknown }).seq === head.seq) as { head?: unknown } | undefined;
+        if (stored?.head !== head.hash) throw new Error(`the destination holds a different anchor at seq ${String(head.seq)}`, { cause: error });
+      }
+    } catch (error: unknown) {
+      const recordClass = dataClass ?? this.#written.get(recordId) ?? { sensitivity: "internal" as const, integrity: "derived" as const };
+      this.append(recordId, "note", recordClass, { type: "anchor_failed", seq: head.seq, head: head.hash, reason: error instanceof Error ? error.message : String(error) }, { actor: ANCHOR_ACTOR });
+      return false;
+    }
+    this.#anchored.set(recordId, { seq: head.seq, at: now.getTime() });
+    return true;
+  }
+
+  /** Whether a record is due an anchor: never anchored, or its interval has passed since the last one (§3.4.1). */
+  anchorDue(recordId: string): boolean {
+    const last = this.#anchored.get(recordId);
+    return last === undefined || this.now() - last.at >= this.#anchoring.intervalMs;
+  }
+
+  /** Whether every entry of a record this layer wrote is anchored. */
+  anchoredUpToDate(recordId: string): boolean {
+    const verdict = verifyTrajectory(this.#journal.root, recordId);
+    return verdict.ok && (verdict.head === null || this.#anchored.get(recordId)?.seq === verdict.head.seq);
+  }
+
+  /**
+   * Anchors every record this layer wrote that has entries after its last anchor (refused admissions and calls from
+   * sessions never admitted included). Answers the records that could not be anchored. A service runs it at each
+   * interval (`startAnchoring`) and when it stops (`close`), so no record of any mode is left unanchored for longer
+   * than one interval while the service runs (§3.4.1, D-198).
+   */
+  async anchorPending(): Promise<string[]> {
+    const failed: string[] = [];
+    for (const recordId of [...this.#written.keys()]) {
+      if (!(await this.anchorHead(recordId))) failed.push(recordId);
+    }
+    for (const session of this.#sessions.values()) if (failed.includes(session.id)) session.stop("anchor_unavailable");
+    return failed;
+  }
+
+  /** Starts anchoring every pending record once per interval, in the background; `close` stops it (D-198). */
+  startAnchoring(): void {
+    if (this.#timer !== null) return;
+    this.#timer = setInterval(() => {
+      void this.anchorPending();
+    }, this.#anchoring.intervalMs);
+    this.#timer.unref();
+  }
+
+  /** Stops the interval and anchors everything pending (a service's last act, §3.4.1). Answers the records that failed. */
+  async close(): Promise<string[]> {
+    if (this.#timer !== null) clearInterval(this.#timer);
+    this.#timer = null;
+    return this.anchorPending();
   }
 
   /** A refused admission: never run, never referenced, so recorded at the most restrictive class. */
@@ -241,7 +410,14 @@ export class SessionLayer {
   }
 }
 
-export type CallStart = { readonly ok: true } | { readonly ok: false; readonly reason: "ttl_expired" } | { readonly ok: false; readonly reason: "budget_exceeded"; readonly axes: readonly BudgetAxis[] };
+export type CallStart =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly reason: "ttl_expired" }
+  | { readonly ok: false; readonly reason: "anchor_unavailable" }
+  | { readonly ok: false; readonly reason: "budget_exceeded"; readonly axes: readonly BudgetAxis[] };
+
+/** The actor of the layer's own anchoring records. */
+export const ANCHOR_ACTOR = "juno.anchoring";
 
 /** One admitted session: its limits, its spend, its consecutive rejections, and its journal records. */
 export class GovernedSession {
@@ -255,6 +431,8 @@ export class GovernedSession {
   #rejections: RejectionMark[] = [];
   #parks = 0;
   #lastPark: string | null = null;
+  #anchoringNoted = false;
+  #stopped: string | null = null;
   readonly #now: () => number;
 
   constructor(layer: SessionLayer, id: string, mode: SessionMode, limits: SessionLimits, admittedAt: number, spent: Spend, now: () => number) {
@@ -309,11 +487,44 @@ export class GovernedSession {
     return overrunAxes(this.spent(), this.limits.budget, this.limits.metered);
   }
 
+  /** Why the session stopped for good (`anchor_unavailable`), or null while it may go on (D-198). */
+  get stopped(): string | null {
+    return this.#stopped;
+  }
+
+  /** Stops the session for good: no call starts again (a session whose head cannot be anchored stops, §3.4.1, D-198). */
+  stop(reason: string): void {
+    this.#stopped ??= reason;
+  }
+
   /**
-   * One call in a mediated mode (§4.3): TTL, then the budget, then the call is counted, so every call counts, one JUNO
-   * then rejects included (D-192). On `budget_exceeded` the park is journalled here.
+   * Anchors this session's head off the host (§3.4.1, D-198). The first time, it journals the `anchoring` note (the
+   * interval and the journal key) and anchors, whatever is due; later, only when the interval has passed, unless
+   * `force`. A head that cannot be anchored stops the session for good. Answers whether the session may go on.
    */
-  beginCall(dataClass: DataClass, actor: string, detail: Record<string, unknown>): CallStart {
+  async anchor(dataClass: DataClass, options: { readonly force?: boolean } = {}): Promise<boolean> {
+    if (this.#stopped !== null) return false;
+    if (!this.#anchoringNoted) {
+      this.#anchoringNoted = true;
+      this.record("note", dataClass, this.#layer.anchoringNote(), { actor: ANCHOR_ACTOR });
+    } else if (options.force !== true && !this.#layer.anchorDue(this.id)) return true;
+    if (await this.#layer.anchorHead(this.id, dataClass)) return true;
+    this.stop("anchor_unavailable");
+    return false;
+  }
+
+  /** Whether this session has had its `anchoring` note and first anchor (the own loop's resume has, in the journal). */
+  markAnchoringNoted(): void {
+    this.#anchoringNoted = true;
+  }
+
+  /**
+   * One call in a mediated mode (§4.3): the anchor (the first one, or one due), then TTL, then the budget, then the call
+   * is counted, so every call counts, one JUNO then rejects included (D-192). A session whose head cannot be anchored
+   * stops and no call starts (§3.4.1, D-198). On `budget_exceeded` the park is journalled here.
+   */
+  async beginCall(dataClass: DataClass, actor: string, detail: Record<string, unknown>): Promise<CallStart> {
+    if (!(await this.anchor(dataClass))) return { ok: false, reason: "anchor_unavailable" };
     if (this.expired()) return { ok: false, reason: "ttl_expired" };
     const axes = this.exhausted();
     if (axes.length > 0) {

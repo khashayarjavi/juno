@@ -24,5 +24,10 @@ RUN ["chown", "node:node", "/journal"]
 RUN ["mkdir", "-m", "0755", "/work"]
 RUN ["chown", "65532:65532", "/work"]
 
+# The runner's own folder for its journal key and its clone of juno-anchors (§3.4.1, D-198): owned by the runner user
+# and closed to everyone else, outside the journal and the work volume.
+RUN ["mkdir", "-m", "0700", "/var/lib/juno-runner"]
+RUN ["chown", "node:node", "/var/lib/juno-runner"]
+
 USER node
 CMD ["node", "dist/runner/src/main.js"]

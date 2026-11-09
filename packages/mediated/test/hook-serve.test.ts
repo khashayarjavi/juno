@@ -1,0 +1,207 @@
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { SessionLayer } from "../../enforcement/src/index.js";
+import { MemoryAnchorSink, testAnchoring } from "../../enforcement/test/anchoring.js";
+import { ordinaryHost } from "../../enforcement/test/layer.js";
+import { TEST_ANCHOR, signed } from "../../enforcement/test/test-keys.js";
+import { readPayload, readTrajectory } from "../../journal/src/index.js";
+import { systemFilesystemIo } from "../src/filesystem.js";
+import { runHookClient } from "../src/hook-client.js";
+import { type HookServeIo, runHookAdmitCli, runHookServeCli } from "../src/hook-serve.js";
+import { HookSessionFile } from "../src/hook-session-file.js";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
+// Plan Increment 6, operator ruling D-180 (DECISIONS.md D-196): `juno hook serve` starts JUNO's hook service on the
+// operator's machine and `juno hook admit` admits one session the operator wrote. Here: the real commands, the real
+// shared start-up check, the real sockets and the real hook client (juno-hook's `runHookClient`); only the uid (an
+// ordinary user), the container runtime's report and the stop signal are given.
+
+const PRINCIPAL = "alireza";
+const SESSION = "6f1c2d3e-4a5b-4c6d-8e7f-0123456789ab";
+/** The in-memory anchor destination of each test (D-198). */
+let anchors = new MemoryAnchorSink();
+let dir: string;
+let work: string;
+let sockets: string;
+let said: string[];
+
+const grant = (id: string, overrides: Record<string, unknown> = {}): Record<string, unknown> =>
+  signed({ id, principal: PRINCIPAL, capability_selector: { capabilities: ["cc.read", "cc.write"] }, resource_scope: [{ kind: "path", prefix: "/work/project" }], data_class_bounds: { max_sensitivity: "secret", min_integrity: "untrusted" }, issuance: "preissued", issued_by: PRINCIPAL, issued_at: new Date(Date.now() - 60_000).toISOString(), expires_at: new Date(Date.now() + 86_400_000).toISOString(), max_invocations: 100, attenuation_parent: null, revoked_at: null, ...overrides });
+
+const sessionFile = (overrides: Record<string, unknown> = {}, grants: readonly string[] = [join(dir, "state", "grant-cc.json")]): Record<string, unknown> => ({
+  comments: ["The operator's session file (plan Increment 6)."],
+  session: { session_id: SESSION, principal: PRINCIPAL, attendance: "gated", ttl: 3_600_000, grants: ["grant-cc"], budget: { tool_calls: 20, wall_clock_ms: 3_600_000 }, unmetered_accepted: true, provider_clearance: "internal", sources: [{ id: "project", selector: { kind: "path", prefix: "/work/project" }, data_class: { sensitivity: "internal", integrity: "untrusted" } }], name_map: [], ...overrides },
+  grants,
+});
+
+const args = (): string[] => ["--socket", join(sockets, "hook.sock"), "--control", join(sockets, "admit.sock"), "--journal", join(dir, "state", "journal"), "--anchor", join(dir, "anchor", "operator.pub"), "--workspace", work, "--checkpoints", join(dir, "state", "checkpoints"), "--journal-key", join(dir, "state", "journal-key"), "--anchors", join(dir, "state", "juno-anchors"), "--protect", join(dir, "claude-home")];
+
+const quiet = { out: (text: string) => said.push(text), err: (text: string) => said.push(text) };
+
+/** Runs `juno hook serve` until `drive` finishes, handing it the service's layer; returns the exit code. */
+async function serving(drive: (layer: SessionLayer) => Promise<void>, overrides: Partial<HookServeIo> = {}): Promise<number> {
+  let driving: Promise<void> = Promise.resolve();
+  return runHookServeCli(args(), {
+    host: ordinaryHost(),
+    filesystem: systemFilesystemIo(),
+    runtime: () => Promise.resolve({ cgroupDriver: "systemd", cgroupVersion: "2", rootless: true }),
+    // §3.4.1 (D-198): every service anchors; here to an in-memory destination (the flags are still judged).
+    anchoring: testAnchoring({ sink: anchors }),
+    ready: ({ layer }) => {
+      driving = drive(layer);
+    },
+    stopped: () => driving,
+    ...quiet,
+    ...overrides,
+  });
+}
+
+let toolUses = 0;
+const pre = (tool: string, input: Record<string, unknown>): string => {
+  toolUses += 1;
+  return JSON.stringify({ session_id: SESSION, hook_event_name: "PreToolUse", tool_name: tool, tool_input: input, tool_use_id: `toolu_${String(toolUses)}`, cwd: join(work, "project") });
+};
+
+const entries = (root: string): Record<string, unknown>[] =>
+  readTrajectory(root, `session-${SESSION}`).map((entry) => {
+    const blob = readPayload(root, entry.payload_ref);
+    return { kind: entry.kind, ...(blob.status === "present" ? (JSON.parse(new TextDecoder().decode(blob.bytes)) as Record<string, unknown>) : {}) };
+  });
+
+beforeEach(() => {
+  anchors = new MemoryAnchorSink();
+  dir = mkdtempSync(join(tmpdir(), "juno-hook-serve-"));
+  work = join(dir, "work");
+  sockets = join(dir, "sock");
+  said = [];
+  mkdirSync(join(work, "project"), { recursive: true });
+  writeFileSync(join(work, "project", "notes.txt"), "notes\n");
+  mkdirSync(join(dir, "state"), { mode: 0o700 });
+  mkdirSync(join(dir, "claude-home"), { mode: 0o700 });
+  mkdirSync(sockets, { mode: 0o750 });
+  mkdirSync(join(dir, "anchor"));
+  writeFileSync(join(dir, "anchor", "operator.pub"), TEST_ANCHOR.export({ type: "spki", format: "pem" }), { mode: 0o444 });
+  chmodSync(join(dir, "anchor", "operator.pub"), 0o444);
+  chmodSync(join(dir, "anchor"), 0o555);
+  writeFileSync(join(dir, "state", "grant-cc.json"), JSON.stringify(grant("grant-cc")), { mode: 0o600 });
+  writeFileSync(join(dir, "state", "session.json"), JSON.stringify(sessionFile()), { mode: 0o600 });
+});
+
+afterEach(() => {
+  chmodSync(join(dir, "anchor"), 0o755);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+describe("juno hook serve and juno hook admit (plan Increment 6, D-180, D-196)", () => {
+  // proves §4.3 acceptance test 1 through the commands that run it on the operator's machine: an admitted session's read
+  // inside its grant gets no decision and a write outside it is denied, both journalled; a session JUNO did not admit is
+  // denied every call
+  it("serves the hook, admits the operator's session, allows an in-grant read and denies an out-of-grant write", async () => {
+    const hookSocket = join(sockets, "hook.sock");
+    let root = "";
+    const code = await serving(async (layer) => {
+      root = layer.root;
+      // Before admission, every call is denied (§4.3).
+      const early = await runHookClient(pre("Read", { file_path: join(work, "project", "notes.txt") }), hookSocket);
+      expect(JSON.parse(early.stdout)).toMatchObject({ hookSpecificOutput: { permissionDecision: "deny", permissionDecisionReason: expect.stringContaining("not admitted") } });
+      expect(await runHookAdmitCli(["--control", join(sockets, "admit.sock"), join(dir, "state", "session.json")], quiet)).toBe(0);
+      expect(said.join("")).toContain(`claude --session-id ${SESSION}`);
+      // §3.4.1 (D-198): it prints the operator's journal check for this session, with the paths the service uses.
+      expect(said.join("")).toContain(`journal check --journal ${join(dir, "state", "journal")} --anchors ${join(dir, "state", "juno-anchors")} --key ${join(dir, "state", "journal-key", "journal-key.pub.pem")} session-${SESSION}`);
+      const read = await runHookClient(pre("Read", { file_path: join(work, "project", "notes.txt") }), hookSocket);
+      expect(read).toMatchObject({ exitCode: 0, stdout: "" });
+      // Claude Code reports the read's result, as it does after every call it ran (plan item 8).
+      const asked = JSON.parse(pre("Read", { file_path: join(work, "project", "notes.txt") })) as Record<string, unknown>;
+      expect((await runHookClient(JSON.stringify({ ...asked, tool_use_id: `toolu_${String(toolUses - 1)}`, hook_event_name: "PostToolUse", tool_response: { content: "notes" } }), hookSocket)).exitCode).toBe(0);
+      const write = await runHookClient(pre("Write", { file_path: join(dir, "outside.txt"), content: "x" }), hookSocket);
+      expect(JSON.parse(write.stdout)).toMatchObject({ hookSpecificOutput: { permissionDecision: "deny", permissionDecisionReason: expect.stringContaining("scope_violation") } });
+      expect(layer.sessions().map((session) => session.id)).toEqual([`session-${SESSION}`]);
+    });
+    expect(code).toBe(0);
+    const journalled = entries(root);
+    expect(journalled[0]).toMatchObject({ kind: "note", type: "admission", outcome: "admitted", mode: "hook" });
+    expect(journalled.filter((entry) => entry["kind"] === "capability_result")).toEqual([expect.objectContaining({ tool: "Read", outcome: "succeeded" })]);
+    expect(journalled.filter((entry) => entry["kind"] === "park")).toEqual([expect.objectContaining({ reason: "scope_violation", mode: "hook", answer: "deny" })]);
+    expect(existsSync(join(dir, "outside.txt"))).toBe(false);
+  }, 60_000);
+
+  // proves D-196 (§3.2, D-148, D-191): the service refuses a session file or grant file others could change, one inside
+  // the workspace, a forged grant, a file that is not a session file, and the same session twice; nothing is admitted
+  it("refuses session and grant files it must not trust, and admits a session once", async () => {
+    const control = join(sockets, "admit.sock");
+    const admit = (file: string) => runHookAdmitCli(["--control", control, file], quiet);
+    const write = (path: string, value: unknown, mode = 0o600): string => {
+      writeFileSync(path, JSON.stringify(value), { mode });
+      chmodSync(path, mode);
+      return path;
+    };
+    const code = await serving(async (layer) => {
+      expect(await admit(write(join(dir, "state", "open.json"), sessionFile(), 0o666))).toBe(1);
+      expect(await admit(write(join(work, "project", "inside.json"), sessionFile()))).toBe(1);
+      expect(await admit(write(join(dir, "state", "loose-grant.json"), sessionFile({}, [write(join(dir, "state", "g-open.json"), grant("grant-cc"), 0o666)])))).toBe(1);
+      expect(await admit(write(join(dir, "state", "forged.json"), sessionFile({}, [write(join(dir, "state", "g-forged.json"), { ...grant("grant-cc"), max_invocations: 9999 })])))).toBe(1);
+      expect(await admit(write(join(dir, "state", "not-a-session.json"), { session: { session_id: SESSION } }))).toBe(1);
+      expect(await admit("relative.json")).toBe(2);
+      expect(layer.sessions()).toEqual([]);
+      expect(await admit(join(dir, "state", "session.json")), said.join("")).toBe(0);
+      expect(await admit(join(dir, "state", "session.json"))).toBe(1);
+      expect(layer.sessions()).toHaveLength(1);
+    });
+    expect(code).toBe(0);
+    const out = said.join("");
+    expect(out).toMatch(/session file .*open\.json is writable by group or others/);
+    expect(out).toMatch(/inside\.json is JUNO's own state and overlaps the workspace/);
+    expect(out).toMatch(/g-open\.json is writable by group or others/);
+    expect(out).toMatch(/g-forged\.json holds grant grant-cc without a valid operator signature/);
+    expect(out).toContain("already admitted");
+  }, 60_000);
+
+  // proves D-131 (plan Increment 6): a container runtime that would ignore the workloads' limits, or one that cannot be
+  // checked, stops the service from starting; nothing listens
+  it("refuses to start on a runtime that ignores limits or cannot be checked", async () => {
+    expect(await serving(() => Promise.resolve(), { runtime: () => Promise.resolve({ cgroupDriver: "none", cgroupVersion: "2", rootless: false }) })).toBe(1);
+    expect(await serving(() => Promise.resolve(), { runtime: () => Promise.reject(new Error("docker is not running")) })).toBe(1);
+    expect(said.join("")).toMatch(/cgroup driver "none"/);
+    expect(said.join("")).toMatch(/could not be checked/);
+    expect(existsSync(join(sockets, "hook.sock"))).toBe(false);
+  });
+
+  // proves D-178 (plan Increment 6): the command refuses to start on a workspace whose file system JUNO cannot check;
+  // nothing listens
+  it("refuses to start on a workspace D-178 refuses", async () => {
+    expect(await serving(() => Promise.resolve(), { filesystem: { ...systemFilesystemIo(), mountinfo: () => null } })).toBe(1);
+    expect(said.join("")).toMatch(/juno hook serve: refused:[\s\S]*workspace/);
+    expect(existsSync(join(sockets, "hook.sock"))).toBe(false);
+  });
+
+  // proves D-178 at the command: a workspace whose file system JUNO cannot check (as on a case-folding or non-Linux one) is
+  // refused at admission, so the session is never admitted
+  it("refuses at admission a workspace D-178 refuses", async () => {
+    // A host whose mount table JUNO can read at start but not afterwards: D-178 refuses what it cannot check.
+    let reads = 0;
+    const real = systemFilesystemIo();
+    const folding = { ...real, mountinfo: () => (reads++ === 0 ? real.mountinfo() : null) };
+    const code = await serving(async (layer) => {
+      expect(await runHookAdmitCli(["--control", join(sockets, "admit.sock"), join(dir, "state", "session.json")], quiet)).toBe(1);
+      expect(layer.sessions()).toEqual([]);
+    }, { filesystem: folding });
+    expect(code).toBe(0);
+    expect(said.join("")).toMatch(/workspace/);
+  }, 60_000);
+
+  // proves D-180: without every required option it is bad usage, and an unreachable service is a refusal
+  it("is bad usage without its options, and refuses when the service is not running", async () => {
+    expect(await runHookServeCli(["--socket", join(sockets, "hook.sock")], { ...quiet, host: ordinaryHost(), filesystem: systemFilesystemIo(), runtime: () => Promise.reject(new Error("unused")), stopped: () => Promise.resolve() })).toBe(2);
+    expect(await runHookAdmitCli(["--control", join(sockets, "missing.sock"), join(dir, "state", "session.json")], quiet)).toBe(1);
+    expect(said.join("")).toMatch(/not reachable/);
+  });
+
+  // proves plan Increment 6 step 2: the example session file the operator copies is a valid hook session file
+  it("ships an example session file that parses", () => {
+    const example = JSON.parse(readFileSync(fileURLToPath(new URL("../../../docs/examples/session.example.json", import.meta.url)), "utf8")) as unknown;
+    expect(HookSessionFile.safeParse(example).success).toBe(true);
+  });
+});

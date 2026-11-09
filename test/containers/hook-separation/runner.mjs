@@ -6,7 +6,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import process from "node:process";
 
 process.umask(0o077);
-const { GrantStore, HostPathResolver, SessionLayer, Workspace, execFileScript } = await import("/app/dist/enforcement/src/index.js");
+const { GrantStore, HostPathResolver, SessionLayer, Workspace, execFileScript, gitAnchoring } = await import("/app/dist/enforcement/src/index.js");
 const { MediatedSessions, PathMap } = await import("/app/dist/mediated/src/session.js");
 const { HookService } = await import("/app/dist/mediated/src/hook-service.js");
 const { systemFilesystemIo } = await import("/app/dist/mediated/src/filesystem.js");
@@ -22,6 +22,9 @@ const layer = SessionLayer.open({
   workspaces: ["/srv/work"],
   state: [{ what: "JUNO's state", path: state, kind: "path" }, { what: "the hook socket", path: "/var/lib/juno-hook/hook.sock", kind: "socket" }, { what: "Claude Code's managed settings", path: "/etc/claude-code", kind: "path" }],
   anchor: null,
+}, {
+  // §3.4.1 (D-198): every layer anchors; the driver's root-owned stand-in git pushes to a stand-in destination.
+  anchoring: (root) => gitAnchoring({ journalKeyDir: `${state}/journal-key-probe`, anchorClone: `${state}/juno-anchors-probe`, intervalMs: 60_000, git: "/opt/fake-git/git" }, root),
 });
 const grants = new GrantStore(createPublicKey(readFileSync("/etc/juno/operator.pub", "utf8")));
 const sessions = new MediatedSessions({

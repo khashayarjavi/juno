@@ -175,6 +175,9 @@ export class GitAnchorSink implements AnchorSink {
 
   async list(task: string): Promise<unknown[]> {
     await this.#run(["pull", "--ff-only", "--quiet"]);
+    // D-198: an anchor committed in the clone but never pushed (a push that failed before a restart) is not off the
+    // host. Push first, so what is listed is what the destination holds; a push that fails fails the listing.
+    await this.#run(["push", "--quiet"]);
     return readAnchorDirectory(this.#clone, task);
   }
 }

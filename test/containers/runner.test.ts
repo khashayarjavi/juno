@@ -130,8 +130,9 @@ beforeAll(async () => {
   const setup = 'const fs = require("node:fs"); fs.mkdirSync("/work/project"); fs.writeFileSync("/work/project/notes.txt", "hello\\n"); fs.writeFileSync("/work/project/done.txt", "ok\\n"); fs.mkdirSync("/work/project/protected"); fs.writeFileSync("/work/project/protected/keep.txt", "keep\\n");';
   await docker([...compose, "run", "--rm", "--no-deps", "-T", "workload", "-e", setup]);
 
-  const config = parseRunnerConfig({ JUNO_JOURNAL_DIR: journalRoot, JUNO_WORK_DIR: "/work" });
-  const layer = openTestLayer("runner", { journal: config.journalDir, workspaces: [] });
+  const config = parseRunnerConfig({ JUNO_JOURNAL_DIR: journalRoot, JUNO_WORK_DIR: "/work", JUNO_JOURNAL_KEY_DIR: "/var/lib/juno-runner/journal-key", JUNO_ANCHOR_CLONE: "/var/lib/juno-runner/juno-anchors" });
+  // The real append-only stand-in destination (§3.4.1, D-122), in its own container; the layer anchors (D-198).
+  const layer = openTestLayer("runner", { journal: config.journalDir, workspaces: [], anchoring: { sink: anchorSink, journalKey, intervalMs: 3_600_000 } });
   const registry = new CapabilityRegistry();
   const registered = registry.register(JSON.parse(readFileSync(definitionFile, "utf8")), [new WorkloadExecFileAdapter({ composeFile, project, service: "workload" })]);
   if (!registered.registered) throw new Error(`shell.run did not register: ${JSON.stringify(registered.refusals)}`);
@@ -164,8 +165,6 @@ beforeAll(async () => {
     providers: [provider],
     sources: [{ id: "project", selector: { kind: "path", prefix: "/work/project" }, data_class: { sensitivity: "internal", integrity: "untrusted" } }],
     resolver: new WorkloadPathResolver({ composeFile, project, service: "workload" }),
-    // The real append-only stand-in destination (§3.4.1, D-122), in its own container.
-    anchoring: { sink: anchorSink, journalKey, intervalMs: 3_600_000 },
   });
   const admission = runner.admit({
     id: "task-host",

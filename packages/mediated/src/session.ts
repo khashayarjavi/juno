@@ -324,6 +324,21 @@ export class MediatedSessions {
     this.#filesystem = options.filesystem;
   }
 
+  /**
+   * A session refused before admission was judged (its session file's grant files failed, D-196): journalled as a
+   * refused admission at the most restrictive class, and anchored, as every refusal is (§3.2, §3.4.1; D-198 autopilot
+   * ruling). A request that does not even name a session cannot be recorded under one, and is only refused.
+   */
+  async refuse(input: unknown, failures: readonly string[]): Promise<void> {
+    const parsed = SessionRequest.safeParse(input);
+    if (!parsed.success) return;
+    const id = `session-${parsed.data.session_id}`;
+    if (this.#sessions.has(id)) return;
+    this.#layer.refuse(id, { mode: "hook", failures }, SESSION_ACTOR);
+    this.#refused.set(id, new Map(parsed.data.name_map.map((entry) => [entry.name, entry.program])));
+    await this.#layer.anchorHead(id, REFUSED_ADMISSION_CLASS);
+  }
+
   /** Admits a session as a Task (§4.3 V6-6), or says why not. */
   async admit(input: unknown): Promise<{ readonly admitted: true; readonly task_id: string } | { readonly admitted: false; readonly failures: readonly string[] }> {
     const parsed = SessionRequest.safeParse(input);
@@ -392,6 +407,8 @@ export class MediatedSessions {
       if (!this.#sessions.has(id)) {
         this.#layer.refuse(id, { mode: "hook", failures }, SESSION_ACTOR);
         this.#refused.set(id, new Map(request.name_map.map((entry) => [entry.name, entry.program])));
+        // §3.4.1 (D-198): a refused admission is anchored too; a failure is journalled by the layer.
+        await this.#layer.anchorHead(id, REFUSED_ADMISSION_CLASS);
       }
       return { admitted: false, failures };
     }
@@ -454,6 +471,12 @@ export class MediatedSessions {
     const session: Session = { task, request, governed, floor: "public", pending: new Map(), reversible };
     this.#sessions.set(id, session);
     for (const checkpoint of checkpoints) this.#append(id, "note", { sensitivity: "internal", integrity: "derived" }, SESSION_ACTOR, { type: "checkpoint", ...checkpoint });
+    // §3.4.1 (D-198): the shared layer records the interval and anchors the admitted session's head before its first
+    // call; a session whose head cannot be anchored is never run.
+    if (!(await governed.anchor(this.#class(session), { force: true }))) {
+      this.#stopForAnchor(session);
+      return { admitted: false, failures: ["the session's journal head could not be anchored off the host, so the session does not start (§3.4.1, D-198)"] };
+    }
     return { admitted: true, task_id: id };
   }
 
@@ -501,7 +524,16 @@ export class MediatedSessions {
       return deny("JUNO did not receive the result of an earlier call; that gap is now recorded. Retry this call");
     }
     // §4.3 in the shared layer: the budget is checked and the call counted there; a `budget_exceeded` park is journalled there.
-    const started = session.governed.beginCall(this.#class(session), SESSION_ACTOR, { tool: input.tool_name });
+    const started = await session.governed.beginCall(this.#class(session), SESSION_ACTOR, { tool: input.tool_name });
+    if (!started.ok && started.reason === "anchor_unavailable") {
+      this.#stopForAnchor(session);
+      return deny("JUNO could not copy this session's journal head off the host, so the session has stopped (§3.4.1)");
+    }
+    if (!started.ok && started.reason === "ttl_expired") {
+      session.task = Task.parse({ ...session.task, state: "failed", runtime_substate: null });
+      this.#append(id, "note", this.#class(session), SESSION_ACTOR, { type: "state", to: "failed", reason: "ttl_expired" });
+      return deny("the session's time to live has expired (§6.4)");
+    }
     if (!started.ok) return deny(parkText("budget_exceeded", "", true));
     if (input.tool_name.startsWith("mcp__")) return this.#mcp(session, input);
 
@@ -766,6 +798,13 @@ export class MediatedSessions {
   #parkRefused(taskId: string, detail: Record<string, unknown>): HookDecision {
     this.#layer.append(taskId, "park", REFUSED_ADMISSION_CLASS, { reason: "integrity_floor", overridable: false, mode: "hook", answer: "deny", admitted: false, ...detail }, { actor: SESSION_ACTOR });
     return deny("JUNO parked this call: integrity_floor. This cannot be overridden (§8.3).");
+  }
+
+  /** §3.4.1 (D-198): a session whose head cannot be anchored stops for good, journalled; every later call is denied. */
+  #stopForAnchor(session: Session): void {
+    if (session.task.state === "failed") return;
+    session.task = Task.parse({ ...session.task, state: "failed", runtime_substate: null });
+    this.#append(session.task.id, "note", this.#class(session), SESSION_ACTOR, { type: "state", to: "failed", reason: "anchor_unavailable" });
   }
 
   /** The shared session layer this service admits and journals through (D-194). */

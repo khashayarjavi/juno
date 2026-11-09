@@ -3,6 +3,8 @@ import { McpGateway } from "../../mediated/src/gateway.js";
 import { runGatewayCli, systemGatewayCliIo } from "../../mediated/src/gateway-cli.js";
 import { GatewayService } from "../../mediated/src/gateway-service.js";
 import { HookService } from "../../mediated/src/hook-service.js";
+import { HookAdmissionService } from "../../mediated/src/hook-admission.js";
+import { runHookAdmitCli, runHookServeCli, systemHookServeIo } from "../../mediated/src/hook-serve.js";
 import { runHookInstallCli } from "../../mediated/src/install.js";
 import { MediatedSessions } from "../../mediated/src/session.js";
 import { runGrantCli } from "./grant-cli.js";
@@ -84,6 +86,8 @@ export const ENTRY_POINTS: readonly EntryPoint[] = [
   },
   { id: "runtime", kind: "command", module: "packages/runner/src/entry-points.ts", name: ["runtime"], service: null, admits: false, why: "reports whether the container runtime enforces the workload's limits (D-149)", implementation: runtimeCheck, run: runtimeCheck },
   { id: "hook", kind: "command", module: "packages/mediated/src/install.ts", name: ["hook"], service: null, admits: false, why: "installs or checks Claude Code's root-owned managed settings (D-143, D-173, D-190); serves nothing, admits no session", implementation: runHookInstallCli, run: (args) => runHookInstallCli(args, out, err) },
+  { id: "hook.serve", kind: "command", module: "packages/mediated/src/hook-serve.ts", name: ["hook", "serve"], service: "hook", admits: true, implementation: runHookServeCli, run: (args) => runHookServeCli(args.slice(1), systemHookServeIo()) },
+  { id: "hook.admit", kind: "command", module: "packages/mediated/src/hook-serve.ts", name: ["hook", "admit"], service: null, admits: false, why: "asks the running hook service, over its runner-only socket, to admit a session file; the service reads the file and admits it through its shared session layer (D-196)", implementation: runHookAdmitCli, run: (args) => runHookAdmitCli(args.slice(1), { out, err }) },
   { id: "gateway.serve", kind: "command", module: "packages/mediated/src/gateway-cli.ts", name: ["gateway"], service: "gateway", admits: true, implementation: runGatewayCli, run: (args) => runGatewayCli(args, systemGatewayCliIo()) },
   // Programs of their own.
   { id: "runner.process", kind: "program", module: "packages/runner/src/runner-main.ts", program: "packages/runner/src/main.ts", name: "runRunnerMain", service: "runner", admits: false, implementation: runRunnerMain },
@@ -93,22 +97,24 @@ export const ENTRY_POINTS: readonly EntryPoint[] = [
   // Classes that start a service or admit sessions.
   { id: "class.Runner", kind: "class", module: "packages/runner/src/runner.ts", name: "Runner", service: "runner", admits: true, implementation: Runner },
   { id: "class.MediatedSessions", kind: "class", module: "packages/mediated/src/session.ts", name: "MediatedSessions", service: "hook", admits: true, implementation: MediatedSessions },
+  { id: "class.HookAdmissionService", kind: "class", module: "packages/mediated/src/hook-admission.ts", name: "HookAdmissionService", service: "hook", admits: true, implementation: HookAdmissionService },
   { id: "class.HookService", kind: "class", module: "packages/mediated/src/hook-service.ts", name: "HookService", service: "hook", admits: false, implementation: HookService },
   { id: "class.McpGateway", kind: "class", module: "packages/mediated/src/gateway.ts", name: "McpGateway", service: "gateway", admits: true, implementation: McpGateway },
   { id: "class.GatewayService", kind: "class", module: "packages/mediated/src/gateway-service.ts", name: "GatewayService", service: "gateway", admits: false, implementation: GatewayService },
 ];
 
-const USAGE = "usage: juno grant sign|verify ... | juno journal check ... | juno checkpoint restore ... | juno hook install ... | juno hook check ... | juno gateway serve ... | juno runtime check\n";
+const USAGE = "usage: juno grant sign|verify ... | juno journal check ... | juno checkpoint restore ... | juno hook install ... | juno hook check ... | juno hook serve ... | juno hook admit ... | juno gateway serve ... | juno runtime check\n";
 
 /** The `juno` command: runs the registered command its first word names, or prints the usage (exit 2). */
 export async function dispatch(argv: readonly string[]): Promise<number> {
-  const [word, ...args] = argv;
-  const entry = ENTRY_POINTS.find((candidate) => candidate.kind === "command" && Array.isArray(candidate.name) && candidate.name[0] === word);
+  // The registered command whose words begin the arguments, the longest first (`hook serve` before `hook`).
+  const matches = ENTRY_POINTS.filter((candidate): candidate is EntryPoint & { name: readonly string[] } => candidate.kind === "command" && Array.isArray(candidate.name) && candidate.name.every((part, index) => argv[index] === part));
+  const entry = matches.sort((a, b) => b.name.length - a.name.length)[0];
   if (entry?.run === undefined) {
     err(USAGE);
     return 2;
   }
-  return entry.run(args);
+  return entry.run(argv.slice(1));
 }
 
 /** The host as the real process sees it, for the programs (re-exported so juno.ts imports this registry only). */

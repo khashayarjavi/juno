@@ -15,7 +15,9 @@ const child = execFile(
   // acceptEdits: Claude Code's own rules approve file edits, so JUNO's hook is the only thing that can stop one (D-145).
   ["-p", prompt, "--session-id", sessionId, "--output-format", "json", "--permission-mode", "acceptEdits", ...extra],
   {
-    cwd: "/workspace/project",
+    // The workspace's path inside the container: the gateway test mounts it at /workspace; the hook test at its host path,
+    // as on the operator's machine, where Claude Code and `juno hook serve` see one path (D-198).
+    cwd: `${process.env.JUNO_E2E_WORKSPACE ?? "/workspace"}/project`,
     timeout: 120_000,
     env: {
       HOME: "/home/claude",

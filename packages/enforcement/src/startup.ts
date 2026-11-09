@@ -159,6 +159,23 @@ export function verifyTrustAnchor(path: string, host: HostIo): { readonly ok: tr
   }
 }
 
+/**
+ * The start-up check's own rules for one file a running service is asked to read later (a session file handed to the
+ * hook service, and the grant files it names; D-196): absolute, not inside or overlapping any of `workspaces` or the
+ * capability namespace, and changeable by no one but root and this process. The same code `startupCheck` runs.
+ */
+export function laterFileRefusals(what: string, path: string, workspaces: readonly string[], host: HostIo): string[] {
+  if (!path.startsWith("/")) return [`${what} ${path} is not an absolute path`];
+  const refusals: string[] = [];
+  const real = resolved(path, host);
+  if ([path, real].some((candidate) => pathsOverlap(candidate, WORK_NAMESPACE))) refusals.push(`${what} ${path} lies in the capability namespace ${WORK_NAMESPACE}, which grants can name (§3.2, §3.4.1)`);
+  for (const root of workspaces) {
+    if (pathsOverlap(real, resolved(root, host)) || pathsOverlap(path, root)) refusals.push(`${what} ${path} is JUNO's own state and overlaps the workspace ${root}, so a tool call could reach it; move the workspace or the state (D-148, D-194)`);
+  }
+  refusals.push(...changeableRefusals(what, path, "file", host));
+  return refusals;
+}
+
 /** Why someone other than root or this process could change `path` (empty: no one could). */
 function changeableRefusals(what: string, path: string, kind: "file" | "dir" | "socket" | "journal" | "anchor", host: HostIo): string[] {
   const refusals: string[] = [];
@@ -181,7 +198,10 @@ function changeableRefusals(what: string, path: string, kind: "file" | "dir" | "
     holder = host.lstat(folder);
   }
   if (holder !== null) {
-    if ((holder.mode & 0o022) !== 0 && (holder.mode & 0o1000) === 0) refusals.push(`the folder ${folder} holding ${what} ${path} is writable by group or others without the sticky bit, so they could replace it (D-194)`);
+    // Restrictive (D-195): state that does not exist yet must not be left for a shared folder to hold: anyone who can
+    // write there, sticky bit or not, could create it between this check and the moment JUNO opens it.
+    if (facts === null && (holder.mode & 0o022) !== 0) refusals.push(`${what} ${path} does not exist yet, and the folder ${folder} that would hold it is writable by group or others, who could create it first (D-195)`);
+    else if ((holder.mode & 0o022) !== 0 && (holder.mode & 0o1000) === 0) refusals.push(`the folder ${folder} holding ${what} ${path} is writable by group or others without the sticky bit, so they could replace it (D-194)`);
     else if (holder.uid !== 0 && holder.uid !== host.uid && (holder.mode & 0o1000) === 0) refusals.push(`the folder ${folder} holding ${what} ${path} is owned by uid ${String(holder.uid)}, neither root nor this process, who could replace it (D-194)`);
   }
   return refusals;
