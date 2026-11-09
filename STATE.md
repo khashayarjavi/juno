@@ -1,6 +1,105 @@
 # STATE
 
 ## Current increment
+**Slice 1.5 — Increment 5: gateway mode for MCP (§4.3 mode B)** (`docs/plans/slice-1.5-build-plan.md`, Increment 5; §4.3, §2.3.2, §7.8 E2, §2.2.2 for `external` effects; D-154). Branch `claude/blissful-gates-7hljw0` (this session's only pushable branch); it carries PR #45's commits from `claude/jolly-maxwell-s3mk53` unchanged, and its PR supersedes PR #45. Spec v0.6.1. No objection open.
+
+Status (2026-11-09, later session): **your ruling D-193 is built (D-194); review round 2 is next.** Nothing merged yet.
+- **Your ruling, recorded as D-193:** finding 2 was correctly a repeat (D-148); close the class "a new entry point lacks an existing guard" structurally; then round 2 is authorised.
+- **What D-194 changes, in plain words.**
+  - **One start-up check for every JUNO service** (`packages/enforcement/src/startup.ts`). The runner, the hook service and the gateway all run the same function before they open anything. It refuses: running as root; the journal, grant or session files, keys, the trust anchor, sockets or any other state inside or overlapping any workspace or source (as the kernel resolves them); state anyone else could change; and a trust anchor it cannot verify. The copies that each entry point had of these checks are gone.
+  - **One session layer for every mode** (`packages/enforcement/src/session-layer.ts`). It is the only way to get the journal, and the only way to get it is through the start-up check. JUNO's own loop, the hook and the gateway each admit their sessions through it, and it owns each session's rejection limit, budget, time limit, parks and journal records. A mode cannot be built on anything else.
+  - **One registry of entry points** (`packages/runner/src/entry-points.ts`). The `juno` command runs only what it lists.
+  - **The test you asked for** (`packages/runner/test/entry-points.test.ts`, 50 tests). It reads the source code and fails on any program, service, session class or journal writer the registry does not list. Then it runs every registered entry point that starts a service against each thing the shared check refuses, and checks the refusal is the shared check's own and nothing was started. It checks every class refuses a layer the check did not open. It drives the own loop, hook and gateway modes and checks the shared layer counts their rejections and calls and parks them.
+  - **Shown failing on round 1's code:** on `4fc2675` it fails 9 of 10, including both of round 1's findings: `juno gateway serve` started with its journal inside the workspace, and gateway mode had no rejection limit (`docs/evidence/d194-round1/`).
+- **Autopilot rulings (D-194):** wall clock and time limit are spent at the same moment in every mode (`>=`); a socket's folder counts as state and must exist at start-up; unit tests run the real check as an ordinary user; a runner whose workloads are in containers names no host workspace.
+- **Tests changed on purpose (kept, now asserting the shared check):** six, listed in D-194. The unit count is unchanged for the old tests (1,196) plus 50 new.
+
+### Before this session
+Earlier status (2026-11-09): **STOPPED after review round 1 (D-192); the round's findings were fixed; round 2 needed your go-ahead** (given: D-193). Earlier (2026-11-08): `make verify: GREEN` locally on 5a8082b (1,128 unit, 109 container). Built and committed before this session:
+- **D-183:** the D-046 property test states a 30 s time budget (same assertions and runs). It timed out once under CI load on PR #43.
+- **D-154 in step 4 (D-184):** an enumerated path target matches only on its resolved path; never when unresolved or hard-linked. Other values match only exactly, except an email's domain, which is compared without regard to ASCII case.
+- **The MCP gateway core** (`packages/mediated/src/gateway.ts`, `gateway-stdio.ts`):
+  - one admitted Task per session (`steer_capability: none`);
+  - operator tool definitions (typed capabilities that pass registration review);
+  - every `tools/call` judged by the boundary, with untrusted arguments and operator constants;
+  - the read gate before anything is forwarded;
+  - parks and rejections answered `isError: true`, journalled, and never forwarded;
+  - responses journalled as untrusted and raising the floor;
+  - the upstream started by `execFile`;
+  - MCP `2025-11-25` only (D-185);
+  - `input_required` answers and server-to-client requests refused (D-186);
+  - session and tool definitions as D-187 describes.
+- **The test MCP server** (`test/mcp/test-server.mjs`, test-only). It records everything it receives, so a test can prove a parked call never reached it.
+- **Tests** (`packages/mediated/test/gateway.test.ts`, 14):
+  - an out-of-scope argument parks and is never received;
+  - acceptance test 3: an unenumerated untrusted recipient parks `integrity_floor`, and the enumerated one is delivered with an untrusted body;
+  - a read above the clearance parks before forwarding;
+  - only defined tools are listed, and others are rejected;
+  - E2;
+  - a forged grant is refused;
+  - fail-closed: upstream unreachable, boundary unable to judge, malformed upstream result, other protocol revisions, before admission;
+  - `input_required` and elicitation are refused;
+  - a scripted client over the stdio transport.
+- **Observed (plan item 1, rule 13):** Claude Code 2.1.319 first sends `server/discover` (2026-07-28). When the server answers "method not found", it falls back to `initialize` `2025-11-25` (D-185).
+
+- **Also built since:** the runner-owned gateway service on its own socket, and Claude Code's stdio shim `juno-mcp.js`, which only relays and fails closed when the gateway is down (D-188, 3 tests). D-073's network guard lists the two socket files under D-144's stricter check (D-189).
+
+**Session of 2026-11-09 (branch `claude/jolly-maxwell-s3mk53`, which carries PR #44's commits unchanged; its PR supersedes PR #44).** Your ruling on the hook and the gateway together is recorded as **D-190**.
+- **Finding: the control exists.** A root-owned `/etc/claude-code/managed-mcp.json` gives Claude Code's administrator exclusive control of MCP servers. The sources, quoted in D-190, are the official docs page on managed MCP, the hooks reference, and the installed 2.1.319 binary, with hashes. **Observed with the real binary** in the sealed container:
+  - with no managed file, a `juno` server defined in the user's own settings took the name and ran the call;
+  - with the managed file, none of five user, project or local definitions started, and the call reached the managed server;
+  - `--mcp-config` and `--strict-mcp-config` refuse to start.
+  - One gap the docs name and the binary showed: a remote server given through managed settings still loads beside the file. JUNO closes it with a deny-every-remote-URL list in its own root-owned managed settings. That was observed working too.
+- **Built (branch 2 of your ruling):**
+  - **`juno hook install --gateway <name> --shim <juno-mcp.js> --gateway-socket <path>`.** It writes JUNO's relay as the only server in `managed-mcp.json`. It adds three things to the managed settings:
+    - a lock, so the user cannot widen the allowlist;
+    - an allowlist naming only the relay's exact command;
+    - a denylist of every remote server and the two built-in ones.
+    It refuses a name with anything but letters, digits and hyphens. It refuses a managed MCP file that already holds your own servers, and settings that would let another server load.
+  - **`juno hook check --gateway …`** refuses unless all of the above is in force. The managed MCP file, the shim and every file beside it, and node must be root's and writable by no one else. The gateway's socket must follow the hook socket's rules.
+  - **The hook** gives "no decision" only to a call whose input says it comes from the gateway's server, defined in the managed file (`source: "enterprise"`); the gateway then judges it. Every other MCP tool stays denied: another source (project, user, local, sdk, managed, plugin), another server, or no gateway configured at all. A passed call still counts against the session's budget and is journalled.
+  - **`juno gateway serve`** (D-191) admits your gateway session file and serves the socket as the runner. It refuses root, and a session or grant file that others could change.
+  - **Tests:** 37 unit tests for D-190 and 10 for the command.
+  - **The real Claude Code test you asked for** (`test/mediated-e2e/gateway.e2e.ts`, 5 tests). The project's `.mcp.json`, the user's own settings and its local scope each define a server named `juno` pointing at a planted program.
+    - It never starts.
+    - The call goes to JUNO's gateway, which parks `message.send` to an unenumerated recipient, and nothing is sent. This is §4.3 acceptance test 3 on the real binary.
+    - The enumerated recipient is delivered.
+    - With the gateway down, the call runs nowhere.
+    - With the managed MCP file removed, the allowlist alone still keeps the planted server out.
+    - **Positive control:** with both layers removed, the planted server does start, which proves the planted files are live, and JUNO's hook still denies its call.
+  - `make mediated-e2e`: **12/12 green** on Claude Code 2.1.319.
+
+### STOP after review round 1 (2026-11-09) — your decision needed
+- **PR:** [khashayarjavi/juno#45](https://github.com/khashayarjavi/juno/pull/45) (draft; supersedes PR #44, which is left open and untouched).
+- **Round 1** (fresh reviewer, P2 verbatim, head 4fc2675): **DO NOT MERGE**. Checks 1–4 and 6, and the D-052 to D-054 re-check, passed. Check 5 failed on two points:
+  1. **Gateway mode had no rejection limit** (§2.7.1 A4 requires one per session), and calls to undefined tools did not count against the call budget.
+  2. **`juno gateway serve` accepted a journal inside the workspace**, where a gateway tool call could read the journal. This is the mechanism D-148 closed for mode C, missing from the new mode-B entry point.
+- **Why this is a STOP:** CLAUDE.md §7 stops the loop when "a round finds a MECHANISM already fixed in an earlier round or recorded in DECISIONS.md". Finding 2 is D-148's mechanism (JUNO's own state under a workspace root). I read that restrictively, as a repeat.
+- **What I did anyway (D-192), so round 2 can start at once:** both findings are fixed with 12 tests.
+  - The gateway parks `rejection_limit` after three consecutive rejections and counts every call.
+  - The gateway and `juno gateway serve` refuse to start when the journal, session or grant files, anchor or socket folder overlap the workspace (as the kernel resolves them).
+  - The hook keeps its rejection count across a gateway pass.
+- **Also found and fixed:** CI run 42567090430 on 4fc2675 failed in my new `juno gateway serve` test. The test claimed a uid that did not own its files, so CI, which runs as an ordinary user, saw the command rightly refuse. I reproduced it as a non-root user and fixed the test (3af62b8). This was a test bug; the command's behaviour is unchanged.
+- **Verification on the fixes:** `make verify` GREEN locally (1,196 unit, 109 container) on 8067b4a; `make mediated-e2e` 12/12 on Claude Code 2.1.319; the one test changed in 3af62b8 passes as root and as an ordinary user. CI on the final head: see the PR's checks.
+- **Your decision:** authorise review round 2 on PR #45 (round limit 5, D-157), or tell me to treat finding 2 as a new mechanism and continue without a STOP.
+
+**Left in this increment, in order:**
+1. `make verify` green on the D-194 head, CI green, then review round 2 (D-193) on this branch's PR, then the merge gate (CLAUDE.md §7 step 6), then Increment 6.
+
+### What mode B does not protect (§4.3; Increment 5's done-when)
+1. **Tool descriptions.** The gateway passes the upstream's tool descriptions to the model unchanged. An injected instruction in a description reaches the model. What it can make the model *do* is still judged: every call's arguments are untrusted, and an unenumerated recipient parks.
+2. **What the upstream does with an allowed call.** Once a call proceeds, the upstream server performs it. JUNO journals the call and the answer, but cannot see or undo what the upstream did inside its own systems.
+3. **The upstream's own credentials and network.** They are the upstream's, set in your gateway session file. JUNO never shows them to the client, but does not limit what the upstream reaches with them.
+4. **Anything Claude Code does outside MCP and the hook.** Mode B sees only MCP calls. In a Claude Code session governed by the hook too, the hook covers Claude Code's own tools (mode C's list applies). In a Claude Code session without JUNO's hook, the gateway governs only the gateway's calls, and everything else Claude Code does is not governed.
+5. **Other MCP servers in a session without JUNO's hook and managed files.** There, Claude Code can load any server the user configures, and JUNO sees none of them. D-190's protections hold only where `juno hook install --gateway` installed them and `juno hook check --gateway` passed.
+6. **An in-process (`sdk`) MCP server** that an app or the Agent SDK registers when it starts Claude Code. Claude Code applies no list to it. JUNO's hook denies its calls (their source is `sdk`), and a governed session is started from the WSL terminal, where no app registers one (D-190).
+7. **How Claude Code is started.** As D-173: a session started with `CLAUDE_CODE_MANAGED_SETTINGS_PATH` naming another folder reads another managed MCP file as well as another hook.
+8. **Server-to-client requests and multi-round-trip answers** are refused, not supported (D-186). An upstream that needs them does not work through the gateway.
+
+### Merges this session
+- **PR #43 (Slice 1.5 Increment 4, supersedes #42): merged** as 0aa797d, pinned to head 39ca6af. Reviewer round 9 (fresh subagent, P2 verbatim): **MERGE**, all six checks PASS. CI on 39ca6af: run 42526418093, `verify-rootless` green on attempt 1; `verify` timed out once in an unchanged test (`enforcement.test.ts:722`, the D-046 property: 5 s budget, about 2.8 s here) and was green on attempt 2. CI on main for 0aa797d: run 42528332351, **green**.
+
+## Previous increment (Slice 1.5 Increment 4, merged as PR #43)
 **Slice 1.5 — Increment 4: hook mode for Claude Code (§4.3 mode C)** (`docs/plans/slice-1.5-build-plan.md`, Increment 4; also §2.3.2 E1, §7.8 E2, D-131's Increment 4 directives). Branch `claude/loving-brahmagupta-rp1azf` (this session's only pushable branch, D-181); it carries PR #42's commits unchanged (which carry #41's, #40's, #39's, #38's and #37's), and its PR supersedes PR #42. Spec v0.6.1. No objection open.
 
 Status (2026-11-08, later session): **your rulings on D-177 are built (D-178 to D-182), `make verify` GREEN, CI green; review round 9 is running.** Nothing merged yet; Increment 5 not started.

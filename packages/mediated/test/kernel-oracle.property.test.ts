@@ -7,7 +7,9 @@ import fc from "fast-check";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { type Sensitivity, maxSensitivity, pathWithin, sensitivityRank } from "../../contracts/src/index.js";
 import { CheckpointStore, GrantStore, HostPathResolver, Workspace, execFileScript } from "../../enforcement/src/index.js";
-import { JournalWriter, readPayload, readTrajectory } from "../../journal/src/index.js";
+import { readPayload, readTrajectory } from "../../journal/src/index.js";
+import { openTestLayer } from "../../enforcement/test/layer.js";
+import type { SessionLayer } from "../../enforcement/src/index.js";
 import { TEST_ANCHOR, signed } from "../../enforcement/test/test-keys.js";
 import { type DeclaredSource, classifyRead } from "../src/reads.js";
 import { MediatedSessions, PathMap, SUPPORTED_TOOLS, type SessionRequest } from "../src/session.js";
@@ -48,7 +50,8 @@ const SOURCES: DeclaredSource[] = [
 let box: string; // the sandbox: `work` (the workspace) and `outside` (beyond it); nothing else, so the oracle can scan it whole
 let work: string;
 let state: string; // the journal and the checkpoint store, outside the sandbox
-let journal: JournalWriter;
+let journal: { readonly root: string };
+let layer: SessionLayer;
 let sessions: MediatedSessions;
 let runs = 0;
 
@@ -68,7 +71,8 @@ beforeAll(() => {
   writeFileSync(join(work, "other", "plain.txt"), "unregistered\n");
   writeFileSync(join(work, "other", "pub", "readme.txt"), "public\n");
   writeFileSync(join(box, "outside", "host.txt"), "outside the workspace\n");
-  journal = JournalWriter.open(join(state, "journal"));
+  layer = openTestLayer("hook", { journal: join(state, "journal"), workspaces: [work], state: [{ what: "JUNO's state", path: state, kind: "path" }] });
+  journal = { root: layer.root };
   const grants = new GrantStore(TEST_ANCHOR);
   // Every declared path source is in scope (§5.4 check 4 refuses a grant beyond them), so step 4 passes for every read
   // the kernel places in one and the read gate alone decides it; an unregistered place is out of scope, a deny.
@@ -90,12 +94,12 @@ beforeAll(() => {
   );
   const view = new Workspace(execFileScript(process.execPath, []), "/work", work);
   sessions = new MediatedSessions({
-    journal,
+    layer,
     grants,
     paths: new PathMap([work]),
     resolver: new HostPathResolver(work),
     view,
-    filesystem: systemFilesystemIo(), protectedPaths: [state],
+    filesystem: systemFilesystemIo(),
     clock: () => T0,
     checkpoints: { workspace: view, store: new CheckpointStore(join(state, "checkpoints")) },
   });
@@ -482,7 +486,7 @@ describe("D-178: a case-folded folder, against the kernel where it can fold case
       };
       const probe = await caseFoldingRefusals([{ what: "the workspace", path: work }], lookups);
       expect(probe).toEqual([expect.stringContaining("matches names without regard to case")]);
-      const refusing = new MediatedSessions({ journal, grants: new GrantStore(TEST_ANCHOR), paths: new PathMap([work]), resolver: new HostPathResolver(work), view: new Workspace(execFileScript(process.execPath, []), "/work", work), filesystem: folds(join(project, "secrets")), protectedPaths: [state], clock: () => T0 });
+      const refusing = new MediatedSessions({ layer, grants: new GrantStore(TEST_ANCHOR), paths: new PathMap([work]), resolver: new HostPathResolver(work), view: new Workspace(execFileScript(process.execPath, []), "/work", work), filesystem: folds(join(project, "secrets")), clock: () => T0 });
       const admitted = await refusing.admit({ session_id: "casefold-described", principal: PRINCIPAL, attendance: "gated", ttl: 60_000, grants: [], budget: { tool_calls: 1, wall_clock_ms: 60_000 }, unmetered_accepted: true, provider_clearance: "secret", sources: SOURCES, name_map: NAME_MAP });
       expect(admitted).toMatchObject({ admitted: false, failures: expect.arrayContaining([expect.stringContaining("case-folding attribute")]) as unknown });
       return;
@@ -504,7 +508,7 @@ describe("D-178: a case-folded folder, against the kernel where it can fold case
       // D-178: the check and admission refuse this workspace.
       const io = systemFilesystemIo();
       expect((await caseFoldingRefusals([{ what: "the workspace", path: cfWork }], io)).join(" ")).toMatch(/case-folding attribute|without regard to case/);
-      const folded = new MediatedSessions({ journal, grants: new GrantStore(TEST_ANCHOR), paths: new PathMap([cfWork]), resolver: new HostPathResolver(cfWork), view: new Workspace(execFileScript(process.execPath, []), "/work", cfWork), filesystem: io, protectedPaths: [state], clock: () => T0 });
+      const folded = new MediatedSessions({ layer: openTestLayer("hook", { journal: join(state, "journal-casefold"), workspaces: [cfWork] }), grants: new GrantStore(TEST_ANCHOR), paths: new PathMap([cfWork]), resolver: new HostPathResolver(cfWork), view: new Workspace(execFileScript(process.execPath, []), "/work", cfWork), filesystem: io, clock: () => T0 });
       const admitted = await folded.admit({ session_id: "casefold-real", principal: PRINCIPAL, attendance: "gated", ttl: 60_000, grants: [], budget: { tool_calls: 1, wall_clock_ms: 60_000 }, unmetered_accepted: true, provider_clearance: "secret", sources: SOURCES, name_map: NAME_MAP });
       expect(admitted).toMatchObject({ admitted: false });
       // D-182, past admission: every case spelling of every place, classified by JUNO, against what the kernel opens.

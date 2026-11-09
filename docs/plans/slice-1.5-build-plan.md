@@ -291,6 +291,8 @@ The ten objections the first draft raised (V6-1 to V6-10) are resolved by v0.6.1
 5. **Responses** are journaled as `untrusted` content and raise the session's `sensitivity_floor` like any read (§4.3, §1.2). A call that would read a source classified above the session provider's declared clearance parks before it is forwarded (§4.3, v0.6.1). The session is a Task, as in Increment 4.
 6. **`input_required` (multi round-trip) results are refused** in Slice 1.5: the gateway returns an error to the client and journals it. Supporting them needs a design for the retried input's provenance, which v0.6 does not give. Recorded as a D-number (restrictive reading).
 7. **Test MCP server** (JUNO-authored, test-only, in `test/`): `files.read` (`read`), and `message.send(to: target, body: payload)` (`external`), which records what it would have sent and sends nothing.
+8. **The hook and the gateway together (operator ruling, D-190).** On the operator's machine JUNO's hook runs for every Claude Code session. `juno hook install --gateway` makes JUNO's relay the only MCP server Claude Code loads: Claude Code's exclusive managed MCP file, `/etc/claude-code/managed-mcp.json`, plus an exact-command allowlist and a deny-every-remote list in the managed settings. `juno hook check --gateway` refuses unless that holds and the Claude Code user cannot change it. The hook then gives "no decision" only to a call whose hook input says it is the gateway's server, from the managed file (`source: "enterprise"`); the gateway judges it. Every other MCP tool stays denied.
+9. **`juno gateway serve`** (D-191): loads the operator's gateway session file, admits it, starts the upstream, and serves the socket as the runner.
 
 **Tests:**
 - §4.3 mode B: a `tools/call` with an out-of-scope argument returns `isError: true`, is journaled as a park, and never reaches the upstream server (the server's record is empty).
@@ -300,6 +302,7 @@ The ten objections the first draft raised (V6-1 to V6-10) are resolved by v0.6.1
 - §2.5: an upstream tool with no operator definition is not listed and a call to it is rejected.
 - MRTR: an `input_required` answer is refused and journaled.
 - **End to end:** a scripted MCP client (in `make verify`) and the real Claude Code binary with the scripted model (`make mediated-e2e`, cloud session only, D-092) — §4.3 acceptance test 3.
+- **End to end, D-190:** with the real Claude Code binary, a project file (and the user's own settings) define a server under the gateway's name pointing elsewhere: it never starts, and its call never runs.
 
 **Done when:** the tests above are green; STATE.md says what mode B does not protect.
 **Depends on:** Increments 1–4; reuses Increment 4's session record and scripted model. **Estimate:** 2 sessions.

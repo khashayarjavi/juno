@@ -1,0 +1,176 @@
+
+ RUN  v5.0.5 /tmp/claude-0/-home-user-juno/2684e1ae-a4e9-5e86-8a16-e4a8b4338718/scratchpad/round1
+
+ ❯ packages/runner/test/entry-points.round1.test.ts (10 tests | 9 failed) 142ms
+   ❯ D-194 A: the registry accounts for every entry point, service, session class and journal writer (6)
+     × names each entry once, at a module that exists and exports it 14ms
+     × has a juno command that imports nothing but the registry 6ms
+     × has no service or session class the registry does not list, and each requires the shared layer 3ms
+     × writes the journal only through the shared layer 3ms
+     × opens a session layer only in a registered service entry, and in each of them 2ms
+   ❯ D-194 B (round 1): gateway.serve refuses what the shared check refuses (2)
+     × gateway.serve: refuses when the journal lies in the workspace 43ms
+     × gateway.serve: refuses when the workspace holds JUNO's state 13ms
+   ❯ D-194 D (round 1): the gateway's sessions are counted to the rejection limit and the budget (2)
+     × class.McpGateway: the shared layer holds the session and owns its rejection limit 29ms
+     × class.McpGateway: the shared layer owns its budget 24ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 9 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  packages/runner/test/entry-points.round1.test.ts > D-194 A: the registry accounts for every entry point, service, session class and journal writer > names each entry once, at a module that exists and exports it
+AssertionError: runner.process: expected [] to include 'main'
+ ❯ packages/runner/test/entry-points.round1.test.ts:126:70
+    124|       const found = facts.get(entry.module);
+    125|       expect(found, `${entry.id}: ${entry.module}`).toBeDefined();
+    126|       if (entry.kind !== "command") expect(found?.exports, entry.id).t…
+       |                                                                      ^
+    127|       if (entry.kind === "program") expect(entry.program !== undefined…
+    128|       if (entry.service === null) expect(entry.why, `${entry.id} start…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/9]⎯
+
+ FAIL  packages/runner/test/entry-points.round1.test.ts > D-194 A: the registry accounts for every entry point, service, session class and journal writer > has a juno command that imports nothing but the registry
+AssertionError: expected [ './grant-cli.js', …(6) ] to deeply equal [ './entry-points.js' ]
+
+- Expected
++ Received
+
+  [
+-   "./entry-points.js",
++   "./grant-cli.js",
++   "./journal-cli.js",
++   "../../mediated/src/install.js",
++   "../../enforcement/src/index.js",
++   "./restore.js",
++   "../../mediated/src/gateway-cli.js",
++   "./trust.js",
+  ]
+
+ ❯ packages/runner/test/entry-points.round1.test.ts:142:63
+    140|   // proves D-193: the `juno` command runs only what the registry lists
+    141|   it("has a juno command that imports nothing but the registry", () =>…
+    142|     expect(facts.get("packages/runner/src/juno.ts")?.imports).toEqual(…
+       |                                                               ^
+    143|   });
+    144|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/9]⎯
+
+ FAIL  packages/runner/test/entry-points.round1.test.ts > D-194 A: the registry accounts for every entry point, service, session class and journal writer > has no service or session class the registry does not list, and each requires the shared layer
+AssertionError: class.Runner calls SessionLayer.require in its own body: expected [] to include 'Runner'
+ ❯ packages/runner/test/entry-points.round1.test.ts:152:112
+    150|     expect(found.filter((name) => !registered.includes(name))).toEqual…
+    151|     for (const entry of ENTRY_POINTS.filter((candidate) => candidate.k…
+    152|       expect(facts.get(entry.module)?.requiresLayer, `${entry.id} call…
+       |                                                                                                                ^
+    153|     }
+    154|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/9]⎯
+
+ FAIL  packages/runner/test/entry-points.round1.test.ts > D-194 A: the registry accounts for every entry point, service, session class and journal writer > writes the journal only through the shared layer
+AssertionError: expected [ …(2) ] to deeply equal []
+
+- Expected
++ Received
+
+- []
++ [
++   "packages/mediated/src/gateway-cli.ts",
++   "packages/runner/src/main.ts",
++ ]
+
+ ❯ packages/runner/test/entry-points.round1.test.ts:163:136
+    161|       files.filter((file) => predicate(facts.get(file) as Facts) && !a…
+    162|     const journalPackage = (file: string): boolean => file.startsWith(…
+    163|     expect(outside((fact) => fact.opensJournal, (file) => file === LAY…
+       |                                                                                                                                        ^
+    164|     expect(outside((fact) => fact.newBoundary, (file) => file === LAYE…
+    165|     expect(outside((fact) => fact.appendsToJournal, (file) => file ===…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/9]⎯
+
+ FAIL  packages/runner/test/entry-points.round1.test.ts > D-194 A: the registry accounts for every entry point, service, session class and journal writer > opens a session layer only in a registered service entry, and in each of them
+AssertionError: packages/mediated/src/gateway-cli.ts: expected [] to include 'packages/mediated/src/gateway-cli.ts'
+ ❯ packages/runner/test/entry-points.round1.test.ts:174:60
+    172|     const starting = serviceEntries.filter((entry) => entry.kind !== "…
+    173|     expect(openers.filter((file) => !starting.includes(file))).toEqual…
+    174|     for (const module of starting) expect(openers, module).toContain(m…
+       |                                                            ^
+    175|   });
+    176| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/9]⎯
+
+ FAIL  packages/runner/test/entry-points.round1.test.ts > D-194 B (round 1): gateway.serve refuses what the shared check refuses > gateway.serve: refuses when the journal lies in the workspace
+AssertionError: expected +0 to be 1 // Object.is equality
+
+- Expected
++ Received
+
+- 1
++ 0
+
+ ❯ packages/runner/test/entry-points.round1.test.ts:208:58
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/9]⎯
+
+ FAIL  packages/runner/test/entry-points.round1.test.ts > D-194 B (round 1): gateway.serve refuses what the shared check refuses > gateway.serve: refuses when the workspace holds JUNO's state
+AssertionError: expected +0 to be 1 // Object.is equality
+
+- Expected
++ Received
+
+- 1
++ 0
+
+ ❯ packages/runner/test/entry-points.round1.test.ts:213:25
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/9]⎯
+
+ FAIL  packages/runner/test/entry-points.round1.test.ts > D-194 D (round 1): the gateway's sessions are counted to the rejection limit and the budget > class.McpGateway: the shared layer holds the session and owns its rejection limit
+AssertionError: expected [] to have a length of 1 but got +0
+
+- Expected
++ Received
+
+- 1
++ 0
+
+ ❯ packages/runner/test/entry-points.round1.test.ts:233:97
+    231|     const { gateway, root } = await opened();
+    232|     for (let index = 0; index < 3; index += 1) await gateway.handle({ …
+    233|     expect(parks(root, "gateway-probe").filter((park) => park["reason"…
+       |                                                                                                 ^
+    234|   });
+    235|   it("class.McpGateway: the shared layer owns its budget", async () =>…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/9]⎯
+
+ FAIL  packages/runner/test/entry-points.round1.test.ts > D-194 D (round 1): the gateway's sessions are counted to the rejection limit and the budget > class.McpGateway: the shared layer owns its budget
+AssertionError: expected [] to have a length of 1 but got +0
+
+- Expected
++ Received
+
+- 1
++ 0
+
+ ❯ packages/runner/test/entry-points.round1.test.ts:238:98
+    236|     const { gateway, root } = await opened({ session_id: "budget", bud…
+    237|     for (let index = 0; index <= 3; index += 1) await gateway.handle({…
+    238|     expect(parks(root, "gateway-budget").filter((park) => park["reason…
+       |                                                                                                  ^
+    239|   });
+    240| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[9/9]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  9 failed | 1 passed (10)
+   Start at  15:26:25
+   Duration  1.55s (import 51%, transform 38%, tests 10%)
+

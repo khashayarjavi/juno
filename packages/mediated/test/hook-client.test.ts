@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { GrantStore, HostPathResolver, Workspace, execFileScript } from "../../enforcement/src/index.js";
-import { JournalWriter } from "../../journal/src/index.js";
+import { openTestLayer } from "../../enforcement/test/layer.js";
 import { TEST_ANCHOR, signed } from "../../enforcement/test/test-keys.js";
 import { runHookClient } from "../src/hook-client.js";
 import { HookService } from "../src/hook-service.js";
@@ -109,6 +109,9 @@ describe("§4.3 fail-closed: the hook client blocks on any doubt", () => {
 describe("the hook service and client together (§4.3 mode C, D-142)", () => {
   // proves §4.3 end to end through the socket: a shell-syntax command is denied with integrity_floor, a plain one gets no decision
   it("denies shell syntax and passes a plain mapped command, through the real socket", async () => {
+    // The socket in a folder of its own: the shared start-up check refuses a socket whose folder holds the workspace (D-192, D-194).
+    mkdirSync(join(dir, "sock"), { mode: 0o700 });
+    socketPath = join(dir, "sock", "juno.sock");
     mkdirSync(join(dir, "work", "project"), { recursive: true });
     writeFileSync(join(dir, "work", "project", "notes.txt"), "notes\n");
     const grants = new GrantStore(TEST_ANCHOR);
@@ -129,7 +132,7 @@ describe("the hook service and client together (§4.3 mode C, D-142)", () => {
         revoked_at: null,
       }),
     );
-    const sessions = new MediatedSessions({ journal: JournalWriter.open(join(dir, "journal")), grants, paths: new PathMap([join(dir, "work")]), resolver: new HostPathResolver(join(dir, "work")), view: new Workspace(execFileScript(process.execPath, []), "/work", join(dir, "work")), filesystem: systemFilesystemIo(), protectedPaths: [dir + "/sock-unused"] });
+    const sessions = new MediatedSessions({ layer: openTestLayer("hook", { journal: join(dir, "journal"), workspaces: [join(dir, "work")], state: [{ what: "the hook socket", path: socketPath, kind: "socket" }] }), grants, paths: new PathMap([join(dir, "work")]), resolver: new HostPathResolver(join(dir, "work")), view: new Workspace(execFileScript(process.execPath, []), "/work", join(dir, "work")), filesystem: systemFilesystemIo() });
     await sessions.admit({
       session_id: "s-1",
       principal: "alireza",

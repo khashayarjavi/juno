@@ -1,0 +1,240 @@
+// ROUND-1 DEMONSTRATION (D-193: "Show it failing on the round-1 code"). Part A below is copied VERBATIM from the branch's
+// packages/runner/test/entry-points.test.ts; it reads round-1's source tree and a registry describing round-1's entry
+// points. Parts B and D run the branch test's probes for the gateway (the entry point round 1 found), adapted only to
+// round-1's constructor and io shapes: the same arrangements and the same assertions on what is refused and journalled.
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, lstatSync, writeFileSync, type Stats } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
+import ts from "typescript";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { GrantStore, HostPathResolver, Workspace, execFileScript } from "../../enforcement/src/index.js";
+import { TEST_ANCHOR, signed } from "../../enforcement/test/test-keys.js";
+import { JournalWriter, readPayload, readTrajectory } from "../../journal/src/index.js";
+import { systemFilesystemIo } from "../../mediated/src/filesystem.js";
+import { MCP_REVISION, McpGateway, type Upstream } from "../../mediated/src/gateway.js";
+import { type GatewayCliIo, runGatewayCli } from "../../mediated/src/gateway-cli.js";
+import { ENTRY_POINTS } from "../src/entry-points.js";
+
+const ROOT = fileURLToPath(new URL("../../..", import.meta.url));
+
+// ------------------------------------------------------------------------------------------------------------------
+// A. The registry accounts for every entry point in the source tree.
+// ------------------------------------------------------------------------------------------------------------------
+
+function sourceFiles(): string[] {
+  const out: string[] = [];
+  for (const pkg of readdirSync(join(ROOT, "packages"))) {
+    const src = join(ROOT, "packages", pkg, "src");
+    if (!existsSync(src)) continue;
+    const walk = (dir: string): void => {
+      for (const name of readdirSync(dir)) {
+        const path = join(dir, name);
+        if (statSync(path).isDirectory()) walk(path);
+        else if (name.endsWith(".ts")) out.push(relative(ROOT, path));
+      }
+    };
+    walk(src);
+  }
+  return out.sort();
+}
+
+type Facts = {
+  /** It runs code at module top level that reads `process.argv`, `process.env` or sets `process.exitCode`: a program. */
+  readonly program: boolean;
+  /** Classes that admit sessions (an `admit` method) or serve (`createServer`). */
+  readonly serviceClasses: readonly string[];
+  readonly opensLayer: boolean;
+  readonly opensJournal: boolean;
+  readonly newBoundary: boolean;
+  readonly appendsToJournal: boolean;
+  readonly requiresLayer: readonly string[];
+  readonly exports: readonly string[];
+  readonly imports: readonly string[];
+};
+
+function factsOf(file: string): Facts {
+  const text = readFileSync(join(ROOT, file), "utf8");
+  const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
+  const journalNames = new Set<string>();
+  const imports: string[] = [];
+  const exports: string[] = [];
+  for (const statement of source.statements) {
+    if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier)) {
+      imports.push(statement.moduleSpecifier.text);
+      const bindings = statement.importClause?.namedBindings;
+      if (bindings !== undefined && ts.isNamedImports(bindings)) {
+        for (const element of bindings.elements) if ((element.propertyName ?? element.name).text === "JournalWriter") journalNames.add(element.name.text);
+      }
+    }
+    const modifiers = ts.canHaveModifiers(statement) ? (ts.getModifiers(statement) ?? []) : [];
+    if (modifiers.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)) {
+      if ((ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement)) && statement.name !== undefined) exports.push(statement.name.text);
+      if (ts.isVariableStatement(statement)) for (const declaration of statement.declarationList.declarations) if (ts.isIdentifier(declaration.name)) exports.push(declaration.name.text);
+    }
+  }
+  let program = false;
+  let opensLayer = false;
+  let opensJournal = false;
+  let newBoundary = false;
+  let appendsToJournal = false;
+  const serviceClasses: string[] = [];
+  const requiresLayer: string[] = [];
+  const isProcessAccess = (node: ts.Node): boolean =>
+    ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "process" && ["argv", "env", "exitCode"].includes(node.name.text);
+  const visit = (node: ts.Node, topLevel: boolean, inClass: string | null): void => {
+    if (topLevel && isProcessAccess(node)) program = true;
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+      const target = node.expression.expression.getText(source);
+      const method = node.expression.name.text;
+      if (target === "SessionLayer" && method === "open") opensLayer = true;
+      if (journalNames.has(target) && method === "open") opensJournal = true;
+      if (method === "append" && /journal|writer/i.test(target)) appendsToJournal = true;
+      if (target === "SessionLayer" && method === "require" && inClass !== null) requiresLayer.push(inClass);
+    }
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "createServer" && inClass !== null) serviceClasses.push(inClass);
+    if (ts.isNewExpression(node) && node.expression.getText(source) === "EnforcementBoundary") newBoundary = true;
+    if (ts.isClassDeclaration(node) && node.name !== undefined) {
+      const name = node.name.text;
+      if (node.members.some((member) => ts.isMethodDeclaration(member) && member.name.getText(source) === "admit")) serviceClasses.push(name);
+      ts.forEachChild(node, (child) => visit(child, false, name));
+      return;
+    }
+    const nested = ts.isFunctionLike(node) ? false : topLevel;
+    ts.forEachChild(node, (child) => visit(child, nested, inClass));
+  };
+  ts.forEachChild(source, (child) => visit(child, true, null));
+  return { program, serviceClasses: [...new Set(serviceClasses)], opensLayer, opensJournal, newBoundary, appendsToJournal, requiresLayer: [...new Set(requiresLayer)], exports, imports };
+}
+
+const LAYER_MODULE = "packages/enforcement/src/session-layer.ts";
+/** The boundary journals its own decisions; only the layer builds it (checked below). */
+const BOUNDARY_MODULE = "packages/enforcement/src/boundary.ts";
+const operatorWriters = new Set(ENTRY_POINTS.filter((entry) => entry.operatorJournalWrite !== undefined).map((entry) => entry.module));
+const serviceEntries = ENTRY_POINTS.filter((entry) => entry.service !== null);
+
+describe("D-194 A: the registry accounts for every entry point, service, session class and journal writer", () => {
+  const files = sourceFiles();
+  const facts = new Map(files.map((file) => [file, factsOf(file)]));
+
+  // proves D-193: one registry, every entry named once, and each points at code that exists
+  it("names each entry once, at a module that exists and exports it", () => {
+    expect(new Set(ENTRY_POINTS.map((entry) => entry.id)).size).toBe(ENTRY_POINTS.length);
+    for (const entry of ENTRY_POINTS) {
+      const found = facts.get(entry.module);
+      expect(found, `${entry.id}: ${entry.module}`).toBeDefined();
+      if (entry.kind !== "command") expect(found?.exports, entry.id).toContain(entry.name);
+      if (entry.kind === "program") expect(entry.program !== undefined && facts.get(entry.program)?.program === true, `${entry.id}: its program file runs at top level`).toBe(true);
+      if (entry.service === null) expect(entry.why, `${entry.id} starts no service and must say why`).toBeTruthy();
+      if (entry.kind === "class") expect((entry.implementation as { name?: string }).name).toBe(entry.name);
+    }
+  });
+
+  // proves D-193: a program of its own (anything run with node) is a registered program
+  it("has no program the registry does not list", () => {
+    const programs = files.filter((file) => facts.get(file)?.program === true);
+    const registered = new Set(ENTRY_POINTS.flatMap((entry) => (entry.program === undefined ? [] : [entry.program])));
+    expect(programs.filter((file) => !registered.has(file))).toEqual([]);
+  });
+
+  // proves D-193: the `juno` command runs only what the registry lists
+  it("has a juno command that imports nothing but the registry", () => {
+    expect(facts.get("packages/runner/src/juno.ts")?.imports).toEqual(["./entry-points.js"]);
+  });
+
+  // proves D-193: every class that admits sessions or serves a socket is a registered class, and checks its layer
+  it("has no service or session class the registry does not list, and each requires the shared layer", () => {
+    // The shared layer itself admits every session; it is what the others must go through.
+    const found = files.filter((file) => file !== LAYER_MODULE).flatMap((file) => (facts.get(file)?.serviceClasses ?? []).map((name) => `${file}#${name}`));
+    const registered = ENTRY_POINTS.filter((entry) => entry.kind === "class").map((entry) => `${entry.module}#${String(entry.name)}`);
+    expect(found.filter((name) => !registered.includes(name))).toEqual([]);
+    for (const entry of ENTRY_POINTS.filter((candidate) => candidate.kind === "class")) {
+      expect(facts.get(entry.module)?.requiresLayer, `${entry.id} calls SessionLayer.require in its own body`).toContain(entry.name);
+    }
+  });
+
+  // proves D-193 "no mode may ... pass a call except through it": the journal is opened, appended to and given to a
+  // boundary only by the shared layer (and the journal package itself); an operator action recorded in the journal is
+  // registered as such
+  it("writes the journal only through the shared layer", () => {
+    const outside = (predicate: (fact: Facts) => boolean, allowed: (file: string) => boolean): string[] =>
+      files.filter((file) => predicate(facts.get(file) as Facts) && !allowed(file));
+    const journalPackage = (file: string): boolean => file.startsWith("packages/journal/src/");
+    expect(outside((fact) => fact.opensJournal, (file) => file === LAYER_MODULE || journalPackage(file) || operatorWriters.has(file))).toEqual([]);
+    expect(outside((fact) => fact.newBoundary, (file) => file === LAYER_MODULE)).toEqual([]);
+    expect(outside((fact) => fact.appendsToJournal, (file) => file === LAYER_MODULE || file === BOUNDARY_MODULE || journalPackage(file) || operatorWriters.has(file))).toEqual([]);
+  });
+
+  // proves D-193: a layer is opened (so the shared check run) only by a registered service entry, and every registered
+  // command or program that starts a service opens one
+  it("opens a session layer only in a registered service entry, and in each of them", () => {
+    const openers = files.filter((file) => facts.get(file)?.opensLayer === true && file !== LAYER_MODULE);
+    const starting = serviceEntries.filter((entry) => entry.kind !== "class").map((entry) => entry.module);
+    expect(openers.filter((file) => !starting.includes(file))).toEqual([]);
+    for (const module of starting) expect(openers, module).toContain(module);
+  });
+});
+
+
+const PRINCIPAL = "alireza";
+const SEND = { capability: { id: "mcp.message.send", interface: { to: { type: { kind: "string" }, role: "data", data_effect: "target" }, body: { type: { kind: "string" }, role: "data", data_effect: "payload" } }, providers: ["gateway.mcp"], side_effect: "external", isolation_tier: 1, max_input_sensitivity: "internal", min_argument_integrity: "operator", output_class: { sensitivity: "input", integrity: "untrusted" }, cost_model: { expected_cost: 0, expected_latency_ms: 100, cost_of_failure: 0 } } };
+const SOURCE = { id: "project", selector: { kind: "path", prefix: "/work/project" }, data_class: { sensitivity: "internal", integrity: "untrusted" } } as const;
+function gatewayGrant(): Record<string, unknown> {
+  return signed({ id: "g", principal: PRINCIPAL, capability_selector: { capabilities: ["mcp.message.send"] }, resource_scope: [{ kind: "path", prefix: "/work/project" }], data_class_bounds: { max_sensitivity: "secret", min_integrity: "untrusted" }, issuance: "preissued", issued_by: PRINCIPAL, issued_at: new Date(Date.now() - 60_000).toISOString(), expires_at: new Date(Date.now() + 86_400_000).toISOString(), max_invocations: 50, attenuation_parent: null, revoked_at: null, enumerated_targets: [{ field: "to", value: "ops@example.com" }] });
+}
+// Round 1's session request has no rejection_limit field; the branch test sets 2, round 1's limit would be its default.
+function gatewaySession(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return { session_id: "probe", principal: PRINCIPAL, attendance: "autonomous", ttl: 3_600_000, grants: ["g"], budget: { tool_calls: 4, wall_clock_ms: 3_600_000 }, unmetered_accepted: true, provider_clearance: "internal", sources: [SOURCE], tools: [{ tool: "message.send", entry: SEND }], ...overrides };
+}
+let dir: string, work: string;
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), "juno-round1-"));
+  work = join(dir, "work");
+  mkdirSync(join(work, "project"), { recursive: true });
+  mkdirSync(join(dir, "sock"), { mode: 0o700 });
+  writeFileSync(join(dir, "session.json"), JSON.stringify({ session: gatewaySession(), upstream: { program: process.execPath, argv: [fileURLToPath(new URL("../../../test/mcp/test-server.mjs", import.meta.url)), work, join(dir, "record.jsonl")] } }), { mode: 0o644 });
+  writeFileSync(join(dir, "grant.json"), JSON.stringify(gatewayGrant()), { mode: 0o644 });
+  writeFileSync(join(dir, "operator.pub"), "x");
+});
+afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+describe("D-194 B (round 1): gateway.serve refuses what the shared check refuses", () => {
+  const io = (): GatewayCliIo => {
+    const own = typeof process.geteuid === "function" ? process.geteuid() : 1000;
+    return { uid: own === 0 ? 4242 : own, lstat: (path): Stats | null => { try { return lstatSync(path); } catch { return null; } }, readFile: (path) => readFileSync(path, "utf8"), loadAnchor: () => TEST_ANCHOR, filesystem: systemFilesystemIo(), stopped: () => Promise.resolve(), out: () => undefined, err: () => undefined };
+  };
+  const run = (journal: string) => runGatewayCli(["serve", "--session", join(dir, "session.json"), "--socket", join(dir, "sock", "service.sock"), "--journal", journal, "--anchor", join(dir, "operator.pub"), "--workspace", work, "--grant", join(dir, "grant.json")], io());
+  it("gateway.serve: refuses when the journal lies in the workspace", async () => {
+    expect(await run(join(work, "project", ".journal"))).toBe(1);
+    expect(existsSync(join(work, "project", ".journal"))).toBe(false);
+  }, 30_000);
+  it("gateway.serve: refuses when the workspace holds JUNO's state", async () => {
+    const runIn = runGatewayCli(["serve", "--session", join(dir, "session.json"), "--socket", join(dir, "sock", "service.sock"), "--journal", join(dir, "journal"), "--anchor", join(dir, "operator.pub"), "--workspace", dir, "--grant", join(dir, "grant.json")], io());
+    expect(await runIn).toBe(1);
+    expect(existsSync(join(dir, "journal", "tasks"))).toBe(false);
+  }, 30_000);
+});
+
+describe("D-194 D (round 1): the gateway's sessions are counted to the rejection limit and the budget", () => {
+  const upstream = (): Upstream => ({ request: (method) => Promise.resolve(method === "initialize" ? { protocolVersion: MCP_REVISION, capabilities: { tools: {} } } : { tools: [] }), notify: () => undefined, close: () => undefined });
+  const parks = (root: string, id: string) => readTrajectory(root, id).filter((entry) => entry.kind === "park").map((entry) => { const blob = readPayload(root, entry.payload_ref); return blob.status === "present" ? (JSON.parse(new TextDecoder().decode(blob.bytes)) as Record<string, unknown>) : {}; });
+  async function opened(overrides: Record<string, unknown> = {}): Promise<{ gateway: McpGateway; root: string }> {
+    const journal = JournalWriter.open(join(dir, "journal"));
+    const grants = new GrantStore(TEST_ANCHOR);
+    grants.add(gatewayGrant());
+    const gateway = new McpGateway({ journal, grants, resolver: new HostPathResolver(work), view: new Workspace(execFileScript(process.execPath, []), "/work", work), filesystem: systemFilesystemIo(), upstream });
+    expect(await gateway.admit(gatewaySession(overrides))).toMatchObject({ admitted: true });
+    await gateway.handle({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: MCP_REVISION, capabilities: {}, clientInfo: { name: "probe", version: "1" } } });
+    return { gateway, root: journal.root };
+  }
+  it("class.McpGateway: the shared layer holds the session and owns its rejection limit", async () => {
+    const { gateway, root } = await opened();
+    for (let index = 0; index < 3; index += 1) await gateway.handle({ jsonrpc: "2.0", id: 2 + index, method: "tools/call", params: { name: "admin.wipe", arguments: {} } });
+    expect(parks(root, "gateway-probe").filter((park) => park["reason"] === "rejection_limit")).toHaveLength(1);
+  });
+  it("class.McpGateway: the shared layer owns its budget", async () => {
+    const { gateway, root } = await opened({ session_id: "budget", budget: { tool_calls: 3, wall_clock_ms: 3_600_000 } });
+    for (let index = 0; index <= 3; index += 1) await gateway.handle({ jsonrpc: "2.0", id: 10 + index, method: "tools/call", params: { name: "admin.wipe", arguments: {} } });
+    expect(parks(root, "gateway-budget").filter((park) => park["reason"] === "budget_exceeded")).toHaveLength(1);
+  });
+});

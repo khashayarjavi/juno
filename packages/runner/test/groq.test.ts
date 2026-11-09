@@ -140,8 +140,8 @@ describe("the one host (D-072, D-073)", () => {
   });
 });
 
-/** The mode-C hook's Unix-domain socket files (D-144). */
-const UNIX_SOCKET_FILES: ReadonlySet<string> = new Set(["mediated/hook-service.ts", "mediated/hook-client.ts"]);
+/** The Unix-domain socket files: mode C's hook (D-144) and mode B's gateway service and shim (D-188, D-189). */
+const UNIX_SOCKET_FILES: ReadonlySet<string> = new Set(["mediated/hook-service.ts", "mediated/hook-client.ts", "mediated/gateway-service.ts", "mediated/mcp-shim.ts"]);
 
 describe("the profile (§13.1, D-073)", () => {
   // proves §13.1 / D-072: the Groq profile is a valid Provider Capability Profile for openai/gpt-oss-120b, with its settings captured

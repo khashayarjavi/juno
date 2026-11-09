@@ -4,7 +4,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { TrajectoryEntry } from "../../contracts/src/index.js";
 import { type CanonicalPaths, GrantStore, type PathResolver, readResolverOutput, resolverArgs } from "../../enforcement/src/index.js";
-import { JournalWriter, readPayload, readTrajectory } from "../../journal/src/index.js";
+import { readPayload, readTrajectory } from "../../journal/src/index.js";
+import type { SessionLayer } from "../../enforcement/src/index.js";
+import { openTestLayer } from "../../enforcement/test/layer.js";
 import { type Adapter, type CapabilityCall, CapabilityRegistry, WORKLOAD_EXECFILE, executeOutbound, loadRegistryEntry } from "../../registry/src/index.js";
 import type { SourceRegistration } from "../src/admission.js";
 import { type ProviderProfile, SCRIPTED_PROFILE_FILE, loadProviderProfile } from "../src/profile.js";
@@ -82,6 +84,7 @@ export const standInAdapter: Adapter = {
  */
 export function hostResolver(root: string): PathResolver {
   return {
+    hostRoot: root,
     async resolve(paths: readonly string[]): Promise<CanonicalPaths> {
       if (paths.length === 0) return new Map();
       const result = await executeOutbound({ file: process.execPath, args: resolverArgs("/work", root, paths) });
@@ -173,7 +176,10 @@ export function shellRun(argv: readonly unknown[], program: unknown = { slot: "c
 
 export type Harness = {
   dir: string;
-  journal: JournalWriter;
+  /** The journal's root, for readers; it is written only through the shared session layer (D-194). */
+  journal: { readonly root: string };
+  /** The runner's shared session layer (D-194), opened by the real start-up check. */
+  layer: SessionLayer;
   registry: CapabilityRegistry;
   grants: GrantStore;
   now: { value: Date };
@@ -190,7 +196,8 @@ export function harness(adapter: Adapter = standInAdapter): Harness {
   const dir = mkdtempSync(join(tmpdir(), "juno-runner-"));
   standInRoot = join(dir, "work");
   writeWork(WORK_FILES);
-  const journal = JournalWriter.open(join(dir, "journal"));
+  const layer = openTestLayer("runner", { journal: join(dir, "journal"), workspaces: [join(dir, "work")], state: [{ what: "the checkpoint store", path: join(dir, "checkpoints"), kind: "dir" }] });
+  const journal = { root: layer.root };
   const registry = new CapabilityRegistry();
   const registered = registry.register(loadRegistryEntry(SHELL_RUN_FILE), [adapter]);
   if (!registered.registered) throw new Error(`shell.run did not register: ${JSON.stringify(registered.refusals)}`);
@@ -203,6 +210,7 @@ export function harness(adapter: Adapter = standInAdapter): Harness {
   return {
     dir,
     journal,
+    layer,
     registry,
     grants,
     now,
@@ -210,7 +218,7 @@ export function harness(adapter: Adapter = standInAdapter): Harness {
     anchoring,
     runner: (steps, options = {}) => {
       const provider = new ScriptedProvider(options.profile ?? PROFILE, steps);
-      const runner = new Runner({ journal, registry, grants, providers: [provider], sources: [PROJECT_SOURCE], clock: () => now.value, resolver: hostResolver(join(dir, "work")), anchoring, ...options });
+      const runner = new Runner({ layer, registry, grants, providers: [provider], sources: [PROJECT_SOURCE], clock: () => now.value, resolver: hostResolver(join(dir, "work")), anchoring, ...options });
       runners.push(runner);
       return { runner, provider };
     },

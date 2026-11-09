@@ -4,7 +4,9 @@ import { join } from "node:path";
 import fc from "fast-check";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { CheckpointStore, GrantStore, HostPathResolver, Workspace, execFileScript } from "../../enforcement/src/index.js";
-import { JournalWriter, readPayload, readTrajectory } from "../../journal/src/index.js";
+import { readPayload, readTrajectory } from "../../journal/src/index.js";
+import { openTestLayer } from "../../enforcement/test/layer.js";
+import type { SessionLayer } from "../../enforcement/src/index.js";
 import { TEST_ANCHOR, signed } from "../../enforcement/test/test-keys.js";
 import { type DeclaredSource, classifyRead, isPublicInternet } from "../src/reads.js";
 import { type HookDecision, MediatedSessions, PathMap, SUPPORTED_TOOLS, type SessionRequest } from "../src/session.js";
@@ -38,7 +40,8 @@ const SOURCES: DeclaredSource[] = [
 
 let dir: string;
 let work: string;
-let journal: JournalWriter;
+let journal: { readonly root: string };
+let layer: SessionLayer;
 let grants: GrantStore;
 let sessions: MediatedSessions;
 let runs = 0;
@@ -92,16 +95,17 @@ beforeAll(() => {
   writeFileSync(join(work, "other", "plain.txt"), "unclassified\n");
   writeFileSync(join(work, "other", "pub", "readme.txt"), "public\n");
   writeFileSync(join(dir, "outside", "host.txt"), "outside the workspace\n");
-  journal = JournalWriter.open(join(dir, "journal"));
+  layer = openTestLayer("hook", { journal: join(dir, "journal"), workspaces: [work], state: [{ what: "the checkpoint store", path: join(dir, "checkpoints"), kind: "dir" }] });
+  journal = { root: layer.root };
   grants = new GrantStore(TEST_ANCHOR);
   grants.add(grant("grant-all", ALL_CC));
   sessions = new MediatedSessions({
-    journal,
+    layer,
     grants,
     paths: new PathMap([work]),
     resolver: new HostPathResolver(work),
     view: new Workspace(execFileScript(process.execPath, []), "/work", work),
-    filesystem: systemFilesystemIo(), protectedPaths: [join(dir, "checkpoints")],
+    filesystem: systemFilesystemIo(),
     clock: () => T0,
   });
 });
@@ -310,12 +314,12 @@ describe("D-162 positive controls: a read a declared source matches keeps its cl
     const ids = await pair(() => ({ reversible_workspaces: [] }));
     const id = `rw-${String(runs)}`;
     const checkpointed = new MediatedSessions({
-      journal,
+      layer,
       grants,
       paths: new PathMap([work]),
       resolver: new HostPathResolver(work),
       view: new Workspace(execFileScript(process.execPath, []), "/work", work),
-      filesystem: systemFilesystemIo(), protectedPaths: [join(dir, "checkpoints")],
+      filesystem: systemFilesystemIo(),
       clock: () => T0,
       checkpoints: { workspace: new Workspace(execFileScript(process.execPath, []), "/work", work), store: new CheckpointStore(join(dir, "checkpoints")) },
     });

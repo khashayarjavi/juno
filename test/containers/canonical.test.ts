@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { openTestLayer } from "../../packages/enforcement/test/layer.js";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { GrantStore, WorkloadPathResolver } from "../../packages/enforcement/src/index.js";
-import { JournalWriter, readPayload, readTrajectory } from "../../packages/journal/src/index.js";
+import { readPayload, readTrajectory } from "../../packages/journal/src/index.js";
 import { CapabilityRegistry, WorkloadExecFileAdapter } from "../../packages/registry/src/index.js";
 import { SCRIPTED_PROFILE_FILE, loadProviderProfile } from "../../packages/runner/src/profile.js";
 import { ScriptedProvider } from "../../packages/runner/src/provider.js";
@@ -57,7 +58,7 @@ beforeAll(async () => {
   ].join(" ");
   await docker([...compose, "run", "--rm", "--no-deps", "-T", "workload", "-e", setup]);
 
-  const journal = JournalWriter.open(journalRoot);
+  const layer = openTestLayer("runner", { journal: journalRoot, workspaces: [] });
   let runner: Runner;
   const registry = new CapabilityRegistry();
   const registered = registry.register(JSON.parse(readFileSync(definitionFile, "utf8")), [new WorkloadExecFileAdapter({ composeFile, project, service: "workload" })]);
@@ -86,7 +87,7 @@ beforeAll(async () => {
   // One runner per case, each with its own script (a task that parks uses fewer turns); one runner holds the journal at a time.
   const runnerFor = (argv: readonly string[]): Runner =>
     new Runner({
-      journal,
+      layer,
       registry,
       grants: grantsFor(),
       providers: [

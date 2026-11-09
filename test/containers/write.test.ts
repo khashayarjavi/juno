@@ -1,4 +1,6 @@
 import { execFile } from "node:child_process";
+import { openTestLayer } from "../../packages/enforcement/test/layer.js";
+import type { SessionLayer } from "../../packages/enforcement/src/index.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { type CanonicalPaths, CheckpointStore, type ContainerRuntime, GrantStore, type PathResolver, WorkloadPathResolver, probeContainerRuntime, workloadWorkspace } from "../../packages/enforcement/src/index.js";
-import { JournalWriter, readPayload, readTrajectory } from "../../packages/journal/src/index.js";
+import { readPayload, readTrajectory } from "../../packages/journal/src/index.js";
 import { CapabilityRegistry, WorkloadExecFileAdapter, WorkloadWriteAdapter, loadRegistryEntry } from "../../packages/registry/src/index.js";
 import { SCRIPTED_PROFILE_FILE, loadProviderProfile } from "../../packages/runner/src/profile.js";
 import { ScriptedProvider } from "../../packages/runner/src/provider.js";
@@ -41,7 +43,8 @@ const readWork = async (path: string): Promise<string> =>
   inWorkload(`const fs = require("node:fs"); try { process.stdout.write(fs.readFileSync(${JSON.stringify(path)}, "utf8")); } catch (e) { process.stdout.write("<" + e.code + ">"); }`);
 
 const hostDir = mkdtempSync(join(tmpdir(), "juno-write-"));
-let journal: JournalWriter;
+let journal: { readonly root: string };
+let layer: SessionLayer;
 let registry: CapabilityRegistry;
 let grants: GrantStore;
 const runners: Runner[] = [];
@@ -97,7 +100,7 @@ function runnerWith(calls: readonly unknown[], resolver: PathResolver = new Work
   grants = new GrantStore(TEST_ANCHOR);
   grants.add(grant("grant-write", ["fs.file.write"]));
   const runner = new Runner({
-    journal,
+    layer,
     registry,
     grants,
     providers: [provider],
@@ -125,7 +128,8 @@ beforeAll(async () => {
   await inWorkload(
     'const fs = require("node:fs"); fs.mkdirSync("/work/scope/sub", { recursive: true }); fs.mkdirSync("/work/outside"); fs.writeFileSync("/work/scope/notes.txt", "the original notes\\n"); fs.writeFileSync("/work/outside/keep.txt", "outside\\n");',
   );
-  journal = JournalWriter.open(join(hostDir, "journal"));
+  layer = openTestLayer("runner", { journal: join(hostDir, "journal"), workspaces: [], state: [{ what: "the checkpoint store", path: join(hostDir, "checkpoints"), kind: "dir" }] });
+  journal = { root: layer.root };
   registry = new CapabilityRegistry();
   const shell = registry.register(loadRegistryEntry(fileURLToPath(new URL("../../packages/registry/definitions/shell.run.json", import.meta.url))), [new WorkloadExecFileAdapter(target)]);
   const write = registry.register(loadRegistryEntry(fileURLToPath(new URL("../../packages/registry/definitions/fs.file.write.json", import.meta.url))), [new WorkloadWriteAdapter(target)]);

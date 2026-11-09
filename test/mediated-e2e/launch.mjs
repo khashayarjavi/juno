@@ -5,14 +5,15 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import process from "node:process";
 import { setTimeout as sleep } from "node:timers/promises";
 
-const [sessionId, prompt] = process.argv.slice(2);
+// Any further arguments are passed to Claude Code as they are (the gateway test allows its MCP tool with them).
+const [sessionId, prompt, ...extra] = process.argv.slice(2);
 const port = "18765";
 const server = execFile("/usr/local/bin/node", ["/e2e/messages-server.mjs", "/run-e2e/script.json", "/run-e2e/requests.log", port], () => {});
 for (let tries = 0; tries < 100 && !(existsSync("/run-e2e/requests.log") && readFileSync("/run-e2e/requests.log", "utf8").includes("listening")); tries += 1) await sleep(100);
 const child = execFile(
   "/opt/claude-code/bin/claude",
   // acceptEdits: Claude Code's own rules approve file edits, so JUNO's hook is the only thing that can stop one (D-145).
-  ["-p", prompt, "--session-id", sessionId, "--output-format", "json", "--permission-mode", "acceptEdits"],
+  ["-p", prompt, "--session-id", sessionId, "--output-format", "json", "--permission-mode", "acceptEdits", ...extra],
   {
     cwd: "/workspace/project",
     timeout: 120_000,

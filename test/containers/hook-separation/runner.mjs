@@ -6,8 +6,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import process from "node:process";
 
 process.umask(0o077);
-const { JournalWriter } = await import("/app/dist/journal/src/index.js");
-const { GrantStore, HostPathResolver, Workspace, execFileScript } = await import("/app/dist/enforcement/src/index.js");
+const { GrantStore, HostPathResolver, SessionLayer, Workspace, execFileScript } = await import("/app/dist/enforcement/src/index.js");
 const { MediatedSessions, PathMap } = await import("/app/dist/mediated/src/session.js");
 const { HookService } = await import("/app/dist/mediated/src/hook-service.js");
 const { systemFilesystemIo } = await import("/app/dist/mediated/src/filesystem.js");
@@ -16,15 +15,22 @@ const state = "/var/lib/juno-runner";
 mkdirSync(`${state}/grants`, { mode: 0o700 });
 mkdirSync(`${state}/checkpoints`, { mode: 0o700 });
 writeFileSync(`${state}/grants/grant-cc.json`, "{\"id\":\"grant-cc\"}\n", { mode: 0o600 });
-const journal = JournalWriter.open(`${state}/journal`);
+// The shared start-up check, on the real host as the runner (uid 1000), then the shared session layer (D-194).
+const layer = SessionLayer.open({
+  service: "hook",
+  journal: `${state}/journal`,
+  workspaces: ["/srv/work"],
+  state: [{ what: "JUNO's state", path: state, kind: "path" }, { what: "the hook socket", path: "/var/lib/juno-hook/hook.sock", kind: "socket" }, { what: "Claude Code's managed settings", path: "/etc/claude-code", kind: "path" }],
+  anchor: null,
+});
 const grants = new GrantStore(createPublicKey(readFileSync("/etc/juno/operator.pub", "utf8")));
 const sessions = new MediatedSessions({
-  journal,
+  layer,
   grants,
   paths: new PathMap(["/srv/work"]),
   resolver: new HostPathResolver("/srv/work"),
   view: new Workspace(execFileScript(process.execPath, []), "/work", "/srv/work"),
-  filesystem: systemFilesystemIo(), protectedPaths: [state, "/var/lib/juno-hook", "/etc/claude-code"],
+  filesystem: systemFilesystemIo(),
 });
 // Something in the journal to try to read: a refused admission (no such grant) is journalled.
 await sessions.admit({ session_id: "probe", principal: "alireza", attendance: "gated", ttl: 60_000, grants: ["grant-missing"], budget: { tool_calls: 1, wall_clock_ms: 60_000 }, unmetered_accepted: true, provider_clearance: "internal", sources: [{ id: "w", selector: { kind: "path", prefix: "/work" }, data_class: { sensitivity: "internal", integrity: "untrusted" } }], name_map: [] });

@@ -739,7 +739,9 @@ describe("D-046 (O-3 ruling; §2.7.1 v0.6 D4): a grant's data_class_bounds tight
       }),
       { numRuns: 120 },
     );
-  });
+    // D-183: 120 synchronous runs take about 2.8 s on a quiet machine; the 5 s default timed out once under CI load
+    // (run 42526418093, attempt 1). Same assertions, same runs; only the time budget is stated.
+  }, 30_000);
 });
 
 describe("D-047 (O-4 ruling; §2.7.1 v0.6 D4): every argv operand is a path that must lie in scope", () => {

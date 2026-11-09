@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { BoundaryError } from "../../contracts/src/index.js";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { ordinaryHost } from "../../enforcement/test/layer.js";
 import { parseRunnerConfig } from "../src/config.js";
+import { runRunnerMain } from "../src/runner-main.js";
 
 describe("parseRunnerConfig", () => {
   // proves build plan Increment 0: the runner parses its environment at the boundary
@@ -37,7 +41,8 @@ describe("parseRunnerConfig", () => {
     expect(() => parseRunnerConfig(env)).toThrow(BoundaryError);
   });
 
-  // proves §3.4.1: the runner refuses to start with journal storage anywhere a selector could name
+  // proves §3.4.1: the runner refuses to start with journal storage anywhere a selector could name. (D-194: the refusal is
+  // the shared start-up check's, which the runner process runs before it opens anything; nothing is created.)
   it.each([
     [{ JUNO_JOURNAL_DIR: "/work", JUNO_WORK_DIR: "/data" }],
     [{ JUNO_JOURNAL_DIR: "/work/journal", JUNO_WORK_DIR: "/work" }],
@@ -46,6 +51,9 @@ describe("parseRunnerConfig", () => {
     [{ JUNO_JOURNAL_DIR: "/srv/work/journal", JUNO_WORK_DIR: "/srv/work" }],
     [{ JUNO_JOURNAL_DIR: "/srv/journal", JUNO_WORK_DIR: "/srv/journal" }],
   ])("rejects journal storage overlapping the capability namespace or the work volume: %j", (env) => {
-    expect(() => parseRunnerConfig(env)).toThrow(BoundaryError);
+    const said: string[] = [];
+    expect(runRunnerMain(env, { host: ordinaryHost(), out: (text) => said.push(text), err: (text) => said.push(text) })).toBe(1);
+    expect(said.join("")).toMatch(/capability namespace|overlaps the workspace/);
+    expect(existsSync(join(env.JUNO_JOURNAL_DIR, "tasks"))).toBe(false);
   });
 });

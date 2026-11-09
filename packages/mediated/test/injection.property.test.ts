@@ -4,7 +4,9 @@ import { join } from "node:path";
 import fc from "fast-check";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { GrantStore, HostPathResolver, Workspace, execFileScript, readCommandString } from "../../enforcement/src/index.js";
-import { JournalWriter, readPayload, readTrajectory } from "../../journal/src/index.js";
+import { readPayload, readTrajectory } from "../../journal/src/index.js";
+import { openTestLayer } from "../../enforcement/test/layer.js";
+import type { SessionLayer } from "../../enforcement/src/index.js";
 import { TEST_ANCHOR, signed } from "../../enforcement/test/test-keys.js";
 import { MediatedSessions, PathMap, type SessionRequest } from "../src/session.js";
 import { systemFilesystemIo } from "../src/filesystem.js";
@@ -28,7 +30,8 @@ const ALL_CC = ["cc.read", "cc.glob", "cc.write", "cc.edit", "cc.bash.read", "cc
 
 let dir: string;
 let work: string;
-let journal: JournalWriter;
+let journal: { readonly root: string };
+let layer: SessionLayer;
 let grants: GrantStore;
 let sessions: MediatedSessions;
 let now: Date;
@@ -58,7 +61,8 @@ beforeAll(() => {
   mkdirSync(join(work, "project", "secrets"), { recursive: true });
   writeFileSync(join(work, "project", "notes.txt"), "notes\n");
   writeFileSync(join(work, "project", "secrets", "key.txt"), "secret\n");
-  journal = JournalWriter.open(join(dir, "journal"));
+  layer = openTestLayer("hook", { journal: join(dir, "journal"), workspaces: [work], state: [{ what: "the checkpoint store", path: join(dir, "checkpoints"), kind: "dir" }] });
+  journal = { root: layer.root };
   grants = new GrantStore(TEST_ANCHOR);
   grants.add(grant("grant-all", ALL_CC));
   grants.add(grant("grant-no-bash", ["cc.read", "cc.write"]));
@@ -68,7 +72,7 @@ beforeAll(() => {
   // A forged grant: its signature no longer covers its fields, so a session naming it is refused (§3.2 C1).
   grants.add({ ...grant("grant-forged", ALL_CC), max_invocations: 9_999 });
   now = T0;
-  sessions = new MediatedSessions({ journal, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), view: new Workspace(execFileScript(process.execPath, []), "/work", work), filesystem: systemFilesystemIo(), protectedPaths: [join(dir, "checkpoints")], clock: () => now });
+  sessions = new MediatedSessions({ layer, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), view: new Workspace(execFileScript(process.execPath, []), "/work", work), filesystem: systemFilesystemIo(), clock: () => now });
 });
 
 afterAll(() => {

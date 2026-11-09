@@ -45,6 +45,11 @@ export function lexicalNormal(path: string): string {
 export type CanonicalPaths = ReadonlyMap<string, CanonicalPath>;
 
 export interface PathResolver {
+  /**
+   * The host folder the resolved paths name, or null when they name a container's volume, which the runner never names
+   * on the host. A service checks it is a workspace its start-up check judged (D-194).
+   */
+  readonly hostRoot?: string | null;
   /** Resolves each raw absolute path. Every path asked for is answered; one the resolver cannot answer is `ok: false`. */
   resolve(paths: readonly string[]): Promise<CanonicalPaths>;
 }
@@ -149,6 +154,11 @@ export class WorkloadPathResolver implements PathResolver {
     this.#target = parseAtBoundary("workload target", WorkloadTargetSchema, target);
   }
 
+  /** The workload's paths name its container volume, never a host folder (D-065, D-194). */
+  get hostRoot(): null {
+    return null;
+  }
+
   async resolve(paths: readonly string[]): Promise<CanonicalPaths> {
     if (paths.length === 0) return new Map();
     const { composeFile, project, service } = this.#target;
@@ -177,6 +187,10 @@ export class HostPathResolver implements PathResolver {
   constructor(root: string, node: string = process.execPath) {
     this.#root = root;
     this.#node = node;
+  }
+
+  get hostRoot(): string {
+    return this.#root;
   }
 
   async resolve(paths: readonly string[]): Promise<CanonicalPaths> {

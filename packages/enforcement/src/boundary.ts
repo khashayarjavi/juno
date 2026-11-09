@@ -558,13 +558,15 @@ function effectRefusals(
   grant: Grant,
   integrityOf: ReadonlyMap<string, Integrity>,
   effect: JudgedEffect,
+  canonical: CanonicalPaths,
 ): EffectRefusal[] {
   if (effect.kind === "read" || effect.kind === "reversible_write") return [];
   const enumerated = grant.enumerated_targets ?? [];
+  const paths = new Map(scopePaths(entry, call).map((path) => [path.argument, path.raw]));
   const refusals: EffectRefusal[] = [];
   for (const { argument, field, value } of targetValues(entry, call)) {
     if (causingIntegrity(entry, call, argument, integrityOf) !== "untrusted") continue;
-    if (enumerated.some((target) => target.field === field && target.value === value)) continue;
+    if (enumerated.some((target) => target.field === field && enumeratedMatches(target.value, value, paths.get(argument), canonical))) continue;
     refusals.push({
       argument,
       field,
@@ -574,6 +576,30 @@ function effectRefusals(
     });
   }
   return refusals;
+}
+
+/** An email address as D-154 compares it: one `@`, a local part with no space, and an ASCII host name. */
+const EMAIL = /^([^@\s]+)@([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)+)$/;
+
+/**
+ * Whether an enumerated value admits a target value (operator ruling D-154; D-184). A path target matches only on its
+ * canonical (resolved) path, never as typed: it must have resolved, must not be a hard-linked file (its path does not
+ * name it alone, D-157), and its canonical form must equal the enumerated value exactly. Any other value matches only
+ * an exactly equal value, except that the domain of an email address is compared case-insensitively (ASCII only); the
+ * local part stays exact. No prefix, wildcard or subdomain ever matches.
+ */
+function enumeratedMatches(enumerated: CallScalar, value: CallScalar, raw: string | undefined, canonical: CanonicalPaths): boolean {
+  if (raw !== undefined) {
+    const answer = canonical.get(raw);
+    return answer !== undefined && answer.ok && answer.hardLinked !== true && answer.canonical === enumerated;
+  }
+  if (enumerated === value) return true;
+  if (typeof enumerated !== "string" || typeof value !== "string") return false;
+  const [, enumLocal, enumDomain] = EMAIL.exec(enumerated) ?? [];
+  const [, local, domain] = EMAIL.exec(value) ?? [];
+  if (enumLocal === undefined || enumDomain === undefined || local === undefined || domain === undefined) return false;
+  const lower = (text: string): string => text.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+  return local === enumLocal && lower(domain) === lower(enumDomain);
 }
 
 /** §2.3.1 rule 6 (A5): the first undeclared flag of a parsed call whose program's surface is code-free everywhere, or `null`. */
@@ -739,7 +765,7 @@ export class EnforcementBoundary {
     // Step 4, effects (§2.2.2, §2.7.1 "Effects"; D-135): an untrusted target of an effect that cannot be undone must be
     // one the grant enumerates. Not overridable (§8.3): the operator cannot observe where such an effect lands.
     const judgedEffect = effectOf(entry, parsedCall, canonical, context.reversible ?? []);
-    const effects = inScope.map((grant) => ({ grant, refused: effectRefusals(entry, parsedCall, grant, integrityOf, judgedEffect) }));
+    const effects = inScope.map((grant) => ({ grant, refused: effectRefusals(entry, parsedCall, grant, integrityOf, judgedEffect, canonical) }));
     const permitted = effects.filter((candidate) => candidate.refused.length === 0).map((candidate) => candidate.grant);
     if (permitted.length === 0) {
       return park({ reason: "integrity_floor", violations: [], grants: [], effects: effects.map(({ grant, refused }) => ({ grant: grant.id, refused })) });

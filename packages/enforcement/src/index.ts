@@ -10,3 +10,5 @@ export * from "./sshsig.js";
 export * from "./checkpoint.js";
 export * from "./command-string.js";
 export * from "./runtime.js";
+export * from "./startup.js";
+export * from "./session-layer.js";

@@ -1,0 +1,31 @@
+// ROUND-1 DEMONSTRATION ONLY (not part of the branch): the D-194 entry-point registry, written as data describing the
+// entry points that exist at round-1's reviewed head 4fc2675, with the same ids as the real registry. No behaviour.
+import { McpGateway } from "../../mediated/src/gateway.js";
+import { runGatewayCli } from "../../mediated/src/gateway-cli.js";
+import { GatewayService } from "../../mediated/src/gateway-service.js";
+import { HookService } from "../../mediated/src/hook-service.js";
+import { runHookInstallCli } from "../../mediated/src/install.js";
+import { MediatedSessions } from "../../mediated/src/session.js";
+import { runGrantCli } from "./grant-cli.js";
+import { runJournalCli } from "./journal-cli.js";
+import { runCheckpointCli } from "./restore.js";
+import { Runner } from "./runner.js";
+
+export type EntryPoint = { readonly id: string; readonly kind: "command" | "program" | "class"; readonly module: string; readonly program?: string; readonly name: string | readonly string[]; readonly service: "runner" | "hook" | "gateway" | null; readonly admits: boolean; readonly why?: string; readonly operatorJournalWrite?: string; readonly implementation: unknown };
+
+export const ENTRY_POINTS: readonly EntryPoint[] = [
+  { id: "grant", kind: "command", module: "packages/runner/src/grant-cli.ts", name: ["grant"], service: null, admits: false, why: "grant files", implementation: runGrantCli },
+  { id: "journal", kind: "command", module: "packages/runner/src/journal-cli.ts", name: ["journal"], service: null, admits: false, why: "reads a journal", implementation: runJournalCli },
+  { id: "checkpoint", kind: "command", module: "packages/runner/src/restore.ts", name: ["checkpoint"], service: null, admits: false, why: "operator restore", operatorJournalWrite: "§2.2.2", implementation: runCheckpointCli },
+  { id: "hook", kind: "command", module: "packages/mediated/src/install.ts", name: ["hook"], service: null, admits: false, why: "managed settings", implementation: runHookInstallCli },
+  { id: "gateway.serve", kind: "command", module: "packages/mediated/src/gateway-cli.ts", name: ["gateway"], service: "gateway", admits: true, implementation: runGatewayCli },
+  { id: "runner.process", kind: "program", module: "packages/runner/src/main.ts", program: "packages/runner/src/main.ts", name: "main", service: "runner", admits: false, implementation: null },
+  { id: "juno", kind: "program", module: "packages/runner/src/juno.ts", program: "packages/runner/src/juno.ts", name: "juno", service: null, admits: false, why: "the juno command", implementation: null },
+  { id: "juno-hook", kind: "program", module: "packages/mediated/src/hook-client.ts", program: "packages/mediated/src/juno-hook.ts", name: "main", service: null, admits: false, why: "hook client", implementation: null },
+  { id: "juno-mcp", kind: "program", module: "packages/mediated/src/mcp-shim.ts", program: "packages/mediated/src/juno-mcp.ts", name: "main", service: null, admits: false, why: "MCP shim", implementation: null },
+  { id: "class.Runner", kind: "class", module: "packages/runner/src/runner.ts", name: "Runner", service: "runner", admits: true, implementation: Runner },
+  { id: "class.MediatedSessions", kind: "class", module: "packages/mediated/src/session.ts", name: "MediatedSessions", service: "hook", admits: true, implementation: MediatedSessions },
+  { id: "class.HookService", kind: "class", module: "packages/mediated/src/hook-service.ts", name: "HookService", service: "hook", admits: false, implementation: HookService },
+  { id: "class.McpGateway", kind: "class", module: "packages/mediated/src/gateway.ts", name: "McpGateway", service: "gateway", admits: true, implementation: McpGateway },
+  { id: "class.GatewayService", kind: "class", module: "packages/mediated/src/gateway-service.ts", name: "GatewayService", service: "gateway", admits: false, implementation: GatewayService },
+];
