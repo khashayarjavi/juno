@@ -39,6 +39,12 @@ const groupFile = readFileSync("/etc/group", "utf8");
 mkdirSync("/opt/fake-claude", { mode: 0o755 });
 writeFileSync("/opt/fake-claude/claude", "#!/usr/local/bin/node\nprocess.stdout.write(\"2.1.319 (Claude Code)\\n\");\n", { mode: 0o755 });
 
+// §3.4.1 (D-198): the service anchors its journal. This image has no git, so a root-owned stand-in (fake-git.mjs) pushes
+// to a stand-in destination beside the clone; the start-up check judges it like the real /usr/bin/git.
+mkdirSync("/opt/fake-git", { mode: 0o755 });
+writeFileSync("/opt/fake-git/git", readFileSync("/t/fake-git.mjs", "utf8").replace(/^/, "#!/usr/local/bin/node\n"), { mode: 0o755 });
+chmodSync("/opt/fake-git/git", 0o755);
+
 // The trust anchor: public, root's.
 mkdirSync("/etc/juno", { mode: 0o755 });
 // The operator's key pair is made here for this run; the private key never leaves this process (it signs the grant below).
@@ -47,9 +53,12 @@ writeFileSync("/etc/juno/operator.pub", operator.publicKey.export({ type: "spki"
 
 // The runner's state folder and the socket folder (Part E: `install -d -o juno-runner -m 0700` and `-g juno-hook -m 2750`).
 // The mode first, while root owns the folder; then the owner (changing a mode needs the owner, or CAP_FOWNER).
-mkdirSync("/var/lib/juno-runner");
-chmodSync("/var/lib/juno-runner", 0o700);
-chownSync("/var/lib/juno-runner", RUNNER, RUNNER);
+// The runner image already holds it, the runner's and 0700, as Part E makes it (D-198: the journal key and the anchor
+// clone live there). Root here holds no CAP_FOWNER, so it is checked, not changed.
+{
+  const runnerState = statSync("/var/lib/juno-runner");
+  if (runnerState.uid !== RUNNER || (runnerState.mode & 0o777) !== 0o700) throw new Error("/var/lib/juno-runner is not the runner's 0700 folder");
+}
 mkdirSync("/var/lib/juno-hook");
 chmodSync("/var/lib/juno-hook", 0o2750);
 chownSync("/var/lib/juno-hook", RUNNER, HOOK_GROUP);
@@ -134,7 +143,9 @@ const now = Date.now();
 await asRunnerFile("/var/lib/juno-runner/grants/grant-serve.json", JSON.stringify(signGrant({ id: "grant-serve", principal: "alireza", capability_selector: { capabilities: ["cc.read", "cc.write"] }, resource_scope: [{ kind: "path", prefix: "/work/project" }], data_class_bounds: { max_sensitivity: "internal", min_integrity: "untrusted" }, issuance: "preissued", issued_by: "alireza", issued_at: new Date(now - 60_000).toISOString(), expires_at: new Date(now + 3_600_000).toISOString(), max_invocations: 10, attenuation_parent: null, revoked_at: null }, operator.privateKey)));
 await asRunnerFile("/var/lib/juno-runner/session.json", JSON.stringify({ session: { session_id: SESSION, principal: "alireza", attendance: "gated", ttl: 3_600_000, grants: ["grant-serve"], budget: { tool_calls: 10, wall_clock_ms: 3_600_000 }, unmetered_accepted: true, provider_clearance: "internal", sources: [{ id: "project", selector: { kind: "path", prefix: "/work/project" }, data_class: { sensitivity: "internal", integrity: "untrusted" } }], name_map: [] }, grants: ["/var/lib/juno-runner/grants/grant-serve.json"] }));
 
-const serveArgs = (workspace, journal) => [JUNO, "hook", "serve", "--socket", SERVE_SOCKET, "--control", CONTROL, "--journal", journal, "--anchor", "/etc/juno/operator.pub", "--workspace", workspace, "--checkpoints", "/var/lib/juno-runner/serve-checkpoints", "--protect", "/etc/claude-code"];
+const ANCHOR_CLONE = "/var/lib/juno-runner/juno-anchors";
+const JOURNAL_KEY = "/var/lib/juno-runner/journal-key";
+const serveArgs = (workspace, journal) => [JUNO, "hook", "serve", "--socket", SERVE_SOCKET, "--control", CONTROL, "--journal", journal, "--anchor", "/etc/juno/operator.pub", "--journal-key", JOURNAL_KEY, "--anchors", ANCHOR_CLONE, "--git", "/opt/fake-git/git", "--workspace", workspace, "--checkpoints", "/var/lib/juno-runner/serve-checkpoints", "--protect", "/etc/claude-code"];
 /** Runs `node <args>` as uid:gid with groups, feeding `input` on stdin; resolves with its exit. */
 const asUser = (uid, groups, args, input = "", env = process.env) => new Promise((resolve) => {
   const child = execFile(NODE, ["/t/as-user.mjs", String(uid), String(uid), groups, ...args], { timeout: 60_000, env }, (error, stdout, stderr) => resolve({ code: error === null ? 0 : typeof error.code === "number" ? error.code : -1, stdout, stderr }));
@@ -145,7 +156,14 @@ results.serve = {};
 results.serve.overlay = await asUser(RUNNER, "", serveArgs("/srv/overlay-work", "/var/lib/juno-runner/overlay-journal"), "", runnerEnv);
 results.serve.overlayJournalCreated = (() => { try { statSync("/var/lib/juno-runner/overlay-journal"); return true; } catch { return false; } })();
 // The real service, as the runner.
-const served = execFile(NODE, ["/t/as-user.mjs", String(RUNNER), String(RUNNER), "", ...serveArgs("/srv/work", SERVE_JOURNAL)], { timeout: 120_000, env: runnerEnv }, () => undefined);
+let served;
+let servedOut = "";
+const servedExit = new Promise((resolve) => {
+  served = execFile(NODE, ["/t/as-user.mjs", String(RUNNER), String(RUNNER), "", ...serveArgs("/srv/work", SERVE_JOURNAL)], { timeout: 120_000, env: runnerEnv }, (error, stdout, stderr) => resolve({ code: error === null ? 0 : typeof error.code === "number" ? error.code : -1, stdout, stderr }));
+});
+served.stdout.on("data", (chunk) => {
+  servedOut += String(chunk);
+});
 results.serve.started = await new Promise((resolve) => {
   let text = "";
   served.stdout.on("data", (chunk) => {
@@ -172,6 +190,13 @@ if (results.serve.started.ok) {
   });
   results.serve.socketMode = (statSync(SERVE_SOCKET).mode & 0o777).toString(8);
   results.serve.controlMode = (statSync(CONTROL).mode & 0o777).toString(8);
+  // §3.4.1 (D-198): the runner stops its service; the service anchors what is pending as it stops. Then the operator's
+  // check (`juno journal check`, run as the runner) reads the chain back against the anchors at the destination.
+  await asUser(RUNNER, "", ["/t/signal.mjs", String(served.pid)]);
+  results.serve.stopped = await servedExit;
+  results.serve.stoppedText = servedOut;
+  results.serve.journalCheck = await asUser(RUNNER, "", [JUNO, "journal", "check", "--journal", SERVE_JOURNAL, "--anchors", `${ANCHOR_CLONE}.remote`, "--key", `${JOURNAL_KEY}/journal-key.pub.pem`, `session-${SESSION}`]);
+  results.serve.anchoringNote = results.serve.journal.some((entry) => entry.type === "anchoring");
 }
 // The service runs until the container stops; this driver is the container's first process, so leaving ends it.
 process.stdout.write(`${JSON.stringify(results)}\n`, () => process.exit(0));

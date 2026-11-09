@@ -97,7 +97,11 @@ export class HookAdmissionService {
         failures.push(`the grant file ${grantFile} holds no valid grant: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
-    if (failures.length > 0) return { admitted: false, failures };
+    if (failures.length > 0) {
+      // D-198 (autopilot ruling): a refusal for its grant files is journalled under the session, like any refused admission.
+      await this.#sessions.refuse(file.session, failures);
+      return { admitted: false, failures };
+    }
     return this.#sessions.admit(file.session);
   }
 

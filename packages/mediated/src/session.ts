@@ -324,6 +324,21 @@ export class MediatedSessions {
     this.#filesystem = options.filesystem;
   }
 
+  /**
+   * A session refused before admission was judged (its session file's grant files failed, D-196): journalled as a
+   * refused admission at the most restrictive class, and anchored, as every refusal is (§3.2, §3.4.1; D-198 autopilot
+   * ruling). A request that does not even name a session cannot be recorded under one, and is only refused.
+   */
+  async refuse(input: unknown, failures: readonly string[]): Promise<void> {
+    const parsed = SessionRequest.safeParse(input);
+    if (!parsed.success) return;
+    const id = `session-${parsed.data.session_id}`;
+    if (this.#sessions.has(id)) return;
+    this.#layer.refuse(id, { mode: "hook", failures }, SESSION_ACTOR);
+    this.#refused.set(id, new Map(parsed.data.name_map.map((entry) => [entry.name, entry.program])));
+    await this.#layer.anchorHead(id, REFUSED_ADMISSION_CLASS);
+  }
+
   /** Admits a session as a Task (§4.3 V6-6), or says why not. */
   async admit(input: unknown): Promise<{ readonly admitted: true; readonly task_id: string } | { readonly admitted: false; readonly failures: readonly string[] }> {
     const parsed = SessionRequest.safeParse(input);

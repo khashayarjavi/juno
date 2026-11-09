@@ -39,6 +39,10 @@ type Results = {
     journal?: { kind: string; type: string | null; outcome: string | null; reason: string | null; tool: string | null }[];
     socketMode?: string;
     controlMode?: string;
+    stopped?: Exit;
+    stoppedText?: string;
+    journalCheck?: Exit;
+    anchoringNote?: boolean;
   };
 };
 
@@ -163,5 +167,16 @@ describe("plan Increment 6 (D-180, D-196): the real juno hook serve and juno hoo
   it("keeps the admission socket out of the Claude Code user's reach", () => {
     expect(results.serve.agentAdmit?.code).toBe(1);
     expect(results.serve.agentAdmit?.stderr).toMatch(/not reachable/);
+  });
+
+  // proves §3.4.1 (D-198) through the commands: the session's journal records the anchoring interval and key; when the
+  // runner stops the service it anchors what is pending; and the operator's `juno journal check` finds the chain agrees
+  // with the anchors at the destination, with nothing left unanchored
+  it("anchors the session's journal off the host, and the operator's journal check passes", () => {
+    expect(results.serve.anchoringNote).toBe(true);
+    expect(results.serve.stopped, results.serve.stopped?.stderr).toMatchObject({ code: 0 });
+    expect(results.serve.stoppedText).toContain("juno hook: stopped.");
+    expect(results.serve.journalCheck, results.serve.journalCheck?.stderr).toMatchObject({ code: 0 });
+    expect(JSON.parse(results.serve.journalCheck?.stdout ?? "{}")).toMatchObject({ ok: true, unanchored: 0 });
   });
 });
