@@ -3,7 +3,9 @@
 ## Current increment
 **Slice 1.5 — Increment 6: §4.3's Slice 1.5 acceptance, end to end** (`docs/plans/slice-1.5-build-plan.md`, Increment 6; §4.3 "Acceptance for Slice 1.5", §18 tests 1–5 as regression, §3.4.5, §3.4.1; D-180). Branch `claude/blissful-gates-7hljw0`, fast-forwarded to `main` 34d7439 after PR #46 merged. Spec v0.6.1. No objection open.
 
-Status (2026-11-09): **items 1 to 3 built (D-195, D-196), unit tests 1,267/1,267 green; items 4 to 6 left.**
+Status (2026-11-09): **items 1 to 4 built (D-195 to D-197); items 5 and 6 left.**
+- **D-197, item 4, the container test.** The real `juno hook serve` and `juno hook admit`, run from the runner image as the runner, admit your session. The real hook client, as the Claude Code user, gets an allowed read and a denied out-of-grant write, both journalled. The command refuses to start on a workspace D-178 refuses. The Claude Code user cannot reach the admission socket. Container hook-separation: 40/40.
+  - **Found and fixed by it:** the built code the operator runs (`/opt/juno/dist`) lacked the JSON capability definitions, so it could never admit a hook session. Earlier tests ran the TypeScript sources and missed it. `make build` now copies them.
 - **D-195:** the start-up check now refuses state not yet created when the folder that would hold it is shared, sticky bit or not. The gateway now forwards the boundary's judged copy of each call.
 - **D-196: `juno hook serve` and `juno hook admit`.**
   - Claude Code 2.1.319 has `--session-id <uuid>`, and the real-binary test already uses it, so you choose the session's id in the session file. No objection.
