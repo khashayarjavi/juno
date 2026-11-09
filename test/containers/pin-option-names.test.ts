@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { openTestLayer } from "../../packages/enforcement/test/layer.js";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,7 +9,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { GrantStore, WorkloadPathResolver } from "../../packages/enforcement/src/index.js";
 import { TEST_ANCHOR, signed } from "../../packages/enforcement/test/test-keys.js";
 import { testAnchoring } from "../../packages/runner/test/anchor-sink.js";
-import { JournalWriter, readPayload, readTrajectory } from "../../packages/journal/src/index.js";
+import { readPayload, readTrajectory } from "../../packages/journal/src/index.js";
 import { CapabilityRegistry, WorkloadExecFileAdapter } from "../../packages/registry/src/index.js";
 import { SCRIPTED_PROFILE_FILE, loadProviderProfile } from "../../packages/runner/src/profile.js";
 import { ScriptedProvider } from "../../packages/runner/src/provider.js";
@@ -76,7 +77,7 @@ beforeAll(async () => {
   const usage = { tokens_in: 10, tokens_out: 5, tokens_cached: 0 };
   const provider = new ScriptedProvider(profile, [{ model: profile.model, model_version: profile.model_version, text: "done", tool_calls: [], usage }]);
   runner = new Runner({
-    journal: JournalWriter.open(journalRoot),
+    layer: openTestLayer("runner", { journal: journalRoot, workspaces: [] }),
     registry,
     grants,
     providers: [provider],

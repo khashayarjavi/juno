@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { openTestLayer } from "../../packages/enforcement/test/layer.js";
 import { randomBytes } from "node:crypto";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -9,7 +10,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { parseAtBoundary } from "../../packages/contracts/src/index.js";
 import { GrantStore, WorkloadPathResolver } from "../../packages/enforcement/src/index.js";
-import { JournalWriter, readPayload, readTrajectory, verifyTrajectory } from "../../packages/journal/src/index.js";
+import { readPayload, readTrajectory, verifyTrajectory } from "../../packages/journal/src/index.js";
 import { blobFile, entriesFile, headFile } from "../../packages/journal/src/layout.js";
 import { CapabilityRegistry, WorkloadExecFileAdapter } from "../../packages/registry/src/index.js";
 import { parseRunnerConfig } from "../../packages/runner/src/config.js";
@@ -130,7 +131,7 @@ beforeAll(async () => {
   await docker([...compose, "run", "--rm", "--no-deps", "-T", "workload", "-e", setup]);
 
   const config = parseRunnerConfig({ JUNO_JOURNAL_DIR: journalRoot, JUNO_WORK_DIR: "/work" });
-  const journal = JournalWriter.open(config.journalDir);
+  const layer = openTestLayer("runner", { journal: config.journalDir, workspaces: [] });
   const registry = new CapabilityRegistry();
   const registered = registry.register(JSON.parse(readFileSync(definitionFile, "utf8")), [new WorkloadExecFileAdapter({ composeFile, project, service: "workload" })]);
   if (!registered.registered) throw new Error(`shell.run did not register: ${JSON.stringify(registered.refusals)}`);
@@ -157,7 +158,7 @@ beforeAll(async () => {
     { model: profile.model, model_version: profile.model_version, text: "done", tool_calls: [], usage },
   ]);
   runner = new Runner({
-    journal,
+    layer,
     registry,
     grants,
     providers: [provider],

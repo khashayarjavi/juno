@@ -1,4 +1,6 @@
 import { execFile } from "node:child_process";
+import { openTestLayer } from "../../packages/enforcement/test/layer.js";
+import type { SessionLayer } from "../../packages/enforcement/src/index.js";
 import { chmodSync, chownSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,7 +9,7 @@ import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { GrantStore, HostPathResolver, Workspace, execFileScript } from "../../packages/enforcement/src/index.js";
-import { JournalWriter, readPayload, readTrajectory } from "../../packages/journal/src/index.js";
+import { readPayload, readTrajectory } from "../../packages/journal/src/index.js";
 import { HookService } from "../../packages/mediated/src/hook-service.js";
 import { GatewayService } from "../../packages/mediated/src/gateway-service.js";
 import { McpGateway } from "../../packages/mediated/src/gateway.js";
@@ -52,7 +54,8 @@ const gatewaySocket = join(sockets, "gateway.sock");
 const record = join(host, "upstream-record.jsonl");
 const impostorMark = join(home, "impostor.log");
 const now = new Date();
-let journal: JournalWriter;
+let journal: { readonly root: string };
+let layer: SessionLayer;
 let grants: GrantStore;
 let sessions: MediatedSessions;
 let hookService: HookService;
@@ -83,11 +86,11 @@ const PROJECT_SOURCE = { id: "project", selector: { kind: "path", prefix: "/work
 async function startGateway(): Promise<string> {
   const id = `e2e-${randomUUID().slice(0, 8)}`;
   const gateway = new McpGateway({
-    journal,
+    layer: openTestLayer("gateway", { journal: join(host, "journal"), workspaces: [workspace], state: [{ what: "the gateway socket", path: gatewaySocket, kind: "socket" }] }),
     grants,
     resolver: new HostPathResolver(workspace),
     view: new Workspace(execFileScript(process.execPath, []), "/work", workspace),
-    filesystem: systemFilesystemIo(), protectedPaths: [],
+    filesystem: systemFilesystemIo(),
     upstream: (refused) => new StdioUpstream(process.execPath, [TEST_SERVER, workspace, record], { refused }),
   });
   const admitted = await gateway.admit({
@@ -168,18 +171,19 @@ beforeAll(async () => {
   chownSync(sockets, 0, HOOK_GID);
   chmodSync(sockets, 0o2750);
   chmodSync(managed, 0o755);
-  journal = JournalWriter.open(join(host, "journal"));
+  // The shared start-up check judges JUNO's state against the host workspace and the name Claude Code uses for it (D-194).
+  layer = openTestLayer("hook", { journal: join(host, "journal"), workspaces: [workspace, "/workspace"], state: [{ what: "the hook socket", path: hookSocket, kind: "socket" }, { what: "Claude Code's home", path: home, kind: "path" }] });
+  journal = { root: layer.root };
   grants = new GrantStore(TEST_ANCHOR);
   grants.add(grant("grant-cc", ["cc.read"]));
   grants.add(grant("grant-gw", ["mcp.message.send"], { data_class_bounds: { max_sensitivity: "secret", min_integrity: "untrusted" }, enumerated_targets: [{ field: "to", value: "ops@example.com" }] }));
   sessions = new MediatedSessions({
-    journal,
+    layer,
     grants,
     paths: new PathMap(["/workspace"]),
     resolver: new HostPathResolver(workspace),
     view: new Workspace(execFileScript(process.execPath, []), "/work", workspace),
     filesystem: systemFilesystemIo(),
-    protectedPaths: [sockets, home],
     gateway: { server: GATEWAY },
   });
   hookService = new HookService(sessions, { socketMode: 0o660 });

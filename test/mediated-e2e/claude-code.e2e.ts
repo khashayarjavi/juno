@@ -1,4 +1,6 @@
 import { execFile } from "node:child_process";
+import { openTestLayer } from "../../packages/enforcement/test/layer.js";
+import type { SessionLayer } from "../../packages/enforcement/src/index.js";
 import { chmodSync, chownSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,7 +9,7 @@ import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { CheckpointStore, GrantStore, HostPathResolver, Workspace, execFileScript } from "../../packages/enforcement/src/index.js";
-import { JournalWriter, readPayload, readTrajectory } from "../../packages/journal/src/index.js";
+import { readPayload, readTrajectory } from "../../packages/journal/src/index.js";
 import { HookService } from "../../packages/mediated/src/hook-service.js";
 import { SYSTEM_INSTALL_IO, installHook } from "../../packages/mediated/src/install.js";
 import { MediatedSessions, PathMap } from "../../packages/mediated/src/session.js";
@@ -44,7 +46,8 @@ const managed = join(host, "managed");
 const managedFile = join(managed, "managed-settings.json");
 const socketPath = join(sockets, "hook.sock");
 const now = new Date();
-let journal: JournalWriter;
+let journal: { readonly root: string };
+let layer: SessionLayer;
 let grants: GrantStore;
 let sessions: MediatedSessions;
 let service: HookService;
@@ -129,15 +132,21 @@ beforeAll(async () => {
   chownSync(sockets, 0, HOOK_GID);
   chmodSync(sockets, 0o2750);
   chmodSync(managed, 0o755);
-  journal = JournalWriter.open(join(host, "journal"));
+  // The shared start-up check judges JUNO's state against the host workspace and the name Claude Code uses for it (D-194).
+  layer = openTestLayer("hook", {
+    journal: join(host, "journal"),
+    workspaces: [workspace, "/workspace"],
+    state: [{ what: "the checkpoint store", path: join(host, "checkpoints"), kind: "dir" }, { what: "the hook socket", path: socketPath, kind: "socket" }, { what: "Claude Code's home", path: home, kind: "path" }],
+  });
+  journal = { root: layer.root };
   grants = new GrantStore(TEST_ANCHOR);
   grants.add(grant("grant-cc"));
   sessions = new MediatedSessions({
-    journal,
+    layer,
     grants,
     paths: new PathMap(["/workspace"]),
     resolver: new HostPathResolver(workspace), view: new Workspace(execFileScript(process.execPath, []), "/work", workspace),
-    filesystem: systemFilesystemIo(), protectedPaths: [join(host, "checkpoints"), sockets, home],
+    filesystem: systemFilesystemIo(),
     checkpoints: { workspace: new Workspace(execFileScript(process.execPath, []), "/work", workspace), store: new CheckpointStore(join(host, "checkpoints")) },
   });
   service = new HookService(sessions, { socketMode: 0o660 });

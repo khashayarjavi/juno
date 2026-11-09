@@ -3,7 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { GrantStore, HostPathResolver, Workspace, execFileScript } from "../../enforcement/src/index.js";
-import { JournalWriter, readPayload, readTrajectory } from "../../journal/src/index.js";
+import { readPayload, readTrajectory } from "../../journal/src/index.js";
+import { openTestLayer } from "../../enforcement/test/layer.js";
+import type { SessionLayer } from "../../enforcement/src/index.js";
 import { TEST_ANCHOR, signed } from "../../enforcement/test/test-keys.js";
 import { GATEWAY_DENIED, type GatewayInstall, HOOK_EVENTS, type InstallIo, MANAGED_SETTINGS, REFUSED_MCP_KEYS, gatewayServerEntry, gatewaySettingsRefusals, hookEntry, installHook, managedMcpRefusals, runHookInstallCli } from "../src/install.js";
 import { type FileFacts, type PreflightInput, type PreflightIo, hookPreflight, runHookCheckCli } from "../src/preflight.js";
@@ -220,19 +222,19 @@ const PRINCIPAL = "alireza";
 const SESSION = "6f2b8a3e-0c1d-4e5f-9a7b-2c3d4e5f6a7b";
 let tmp: string;
 let work: string;
-let journal: JournalWriter;
+let journal: { readonly root: string };
+let layer: SessionLayer;
 let grants: GrantStore;
 let uses = 0;
 
 function sessionsWith(gateway?: { server: string }): MediatedSessions {
   return new MediatedSessions({
-    journal,
+    layer,
     grants,
     paths: new PathMap([work]),
     resolver: new HostPathResolver(work),
     view: new Workspace(execFileScript(process.execPath, []), "/work", work),
     filesystem: systemFilesystemIo(),
-    protectedPaths: [],
     ...(gateway === undefined ? {} : { gateway }),
   });
 }
@@ -270,7 +272,8 @@ beforeEach(() => {
   work = join(tmp, "work");
   mkdirSync(join(work, "project"), { recursive: true });
   writeFileSync(join(work, "project", "notes.txt"), "notes\n");
-  journal = JournalWriter.open(join(tmp, "journal"));
+  layer = openTestLayer("hook", { journal: join(tmp, "journal"), workspaces: [work] });
+  journal = { root: layer.root };
   grants = new GrantStore(TEST_ANCHOR);
   grants.add(signed({
     id: "grant-cc",

@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { openTestLayer } from "../../packages/enforcement/test/layer.js";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,7 +8,7 @@ import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { TrajectoryEntry } from "../../packages/contracts/src/index.js";
 import { GrantStore, WorkloadPathResolver } from "../../packages/enforcement/src/index.js";
-import { JournalWriter, readPayload, readTrajectory } from "../../packages/journal/src/index.js";
+import { readPayload, readTrajectory } from "../../packages/journal/src/index.js";
 import {
   type Adapter,
   CapabilityRegistry,
@@ -68,7 +69,8 @@ const lastResult = (request: ProviderRequest): { result_seq: number; stdout: str
 
 const hostDir = mkdtempSync(join(tmpdir(), "juno-acceptance-"));
 const journalRoot = join(hostDir, "journal");
-const journal = JournalWriter.open(journalRoot);
+// The runner on the host, its workloads in containers (D-065): no workspace on the host for the start-up check to judge.
+const layer = openTestLayer("runner", { journal: journalRoot, workspaces: [] });
 const clock = { now: new Date() };
 const T0 = clock.now.getTime();
 
@@ -134,7 +136,7 @@ function runner(steps: readonly ScriptStep[], options: { registry?: CapabilityRe
   for (const item of options.grants ?? [grant("grant-main")]) grants.add(item);
   const provider = new ScriptedProvider(profile, steps);
   const resolver = new WorkloadPathResolver({ composeFile, project, service: "workload" });
-  return { runner: new Runner({ journal, registry, grants, providers: [provider], sources: SOURCES, clock: () => clock.now, resolver, anchoring: testAnchoring() }), provider };
+  return { runner: new Runner({ layer, registry, grants, providers: [provider], sources: SOURCES, clock: () => clock.now, resolver, anchoring: testAnchoring() }), provider };
 }
 
 const entries = (taskId: string): readonly TrajectoryEntry[] => readTrajectory(journalRoot, taskId);

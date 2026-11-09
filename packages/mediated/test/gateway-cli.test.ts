@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { readPayload, readTrajectory } from "../../journal/src/index.js";
 import { TEST_ANCHOR, signed } from "../../enforcement/test/test-keys.js";
+import { ordinaryHost } from "../../enforcement/test/layer.js";
 import { systemFilesystemIo } from "../src/filesystem.js";
 import { MCP_REVISION } from "../src/gateway.js";
 import { type GatewayCliIo, runGatewayCli } from "../src/gateway-cli.js";
@@ -13,8 +14,9 @@ import { relay } from "../src/mcp-shim.js";
 
 // D-191 (plan Increment 5 item 3): `juno gateway serve` loads the operator's session file, admits it, starts the
 // upstream with execFile, and serves the gateway on its socket as the runner; Claude Code reaches it through the shim.
-// Here the real command function, the real shim, socket and test upstream; only the uid, the anchor loader and the stop
-// signal are given.
+// Here the real command function, the real shared start-up check (D-194), the real shim, socket and test upstream; only
+// the host's uid (an ordinary user, never root) and the stop signal are given. The anchor is a real file the process
+// cannot write.
 
 const SERVER = fileURLToPath(new URL("../../../test/mcp/test-server.mjs", import.meta.url));
 let dir: string;
@@ -38,18 +40,9 @@ function io(overrides: Partial<GatewayCliIo> & { stop?: Promise<void> } = {}): G
   const said: string[] = [];
   // The process's own uid, so files this test writes are its own; as root (a cloud session), an ordinary uid, since the
   // command refuses root, and root's files are accepted as the operator's (found by CI, which runs as an ordinary user).
-  const own = typeof process.geteuid === "function" ? process.geteuid() : 1000;
   return {
-    uid: own === 0 ? 1000 : own,
-    lstat: (path): Stats | null => {
-      try {
-        return lstatSync(path);
-      } catch {
-        return null;
-      }
-    },
+    host: ordinaryHost(),
     readFile: (path) => readFileSync(path, "utf8"),
-    loadAnchor: () => TEST_ANCHOR,
     filesystem: systemFilesystemIo(),
     stopped: () => overrides.stop ?? Promise.resolve(),
     out: (text) => said.push(text),
@@ -60,7 +53,7 @@ function io(overrides: Partial<GatewayCliIo> & { stop?: Promise<void> } = {}): G
 }
 
 function args(extra: Record<string, string> = {}): string[] {
-  const options: Record<string, string> = { "--session": join(dir, "session.json"), "--socket": join(dir, "sock", "gateway.sock"), "--journal": join(dir, "journal"), "--anchor": join(dir, "operator.pub"), "--workspace": work, "--grant": join(dir, "grant.json"), ...extra };
+  const options: Record<string, string> = { "--session": join(dir, "session.json"), "--socket": join(dir, "sock", "gateway.sock"), "--journal": join(dir, "journal"), "--anchor": join(dir, "anchor", "operator.pub"), "--workspace": work, "--grant": join(dir, "grant.json"), ...extra };
   return ["serve", ...Object.entries(options).flat()];
 }
 
@@ -94,9 +87,14 @@ beforeEach(() => {
   mkdirSync(join(dir, "sock"), { mode: 0o750 });
   writeFileSync(join(dir, "session.json"), JSON.stringify(sessionFile()), { mode: 0o644 });
   writeFileSync(join(dir, "grant.json"), JSON.stringify(grant("g")), { mode: 0o644 });
-  writeFileSync(join(dir, "operator.pub"), "unused: the anchor loader is given\n");
+  // The operator's public key, where this process cannot write it or its folder (§3.2, D-116).
+  mkdirSync(join(dir, "anchor"));
+  writeFileSync(join(dir, "anchor", "operator.pub"), TEST_ANCHOR.export({ type: "spki", format: "pem" }), { mode: 0o444 });
+  chmodSync(join(dir, "anchor", "operator.pub"), 0o444);
+  chmodSync(join(dir, "anchor"), 0o555);
 });
 afterEach(() => {
+  chmodSync(join(dir, "anchor"), 0o755);
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -136,13 +134,13 @@ describe("juno gateway serve (D-191)", () => {
 
   // proves D-191: as root, with a session file or grant file others could change, or with bad input, it refuses and serves nothing
   it.each([
-    ["it runs as root", (): Partial<GatewayCliIo> => ({ uid: 0 })],
+    ["it runs as root", (): Partial<GatewayCliIo> => ({ host: { ...ordinaryHost(), uid: 0 } })],
     ["the session file is writable by others", (): Partial<GatewayCliIo> => { chmodSync(join(dir, "session.json"), 0o666); return {}; }],
     ["the grant file is writable by its group", (): Partial<GatewayCliIo> => { chmodSync(join(dir, "grant.json"), 0o664); return {}; }],
-    ["the session file is owned by another user", (): Partial<GatewayCliIo> => ({ uid: 4242, lstat: (path) => { const stats = lstatSync(path); return Object.assign(Object.create(Object.getPrototypeOf(stats) as object) as Stats, stats, { uid: 4243 }); } })],
+    ["the session file is owned by another user", (): Partial<GatewayCliIo> => ({ host: { ...ordinaryHost(), uid: 4242, lstat: (path) => { const stats = lstatSync(path); return Object.assign(Object.create(Object.getPrototypeOf(stats) as object) as Stats, stats, { uid: path.endsWith("session.json") ? 4243 : 4242 }); } } })],
     ["the session file is not a gateway session", (): Partial<GatewayCliIo> => { writeFileSync(join(dir, "session.json"), JSON.stringify({ session: {} })); return {}; }],
     ["the upstream program is not absolute", (): Partial<GatewayCliIo> => { writeFileSync(join(dir, "session.json"), JSON.stringify({ ...sessionFile(), upstream: { program: "node", argv: [] } })); return {}; }],
-    ["the anchor cannot be trusted", (): Partial<GatewayCliIo> => ({ loadAnchor: () => { throw new Error("the trust anchor is writable by this process"); } })],
+    ["the anchor cannot be trusted", (): Partial<GatewayCliIo> => { chmodSync(join(dir, "anchor"), 0o755); chmodSync(join(dir, "anchor", "operator.pub"), 0o666); chmodSync(join(dir, "anchor"), 0o555); return {}; }],
     ["the grant is forged", (): Partial<GatewayCliIo> => { writeFileSync(join(dir, "grant.json"), JSON.stringify({ ...grant("g"), max_invocations: 9999 })); return {}; }],
   ])("refuses when %s", async (_what, arrange) => {
     const target = io(arrange());

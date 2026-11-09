@@ -4,11 +4,13 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { GrantStore, HostPathResolver, type PathResolver, Workspace, execFileScript } from "../../enforcement/src/index.js";
-import { JournalWriter, readPayload, readTrajectory } from "../../journal/src/index.js";
+import { GrantStore, HostPathResolver, type PathResolver, StartupRefused, Workspace, execFileScript } from "../../enforcement/src/index.js";
+import { readPayload, readTrajectory } from "../../journal/src/index.js";
+import { openTestLayer } from "../../enforcement/test/layer.js";
+import type { SessionLayer } from "../../enforcement/src/index.js";
 import { TEST_ANCHOR, signed } from "../../enforcement/test/test-keys.js";
 import { systemFilesystemIo } from "../src/filesystem.js";
-import { GatewayError, MCP_REVISION, McpGateway, type GatewaySessionRequest } from "../src/gateway.js";
+import { MCP_REVISION, McpGateway, type GatewaySessionRequest } from "../src/gateway.js";
 import { StdioUpstream, serveStdio } from "../src/gateway-stdio.js";
 
 // Slice 1.5 Increment 5 (spec §4.3 mode B, §2.2.2, §2.5, §7.8 E2; D-154, D-184 to D-187): every tools/call from an MCP
@@ -23,7 +25,8 @@ const T0 = new Date("2026-11-08T12:00:00.000Z");
 let dir: string;
 let work: string;
 let record: string;
-let journal: JournalWriter;
+let journal: { readonly root: string };
+let layer: SessionLayer;
 let grants: GrantStore;
 
 const capability = (id: string, sideEffect: "read" | "external", fields: Record<string, unknown>): unknown => ({
@@ -68,12 +71,11 @@ function request(overrides: Partial<GatewaySessionRequest> = {}): GatewaySession
 
 function gateway(mode = "normal", options: { resolver?: PathResolver; program?: string } = {}): McpGateway {
   return new McpGateway({
-    journal,
+    layer,
     grants,
     resolver: options.resolver ?? new HostPathResolver(work),
     view: new Workspace(execFileScript(process.execPath, []), "/work", work),
     filesystem: systemFilesystemIo(),
-    protectedPaths: [],
     clock: () => T0,
     upstream: (refused) => new StdioUpstream(options.program ?? process.execPath, options.program === undefined ? [SERVER, work, record, mode] : [], { refused, timeoutMs: 10_000 }),
   });
@@ -102,7 +104,8 @@ beforeEach(() => {
   writeFileSync(join(work, "project", "notes.txt"), "the notes\n");
   writeFileSync(join(work, "project", "secrets", "key.txt"), "the key\n");
   writeFileSync(join(work, "other", "x.txt"), "elsewhere\n");
-  journal = JournalWriter.open(join(dir, "journal"));
+  layer = openTestLayer("gateway", { journal: join(dir, "journal"), workspaces: [work] });
+  journal = { root: layer.root };
   grants = new GrantStore(TEST_ANCHOR);
   grants.add(signed(grantRecord("grant-gw")));
 });
@@ -341,18 +344,22 @@ describe("D-192: §2.7.1 A4 and §4.3 budgets in gateway mode, and JUNO's state 
   });
 
   // proves §3.4.1 and §3.2 (D-148 for mode B): the gateway refuses to start when the journal, or any of JUNO's state,
-  // overlaps the workspace its tools' paths name, so no tool call can read the journal; judged as the kernel resolves it
+  // overlaps the workspace its tools' paths name, so no tool call can read the journal; judged as the kernel resolves it.
+  // (D-194: the refusal is the shared start-up check's, which is the only way to the layer a gateway needs; and a gateway
+  // refuses a workspace that check did not judge.)
   it("refuses to start when JUNO's state overlaps the workspace", async () => {
     const { symlinkSync } = await import("node:fs");
-    const make = (journalRoot: string, protectedPaths: readonly string[] = []): McpGateway =>
-      new McpGateway({ journal: JournalWriter.open(journalRoot), grants, resolver: new HostPathResolver(work), view: new Workspace(execFileScript(process.execPath, []), "/work", work), filesystem: systemFilesystemIo(), protectedPaths, upstream: () => { throw new Error("unused"); } });
-    expect(() => make(join(work, "project", ".journal"))).toThrow(GatewayError);
-    expect(() => make(join(dir, "journal-ok"), [join(work, "project", "grant.json")])).toThrow(GatewayError);
+    const make = (journalRoot: string, state: readonly string[] = []): McpGateway =>
+      new McpGateway({ layer: openTestLayer("gateway", { journal: journalRoot, workspaces: [work], state: state.map((path) => ({ what: "JUNO's state", path, kind: "path" as const })) }), grants, resolver: new HostPathResolver(work), view: new Workspace(execFileScript(process.execPath, []), "/work", work), filesystem: systemFilesystemIo(), upstream: () => { throw new Error("unused"); } });
+    expect(() => make(join(work, "project", ".journal"))).toThrow(StartupRefused);
+    expect(() => make(join(dir, "journal-ok"), [join(work, "project", "grant.json")])).toThrow(StartupRefused);
     // The workspace inside JUNO's state is refused too.
-    expect(() => make(join(dir, "journal-ok"), [dir])).toThrow(GatewayError);
+    expect(() => make(join(dir, "journal-ok"), [dir])).toThrow(StartupRefused);
     // A journal named outside the workspace that resolves into it is refused.
     symlinkSync(join(work, "project"), join(dir, "looks-outside"));
-    expect(() => make(join(dir, "looks-outside", "journal"))).toThrow(GatewayError);
+    expect(() => make(join(dir, "looks-outside", "journal"))).toThrow(StartupRefused);
+    // A gateway whose workspace the check did not judge is refused.
+    expect(() => new McpGateway({ layer: openTestLayer("gateway", { journal: join(dir, "journal-other"), workspaces: [join(dir, "elsewhere")] }), grants, resolver: new HostPathResolver(work), view: new Workspace(execFileScript(process.execPath, []), "/work", work), filesystem: systemFilesystemIo(), upstream: () => { throw new Error("unused"); } })).toThrow(/not a workspace the start-up check judged/);
     // Positive control: state beside the workspace is accepted.
     expect(() => make(join(dir, "journal-ok"), [join(dir, "session.json")])).not.toThrow();
   });

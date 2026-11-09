@@ -5,7 +5,7 @@ import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { GrantStore, HostPathResolver, Workspace, execFileScript } from "../../enforcement/src/index.js";
-import { JournalWriter } from "../../journal/src/index.js";
+import { openTestLayer } from "../../enforcement/test/layer.js";
 import { TEST_ANCHOR, signed } from "../../enforcement/test/test-keys.js";
 import { systemFilesystemIo } from "../src/filesystem.js";
 import { MCP_REVISION, McpGateway } from "../src/gateway.js";
@@ -58,10 +58,9 @@ describe("D-188: the gateway is served by the runner on a socket; Claude Code's 
   it("relays a session through the shim to the runner's gateway, which judges every call", async () => {
     const work = join(dir, "work");
     const record = join(dir, "record.jsonl");
-    const journal = JournalWriter.open(join(dir, "journal"));
     const grants = new GrantStore(TEST_ANCHOR);
     grants.add(signed({ id: "g", principal: "alireza", capability_selector: { capabilities: ["mcp.message.send"] }, resource_scope: [{ kind: "path", prefix: "/work/project" }], data_class_bounds: { max_sensitivity: "secret", min_integrity: "untrusted" }, issuance: "preissued", issued_by: "alireza", issued_at: new Date(T0.getTime() - 60_000).toISOString(), expires_at: new Date(T0.getTime() + 86_400_000).toISOString(), max_invocations: 10, attenuation_parent: null, revoked_at: null, enumerated_targets: [{ field: "to", value: "ops@example.com" }] }));
-    const gateway = new McpGateway({ journal, grants, resolver: new HostPathResolver(work), view: new Workspace(execFileScript(process.execPath, []), "/work", work), filesystem: systemFilesystemIo(), protectedPaths: [], clock: () => T0, upstream: (refused) => new StdioUpstream(process.execPath, [SERVER, work, record], { refused }) });
+    const gateway = new McpGateway({ layer: openTestLayer("gateway", { journal: join(dir, "journal"), workspaces: [work], state: [{ what: "the gateway socket", path: join(dir, "sock", "gateway.sock"), kind: "socket" }] }), grants, resolver: new HostPathResolver(work), view: new Workspace(execFileScript(process.execPath, []), "/work", work), filesystem: systemFilesystemIo(), clock: () => T0, upstream: (refused) => new StdioUpstream(process.execPath, [SERVER, work, record], { refused }) });
     const entry = { capability: { id: "mcp.message.send", interface: { to: { type: { kind: "string" }, role: "data", data_effect: "target" }, body: { type: { kind: "string" }, role: "data", data_effect: "payload" } }, providers: ["gateway.mcp"], side_effect: "external", isolation_tier: 1, max_input_sensitivity: "internal", min_argument_integrity: "operator", output_class: { sensitivity: "input", integrity: "untrusted" }, cost_model: { expected_cost: 0, expected_latency_ms: 100, cost_of_failure: 0 } } };
     expect(await gateway.admit({ session_id: "svc", principal: "alireza", attendance: "autonomous", ttl: 3_600_000, grants: ["g"], budget: { tool_calls: 10, wall_clock_ms: 3_600_000 }, unmetered_accepted: true, provider_clearance: "internal", sources: [{ id: "project", selector: { kind: "path", prefix: "/work/project" }, data_class: { sensitivity: "internal", integrity: "untrusted" } }, { id: "acks", selector: { kind: "tool_result", tool: "mcp.message.send" }, data_class: { sensitivity: "internal", integrity: "untrusted" } }], tools: [{ tool: "message.send", entry }] })).toMatchObject({ admitted: true });
     const service = new GatewayService(gateway);
@@ -100,13 +99,18 @@ describe("D-188: the gateway is served by the runner on a socket; Claude Code's 
     expect(existsSync(join(dir, "record.jsonl"))).toBe(false);
   });
 
-  // proves D-173 as applied to D-188: the service refuses a socket folder others could write, and a mode open to everyone
+  // proves D-173 as applied to D-188: the service refuses a socket folder others could write, and a mode open to everyone.
+  // (D-194: the shared start-up check refuses such a folder before anything starts; the service checks again when it
+  // listens, so a folder opened up after start-up is refused too, and a socket the check never judged is refused.)
   it("refuses an unsafe socket folder or mode", async () => {
-    const gateway = new McpGateway({ journal: JournalWriter.open(join(dir, "j2")), grants: new GrantStore(TEST_ANCHOR), resolver: new HostPathResolver(join(dir, "work")), view: new Workspace(execFileScript(process.execPath, []), "/work", join(dir, "work")), filesystem: systemFilesystemIo(), protectedPaths: [], upstream: () => { throw new Error("unused"); } });
-    mkdirSync(join(dir, "open"), { mode: 0o777 });
     const { chmodSync } = await import("node:fs");
+    mkdirSync(join(dir, "open"), { mode: 0o700 });
+    const state = [{ what: "the gateway socket", path: join(dir, "open", "g.sock"), kind: "socket" as const }, { what: "the gateway socket", path: join(dir, "sock", "g.sock"), kind: "socket" as const }];
+    const gateway = new McpGateway({ layer: openTestLayer("gateway", { journal: join(dir, "j2"), workspaces: [join(dir, "work")], state }), grants: new GrantStore(TEST_ANCHOR), resolver: new HostPathResolver(join(dir, "work")), view: new Workspace(execFileScript(process.execPath, []), "/work", join(dir, "work")), filesystem: systemFilesystemIo(), upstream: () => { throw new Error("unused"); } });
     chmodSync(join(dir, "open"), 0o777);
+    expect(() => openTestLayer("gateway", { journal: join(dir, "j3"), workspaces: [join(dir, "work")], state })).toThrow(/writable by group or others/);
     await expect(new GatewayService(gateway).listen(join(dir, "open", "g.sock"))).rejects.toThrow(/writable by group or others/);
     await expect(new GatewayService(gateway, { socketMode: 0o666 }).listen(join(dir, "sock", "g.sock"))).rejects.toThrow(/at most read and write/);
+    await expect(new GatewayService(gateway).listen(join(dir, "sock", "other.sock"))).rejects.toThrow(/not one the start-up check judged/);
   });
 });

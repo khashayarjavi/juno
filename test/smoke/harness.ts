@@ -1,11 +1,12 @@
 import { execFile } from "node:child_process";
+import { openTestLayer } from "../../packages/enforcement/test/layer.js";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { TrajectoryEntry } from "../../packages/contracts/src/index.js";
 import { GrantStore, WorkloadPathResolver } from "../../packages/enforcement/src/index.js";
-import { JournalWriter, readPayload, readTrajectory } from "../../packages/journal/src/index.js";
+import { readPayload, readTrajectory } from "../../packages/journal/src/index.js";
 import { CapabilityRegistry, RegistryEntry, WorkloadExecFileAdapter } from "../../packages/registry/src/index.js";
 import type { SourceRegistration } from "../../packages/runner/src/admission.js";
 import { explainTask } from "../../packages/runner/src/explain.js";
@@ -279,7 +280,7 @@ export async function runScenario(scenario: Scenario, index: number, groq: GroqP
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(dir, { recursive: true });
   const journalRoot = join(dir, "journal");
-  const journal = JournalWriter.open(journalRoot);
+  const layer = openTestLayer("runner", { journal: journalRoot, workspaces: [] });
   const started = new Date();
   await freshWork(scenario.files);
   const runners: Runner[] = [];
@@ -291,7 +292,7 @@ export async function runScenario(scenario: Scenario, index: number, groq: GroqP
       for (const item of options.grants ?? [grant("grant-main", Date.now())]) grants.add(item);
       const provider = options.provider ?? groq;
       if (provider.profile !== groq.profile) throw new Error("a scenario's provider must serve the Groq profile");
-      const runner = new Runner({ resolver: new WorkloadPathResolver({ composeFile, project, service: "workload" }), journal, registry: options.registry ?? standardRegistry(), grants, providers: [provider], sources: SOURCES, clock: options.clock ?? (() => new Date()), anchoring: testAnchoring() });
+      const runner = new Runner({ resolver: new WorkloadPathResolver({ composeFile, project, service: "workload" }), layer, registry: options.registry ?? standardRegistry(), grants, providers: [provider], sources: SOURCES, clock: options.clock ?? (() => new Date()), anchoring: testAnchoring() });
       runners.push(runner);
       return runner;
     },
