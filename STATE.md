@@ -3,7 +3,7 @@
 ## Current increment
 **Slice 1.5 — Increment 6: §4.3's Slice 1.5 acceptance, end to end** (`docs/plans/slice-1.5-build-plan.md`, Increment 6; §4.3 "Acceptance for Slice 1.5", §18 tests 1–5 as regression, §3.4.5, §3.4.1; D-180). Branch `claude/blissful-gates-7hljw0`, fast-forwarded to `main` 34d7439 after PR #46 merged. Spec v0.6.1. No objection open.
 
-Status (2026-11-09): **items 1 to 4 built (D-195 to D-197); items 5 and 6 left.**
+Status (2026-11-09): **items 1 to 4 built (D-195 to D-197); items 5 and 6 left.** `make verify: GREEN` locally (1,268 unit, 112 container). Draft PR open for CI.
 - **D-197, item 4, the container test.** The real `juno hook serve` and `juno hook admit`, run from the runner image as the runner, admit your session. The real hook client, as the Claude Code user, gets an allowed read and a denied out-of-grant write, both journalled. The command refuses to start on a workspace D-178 refuses. The Claude Code user cannot reach the admission socket. Container hook-separation: 40/40.
   - **Found and fixed by it:** the built code the operator runs (`/opt/juno/dist`) lacked the JSON capability definitions, so it could never admit a hook session. Earlier tests ran the TypeScript sources and missed it. `make build` now copies them.
 - **D-195:** the start-up check now refuses state not yet created when the folder that would hold it is shared, sticky bit or not. The gateway now forwards the boundary's judged copy of each call.
@@ -26,7 +26,11 @@ Status (2026-11-09): **items 1 to 4 built (D-195 to D-197); items 5 and 6 left.*
    - an allowed read, journalled;
    - a denied out-of-grant write, journalled;
    - a refusal to start on a workspace D-178 refuses.
-5. Run §4.3 acceptance tests 1–4 together with §18 tests 1–5 in one `make verify`. Each test reads the journal back (§3.4.5) and checks the chain against the latest anchor (§3.4.1). The real-binary parts run in one `make mediated-e2e`, against the service the new command started.
+5. **Next, first: anchor every mode's journal (planned as D-198, autopilot ruling, restrictive).** §3.4.1 anchors "the journal", not only the own loop's. Today only the `Runner` anchors; hook and gateway journals are not anchored. The plan's acceptance needs every test to "check the chain against the latest anchor".
+   - Move the anchoring (sink, journal key, interval, anchor at start and at most one interval apart, a session whose head cannot be anchored stops) from `Runner` into the shared session layer, so every mode gets it the same way.
+   - `juno hook serve` and `juno gateway serve` then take a journal key and the anchor destination.
+   - Extend the entry-point test so that a mode that does not anchor fails.
+   Then: run §4.3 acceptance tests 1–4 together with §18 tests 1–5 in one `make verify`. Each test reads the journal back (§3.4.5) and checks the chain against the latest anchor (§3.4.1). The real-binary parts run in one `make mediated-e2e`, against the service the new command started.
 6. Write the operator steps (plan Increment 6) into STATE.md. Then the PR, review and merge gate, and STATE.md records Slice 1.5 complete.
 
 ### Merges this session (2026-11-09, later session)
