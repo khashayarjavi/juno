@@ -2236,3 +2236,14 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   - An in-process `type: "sdk"` server, which an app or the Agent SDK registers when it starts the session, skips every list. Its calls arrive with `source: "sdk"`, so the hook denies them; the governed session is started from the WSL terminal, where no such app registers one.
   - Whoever starts Claude Code with `CLAUDE_CODE_MANAGED_SETTINGS_PATH` naming another folder chooses another managed file as well as another hook (D-173).
 - Reason: the operator's ruling; §4.3 mode B and mode C, fail-closed ingress; D8.
+
+## D-191 — The `juno gateway serve` command (plan Increment 5 item 3; autopilot ruling)
+- Date: 2026-11-09
+- Status: Accepted (restrictive readings)
+- Applies to: `packages/mediated/src/gateway-cli.ts` (new), `packages/runner/src/juno.ts`; `packages/mediated/test/gateway-cli.test.ts`
+- Decision:
+  - `juno gateway serve --session <file> --socket <path> --journal <dir> --anchor <operator.pub> --workspace <dir> --grant <file> [--grant <file> …]`, run as the runner. It admits the one session the file declares (D-187), starts the file's upstream with `execFile(program, argv)` and the file's environment only (empty by default), serves the gateway on the socket with mode 0660 (D-188), and stops cleanly on SIGINT or SIGTERM.
+  - The session file is `{ "session": <gateway session>, "upstream": { "program": <absolute path>, "argv": [...], "env": {...} } }`, strictly parsed: an unknown key, a relative program or an environment name that is not a plain identifier is refused.
+  - Restrictive: it refuses, and serves nothing, when it runs as root (the gateway is the runner's, D-130, D-188); when the session file or a grant file is a symbolic link, is not a file, is owned by anyone but root or this process, or is writable by group or others; when any path given is not absolute; when the anchor cannot be loaded (the runner's own `loadTrustAnchor`, which refuses an anchor this process could write, D-116); when a grant file holds no grant; or when admission refuses the session (journalled, as D-187).
+  - Not built here: a service manager entry. Increment 6 adds the command that starts JUNO's services on the operator's machine (D-180), and the gateway joins it there.
+- Reason: plan Increment 5 item 3; D8.
