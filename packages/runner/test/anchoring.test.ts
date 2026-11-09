@@ -8,7 +8,7 @@ import { AnchorExistsError, JournalKeyError, anchorPath, checkAnchors, loadOrCre
 import type { CliIo } from "../src/grant-cli.js";
 import { runJournalCli } from "../src/journal-cli.js";
 import { RUNNER_RECORD, type Runner } from "../src/runner.js";
-import { MemoryAnchorSink, testAnchoring } from "./anchor-sink.js";
+import { MemoryAnchorSink } from "./anchor-sink.js";
 import { type Harness, harness, request, shellRun, turn } from "./helpers.js";
 
 /**
@@ -50,12 +50,13 @@ describe("§3.4.1 C1: the runner anchors journal heads", () => {
 
   // proves §3.4.1: while a task runs, an anchor is taken whenever the recorded interval has passed
   it("anchors at each interval while the task runs", async () => {
-    const anchoring = { ...h.anchoring, intervalMs: 1_000 };
+    h.cleanup();
+    h = harness(undefined, { anchoring: { intervalMs: 1_000 } });
     const step = (calls: Parameters<typeof turn>[0]): (() => ReturnType<typeof turn>) => () => {
       h.now.value = new Date(h.now.value.getTime() + 1_500);
       return turn(calls);
     };
-    const { runner } = h.runner([step([shellRun(["notes.txt"])]), step([shellRun(["notes.txt"])]), step([])], { anchoring });
+    const { runner } = h.runner([step([shellRun(["notes.txt"])]), step([shellRun(["notes.txt"])]), step([])]);
     admitted(runner);
     await runner.run("task-1");
     // At start, before turns 2 and 3 (each 1.5 s after the last anchor), and at stop.
@@ -74,27 +75,27 @@ describe("§3.4.1 C1: the runner anchors journal heads", () => {
 
   // proves §3.4.1: a running task stops when an interval's anchor cannot be taken
   it("fails a running task when an interval's anchor cannot be taken", async () => {
-    const anchoring = { ...h.anchoring, intervalMs: 1_000 };
-    const { runner } = h.runner(
-      [
-        () => {
-          h.now.value = new Date(h.now.value.getTime() + 1_500);
-          h.anchors.unreachable = "gone";
-          return turn([shellRun(["notes.txt"])]);
-        },
-        turn([]),
-      ],
-      { anchoring },
-    );
+    h.cleanup();
+    h = harness(undefined, { anchoring: { intervalMs: 1_000 } });
+    const { runner } = h.runner([
+      () => {
+        h.now.value = new Date(h.now.value.getTime() + 1_500);
+        h.anchors.unreachable = "gone";
+        return turn([shellRun(["notes.txt"])]);
+      },
+      turn([]),
+    ]);
     admitted(runner);
     expect((await runner.run("task-1")).reason).toBe("anchor_unavailable");
     expect(h.entries().filter((entry) => entry.kind === "turn").length).toBe(1);
   });
 
-  // proves §3.4.1 V6-4: the operator's key never serves as the journal key; the runner refuses to start with it
+  // proves §3.4.1 V6-4: the operator's key never serves as the journal key; the runner refuses to start with it (its
+  // grant store's key), and the shared layer refuses to open with it (the verified trust anchor; D-198)
   it("refuses a journal key that is the operator's grant-signing key", () => {
-    const anchoring = testAnchoring({ journalKey: { privateKey: TEST_OPERATOR_KEY, publicKey: TEST_ANCHOR } });
-    expect(() => h.runner([], { anchoring })).toThrow(/operator's grant-signing key/);
+    h.cleanup();
+    h = harness(undefined, { anchoring: { journalKey: { privateKey: TEST_OPERATOR_KEY, publicKey: TEST_ANCHOR } } });
+    expect(() => h.runner([])).toThrow(/operator's grant-signing key/);
   });
 
   // proves §3.4.1 V6-4: no runner module signs a grant or reads a private key; only the operator's CLI does
@@ -125,16 +126,16 @@ describe("§3.4.1 C1: the runner anchors journal heads", () => {
       };
       return sink;
     };
-    const same = preStored(false);
-    const { runner } = h.runner([turn([])], { anchoring: { ...h.anchoring, sink: same } });
+    h.cleanup();
+    h = harness(undefined, { anchoring: { sink: preStored(false) } });
+    const { runner } = h.runner([turn([])]);
     admitted(runner);
     expect((await runner.run("task-1")).state).toBe("complete_unverified");
     expect(notes("anchor_failed")).toEqual([]);
 
     h.cleanup();
-    h = harness();
-    const forged = preStored(true);
-    const second = h.runner([turn([])], { anchoring: { ...h.anchoring, sink: forged } });
+    h = harness(undefined, { anchoring: { sink: preStored(true) } });
+    const second = h.runner([turn([])]);
     admitted(second.runner);
     expect(await second.runner.run("task-1")).toEqual({ task_id: "task-1", state: "failed", reason: "anchor_unavailable" });
     expect(notes("anchor_failed")[0]?.["reason"]).toMatch(/holds a different anchor/);

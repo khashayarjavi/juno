@@ -13,7 +13,6 @@ import { CapabilityRegistry, WorkloadExecFileAdapter, WorkloadWriteAdapter, load
 import { SCRIPTED_PROFILE_FILE, loadProviderProfile } from "../../packages/runner/src/profile.js";
 import { ScriptedProvider } from "../../packages/runner/src/provider.js";
 import { Runner } from "../../packages/runner/src/runner.js";
-import { MemoryAnchorSink, testAnchoring } from "../../packages/runner/test/anchor-sink.js";
 import { TEST_ANCHOR, signed } from "../../packages/enforcement/test/test-keys.js";
 
 // Slice 1.5 Increment 3 in the real workload container (§2.2.2, §2.4; D-121, D-136, D-137):
@@ -106,7 +105,6 @@ function runnerWith(calls: readonly unknown[], resolver: PathResolver = new Work
     providers: [provider],
     sources: [{ id: "scope", selector: { kind: "path", prefix: "/work/scope" }, data_class: { sensitivity: "internal", integrity: "untrusted" } }],
     resolver,
-    anchoring: testAnchoring({ sink: new MemoryAnchorSink() }),
     checkpoints: { workspace: workloadWorkspace(target), store: new CheckpointStore(join(hostDir, "checkpoints")) },
     // D-149: a runner that starts real workloads checks that the runtime enforces their limits.
     containerRuntime: runtime,

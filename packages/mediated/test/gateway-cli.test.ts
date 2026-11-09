@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { readPayload, readTrajectory } from "../../journal/src/index.js";
 import { TEST_ANCHOR, signed } from "../../enforcement/test/test-keys.js";
+import { MemoryAnchorSink, testAnchoring } from "../../enforcement/test/anchoring.js";
 import { ordinaryHost } from "../../enforcement/test/layer.js";
 import { systemFilesystemIo } from "../src/filesystem.js";
 import { MCP_REVISION } from "../src/gateway.js";
@@ -19,6 +20,8 @@ import { relay } from "../src/mcp-shim.js";
 // cannot write.
 
 const SERVER = fileURLToPath(new URL("../../../test/mcp/test-server.mjs", import.meta.url));
+/** The in-memory anchor destination of each test (D-198). */
+let anchors = new MemoryAnchorSink();
 let dir: string;
 let work: string;
 let record: string;
@@ -44,6 +47,8 @@ function io(overrides: Partial<GatewayCliIo> & { stop?: Promise<void> } = {}): G
     host: ordinaryHost(),
     readFile: (path) => readFileSync(path, "utf8"),
     filesystem: systemFilesystemIo(),
+    // §3.4.1 (D-198): every service anchors; here to an in-memory destination (the flags below are still judged).
+    anchoring: testAnchoring({ sink: anchors }),
     stopped: () => overrides.stop ?? Promise.resolve(),
     out: (text) => said.push(text),
     err: (text) => said.push(text),
@@ -53,7 +58,7 @@ function io(overrides: Partial<GatewayCliIo> & { stop?: Promise<void> } = {}): G
 }
 
 function args(extra: Record<string, string> = {}): string[] {
-  const options: Record<string, string> = { "--session": join(dir, "session.json"), "--socket": join(dir, "sock", "gateway.sock"), "--journal": join(dir, "journal"), "--anchor": join(dir, "anchor", "operator.pub"), "--workspace": work, "--grant": join(dir, "grant.json"), ...extra };
+  const options: Record<string, string> = { "--session": join(dir, "session.json"), "--socket": join(dir, "sock", "gateway.sock"), "--journal": join(dir, "journal"), "--anchor": join(dir, "anchor", "operator.pub"), "--workspace": work, "--journal-key": join(dir, "journal-key"), "--anchors": join(dir, "juno-anchors"), "--grant": join(dir, "grant.json"), ...extra };
   return ["serve", ...Object.entries(options).flat()];
 }
 
@@ -80,6 +85,7 @@ async function through(socket: string, messages: readonly unknown[]): Promise<Re
 }
 
 beforeEach(() => {
+  anchors = new MemoryAnchorSink();
   dir = mkdtempSync(join(tmpdir(), "juno-gw-cli-"));
   work = join(dir, "work");
   record = join(dir, "record.jsonl");

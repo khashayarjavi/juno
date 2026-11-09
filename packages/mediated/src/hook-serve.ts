@@ -1,5 +1,8 @@
 import { z } from "zod";
 import {
+  type Anchoring,
+  type AnchoringConfig,
+  DEFAULT_GIT,
   CheckpointStore,
   type ContainerRuntime,
   GrantStore,
@@ -9,7 +12,10 @@ import {
   StartupRefused,
   type StartupSpec,
   Workspace,
+  anchoringState,
   execFileScript,
+  gitAnchoring,
+  parseAnchorInterval,
   probeContainerRuntime,
   runtimeRefusal,
   systemHostIo,
@@ -23,6 +29,7 @@ import { MediatedSessions, PathMap } from "./session.js";
  * `juno hook serve` and `juno hook admit` (build plan Increment 6; operator ruling D-180; DECISIONS.md D-196).
  *
  *   juno hook serve --socket <hook.sock> --control <admit.sock> --journal <dir> --anchor <operator.pub>
+ *                   --journal-key <dir> --anchors <juno-anchors clone> [--anchor-interval <seconds>] [--git <program>]
  *                   --workspace <dir> --checkpoints <dir> [--protect <path> ...] [--gateway <name>]
  *   juno hook admit --control <admit.sock> <session file>
  *
@@ -45,17 +52,19 @@ export type HookServeIo = {
   readonly runtime: () => Promise<ContainerRuntime>;
   /** Resolves when the service should stop (SIGINT or SIGTERM in real use). */
   readonly stopped: () => Promise<void>;
+  /** Tests only: the anchoring to use in place of the journal key and clone the flags name (the flags are still judged). */
+  readonly anchoring?: Anchoring;
   /** Called once the service listens; tests use it to drive it. */
   readonly ready?: (service: { readonly layer: SessionLayer }) => void;
   readonly out: (text: string) => void;
   readonly err: (text: string) => void;
 };
 
-const SERVE_USAGE = "usage: juno hook serve --socket <hook.sock> --control <admit.sock> --journal <dir> --anchor <operator.pub> --workspace <dir> --checkpoints <dir> [--protect <path> ...] [--gateway <name>]\n";
+const SERVE_USAGE = "usage: juno hook serve --socket <hook.sock> --control <admit.sock> --journal <dir> --anchor <operator.pub> --journal-key <dir> --anchors <juno-anchors clone> [--anchor-interval <seconds>] [--git <program>] --workspace <dir> --checkpoints <dir> [--protect <path> ...] [--gateway <name>]\n";
 const ADMIT_USAGE = "usage: juno hook admit --control <admit.sock> <session file>\n";
 
 /** What `juno hook serve` asks the shared start-up check to judge (D-194, D-196). */
-export function hookStartupSpec(options: { readonly socket: string; readonly control: string; readonly journal: string; readonly anchor: string; readonly workspace: string; readonly checkpoints: string; readonly protect: readonly string[] }): StartupSpec {
+export function hookStartupSpec(options: { readonly socket: string; readonly control: string; readonly journal: string; readonly anchor: string; readonly workspace: string; readonly checkpoints: string; readonly protect: readonly string[]; readonly anchoring: AnchoringConfig }): StartupSpec {
   return {
     service: "hook",
     journal: options.journal,
@@ -64,6 +73,7 @@ export function hookStartupSpec(options: { readonly socket: string; readonly con
       { what: "the hook socket", path: options.socket, kind: "socket" },
       { what: "the admission socket", path: options.control, kind: "socket" },
       { what: "the checkpoint store", path: options.checkpoints, kind: "dir" },
+      ...anchoringState(options.anchoring),
       ...options.protect.map((path) => ({ what: "protected state", path, kind: "path" as const })),
     ],
     anchor: options.anchor,
@@ -77,7 +87,7 @@ function refused(io: { readonly err: (text: string) => void }, command: string, 
 
 /** `juno hook serve`: returns the exit code once stopped, or at once when refused. */
 export async function runHookServeCli(args: readonly string[], io: HookServeIo): Promise<number> {
-  const single = ["--socket", "--control", "--journal", "--anchor", "--workspace", "--checkpoints", "--gateway"];
+  const single = ["--socket", "--control", "--journal", "--anchor", "--workspace", "--checkpoints", "--journal-key", "--anchors", "--anchor-interval", "--git", "--gateway"];
   const options = new Map<string, string>();
   const protect: string[] = [];
   for (let index = 0; index < args.length; index += 2) {
@@ -90,11 +100,13 @@ export async function runHookServeCli(args: readonly string[], io: HookServeIo):
     if (name === "--protect") protect.push(value);
     else options.set(name, value);
   }
-  const [socket, control, journal, anchor, workspace, checkpoints] = single.slice(0, 6).map((name) => options.get(name));
-  if (socket === undefined || control === undefined || journal === undefined || anchor === undefined || workspace === undefined || checkpoints === undefined) {
+  const [socket, control, journal, anchor, workspace, checkpoints, journalKeyDir, anchorClone] = single.slice(0, 8).map((name) => options.get(name));
+  const intervalMs = parseAnchorInterval(options.get("--anchor-interval"));
+  if (socket === undefined || control === undefined || journal === undefined || anchor === undefined || workspace === undefined || checkpoints === undefined || journalKeyDir === undefined || anchorClone === undefined || intervalMs === null) {
     io.err(SERVE_USAGE);
     return 2;
   }
+  const anchoring: AnchoringConfig = { journalKeyDir, anchorClone, intervalMs, git: options.get("--git") ?? DEFAULT_GIT };
   // D-131 (plan Increment 6): a runtime that would ignore the workloads' limits stops the service from starting.
   try {
     const why = runtimeRefusal(await io.runtime());
@@ -109,7 +121,7 @@ export async function runHookServeCli(args: readonly string[], io: HookServeIo):
   // THE shared start-up check, before anything is opened; the two checks above open nothing either (D-193, D-194).
   let layer: SessionLayer;
   try {
-    layer = SessionLayer.open(hookStartupSpec({ socket, control, journal, anchor, workspace, checkpoints, protect }), { host: io.host });
+    layer = SessionLayer.open(hookStartupSpec({ socket, control, journal, anchor, workspace, checkpoints, protect, anchoring }), { host: io.host, anchoring: io.anchoring ?? ((root) => gitAnchoring(anchoring, root)) });
   } catch (error: unknown) {
     return refused(io, "serve", error instanceof StartupRefused ? error.refusals : [error instanceof Error ? error.message : String(error)]);
   }
@@ -143,10 +155,17 @@ export async function runHookServeCli(args: readonly string[], io: HookServeIo):
     await Promise.all([hook.close(), admission.close()]);
     return refused(io, "serve", [error instanceof Error ? error.message : String(error)]);
   }
+  // §3.4.1 (D-198): every record is anchored at most one interval after it is written, and once more when the service stops.
+  layer.startAnchoring();
   io.out(`juno hook: serving ${socket}; admit a session with: juno hook admit --control ${control} <session file>. Stop with Ctrl+C.\n`);
   io.ready?.({ layer });
   await io.stopped();
   await Promise.all([hook.close(), admission.close()]);
+  const unanchored = await layer.close();
+  if (unanchored.length > 0) {
+    io.err(`juno hook: stopped, but ${String(unanchored.length)} journal record(s) could not be anchored off the host (journalled as anchor_failed; §3.4.1).\n`);
+    return 1;
+  }
   io.out("juno hook: stopped.\n");
   return 0;
 }

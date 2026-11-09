@@ -192,21 +192,23 @@ export type Harness = {
   cleanup: () => void;
 };
 
-export function harness(adapter: Adapter = standInAdapter): Harness {
+/** `anchoring`: parts of the layer's anchoring to set (D-198: anchoring belongs to the session layer, not the runner). */
+export function harness(adapter: Adapter = standInAdapter, options: { readonly anchoring?: Partial<Anchoring> } = {}): Harness {
   const dir = mkdtempSync(join(tmpdir(), "juno-runner-"));
   standInRoot = join(dir, "work");
   writeWork(WORK_FILES);
-  const layer = openTestLayer("runner", { journal: join(dir, "journal"), workspaces: [join(dir, "work")], state: [{ what: "the checkpoint store", path: join(dir, "checkpoints"), kind: "dir" }] });
+  const anchors = options.anchoring?.sink instanceof MemoryAnchorSink ? options.anchoring.sink : new MemoryAnchorSink();
+  const anchoring = { ...testAnchoring({ sink: anchors }), ...options.anchoring };
+  const now = { value: new Date(Date.parse(T0) + 60 * 60 * 1000) };
+  // The layer and the runner share the harness's clock, so anchoring intervals are measured on it (D-198).
+  const layer = openTestLayer("runner", { journal: join(dir, "journal"), workspaces: [join(dir, "work")], state: [{ what: "the checkpoint store", path: join(dir, "checkpoints"), kind: "dir" }], anchoring, clock: () => now.value });
   const journal = { root: layer.root };
   const registry = new CapabilityRegistry();
   const registered = registry.register(loadRegistryEntry(SHELL_RUN_FILE), [adapter]);
   if (!registered.registered) throw new Error(`shell.run did not register: ${JSON.stringify(registered.refusals)}`);
   const grants = new GrantStore(TEST_ANCHOR);
   grants.add(grant());
-  const now = { value: new Date(Date.parse(T0) + 60 * 60 * 1000) };
   const runners: Runner[] = [];
-  const anchors = new MemoryAnchorSink();
-  const anchoring = testAnchoring({ sink: anchors });
   return {
     dir,
     journal,
@@ -218,7 +220,7 @@ export function harness(adapter: Adapter = standInAdapter): Harness {
     anchoring,
     runner: (steps, options = {}) => {
       const provider = new ScriptedProvider(options.profile ?? PROFILE, steps);
-      const runner = new Runner({ layer, registry, grants, providers: [provider], sources: [PROJECT_SOURCE], clock: () => now.value, resolver: hostResolver(join(dir, "work")), anchoring, ...options });
+      const runner = new Runner({ layer, registry, grants, providers: [provider], sources: [PROJECT_SOURCE], clock: () => now.value, resolver: hostResolver(join(dir, "work")), ...options });
       runners.push(runner);
       return { runner, provider };
     },

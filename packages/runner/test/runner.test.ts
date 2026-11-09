@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BoundaryError, Closure, type TrajectoryEntry, closureSchemaFor } from "../../contracts/src/index.js";
 import { CapabilityRegistry, WORKLOAD_EXECFILE, type Adapter, loadRegistryEntry } from "../../registry/src/index.js";
 import { RunnerLockError } from "../src/lock.js";
@@ -308,11 +308,14 @@ describe("parks from the enforcement boundary (§2.7, §6.2, §8.3)", () => {
   // proves §18 / CLAUDE.md rule 9: one task runs at a time
   it("refuses to start a second task while one is running", async () => {
     let release: (value: unknown) => void = () => undefined;
-    const { runner } = h.runner([() => new Promise((resolve) => (release = resolve)), turn([])]);
+    let waiting = false;
+    const { runner } = h.runner([() => new Promise((resolve) => ((release = resolve), (waiting = true))), turn([])]);
     admitted(runner);
     admitted(runner, { id: "task-2" });
     const first = runner.run("task-1");
     await expect(runner.run("task-2")).rejects.toThrow(/one task at a time/);
+    // The first task's turn is released once it is waiting on the model (its start anchors first, D-198).
+    await vi.waitFor(() => expect(waiting).toBe(true));
     release(turn([]));
     expect((await first).state).toBe("complete_unverified");
   });

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { type DataClass, type Sensitivity, Task, maxSensitivity, pathWithin } from "../../contracts/src/index.js";
-import { type CanonicalPaths, type EnforcementBoundary, type GovernedSession, type GrantStore, type PathResolver, SessionLayer, type TaskContext, type Verdict, type Workspace } from "../../enforcement/src/index.js";
+import { type CanonicalPaths, type EnforcementBoundary, type GovernedSession, type GrantStore, type PathResolver, REFUSED_ADMISSION_CLASS, SessionLayer, type TaskContext, type Verdict, type Workspace } from "../../enforcement/src/index.js";
 import { type Adapter, type CapabilityCall, CapabilityRegistry, RegistryEntry } from "../../registry/src/index.js";
 import { type FilesystemIo, caseFoldingRefusals } from "./filesystem.js";
 import { DeclaredSource, type ReadTarget, classifyRead } from "./reads.js";
@@ -189,6 +189,8 @@ export class McpGateway {
     }
     if (failures.length > 0) {
       this.#layer.refuse(id, { mode: "gateway", failures }, GATEWAY_ACTOR);
+      // §3.4.1 (D-198): a refused admission is anchored too; a failure is journalled by the layer.
+      await this.#layer.anchorHead(id, REFUSED_ADMISSION_CLASS);
       return { admitted: false, failures };
     }
     const task = Task.parse({
@@ -227,6 +229,12 @@ export class McpGateway {
       clock: "from_admission",
       park_fields: { mode: "gateway", answer: "isError" },
     }, { dataClass: { sensitivity: "internal", integrity: "operator" }, now: () => this.#clock().getTime(), actor: GATEWAY_ACTOR, payload: { mode: "gateway", admitted_at: this.#clock().toISOString(), task, request, unmetered: ["tokens", "currency"] } });
+    // §3.4.1 (D-198): the shared layer records the interval and anchors the admitted session's head before its first
+    // call; a session whose head cannot be anchored is never run.
+    if (!(await this.#session.anchor(this.#class(), { force: true }))) {
+      this.#stopForAnchor();
+      return { admitted: false, failures: ["the session's journal head could not be anchored off the host, so the session does not start (§3.4.1, D-198)"] };
+    }
     return { admitted: true, task_id: id };
   }
 
@@ -315,7 +323,11 @@ export class McpGateway {
     if (task.state !== "running") return denied(`this session is ${task.state}; no call is allowed`);
     // §6.4 and §4.3, in the shared layer: TTL, then the budget, then the call is counted, so every call counts, a call
     // to a tool the operator did not define included (D-192, D-194).
-    const started = session.beginCall(this.#class(), GATEWAY_ACTOR, { tool: toolName });
+    const started = await session.beginCall(this.#class(), GATEWAY_ACTOR, { tool: toolName });
+    if (!started.ok && started.reason === "anchor_unavailable") {
+      this.#stopForAnchor();
+      return denied("JUNO could not copy this session's journal head off the host, so the session has stopped (§3.4.1)");
+    }
     if (!started.ok && started.reason === "ttl_expired") {
       this.#task = Task.parse({ ...task, state: "failed", runtime_substate: null });
       this.#append(task.id, "note", this.#class(), GATEWAY_ACTOR, { type: "state", to: "failed", reason: "ttl_expired" });
@@ -373,6 +385,14 @@ export class McpGateway {
     const seq = this.#append(session.id, "note", this.#class(), GATEWAY_ACTOR, { type: "rejection", reason, tool, ...(callSeq === undefined ? {} : { call_seq: callSeq }), mode: "gateway" });
     if (session.reject({ kind: "call", seq: callSeq ?? seq }, () => session.park("rejection_limit", true, this.#class(), GATEWAY_ACTOR, { tool, last: reason })).parked) return denied(parkText("rejection_limit", true));
     return denied(`JUNO rejected this call: ${why}`);
+  }
+
+  /** §3.4.1 (D-198): a session whose head cannot be anchored stops for good, journalled; every later call is denied. */
+  #stopForAnchor(): void {
+    const task = this.#task;
+    if (task === null || task.state === "failed") return;
+    this.#task = Task.parse({ ...task, state: "failed", runtime_substate: null });
+    this.#append(task.id, "note", this.#class(), GATEWAY_ACTOR, { type: "state", to: "failed", reason: "anchor_unavailable" });
   }
 
   #class(): DataClass {

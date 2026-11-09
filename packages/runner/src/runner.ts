@@ -33,8 +33,8 @@ import {
   type TaskContext,
   type Verdict,
 } from "../../enforcement/src/index.js";
-import { type EntryDraft, JournalIntegrityError, anchorOf, canonicalJson, contentAddress, readPayload, readTrajectory, taskDigest, verifyTrajectory } from "../../journal/src/index.js";
-import { AnchorExistsError, type AnchorSink, type JournalKey, sameKey } from "../../journal/src/index.js";
+import { type EntryDraft, JournalIntegrityError, canonicalJson, contentAddress, readPayload, readTrajectory } from "../../journal/src/index.js";
+import { sameKey } from "../../journal/src/index.js";
 import { type CapabilityRegistry, type InvocationResult, type RegistryEntry, programShape } from "../../registry/src/index.js";
 import {
   type AdmissionResult,
@@ -123,8 +123,6 @@ export type RunnerOptions = {
   readonly verifierIdentity?: string;
   /** Resolves the paths a call names to their canonical forms where the effect will run (§2.7.1 C4, D-113). */
   readonly resolver: PathResolver;
-  /** The anchored head (§3.4.1, v0.6 C1, D-122): where anchors go, the journal key that signs them, and how often. */
-  readonly anchoring: Anchoring;
   /**
    * Reversible workspaces (§2.2.2, D-136): where checkpoints are taken and restored (the workload, by the fixed scripts),
    * and the store outside every mount that keeps their content. Without them a task naming a reversible workspace fails
@@ -139,14 +137,8 @@ export type RunnerOptions = {
   readonly containerRuntime?: ContainerRuntime;
 };
 
-/** How the runner anchors journal heads off the host (§3.4.1, D-122). */
-export type Anchoring = {
-  readonly sink: AnchorSink;
-  /** The runner's own key for anchors; never the operator's grant-signing key (§3.4.1 V6-4). */
-  readonly journalKey: JournalKey;
-  /** At most this long passes between anchors of a running task; it is recorded in the task's journal. */
-  readonly intervalMs: number;
-};
+/** How the runner anchors journal heads off the host: its session layer's anchoring (§3.4.1, D-122, D-198). */
+export type { Anchoring } from "../../enforcement/src/index.js";
 
 export class RunnerError extends Error {
   override readonly name = "RunnerError";
@@ -353,9 +345,6 @@ export class Runner {
   /** Tasks failed because their journal does not verify; never resumed (D-056). */
   readonly #unverifiable = new Map<string, string>();
   #active: string | null = null;
-  readonly #anchoring: Anchoring;
-  /** Per journal record: the seq last anchored and when (§3.4.1, D-122). */
-  readonly #anchored = new Map<string, { seq: number; at: number }>();
 
   /** Takes the journal's runner lock (one runner per journal) and reapplies the recorded quarantines. */
   constructor(options: RunnerOptions) {
@@ -379,10 +368,9 @@ export class Runner {
     }
     this.#resolver = options.resolver;
     this.#checkpoints = options.checkpoints;
-    this.#anchoring = options.anchoring;
-    if (!Number.isSafeInteger(options.anchoring.intervalMs) || options.anchoring.intervalMs < 1) throw new RunnerError("the anchoring interval must be a positive whole number of milliseconds");
-    // §3.4.1 V6-4: the operator key never enters the runner, so the journal key can never be it.
-    if (sameKey(options.anchoring.journalKey.publicKey, options.grants.trustAnchor)) throw new RunnerError("the journal key is the operator's grant-signing key; the runner must hold its own (§3.4.1)");
+    // §3.4.1 V6-4: the operator key never enters the runner, so the journal key can never be it. The layer's anchoring
+    // was checked when it opened (D-198); the grant store's key is checked here too.
+    if (sameKey(this.#layer.anchoring.journalKey.publicKey, options.grants.trustAnchor)) throw new RunnerError("the journal key is the operator's grant-signing key; the runner must hold its own (§3.4.1)");
     this.#lock = acquireRunnerLock(this.#layer.root, this.#clock);
     try {
       this.#reapplyQuarantines();
@@ -504,8 +492,8 @@ export class Runner {
       run.admissionClass,
     );
     // §3.4.1 (D-122): the interval is recorded in the journal, and a task whose head cannot be anchored does not start.
-    this.#append(run.task.id, "note", this.#runnerClass(run), { type: "anchoring", interval_ms: this.#anchoring.intervalMs, journal_key: keyFingerprint(this.#anchoring.journalKey) });
-    if (!(await this.#anchorRecords(run.task.id))) return this.#fail(run, "anchor_unavailable");
+    // The shared session layer journals the `anchoring` note and anchors the head, as in every mode (D-198).
+    if (!(await run.session.anchor(this.#runnerClass(run), { force: true })) || !(await this.#layer.anchorHead(RUNNER_RECORD, { sensitivity: "internal", integrity: "derived" }))) return this.#fail(run, "anchor_unavailable");
     return this.#continue(run);
   }
 
@@ -700,40 +688,15 @@ export class Runner {
     return task && record;
   }
 
-  /**
-   * Copies one journal record's head off the host (§3.4.1): signed with the journal key, appended to the destination.
-   * Nothing new since the last anchor: nothing to do. When the destination already holds an anchor at this seq (a
-   * restart), it counts only if it names the same head. A failure is journalled (`anchor_failed`) and returns false.
-   */
-  async #anchor(recordId: string): Promise<boolean> {
-    const verdict = verifyTrajectory(this.#layer.root, recordId);
-    if (!verdict.ok) return false;
-    const head = verdict.head;
-    if (head === null) return true;
-    if (this.#anchored.get(recordId)?.seq === head.seq) return true;
-    const now = this.#clock();
-    const anchor = anchorOf(recordId, head, now, this.#anchoring.journalKey.privateKey);
-    try {
-      try {
-        await this.#anchoring.sink.append(anchor);
-      } catch (error: unknown) {
-        if (!(error instanceof AnchorExistsError)) throw error;
-        const stored = (await this.#anchoring.sink.list(taskDigest(recordId))).find((item) => (item as { seq?: unknown }).seq === head.seq) as { head?: unknown } | undefined;
-        if (stored?.head !== head.hash) throw new Error(`the destination holds a different anchor at seq ${String(head.seq)}`, { cause: error });
-      }
-    } catch (error: unknown) {
-      const dataClass = recordId === RUNNER_RECORD ? { sensitivity: "internal" as const, integrity: "derived" as const } : this.#recordClass(recordId);
-      this.#append(recordId, "note", dataClass, { type: "anchor_failed", seq: head.seq, head: head.hash, reason: error instanceof Error ? error.message : String(error) });
-      return false;
-    }
-    this.#anchored.set(recordId, { seq: head.seq, at: now.getTime() });
-    return true;
+  /** Copies one journal record's head off the host through the shared session layer (§3.4.1, D-122, D-198). */
+  #anchor(recordId: string): Promise<boolean> {
+    const dataClass = recordId === RUNNER_RECORD ? { sensitivity: "internal" as const, integrity: "derived" as const } : this.#recordClass(recordId);
+    return this.#layer.anchorHead(recordId, dataClass);
   }
 
   /** Whether a running task is due an anchor: its interval has passed since the last one (§3.4.1). */
   #anchorDue(taskId: string): boolean {
-    const last = this.#anchored.get(taskId);
-    return last === undefined || this.#clock().getTime() - last.at >= this.#anchoring.intervalMs;
+    return this.#layer.anchorDue(taskId);
   }
 
   #recordClass(taskId: string): DataClass {
@@ -1619,6 +1582,3 @@ function sourceSeqOf(entry: Contextual): number {
 }
 
 /** The journal key's public half, as a SHA-256 of its SPKI encoding: recorded so a reader knows which key to check with. */
-function keyFingerprint(key: JournalKey): string {
-  return contentAddress(new Uint8Array(key.publicKey.export({ type: "spki", format: "der" })));
-}

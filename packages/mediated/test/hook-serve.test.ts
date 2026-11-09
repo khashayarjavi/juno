@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { SessionLayer } from "../../enforcement/src/index.js";
+import { MemoryAnchorSink, testAnchoring } from "../../enforcement/test/anchoring.js";
 import { ordinaryHost } from "../../enforcement/test/layer.js";
 import { TEST_ANCHOR, signed } from "../../enforcement/test/test-keys.js";
 import { readPayload, readTrajectory } from "../../journal/src/index.js";
@@ -20,6 +21,8 @@ import { fileURLToPath } from "node:url";
 
 const PRINCIPAL = "alireza";
 const SESSION = "6f1c2d3e-4a5b-4c6d-8e7f-0123456789ab";
+/** The in-memory anchor destination of each test (D-198). */
+let anchors = new MemoryAnchorSink();
 let dir: string;
 let work: string;
 let sockets: string;
@@ -34,7 +37,7 @@ const sessionFile = (overrides: Record<string, unknown> = {}, grants: readonly s
   grants,
 });
 
-const args = (): string[] => ["--socket", join(sockets, "hook.sock"), "--control", join(sockets, "admit.sock"), "--journal", join(dir, "state", "journal"), "--anchor", join(dir, "anchor", "operator.pub"), "--workspace", work, "--checkpoints", join(dir, "state", "checkpoints"), "--protect", join(dir, "claude-home")];
+const args = (): string[] => ["--socket", join(sockets, "hook.sock"), "--control", join(sockets, "admit.sock"), "--journal", join(dir, "state", "journal"), "--anchor", join(dir, "anchor", "operator.pub"), "--workspace", work, "--checkpoints", join(dir, "state", "checkpoints"), "--journal-key", join(dir, "state", "journal-key"), "--anchors", join(dir, "state", "juno-anchors"), "--protect", join(dir, "claude-home")];
 
 const quiet = { out: (text: string) => said.push(text), err: (text: string) => said.push(text) };
 
@@ -45,6 +48,8 @@ async function serving(drive: (layer: SessionLayer) => Promise<void>, overrides:
     host: ordinaryHost(),
     filesystem: systemFilesystemIo(),
     runtime: () => Promise.resolve({ cgroupDriver: "systemd", cgroupVersion: "2", rootless: true }),
+    // §3.4.1 (D-198): every service anchors; here to an in-memory destination (the flags are still judged).
+    anchoring: testAnchoring({ sink: anchors }),
     ready: ({ layer }) => {
       driving = drive(layer);
     },
@@ -67,6 +72,7 @@ const entries = (root: string): Record<string, unknown>[] =>
   });
 
 beforeEach(() => {
+  anchors = new MemoryAnchorSink();
   dir = mkdtempSync(join(tmpdir(), "juno-hook-serve-"));
   work = join(dir, "work");
   sockets = join(dir, "sock");
