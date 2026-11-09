@@ -3,7 +3,16 @@
 ## Current increment
 **Slice 1.5 — Increment 6: §4.3's Slice 1.5 acceptance, end to end** (`docs/plans/slice-1.5-build-plan.md`, Increment 6; §4.3 "Acceptance for Slice 1.5", §18 tests 1–5 as regression, §3.4.5, §3.4.1; D-180). Branch `claude/blissful-gates-7hljw0`, fast-forwarded to `main` 34d7439 after PR #46 merged. Spec v0.6.1. No objection open.
 
-Status (2026-11-09): **started; nothing built yet.**
+Status (2026-11-09): **items 1 to 3 built (D-195, D-196), unit tests 1,267/1,267 green; items 4 to 6 left.**
+- **D-195:** the start-up check now refuses state not yet created when the folder that would hold it is shared, sticky bit or not. The gateway now forwards the boundary's judged copy of each call.
+- **D-196: `juno hook serve` and `juno hook admit`.**
+  - Claude Code 2.1.319 has `--session-id <uuid>`, and the real-binary test already uses it, so you choose the session's id in the session file. No objection.
+  - `juno hook serve` runs through the shared start-up check and session layer, and refuses a container runtime that ignores limits. It serves the hook socket and an admission socket only the runner can reach.
+  - `juno hook admit` asks the service to admit your session file. The service reads that file and its grant files itself, under the start-up check's rules, and checks every grant's signature before storing it.
+  - Example files: `docs/examples/session.example.json` and `docs/examples/juno-hook.service`.
+  - The entry-point test covers the new command and its admission socket (63 tests).
+  - The new functional test runs §4.3 test 1 through the commands and the real hook client: an in-grant read is allowed, and an out-of-grant write is denied and journalled. It also covers each kind of file refusal, the runtime refusal, and a workspace JUNO cannot check.
+  - **Found and fixed by that test:** a forged grant with the real grant's id had been stored, unverified, and then blocked the real grant.
 
 **Left in this increment, in order (plan Increment 6):**
 1. Restrictive follow-ups from round 2's non-blocking notes (to be recorded as D-195):
