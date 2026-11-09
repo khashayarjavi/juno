@@ -1,0 +1,23 @@
+{
+  "comments": [
+    "JUNO hook session file (plan Increment 6, D-196). Copy to /var/lib/juno-runner/session.json, readable by juno-runner only.",
+    "Change only: session_id (a new UUID for each Claude Code session: run uuidgen), sources (what Claude may read, and its class),",
+    "grants (the ids of your signed grants) and the grant file paths below, and provider_clearance (the highest class Claude may read).",
+    "Keep this file and the grant files under /var/lib/juno-runner, never under /srv/juno-work."
+  ],
+  "session": {
+    "session_id": "00000000-0000-4000-8000-000000000000",
+    "principal": "alireza",
+    "attendance": "gated",
+    "ttl": 28800000,
+    "grants": ["grant-operator-first"],
+    "budget": { "tool_calls": 200, "wall_clock_ms": 28800000 },
+    "unmetered_accepted": true,
+    "provider_clearance": "internal",
+    "sources": [
+      { "id": "project", "selector": { "kind": "path", "prefix": "/work/project" }, "data_class": { "sensitivity": "internal", "integrity": "untrusted" } }
+    ],
+    "name_map": [{ "name": "cat", "program": "/usr/bin/cat", "side_effect": "read" }]
+  },
+  "grants": ["/var/lib/juno-runner/grants/grant-operator-first.json"]
+}

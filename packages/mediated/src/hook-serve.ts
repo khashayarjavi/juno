@@ -1,5 +1,3 @@
-import { chmodSync } from "node:fs";
-import { type Server, type Socket, createConnection, createServer } from "node:net";
 import { z } from "zod";
 import {
   CheckpointStore,
@@ -17,8 +15,9 @@ import {
   systemHostIo,
 } from "../../enforcement/src/index.js";
 import { type FilesystemIo, systemFilesystemIo } from "./filesystem.js";
+import { HookAdmissionService, askAdmission } from "./hook-admission.js";
 import { HookService } from "./hook-service.js";
-import { MediatedSessions, PathMap, SessionRequest } from "./session.js";
+import { MediatedSessions, PathMap } from "./session.js";
 
 /**
  * `juno hook serve` and `juno hook admit` (build plan Increment 6; operator ruling D-180; DECISIONS.md D-196).
@@ -38,126 +37,6 @@ import { MediatedSessions, PathMap, SessionRequest } from "./session.js";
  * every refusal is printed. Exit 0 admitted / served and stopped, 1 refused, 2 bad usage.
  */
 
-/** The session file the operator writes (plan Increment 6): the session request and the signed grant files it uses. */
-export const HookSessionFile = z.strictObject({
-  /** Plain-language notes for the operator; ignored. */
-  comments: z.array(z.string()).optional(),
-  session: SessionRequest,
-  grants: z.array(z.string().regex(/^\//)).max(64).default([]),
-});
-
-const MAX_REQUEST_BYTES = 64 * 1024;
-
-/**
- * The admission socket's service: one request line `{ "admit": "<absolute session file path>" }`, one answer line
- * `{ "admitted": true, "task_id": … }` or `{ "admitted": false, "failures": [ … ] }`. It reads the file itself, through the
- * hook layer's own rules, and admits through the hook sessions, which admit through the shared session layer.
- */
-export class HookAdmissionService {
-  readonly #sessions: MediatedSessions;
-  readonly #grants: GrantStore;
-  readonly #layer: SessionLayer;
-  readonly #server: Server;
-  #queue: Promise<void> = Promise.resolve();
-
-  constructor(sessions: MediatedSessions, grants: GrantStore) {
-    // D-194: only on a hook layer the shared start-up check opened, whose verified anchor checks these grants.
-    this.#layer = SessionLayer.require(sessions.layer, "hook");
-    this.#layer.requireGrants(grants);
-    this.#sessions = sessions;
-    this.#grants = grants;
-    this.#server = createServer((socket) => {
-      this.#serve(socket);
-    });
-  }
-
-  /** Listens on a socket the start-up check judged, with mode 0600: the runner alone may ask for an admission. */
-  listen(path: string): Promise<void> {
-    try {
-      this.#layer.requireSocket(path, 0o600);
-    } catch (error: unknown) {
-      return Promise.reject(error instanceof Error ? error : new Error(String(error)));
-    }
-    return new Promise((resolve, reject) => {
-      this.#server.once("error", reject);
-      this.#server.listen(path, () => {
-        this.#server.off("error", reject);
-        try {
-          chmodSync(path, 0o600);
-        } catch (error: unknown) {
-          this.#server.close();
-          reject(error instanceof Error ? error : new Error(String(error)));
-          return;
-        }
-        resolve();
-      });
-    });
-  }
-
-  close(): Promise<void> {
-    return new Promise((resolve) => this.#server.close(() => resolve()));
-  }
-
-  /** Admits the session the file names, or says every reason why not. */
-  async admitFile(path: string): Promise<{ readonly admitted: true; readonly task_id: string } | { readonly admitted: false; readonly failures: readonly string[] }> {
-    const refusals = this.#layer.fileRefusals("the session file", path);
-    if (refusals.length > 0) return { admitted: false, failures: refusals };
-    let file: z.output<typeof HookSessionFile>;
-    try {
-      const parsed = HookSessionFile.safeParse(JSON.parse(this.#layer.readFile(path)));
-      if (!parsed.success) return { admitted: false, failures: [`the session file ${path} is not a hook session file: ${parsed.error.message}`] };
-      file = parsed.data;
-    } catch (error: unknown) {
-      return { admitted: false, failures: [`the session file ${path} cannot be read as JSON: ${error instanceof Error ? error.message : String(error)}`] };
-    }
-    const failures: string[] = [];
-    for (const grantFile of file.grants) {
-      const grantRefusals = this.#layer.fileRefusals("the grant file", grantFile);
-      if (grantRefusals.length > 0) {
-        failures.push(...grantRefusals);
-        continue;
-      }
-      try {
-        const grant: unknown = JSON.parse(this.#layer.readFile(grantFile));
-        const id = typeof grant === "object" && grant !== null && "id" in grant ? grant.id : undefined;
-        // A grant already held (by an earlier admission) is not added twice; its signature was checked then.
-        if (typeof id !== "string" || this.#grants.signed(id) === undefined) this.#grants.add(grant);
-      } catch (error: unknown) {
-        failures.push(`the grant file ${grantFile} holds no valid grant: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
-    if (failures.length > 0) return { admitted: false, failures };
-    return this.#sessions.admit(file.session);
-  }
-
-  #serve(socket: Socket): void {
-    const chunks: Buffer[] = [];
-    let size = 0;
-    socket.on("error", () => socket.destroy());
-    socket.on("data", (chunk: Buffer) => {
-      size += chunk.length;
-      if (size > MAX_REQUEST_BYTES) {
-        socket.destroy();
-        return;
-      }
-      chunks.push(chunk);
-      const text = Buffer.concat(chunks).toString("utf8");
-      const newline = text.indexOf("\n");
-      if (newline === -1) return;
-      socket.pause();
-      this.#queue = this.#queue.then(async () => {
-        let answer: unknown;
-        try {
-          const request = z.strictObject({ admit: z.string() }).safeParse(JSON.parse(text.slice(0, newline)));
-          answer = request.success ? await this.admitFile(request.data.admit) : { admitted: false, failures: ["JUNO could not read the admission request"] };
-        } catch (error: unknown) {
-          answer = { admitted: false, failures: [`JUNO could not admit the session: ${error instanceof Error ? error.message : String(error)}`] };
-        }
-        socket.end(`${JSON.stringify(answer)}\n`);
-      });
-    });
-  }
-}
 
 export type HookServeIo = {
   readonly host: HostIo;
@@ -292,21 +171,7 @@ export async function runHookAdmitCli(args: readonly string[], io: { readonly ou
   }
   let answer: unknown;
   try {
-    answer = await new Promise<unknown>((resolve, reject) => {
-      const socket = createConnection(control);
-      let text = "";
-      socket.setTimeout(30_000, () => socket.destroy(new Error("the hook service did not answer")));
-      socket.on("connect", () => socket.write(`${JSON.stringify({ admit: file })}\n`));
-      socket.on("data", (chunk: Buffer) => (text += chunk.toString("utf8")));
-      socket.on("error", reject);
-      socket.on("end", () => {
-        try {
-          resolve(JSON.parse(text));
-        } catch {
-          reject(new Error("the hook service's answer could not be read"));
-        }
-      });
-    });
+    answer = await askAdmission(control, file);
   } catch (error: unknown) {
     return refused(io, "admit", [`the hook service at ${control} is not reachable: ${error instanceof Error ? error.message : String(error)}`]);
   }

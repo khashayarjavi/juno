@@ -2305,3 +2305,24 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   1. The shared start-up check refuses an owned file or folder that does not exist yet when the folder that would hold it is writable by group or others, with or without the sticky bit. An existing entry this process owns in a sticky folder is still accepted, because no one else can replace it.
   2. The gateway forwards `verdict.authorization.call`, a copy of what the boundary judged (as D-053 for the runner).
 - Reason: §3.4.1; D-053; D-194; D8.
+
+## D-196 — `juno hook serve` and `juno hook admit` (plan Increment 6; operator ruling D-180; autopilot rulings)
+- Date: 2026-11-09
+- Status: Accepted (built with tests)
+- Applies to: `packages/mediated/src/hook-serve.ts` (new); `packages/enforcement/src/startup.ts` (`laterFileRefusals`), `session-layer.ts` (`fileRefusals`, `readFile`); `packages/runner/src/entry-points.ts`; `packages/mediated/test/hook-serve.test.ts` (new); `packages/runner/test/entry-points.test.ts`; `docs/examples/session.example.json`, `docs/examples/juno-hook.service` (new)
+- **How Claude Code's session id is fixed before its first tool call (plan: "read from the installed binary").** The installed binary, `/opt/claude-code/bin/claude` 2.1.319 (sha256 `dabafec82ca1319f…`), lists `--session-id <uuid>`: "Use a specific session ID for the conversation (must be a valid UUID)" (`claude --help`, read 2026-11-09). The real-binary test already starts Claude Code with `-p … --session-id <uuid>` (`test/mediated-e2e/launch.mjs`), and its hook calls arrive under that id: they are journalled as `session-<uuid>` (`make mediated-e2e` 12/12). So no objection: the operator writes a fresh UUID into the session file, admits it, and starts `claude --session-id <that UUID>`. `juno hook admit` prints that command.
+- Decision:
+  1. **`juno hook serve`** options: `--socket`, `--control`, `--journal`, `--anchor`, `--workspace`, `--checkpoints`, `--protect <path>` (repeatable) and `--gateway <name>`. It is a registered entry point (`hook.serve`), so the entry-point test covers it. In order, it:
+     - opens its session layer through the shared start-up check (D-194). The check judges the hook socket, the admission socket, the checkpoint store and the protected paths;
+     - refuses a container runtime that would ignore the workloads' limits, or one it cannot check (D-131, as the plan requires);
+     - builds the hook sessions on the layer, with an empty grant store checked against the verified anchor;
+     - serves the hook socket (0660, D-173) and the admission socket (0600, the runner alone), and stops on SIGINT or SIGTERM.
+     No session is admitted at start.
+  2. **The admission socket** (`HookAdmissionService`, a registered class) takes one line, `{ "admit": "<absolute session file path>" }`. The service reads the file itself; the client never sends its content. The file and every grant file it names must pass the start-up check's own rules (`laterFileRefusals`, the same code): absolute, outside every workspace and `/work`, a file and not a link, root's or the runner's, and writable by no group or other.
+  3. **The session file** is `{ comments?, session: <SessionRequest>, grants: [<absolute grant file>] }`, strictly parsed.
+  4. **Restrictive: a grant enters the service's store only after its operator signature verifies on a store of its own.** This was found by the new test: a forged grant had been stored under the real grant's id and blocked it later. A grant already held is not added again. A session id is admitted once.
+  5. **`juno hook admit --control <socket> <session file>`** (registered, starts no service) asks the running service and prints `admitted session-<id>` and the `claude --session-id` line, or every refusal. Its exit codes: 0 admitted, 1 refused or unreachable, 2 bad usage.
+  6. **The systemd user unit** (`docs/examples/juno-hook.service`) runs `juno hook serve` as `juno-runner` with the paths of plan §2a and Part E: `/var/lib/juno-hook/hook.sock`, `/var/lib/juno-runner/{admit.sock,journal,checkpoints}`, `/etc/juno/operator.pub`, `/srv/juno-work`, protecting `/etc/claude-code` and `/home/juno-agent`. It has `Restart=no`, so a refused start stays stopped and visible.
+  7. The `juno` command now matches the longest registered command words: `hook serve` and `hook admit` before `hook`.
+  8. **D-073's network guard** lists the admission socket's file (`packages/mediated/src/hook-admission.ts`) among the Unix-socket files, under D-144's stricter check: no host, port or URL, and it connects and listens only on a socket path. This is the same treatment D-189 gave the gateway's files. The file holds only the socket code; `hook-serve.ts` uses no `node:net`.
+- Reason: plan Increment 6; D-180; §4.3; §3.2; D-131, D-148, D-173, D-194; CLAUDE.md rule 13; D8.

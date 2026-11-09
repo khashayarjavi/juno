@@ -1,0 +1,16 @@
+# JUNO's hook service as a systemd user service of juno-runner (plan Increment 6, D-180, D-196).
+# Install: as juno-runner, copy to ~/.config/systemd/user/juno-hook.service, then
+#   systemctl --user daemon-reload && systemctl --user enable --now juno-hook.service
+# It runs as juno-runner (never root, never juno-agent). It refuses to start, and says why in
+# `journalctl --user -u juno-hook.service`, whenever the shared start-up check refuses (D-194).
+[Unit]
+Description=JUNO hook service (governs Claude Code's tool calls)
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/node /opt/juno/dist/runner/src/juno.js hook serve --socket /var/lib/juno-hook/hook.sock --control /var/lib/juno-runner/admit.sock --journal /var/lib/juno-runner/journal --anchor /etc/juno/operator.pub --workspace /srv/juno-work --checkpoints /var/lib/juno-runner/checkpoints --protect /etc/claude-code --protect /home/juno-agent
+Restart=no
+UMask=0077
+
+[Install]
+WantedBy=default.target

@@ -3,7 +3,8 @@ import { McpGateway } from "../../mediated/src/gateway.js";
 import { runGatewayCli, systemGatewayCliIo } from "../../mediated/src/gateway-cli.js";
 import { GatewayService } from "../../mediated/src/gateway-service.js";
 import { HookService } from "../../mediated/src/hook-service.js";
-import { HookAdmissionService, runHookAdmitCli, runHookServeCli, systemHookServeIo } from "../../mediated/src/hook-serve.js";
+import { HookAdmissionService } from "../../mediated/src/hook-admission.js";
+import { runHookAdmitCli, runHookServeCli, systemHookServeIo } from "../../mediated/src/hook-serve.js";
 import { runHookInstallCli } from "../../mediated/src/install.js";
 import { MediatedSessions } from "../../mediated/src/session.js";
 import { runGrantCli } from "./grant-cli.js";
@@ -96,7 +97,7 @@ export const ENTRY_POINTS: readonly EntryPoint[] = [
   // Classes that start a service or admit sessions.
   { id: "class.Runner", kind: "class", module: "packages/runner/src/runner.ts", name: "Runner", service: "runner", admits: true, implementation: Runner },
   { id: "class.MediatedSessions", kind: "class", module: "packages/mediated/src/session.ts", name: "MediatedSessions", service: "hook", admits: true, implementation: MediatedSessions },
-  { id: "class.HookAdmissionService", kind: "class", module: "packages/mediated/src/hook-serve.ts", name: "HookAdmissionService", service: "hook", admits: true, implementation: HookAdmissionService },
+  { id: "class.HookAdmissionService", kind: "class", module: "packages/mediated/src/hook-admission.ts", name: "HookAdmissionService", service: "hook", admits: true, implementation: HookAdmissionService },
   { id: "class.HookService", kind: "class", module: "packages/mediated/src/hook-service.ts", name: "HookService", service: "hook", admits: false, implementation: HookService },
   { id: "class.McpGateway", kind: "class", module: "packages/mediated/src/gateway.ts", name: "McpGateway", service: "gateway", admits: true, implementation: McpGateway },
   { id: "class.GatewayService", kind: "class", module: "packages/mediated/src/gateway-service.ts", name: "GatewayService", service: "gateway", admits: false, implementation: GatewayService },

@@ -13,7 +13,8 @@ import { MCP_REVISION, McpGateway, type Upstream } from "../../mediated/src/gate
 import { type GatewayCliIo, runGatewayCli } from "../../mediated/src/gateway-cli.js";
 import { GatewayService } from "../../mediated/src/gateway-service.js";
 import { HookService } from "../../mediated/src/hook-service.js";
-import { HookAdmissionService, type HookServeIo, runHookAdmitCli, runHookServeCli } from "../../mediated/src/hook-serve.js";
+import { HookAdmissionService } from "../../mediated/src/hook-admission.js";
+import { type HookServeIo, runHookAdmitCli, runHookServeCli } from "../../mediated/src/hook-serve.js";
 import { MediatedSessions, PathMap } from "../../mediated/src/session.js";
 import { ENTRY_POINTS } from "../src/entry-points.js";
 import { runRunnerMain } from "../src/runner-main.js";
