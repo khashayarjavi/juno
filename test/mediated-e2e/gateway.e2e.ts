@@ -34,6 +34,7 @@ const CONTAINER_UID = 1001;
 const HOOK_GID = 1500;
 const GATEWAY = "juno";
 const TOOL = `mcp__${GATEWAY}__message_send`;
+const USER_SPEC = [String(CONTAINER_UID), String(CONTAINER_UID)].join(":");
 
 function bind(source: string, target: string, readOnly: boolean): string[] {
   return ["--mount", ["type=bind", ["source", source].join("="), ["target", target].join("="), ...(readOnly ? ["readonly"] : [])].join(",")];
@@ -127,7 +128,7 @@ async function claude(sessionId: string, args: Record<string, string>): Promise<
   await run(
     "docker",
     [
-      "run", "--rm", "--network", "none", "--user", `${String(CONTAINER_UID)}:${String(CONTAINER_UID)}`, "--group-add", String(HOOK_GID), "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
+      "run", "--rm", "--network", "none", "--user", USER_SPEC, "--group-add", String(HOOK_GID), "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
       ...bind(CLAUDE_HOME, CLAUDE_HOME, true),
       ...bind(e2eDir, "/e2e", true),
       ...bind(runDir, "/run-e2e", false),
