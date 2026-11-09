@@ -1,7 +1,7 @@
 # STATE
 
 ## Current increment
-**Slice 1.5 — Increment 5: gateway mode for MCP (§4.3 mode B)** (`docs/plans/slice-1.5-build-plan.md`, Increment 5; §4.3, §2.3.2, §7.8 E2, §2.2.2 for `external` effects; D-154). Branch `claude/loving-brahmagupta-rp1azf`, restarted from `main` 0aa797d after PR #43 merged. Spec v0.6.1. No objection open.
+**Slice 1.5 — Increment 5: gateway mode for MCP (§4.3 mode B)** (`docs/plans/slice-1.5-build-plan.md`, Increment 5; §4.3, §2.3.2, §7.8 E2, §2.2.2 for `external` effects; D-154). Branch `claude/jolly-maxwell-s3mk53` (this session's only pushable branch; it carries PR #44's commits from `claude/loving-brahmagupta-rp1azf` unchanged), restarted from `main` 0aa797d after PR #43 merged. Spec v0.6.1. No objection open.
 
 Status (2026-11-08): **in progress; not done.** `make verify: GREEN` locally on 5a8082b (1,128 unit, 109 container). Built and committed so far:
 - **D-183:** the D-046 property test states a 30 s time budget (same assertions and runs). It timed out once under CI load on PR #43.
@@ -32,11 +32,16 @@ Status (2026-11-08): **in progress; not done.** `make verify: GREEN` locally on 
 
 - **Also built since:** the runner-owned gateway service on its own socket, and Claude Code's stdio shim `juno-mcp.js`, which only relays and fails closed when the gateway is down (D-188, 3 tests). D-073's network guard lists the two socket files under D-144's stricter check (D-189).
 
+**Session of 2026-11-09 (branch `claude/jolly-maxwell-s3mk53`, which carries PR #44's commits unchanged; its PR supersedes PR #44).** Your ruling on the hook and the gateway together is recorded as **D-190**.
+- **Finding: the control exists.** A root-owned `/etc/claude-code/managed-mcp.json` gives Claude Code's administrator exclusive control of MCP servers. The sources, quoted in D-190, are the official docs page on managed MCP, the hooks reference, and the installed 2.1.319 binary, with hashes. **Observed with the real binary** in the sealed container:
+  - with no managed file, a `juno` server defined in the user's own settings took the name and ran the call;
+  - with the managed file, none of five user, project or local definitions started, and the call reached the managed server;
+  - `--mcp-config` and `--strict-mcp-config` refuse to start.
+  - One gap the docs name and the binary showed: a remote server given through managed settings still loads beside the file. JUNO closes it with a deny-every-remote-URL list in its own root-owned managed settings. That was observed working too.
+- **So item 1 below is built as D-190 describes** (branch 2 of your ruling). The hook lets through only calls whose hook input says they come from the gateway's name with source `enterprise`; every other MCP tool stays blocked.
+
 **Left in this increment, in order:**
-1. **The hook and the gateway together (to decide restrictively, then build).** On your machine JUNO's hook (mode C) runs for every Claude Code session, and it denies any tool outside its table. So it would deny the gateway's tools (`mcp__<server>__<tool>`) before they reach the gateway.
-   - Planned restrictive reading: the hook gives "no decision" only to tools of the one gateway server that `juno hook install` names in the managed settings, because the gateway judges and journals those calls itself. Every other `mcp__` tool stays denied.
-   - **Precondition found while writing it (not built; the draft was reverted):** the Claude Code user's own or project settings could define an MCP server under the same name, pointing at any program. The hook would then pass that impostor's tools unjudged. Before any pass-through exists, the next session must show from the 2.1.319 binary that root-owned managed settings alone decide which program that server name runs, and that a user or project definition cannot replace or add to it. `juno hook check` must then verify that. If the binary offers no such control, the hook keeps denying every `mcp__` tool and mode B is usable only in sessions without JUNO's hook. That case is to be written as an objection, not guessed.
-   - To be recorded as a D-number with a test, and checked against the real binary.
+1. **The hook and the gateway together (D-190; building now).** `juno hook install --gateway`, `juno hook check --gateway`, the hook's pass-through, unit tests, and the real Claude Code test: a project file defines a server with the gateway's name pointing elsewhere; it must not start, and the call must not run.
 2. **Observed (done):** Claude Code 2.1.319 shows the model an MCP tool `message.send` of server `obs` as `mcp__obs__message_send` (the dot becomes `_`). When the model calls that name, it sends the server `tools/call` with `name: "message.send"`, plus a `_meta` (`claudecode/toolUseId`, `progressToken`) that the gateway does not forward. To be recorded with D-185.
 3. **The `juno gateway` command:** loads a session file (session, tool definitions, upstream program and argv), admits it, and serves the socket as the runner.
 4. **The real-binary run** (`make mediated-e2e`): Claude Code with the scripted model calls `message.send` through the shim. The unenumerated recipient parks and the test server receives nothing; the enumerated recipient is delivered (§4.3 acceptance test 3).
