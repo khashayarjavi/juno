@@ -1,28 +1,25 @@
 # STATE
 
 ## Current increment
-**Slice 1.5 — Increment 6: §4.3's Slice 1.5 acceptance, end to end** (`docs/plans/slice-1.5-build-plan.md`, Increment 6; §4.3 "Acceptance for Slice 1.5", §18 tests 1–5 as regression, §3.4.5, §3.4.1; D-180). Branch `claude/practical-volta-hjzfmz` (this session's only pushable branch); it carries PR #47's commits from `claude/blissful-gates-7hljw0` unchanged, and its PR supersedes PR #47. Spec v0.6.1. No objection open.
+**Slice 1.5 — finishing: the operator setup document and the evidence document** (operator instruction of 2026-11-09; D-199). Increment 6, the last increment of the plan, is **merged** (PR #48). Branch `claude/practical-volta-hjzfmz`, fast-forwarded to `main` f323720. Spec v0.6.1. No objection open.
 
-Status (2026-11-09, this session): **items 1 to 6 built (D-195 to D-198); review and the merge gate are next.** `make verify: GREEN` locally (1,297 unit, 118 container); `make mediated-e2e` 13/13 with the real Claude Code 2.1.321.
-- **D-198, every mode's journal is anchored (item 5).** §3.4.1 anchors "the journal"; until now only JUNO's own loop did.
-  - The anchoring moved from the runner into the shared session layer, so every mode gets it the same way. No service can open its journal without an anchor destination and a journal key of its own; the operator's signing key is refused as the journal key.
-  - Every session records the interval and the journal key, and is anchored when it starts. A hook or gateway session that cannot be anchored is not admitted. Before each call it is anchored again once the interval (default one minute) has passed; **a session whose fingerprint cannot be copied off the host stops for good**, and every later call is denied.
-  - Refusals and calls from sessions never admitted are anchored too. A running service anchors everything pending once a minute and once more when it stops.
-  - `juno hook serve` and `juno gateway serve` take `--journal-key`, `--anchors` (the clone of `juno-anchors`), `--anchor-interval` and `--git` (default `/usr/bin/git`). The start-up check judges all of them like the rest of JUNO's state.
-  - Found and fixed on the way: the git destination could count an anchor that was committed but never pushed (it now pushes before it lists); a session refused for a forged grant file left no journal record (it is now journalled like every refused admission); the example systemd unit named the wrong node and could not reach rootless Docker.
-  - The entry-point test checks, for every registered mode, that its journal is anchored, that it stops when it cannot be, and that no service starts without anchoring.
-- **The acceptance run (item 5).** `test/acceptance/slice-1.5.test.ts` runs §4.3 tests 1–4 in the same `make verify` as §18 tests 1–5 (`test/acceptance/acceptance.test.ts`). Each runs through the commands you will run, reads the journal back and explains it from the journal alone (§3.4.5), and checks the chain against the anchors held by the stand-in anchor container (§3.4.1):
-  1. mode C, through `juno hook serve`, `juno hook admit` and the real hook client: a write outside the grant is denied (`scope_violation`), journalled, and not written;
-  2. mode C: after a planted file is read, `cat notes.txt; sh -c '…'` parks `integrity_floor` (not overridable) and nothing runs; mode A is §18 test 2 in the same run;
-  3. mode B, through `juno gateway serve` and the real shim: an unenumerated recipient parks `integrity_floor` and the test server never receives it; the enumerated one is delivered;
-  4. modes A and C: a tampered grant, one signed by another key, and an unsigned one are each refused at admission and journalled; nothing runs.
-  - **The real-binary parts** (`make mediated-e2e`, this cloud session): the real Claude Code 2.1.321 runs against the service `juno hook serve` started, each session admitted with `juno hook admit` from a session file and signed grant files. It covers tests 1, 2 and 4 in mode C and test 3 in mode B. The service anchors with the real git into a local repository standing in for `juno-anchors`, and the last test runs your `juno journal check` for every session against a fresh clone of it: all agree, nothing unanchored. No paid model is called: the model's turns are scripted (D-002, D-145).
-  - The sealed container test also runs the real `juno hook serve` and stops it; your journal check then passes (hook-separation 41/41).
-- **Operator steps (item 6).** They are below under "Operator steps for Increment 6", and they will move, with Parts A–F, into one document, `docs/operator-setup.md`, in the follow-up PR that finishes Slice 1.5.
+Status (2026-11-09): **both documents written; PR, review and the merge gate next. After that merge, Slice 1.5 is complete and the autopilot STOPS** (the operator's instruction: no roadmap item beyond Slice 1.5).
+- `docs/operator-setup.md`: every operator step, Parts A–H, in the order to do them, click by click, each part ending with a check. The steps that create a credential are marked. Nothing asks you to paste a secret: the anchor push key is now a deploy key made inside WSL, and only its public half goes to GitHub (D-199).
+- `docs/evidence/slice-1.5.md`: what Slice 1.5 proves (each property with its § and its test), what each mode does not protect (§4.3), and every residual recorded during the slice, in plain words.
+- From the PR #48 reviewer's non-blocking notes: the real-binary test now covers all three forged grants; your journal check runs against a fresh clone of `juno-anchors`; two cosmetic leftovers are removed.
 
-**Left in this increment, in order:**
-1. Open the PR (superseding #47), CI green on its head, review rounds (CLAUDE.md §7 step 5), the merge gate (step 6).
-2. Then, to finish Slice 1.5 (operator instruction of 2026-11-09): `docs/operator-setup.md` (every operator step, Parts A–F and the new ones, click by click) and `docs/evidence/slice-1.5.md` (what Slice 1.5 proves, what each mode does not protect, every residual), through the same gate; then STOP and report.
+**Left, in order:** PR; CI green on its head; review (CLAUDE.md §7 step 5); the merge gate; record the merge; STOP and report.
+
+### Merges this session (2026-11-09, this session)
+- **PR #48 (Slice 1.5 Increment 6, supersedes #47): merged** as f323720, pinned to head 085158f.
+  - Reviewer round 1 (fresh subagent, P2 verbatim): **MERGE**. All six checks PASS. Non-blocking notes: the journal-check line names the runner's own clone (the setup document now uses a fresh clone); the real-binary test covered one forgery of three (now three); two cosmetic leftovers (removed).
+  - CI on 085158f: run 42690687897, `verify` and `verify-rootless` green.
+  - CI on main for f323720: run 42692280432 (see "Merges recorded").
+  - Locally: `make verify` GREEN (1,297 unit, 118 container); `make mediated-e2e` 13/13 with the real Claude Code 2.1.321 (15/15 after the follow-up added the two other forgeries).
+  - PR #47 is left open and untouched; #48 carried its commits unchanged.
+
+## Previous increment (Slice 1.5 Increment 6, merged as PR #48)
+**Slice 1.5 — Increment 6: §4.3's Slice 1.5 acceptance, end to end.** What it proves is in PR #48 and `docs/evidence/slice-1.5.md`. D-195 to D-198.
 
 ### Operator steps for Increment 6 (after Part E; superseded by `docs/operator-setup.md` once merged)
 These assume Parts A–E are done. They need the anchor repository of Part D, now with a **deploy key** made by `juno-runner` instead of a token (the docs PR records why).

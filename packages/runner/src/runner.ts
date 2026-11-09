@@ -1580,5 +1580,3 @@ function sourceSeqOf(entry: Contextual): number {
   }
   return entry.seq;
 }
-
-/** The journal key's public half, as a SHA-256 of its SPKI encoding: recorded so a reader knows which key to check with. */

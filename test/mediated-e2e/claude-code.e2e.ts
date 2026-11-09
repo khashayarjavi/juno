@@ -4,8 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { randomUUID } from "node:crypto";
+import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { signGrant } from "../../packages/enforcement/src/index.js";
 import { ordinaryHost } from "../../packages/enforcement/test/layer.js";
 import { readPayload, readTrajectory } from "../../packages/journal/src/index.js";
 import { runHookAdmitCli, runHookServeCli } from "../../packages/mediated/src/hook-serve.js";
@@ -62,7 +63,11 @@ let claudeVersion = "";
 const sessionIds: string[] = [];
 
 function grant(id: string): Record<string, unknown> {
-  return signed({
+  return signed(unsignedGrant(id));
+}
+
+function unsignedGrant(id: string): Record<string, unknown> {
+  return {
     id,
     principal: PRINCIPAL,
     capability_selector: { capabilities: ["cc.read", "cc.write", "cc.edit", "cc.glob", "cc.bash.read"] },
@@ -75,7 +80,7 @@ function grant(id: string): Record<string, unknown> {
     max_invocations: 50,
     attenuation_parent: null,
     revoked_at: null,
-  });
+  };
 }
 
 const CAT_ONLY = [{ name: "cat", program: "/usr/bin/cat", side_effect: "read" }];
@@ -204,6 +209,8 @@ beforeAll(async () => {
   chmodSync(state, 0o700);
   writeState("grant-cc.json", grant("grant-cc"));
   writeState("grant-forged.json", { ...grant("grant-forged"), max_invocations: 9999 });
+  writeState("grant-other-key.json", signGrant(unsignedGrant("grant-other-key"), generateKeyPairSync("ed25519").privateKey));
+  writeState("grant-unsigned.json", unsignedGrant("grant-unsigned"));
   mkdirSync(anchorDir);
   writeFileSync(anchorFile, TEST_ANCHOR.export({ type: "spki", format: "pem" }), { mode: 0o444 });
   chmodSync(anchorFile, 0o444);
@@ -311,9 +318,10 @@ describe(`§4.3 acceptance in mode C, real Claude Code (no paid model)`, () => {
   }, 240_000);
 
   // proves §4.3 acceptance test 4 (mode C): a forged grant is not honoured: the session is not admitted and every call is denied
-  it("does not honour a forged grant", async () => {
+  // (plan §4: a tampered grant, a grant signed by another key, and an unsigned grant)
+  it.each([["tampered", "grant-forged"], ["signed by another key", "grant-other-key"], ["unsigned", "grant-unsigned"]])("does not honour a forged grant: %s", async (_kind, grantId) => {
     const id = randomUUID();
-    const refused = await admit(id, ["grant-forged"]);
+    const refused = await admit(id, [grantId]);
     expect(refused.admitted).toBe(false);
     expect(refused.said).toMatch(/signature/);
     await claude(id, [{ tool_use: { name: "Read", input: { file_path: `${workspace}/project/notes.txt` } } }, { text: "done" }], "read the notes");
@@ -351,7 +359,7 @@ describe(`§4.3 acceptance in mode C, real Claude Code (no paid model)`, () => {
     await stopService();
     const fresh = join(host, "check-clone");
     await run(GIT, ["clone", "--quiet", remote, fresh]);
-    expect(sessionIds.length).toBeGreaterThanOrEqual(6);
+    expect(sessionIds.length).toBeGreaterThanOrEqual(8);
     for (const id of sessionIds) {
       const said: string[] = [];
       const code = runJournalCli(["check", "--journal", journalRoot, "--anchors", fresh, "--key", join(state, "journal-key", "journal-key.pub.pem"), id], { ...FILE_IO, out: (text) => said.push(text), err: (text) => said.push(text) });

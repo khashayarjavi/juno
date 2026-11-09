@@ -513,11 +513,6 @@ export class GovernedSession {
     return false;
   }
 
-  /** Whether this session has had its `anchoring` note and first anchor (the own loop's resume has, in the journal). */
-  markAnchoringNoted(): void {
-    this.#anchoringNoted = true;
-  }
-
   /**
    * One call in a mediated mode (§4.3): the anchor (the first one, or one due), then TTL, then the budget, then the call
    * is counted, so every call counts, one JUNO then rejects included (D-192). A session whose head cannot be anchored
