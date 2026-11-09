@@ -2293,3 +2293,15 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   - D. A Runner whose workloads run in containers judges no host workspace (`workspaces: []`; the work volume is never named on the host, D-065); the container tests prove the workload cannot reach the journal.
 - Tests changed on purpose, kept, each now asserting the shared check: `session.test.ts` "refuses a workspace root that covers the journal or a protected path" (plus a root the check did not judge); `gateway.test.ts` "refuses to start when JUNO's state overlaps the workspace" (`StartupRefused` instead of `GatewayError`, plus an unjudged workspace); `gateway-service.test.ts` "refuses an unsafe socket folder or mode" (refused at start-up and again at listen, plus an unjudged socket); `config.test.ts` "rejects journal storage overlapping…" (the same six cases, through the runner process's start-up); `gateway-cli.test.ts` uses a real anchor file the process cannot write; `hook-client.test.ts` puts its service socket in a folder of its own, since its folder held the workspace.
 - Reason: the operator's ruling D-193; §3.2, §3.4.1, §2.7.1 A4, §3.1, §4.3, §8.3; D-116, D-148, D-173, D-192; D8.
+
+## D-195 — Review round 2's non-blocking notes on PR #46, closed restrictively (autopilot ruling; Slice 1.5 Increment 6)
+- Date: 2026-11-09
+- Status: Accepted (built with tests)
+- Applies to: `packages/enforcement/src/startup.ts`, `packages/mediated/src/gateway.ts`; `packages/enforcement/test/startup.test.ts` (new)
+- Notes (fresh reviewer, round 2, head fa0dbf8; verdict MERGE):
+  1. For state that does not exist yet (a journal folder on first start), the check judged the nearest existing folder, which could be a shared folder with the sticky bit, where another user could create the folder first.
+  2. The gateway forwarded the parsed arguments, not the boundary's judged copy. The values were the same, so there was no gap.
+- Decision (restrictive):
+  1. The shared start-up check refuses an owned file or folder that does not exist yet when the folder that would hold it is writable by group or others, with or without the sticky bit. An existing entry this process owns in a sticky folder is still accepted, because no one else can replace it.
+  2. The gateway forwards `verdict.authorization.call`, a copy of what the boundary judged (as D-053 for the runner).
+- Reason: §3.4.1; D-053; D-194; D8.

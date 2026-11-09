@@ -181,7 +181,10 @@ function changeableRefusals(what: string, path: string, kind: "file" | "dir" | "
     holder = host.lstat(folder);
   }
   if (holder !== null) {
-    if ((holder.mode & 0o022) !== 0 && (holder.mode & 0o1000) === 0) refusals.push(`the folder ${folder} holding ${what} ${path} is writable by group or others without the sticky bit, so they could replace it (D-194)`);
+    // Restrictive (D-195): state that does not exist yet must not be left for a shared folder to hold: anyone who can
+    // write there, sticky bit or not, could create it between this check and the moment JUNO opens it.
+    if (facts === null && (holder.mode & 0o022) !== 0) refusals.push(`${what} ${path} does not exist yet, and the folder ${folder} that would hold it is writable by group or others, who could create it first (D-195)`);
+    else if ((holder.mode & 0o022) !== 0 && (holder.mode & 0o1000) === 0) refusals.push(`the folder ${folder} holding ${what} ${path} is writable by group or others without the sticky bit, so they could replace it (D-194)`);
     else if (holder.uid !== 0 && holder.uid !== host.uid && (holder.mode & 0o1000) === 0) refusals.push(`the folder ${folder} holding ${what} ${path} is owned by uid ${String(holder.uid)}, neither root nor this process, who could replace it (D-194)`);
   }
   return refusals;

@@ -352,8 +352,9 @@ export class McpGateway {
       return denied(parkText(verdict.detail.reason, parked.overridable));
     }
     session.clearRejections();
-    // Proceed: forwarded exactly as judged. The response is untrusted content at the class of what the call read (§1.2).
-    const answered = await this.#upstream.request("tools/call", { name: toolName, arguments: args });
+    // Proceed: forwarded exactly as judged, the boundary's own copy of the call and nothing the client sent (D-053, D-195).
+    // The response is untrusted content at the class of what the call read (§1.2).
+    const answered = await this.#upstream.request("tools/call", { name: toolName, arguments: structuredClone(verdict.authorization.call) });
     const result = CallResult.safeParse(answered);
     const multiRound = typeof answered === "object" && answered !== null && ["input_required", "inputRequired", "inputRequests"].some((key) => Object.hasOwn(answered, key));
     this.#floor = maxSensitivity(this.#floor, reads);
