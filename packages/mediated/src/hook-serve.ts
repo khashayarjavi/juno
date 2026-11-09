@@ -14,7 +14,7 @@ import {
   runtimeRefusal,
   systemHostIo,
 } from "../../enforcement/src/index.js";
-import { type FilesystemIo, systemFilesystemIo } from "./filesystem.js";
+import { type FilesystemIo, caseFoldingRefusals, systemFilesystemIo } from "./filesystem.js";
 import { HookAdmissionService, askAdmission } from "./hook-admission.js";
 import { HookService } from "./hook-service.js";
 import { MediatedSessions, PathMap } from "./session.js";
@@ -28,7 +28,7 @@ import { MediatedSessions, PathMap } from "./session.js";
  *
  * `serve`, run as the runner, runs THE shared start-up check through `SessionLayer.open` (never root; no state in or
  * overlapping the workspace; nothing anyone else could change; a verified trust anchor; D-194), then refuses a container
- * runtime that would ignore the workloads' limits (D-131), then serves the hook on its socket (0660, D-173) and an
+ * runtime that would ignore the workloads' limits (D-131) and a workspace D-178 refuses, then serves the hook on its socket (0660, D-173) and an
  * admission socket that only the runner can reach (0600). No session is admitted until the operator asks.
  *
  * `admit`, run as the runner, names one session file. The service reads it itself, refusing it, and every grant file it
@@ -109,6 +109,10 @@ export async function runHookServeCli(args: readonly string[], io: HookServeIo):
   } catch (error: unknown) {
     return refused(io, "serve", [`the container runtime could not be checked: ${error instanceof Error ? error.message : String(error)} (D-131)`]);
   }
+  // D-178 (plan Increment 6): the workspace must be a case-sensitive Linux file system with no folding folder, checked at
+  // start as well as at every admission; a workspace JUNO cannot check is refused.
+  const folding = await caseFoldingRefusals([{ what: "the workspace", path: workspace }], io.filesystem);
+  if (folding.length > 0) return refused(io, "serve", folding);
   const trust = layer.anchor;
   if (trust === null) return refused(io, "serve", ["no verified trust anchor (D-194)"]);
   const grants = new GrantStore(trust);

@@ -161,11 +161,21 @@ describe("juno hook serve and juno hook admit (plan Increment 6, D-180, D-196)",
     expect(existsSync(join(sockets, "hook.sock"))).toBe(false);
   });
 
+  // proves D-178 (plan Increment 6): the command refuses to start on a workspace whose file system JUNO cannot check;
+  // nothing listens
+  it("refuses to start on a workspace D-178 refuses", async () => {
+    expect(await serving(() => Promise.resolve(), { filesystem: { ...systemFilesystemIo(), mountinfo: () => null } })).toBe(1);
+    expect(said.join("")).toMatch(/juno hook serve: refused:[\s\S]*workspace/);
+    expect(existsSync(join(sockets, "hook.sock"))).toBe(false);
+  });
+
   // proves D-178 at the command: a workspace whose file system JUNO cannot check (as on a case-folding or non-Linux one) is
   // refused at admission, so the session is never admitted
   it("refuses at admission a workspace D-178 refuses", async () => {
-    // A host where JUNO cannot read the mount table: D-178 refuses what it cannot check.
-    const folding = { ...systemFilesystemIo(), mountinfo: () => null };
+    // A host whose mount table JUNO can read at start but not afterwards: D-178 refuses what it cannot check.
+    let reads = 0;
+    const real = systemFilesystemIo();
+    const folding = { ...real, mountinfo: () => (reads++ === 0 ? real.mountinfo() : null) };
     const code = await serving(async (layer) => {
       expect(await runHookAdmitCli(["--control", join(sockets, "admit.sock"), join(dir, "state", "session.json")], quiet)).toBe(1);
       expect(layer.sessions()).toEqual([]);
