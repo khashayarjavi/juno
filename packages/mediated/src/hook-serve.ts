@@ -95,13 +95,6 @@ export async function runHookServeCli(args: readonly string[], io: HookServeIo):
     io.err(SERVE_USAGE);
     return 2;
   }
-  // THE shared start-up check, before anything is opened (D-193, D-194).
-  let layer: SessionLayer;
-  try {
-    layer = SessionLayer.open(hookStartupSpec({ socket, control, journal, anchor, workspace, checkpoints, protect }), { host: io.host });
-  } catch (error: unknown) {
-    return refused(io, "serve", error instanceof StartupRefused ? error.refusals : [error instanceof Error ? error.message : String(error)]);
-  }
   // D-131 (plan Increment 6): a runtime that would ignore the workloads' limits stops the service from starting.
   try {
     const why = runtimeRefusal(await io.runtime());
@@ -113,6 +106,13 @@ export async function runHookServeCli(args: readonly string[], io: HookServeIo):
   // start as well as at every admission; a workspace JUNO cannot check is refused.
   const folding = await caseFoldingRefusals([{ what: "the workspace", path: workspace }], io.filesystem);
   if (folding.length > 0) return refused(io, "serve", folding);
+  // THE shared start-up check, before anything is opened; the two checks above open nothing either (D-193, D-194).
+  let layer: SessionLayer;
+  try {
+    layer = SessionLayer.open(hookStartupSpec({ socket, control, journal, anchor, workspace, checkpoints, protect }), { host: io.host });
+  } catch (error: unknown) {
+    return refused(io, "serve", error instanceof StartupRefused ? error.refusals : [error instanceof Error ? error.message : String(error)]);
+  }
   const trust = layer.anchor;
   if (trust === null) return refused(io, "serve", ["no verified trust anchor (D-194)"]);
   const grants = new GrantStore(trust);

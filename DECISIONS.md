@@ -2327,3 +2327,16 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   9. **`juno hook serve` also runs D-178's workspace check at start** (the plan: "refuses to start … when `/srv/juno-work` fails D-178's check"), as well as at every admission. A workspace JUNO cannot check is refused.
   8. **D-073's network guard** lists the admission socket's file (`packages/mediated/src/hook-admission.ts`) among the Unix-socket files, under D-144's stricter check: no host, port or URL, and it connects and listens only on a socket path. This is the same treatment D-189 gave the gateway's files. The file holds only the socket code; `hook-serve.ts` uses no `node:net`.
 - Reason: plan Increment 6; D-180; §4.3; §3.2; D-131, D-148, D-173, D-194; CLAUDE.md rule 13; D8.
+
+## D-197 — The built code carries its capability definitions (found by Increment 6's container test)
+- Date: 2026-11-09
+- Status: Accepted (fixed; proven by the container test)
+- Applies to: `Makefile` (`build`); `test/containers/hook-separation/driver.mjs`, `write-file.mjs` (new), `test/containers/hook-separation.test.ts`
+- **Finding.** The new container test ran the real `juno hook serve` from the runner image (`/app/dist`). Its first admission was refused: `ENOENT … scandir '/app/dist/mediated/definitions/claude-code/'`. The hook sessions load their tool table, program list and `shell.run` at run time from `../definitions/…` beside the code. `make build` compiled only the TypeScript. So the built code, the code the operator runs from `/opt/juno/dist`, could never admit a hook session. Every earlier test of mode C ran the TypeScript sources, which find the files, so none caught it.
+- **Decision.** `make build` copies `packages/mediated/definitions` and `packages/registry/definitions` beside the built code (`dist/<package>/definitions`). The container test, run by `make verify`, now admits a session with the built code, so a missing definition fails `make verify`.
+- **The container test (plan Increment 6) adds three things**, in the same sealed container as D-173's:
+  - The real `juno hook serve` runs as the runner, and the runner admits the operator's session with the real `juno hook admit`. The real hook client, as the Claude Code user, is then denied before admission, allowed an in-grant read, and denied an out-of-grant write with `scope_violation`. The admission, the read's result and the park are read back from the journal.
+  - The command refuses to start on the container's overlay root (D-178) and creates nothing.
+  - The Claude Code user cannot reach the admission socket (0600, in the runner's 0700 folder).
+  The container has no Docker (D-065), so a stand-in `docker` on the runner's PATH answers `docker info` as Part E's rootless setup does (cgroup v2, systemd). The probe itself is proven by D-149.
+- Reason: plan Increment 6; D-180; D-196; §4.3; CLAUDE.md rule 4 (nothing is done until `make verify` is green).

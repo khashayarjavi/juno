@@ -26,6 +26,20 @@ type Results = {
   recheck: Exit;
   agent: Record<string, Attempt> & { identity: { uid: number; gid: number; groups: number[]; capEff: string | null }; hook: Exit };
   negative: Record<string, Exit>;
+  serve: {
+    overlay: Exit;
+    overlayJournalCreated: boolean;
+    started: { ok: boolean; text: string };
+    beforeAdmission?: Exit;
+    agentAdmit?: Exit;
+    admit?: Exit;
+    read?: Exit;
+    readResult?: Exit;
+    write?: Exit;
+    journal?: { kind: string; type: string | null; outcome: string | null; reason: string | null; tool: string | null }[];
+    socketMode?: string;
+    controlMode?: string;
+  };
 };
 
 let results: Results;
@@ -115,5 +129,39 @@ describe("D-173: the Claude Code user cannot modify the hook settings or reach t
     const lines = (results.negative["workspaceOnOverlay"]?.stderr ?? "").split("\n").filter((line) => line.startsWith("  - "));
     expect(lines).toEqual([expect.stringContaining("/srv/overlay-work is on a file system of type overlay")]);
     expect(lines[0]).toContain("D-178");
+  });
+});
+
+describe("plan Increment 6 (D-180, D-196): the real juno hook serve and juno hook admit on Part E's layout (container)", () => {
+  // proves D-178 at start (plan Increment 6): on a workspace that is not a native case-sensitive Linux file system the
+  // command refuses to start, and creates nothing
+  it("refuses to start on a workspace D-178 refuses", () => {
+    expect(results.serve.overlay.code).toBe(1);
+    expect(results.serve.overlay.stderr).toMatch(/juno hook serve: refused:[\s\S]*workspace/);
+    expect(results.serve.overlayJournalCreated).toBe(false);
+  });
+
+  // proves §4.3 acceptance test 1 through the commands that run it on the operator's machine: as the runner the service
+  // starts, the runner admits the operator's session, and the real hook client as the Claude Code user gets an allowed
+  // read and a denied out-of-grant write, both journalled; before admission every call is denied
+  it("serves as the runner, admits the session, allows an in-grant read and denies an out-of-grant write, journalled", () => {
+    expect(results.serve.started, results.serve.started.text).toMatchObject({ ok: true });
+    expect(results.serve.socketMode).toBe("660");
+    expect(results.serve.controlMode).toBe("600");
+    expect(JSON.parse(results.serve.beforeAdmission?.stdout ?? "{}")).toMatchObject({ hookSpecificOutput: { permissionDecision: "deny", permissionDecisionReason: expect.stringContaining("not admitted") } });
+    expect(results.serve.admit).toMatchObject({ code: 0, stdout: expect.stringContaining("admitted session-7d2c4b1a-0e3f-4a5b-9c6d-112233445566") });
+    expect(results.serve.read).toMatchObject({ code: 0, stdout: "" });
+    expect(results.serve.readResult).toMatchObject({ code: 0 });
+    expect(JSON.parse(results.serve.write?.stdout ?? "{}")).toMatchObject({ hookSpecificOutput: { permissionDecision: "deny", permissionDecisionReason: expect.stringContaining("scope_violation") } });
+    const journal = results.serve.journal ?? [];
+    expect(journal[0]).toMatchObject({ kind: "note", type: "admission", outcome: "admitted" });
+    expect(journal.filter((entry) => entry.kind === "capability_result")).toEqual([expect.objectContaining({ tool: "Read", outcome: "succeeded" })]);
+    expect(journal.filter((entry) => entry.kind === "park")).toEqual([expect.objectContaining({ reason: "scope_violation" })]);
+  });
+
+  // proves D-196: the Claude Code user cannot reach the admission socket, so it cannot admit a session for itself
+  it("keeps the admission socket out of the Claude Code user's reach", () => {
+    expect(results.serve.agentAdmit?.code).toBe(1);
+    expect(results.serve.agentAdmit?.stderr).toMatch(/not reachable/);
   });
 });
