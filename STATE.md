@@ -1,9 +1,21 @@
 # STATE
 
 ## Current increment
-**Slice 1.5 — Increment 5: gateway mode for MCP (§4.3 mode B)** (`docs/plans/slice-1.5-build-plan.md`, Increment 5; §4.3, §2.3.2, §7.8 E2, §2.2.2 for `external` effects; D-154). Branch `claude/jolly-maxwell-s3mk53` (this session's only pushable branch; it carries PR #44's commits from `claude/loving-brahmagupta-rp1azf` unchanged), restarted from `main` 0aa797d after PR #43 merged. Spec v0.6.1. No objection open.
+**Slice 1.5 — Increment 5: gateway mode for MCP (§4.3 mode B)** (`docs/plans/slice-1.5-build-plan.md`, Increment 5; §4.3, §2.3.2, §7.8 E2, §2.2.2 for `external` effects; D-154). Branch `claude/blissful-gates-7hljw0` (this session's only pushable branch); it carries PR #45's commits from `claude/jolly-maxwell-s3mk53` unchanged, and its PR supersedes PR #45. Spec v0.6.1. No objection open.
 
-Status (2026-11-09): **STOPPED after review round 1 (D-192); the round's findings are fixed, nothing is merged, and round 2 needs your go-ahead.** Earlier (2026-11-08): `make verify: GREEN` locally on 5a8082b (1,128 unit, 109 container). Built and committed before this session:
+Status (2026-11-09, later session): **your ruling D-193 is built (D-194); review round 2 is next.** Nothing merged yet.
+- **Your ruling, recorded as D-193:** finding 2 was correctly a repeat (D-148); close the class "a new entry point lacks an existing guard" structurally; then round 2 is authorised.
+- **What D-194 changes, in plain words.**
+  - **One start-up check for every JUNO service** (`packages/enforcement/src/startup.ts`). The runner, the hook service and the gateway all run the same function before they open anything. It refuses: running as root; the journal, grant or session files, keys, the trust anchor, sockets or any other state inside or overlapping any workspace or source (as the kernel resolves them); state anyone else could change; and a trust anchor it cannot verify. The copies that each entry point had of these checks are gone.
+  - **One session layer for every mode** (`packages/enforcement/src/session-layer.ts`). It is the only way to get the journal, and the only way to get it is through the start-up check. JUNO's own loop, the hook and the gateway each admit their sessions through it, and it owns each session's rejection limit, budget, time limit, parks and journal records. A mode cannot be built on anything else.
+  - **One registry of entry points** (`packages/runner/src/entry-points.ts`). The `juno` command runs only what it lists.
+  - **The test you asked for** (`packages/runner/test/entry-points.test.ts`, 50 tests). It reads the source code and fails on any program, service, session class or journal writer the registry does not list. Then it runs every registered entry point that starts a service against each thing the shared check refuses, and checks the refusal is the shared check's own and nothing was started. It checks every class refuses a layer the check did not open. It drives the own loop, hook and gateway modes and checks the shared layer counts their rejections and calls and parks them.
+  - **Shown failing on round 1's code:** on `4fc2675` it fails 9 of 10, including both of round 1's findings: `juno gateway serve` started with its journal inside the workspace, and gateway mode had no rejection limit (`docs/evidence/d194-round1/`).
+- **Autopilot rulings (D-194):** wall clock and time limit are spent at the same moment in every mode (`>=`); a socket's folder counts as state and must exist at start-up; unit tests run the real check as an ordinary user; a runner whose workloads are in containers names no host workspace.
+- **Tests changed on purpose (kept, now asserting the shared check):** six, listed in D-194. The unit count is unchanged for the old tests (1,196) plus 50 new.
+
+### Before this session
+Earlier status (2026-11-09): **STOPPED after review round 1 (D-192); the round's findings were fixed; round 2 needed your go-ahead** (given: D-193). Earlier (2026-11-08): `make verify: GREEN` locally on 5a8082b (1,128 unit, 109 container). Built and committed before this session:
 - **D-183:** the D-046 property test states a 30 s time budget (same assertions and runs). It timed out once under CI load on PR #43.
 - **D-154 in step 4 (D-184):** an enumerated path target matches only on its resolved path; never when unresolved or hard-linked. Other values match only exactly, except an email's domain, which is compared without regard to ASCII case.
 - **The MCP gateway core** (`packages/mediated/src/gateway.ts`, `gateway-stdio.ts`):
@@ -72,7 +84,7 @@ Status (2026-11-09): **STOPPED after review round 1 (D-192); the round's finding
 - **Your decision:** authorise review round 2 on PR #45 (round limit 5, D-157), or tell me to treat finding 2 as a new mechanism and continue without a STOP.
 
 **Left in this increment, in order:**
-1. Review round 2 on PR #45 (after your decision), then the merge gate (CLAUDE.md §7 step 6), then Increment 6.
+1. `make verify` green on the D-194 head, CI green, then review round 2 (D-193) on this branch's PR, then the merge gate (CLAUDE.md §7 step 6), then Increment 6.
 
 ### What mode B does not protect (§4.3; Increment 5's done-when)
 1. **Tool descriptions.** The gateway passes the upstream's tool descriptions to the model unchanged. An injected instruction in a description reaches the model. What it can make the model *do* is still judged: every call's arguments are untrusted, and an unenumerated recipient parks.
