@@ -1,7 +1,7 @@
 import { type Stats, lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { type FilesystemIo, caseFoldingRefusals, systemFilesystemIo } from "./filesystem.js";
-import { MANAGED_SETTINGS, hookRefusals } from "./install.js";
+import { type GatewayInstall, MANAGED_MCP_NAME, MANAGED_SETTINGS, gatewayInputRefusals, gatewaySettingsRefusals, hookRefusals, managedMcpRefusals } from "./install.js";
 
 /**
  * `juno hook check` (operator ruling 1 of 2026-11-08, second set; DECISIONS.md D-173). Before a governed session, it
@@ -36,6 +36,11 @@ export type PreflightInput = {
   readonly state: readonly string[];
   /** The trust anchor: public (D-116), so the agent may read it, but never write or replace it. */
   readonly anchor?: string;
+  /**
+   * JUNO's gateway relay, when the hook is to let the gateway's calls through (D-190): its server name, the shim Claude
+   * Code starts, and the runner's gateway socket. Node is `node` above.
+   */
+  readonly gateway?: { readonly name: string; readonly shim: string; readonly socket: string };
 };
 
 /** The account named `name`: its uid, its primary group and every group listing it as a member. */
@@ -104,6 +109,28 @@ function canReplace(who: Account, path: string, io: PreflightIo): boolean {
   if (!holds(who, folder, 2) || !holds(who, folder, 1)) return false;
   const sticky = (folder.mode & 0o1000) !== 0;
   return !sticky || folder.uid === who.uid || entry === null || entry.uid === who.uid;
+}
+
+/** Refusals for a socket of the runner's that the agent must reach and must not replace (D-173; the gateway's too, D-190). */
+function socketRefusals(what: string, path: string, agent: Account, runner: Account, io: PreflightIo): string[] {
+  const refusals: string[] = [];
+  const socket = io.lstat(path);
+  const folder = io.lstat(dirname(path));
+  if (socket === null || socket.kind !== "socket") refusals.push(`${what} ${path} is not a listening socket (start the runner's service first)`);
+  else {
+    if (socket.uid !== runner.uid) refusals.push(`${what} ${path} is not owned by the runner's user (${describeMode(socket)}); its owner can change its mode`);
+    if (!holds(agent, socket, 2)) refusals.push(`the Claude Code user cannot connect to ${what} ${path} (${describeMode(socket)}); the hook would block every call`);
+    if ((socket.mode & 0o007) !== 0) refusals.push(`${what} ${path} is open to every user (${describeMode(socket)}); only the runner and the Claude Code user's group may reach it`);
+  }
+  if (folder === null) refusals.push(`${what}'s folder ${dirname(path)} does not exist`);
+  else {
+    if (folder.uid !== runner.uid) refusals.push(`${what}'s folder ${dirname(path)} is not owned by the runner's user (${describeMode(folder)})`);
+    if (!ancestors(path).every((at) => { const facts = io.lstat(at); return facts !== null && holds(agent, facts, 1); })) refusals.push(`the Claude Code user cannot reach ${what}'s folder ${dirname(path)}; the hook would block every call`);
+    if (holds(agent, folder, 2)) refusals.push(`the Claude Code user can write ${what}'s folder ${dirname(path)} (${describeMode(folder)}), so it could replace ${what} (D-173)`);
+    if ((folder.mode & 0o002) !== 0) refusals.push(`${what}'s folder ${dirname(path)} is writable by every user (${describeMode(folder)})`);
+    if (canReplace(agent, dirname(path), io)) refusals.push(`the Claude Code user can replace ${what}'s folder ${dirname(path)} (D-173)`);
+  }
+  return refusals;
 }
 
 /** The refusals; empty when the separation D-173 requires holds. */
@@ -178,21 +205,25 @@ export function hookPreflight(input: PreflightInput, io: PreflightIo): string[] 
   }
 
   // 5. The socket: the runner's, which the agent can connect to but whose mode and folder it cannot change.
-  const socket = io.lstat(input.socket);
-  const folder = io.lstat(dirname(input.socket));
-  if (socket === null || socket.kind !== "socket") refusals.push(`${input.socket} is not a listening socket (start the runner's service first)`);
-  else {
-    if (socket.uid !== runner.uid) refusals.push(`the socket ${input.socket} is not owned by the runner's user (${describeMode(socket)}); its owner can change its mode`);
-    if (!holds(agent, socket, 2)) refusals.push(`the Claude Code user cannot connect to ${input.socket} (${describeMode(socket)}); the hook would block every call`);
-    if ((socket.mode & 0o007) !== 0) refusals.push(`the socket ${input.socket} is open to every user (${describeMode(socket)}); only the runner and the Claude Code user's group may reach it`);
-  }
-  if (folder === null) refusals.push(`the socket's folder ${dirname(input.socket)} does not exist`);
-  else {
-    if (folder.uid !== runner.uid) refusals.push(`the socket's folder ${dirname(input.socket)} is not owned by the runner's user (${describeMode(folder)})`);
-    if (!ancestors(input.socket).every((at) => { const facts = io.lstat(at); return facts !== null && holds(agent, facts, 1); })) refusals.push(`the Claude Code user cannot reach the socket's folder ${dirname(input.socket)}; the hook would block every call`);
-    if (holds(agent, folder, 2)) refusals.push(`the Claude Code user can write the socket's folder ${dirname(input.socket)} (${describeMode(folder)}), so it could replace the socket (D-173)`);
-    if ((folder.mode & 0o002) !== 0) refusals.push(`the socket's folder ${dirname(input.socket)} is writable by every user (${describeMode(folder)})`);
-    if (canReplace(agent, dirname(input.socket), io)) refusals.push(`the Claude Code user can replace the socket's folder ${dirname(input.socket)} (D-173)`);
+  refusals.push(...socketRefusals("the socket", input.socket, agent, runner, io));
+
+  // 6. The gateway (D-190): Claude Code's exclusive managed MCP file names only JUNO's relay, nothing else can load,
+  // and what the relay runs and where it connects are out of the agent's reach.
+  if (input.gateway !== undefined) {
+    const gateway: GatewayInstall = { name: input.gateway.name, node: input.node, shim: input.gateway.shim, socket: input.gateway.socket };
+    refusals.push(...gatewayInputRefusals(gateway));
+    const mcpFile = join(dirname(input.settings), MANAGED_MCP_NAME);
+    refusals.push(...rootOnly("the managed MCP file", mcpFile, io));
+    refusals.push(...managedMcpRefusals(io.readFile(mcpFile), gateway));
+    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) refusals.push(...gatewaySettingsRefusals(parsed as Record<string, unknown>, gateway));
+    refusals.push(...rootOnly("the gateway shim", input.gateway.shim, io));
+    for (const name of io.readdir(dirname(input.gateway.shim)) ?? []) {
+      const facts = io.lstat(join(dirname(input.gateway.shim), name));
+      if (facts !== null && facts.kind !== "symlink" && (facts.uid !== 0 || (facts.mode & 0o022) !== 0)) {
+        refusals.push(`the gateway shim's folder holds ${name}, which must be owned by root and writable by no one else (${describeMode(facts)})`);
+      }
+    }
+    refusals.push(...socketRefusals("the gateway socket", input.gateway.socket, agent, runner, io));
   }
   return refusals;
 }
@@ -238,14 +269,14 @@ export function systemPreflightIo(): PreflightIo {
   };
 }
 
-const CHECK_USAGE = "usage: juno hook check --agent-user <name> --runner-user <name> --socket <path> --client <juno-hook.js> --node <node> --state <path> [--state <path> ...] --workspace <path> [--workspace <path> ...] [--source <path> ...] [--anchor <file>] [--settings <file>]\n";
+const CHECK_USAGE = "usage: juno hook check --agent-user <name> --runner-user <name> --socket <path> --client <juno-hook.js> --node <node> --state <path> [--state <path> ...] --workspace <path> [--workspace <path> ...] [--source <path> ...] [--anchor <file>] [--settings <file>] [--gateway <name> --shim <juno-mcp.js> --gateway-socket <path>]\n";
 
 /**
  * `juno hook check …` (see USAGE in install.ts). Exit 0 when the separation holds and every workspace and source is on
  * a case-sensitive Linux file system with no case-folding folder (D-178), 1 refused, 2 bad usage.
  */
 export async function runHookCheckCli(args: readonly string[], out: (text: string) => void, err: (text: string) => void, io: PreflightIo = systemPreflightIo(), fsIo: FilesystemIo = systemFilesystemIo()): Promise<number> {
-  const single = ["--agent-user", "--runner-user", "--socket", "--client", "--node", "--settings", "--anchor"];
+  const single = ["--agent-user", "--runner-user", "--socket", "--client", "--node", "--settings", "--anchor", "--gateway", "--shim", "--gateway-socket"];
   const repeated = ["--state", "--workspace", "--source"];
   const options = new Map<string, string>();
   const lists = new Map<string, string[]>(repeated.map((name) => [name, []]));
@@ -270,12 +301,20 @@ export async function runHookCheckCli(args: readonly string[], out: (text: strin
     return 2;
   }
   const anchor = options.get("--anchor");
-  const refusals = hookPreflight({ agentUser, runnerUser, socket, client, node, state, settings: options.get("--settings") ?? MANAGED_SETTINGS, ...(anchor === undefined ? {} : { anchor }) }, io);
+  // D-190: the gateway is all three or none.
+  const [gatewayName, shim, gatewaySocket] = ["--gateway", "--shim", "--gateway-socket"].map(need);
+  const gatewayGiven = [gatewayName, shim, gatewaySocket].filter((part) => part !== undefined).length;
+  if (gatewayGiven !== 0 && gatewayGiven !== 3) {
+    err(CHECK_USAGE);
+    return 2;
+  }
+  const gateway = gatewayName === undefined || shim === undefined || gatewaySocket === undefined ? undefined : { name: gatewayName, shim, socket: gatewaySocket };
+  const refusals = hookPreflight({ agentUser, runnerUser, socket, client, node, state, settings: options.get("--settings") ?? MANAGED_SETTINGS, ...(anchor === undefined ? {} : { anchor }), ...(gateway === undefined ? {} : { gateway }) }, io);
   refusals.push(...(await caseFoldingRefusals([...workspaces.map((path) => ({ what: "the workspace", path })), ...sources.map((path) => ({ what: "the source", path }))], fsIo)));
   if (refusals.length > 0) {
     err(`juno hook check: refused:\n${refusals.map((line) => `  - ${line}`).join("\n")}\n`);
     return 1;
   }
-  out(`juno hook check: the Claude Code user ${agentUser} is separated from the runner ${runnerUser} as D-173 requires, and the workspace is on a case-sensitive Linux file system with no case-folding folder (D-178).\n`);
+  out(`juno hook check: the Claude Code user ${agentUser} is separated from the runner ${runnerUser} as D-173 requires, and the workspace is on a case-sensitive Linux file system with no case-folding folder (D-178).${gateway === undefined ? "" : ` JUNO's gateway relay ${gateway.name} is the only MCP server Claude Code can load, and the Claude Code user cannot change it (D-190).`}\n`);
   return 0;
 }

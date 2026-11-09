@@ -36,6 +36,93 @@ export const NOT_CONTROLLED = [
   "a hook in a user's or a project's settings file, where Claude Code does not honour allowManagedHooksOnly (JUNO sets it, D-173)",
 ];
 
+/** Claude Code's managed MCP file on Linux (and so in WSL2): while it exists, Claude Code loads only the servers it defines (D-190). */
+export const MANAGED_MCP_NAME = "managed-mcp.json";
+
+/**
+ * JUNO's gateway relay as Claude Code's one managed MCP server (D-190): `<node> <shim> --socket <socket>`, the stdio shim
+ * that only relays to the runner's gateway service (D-188). The name is letters, digits and hyphens only, so
+ * `mcp__<name>__` cannot be read as another server's prefix.
+ */
+export type GatewayInstall = { readonly name: string; readonly node: string; readonly shim: string; readonly socket: string };
+
+export const GATEWAY_NAME = /^[A-Za-z0-9-]{1,64}$/;
+
+/** Every remote server, and the built-in servers by name: kept out by the denylist, which nothing overrides (D-190). */
+export const GATEWAY_DENIED: readonly Record<string, string>[] = [{ serverUrl: "*" }, { serverUrl: "*://*:*/*" }, { serverName: "ide" }, { serverName: "claude-in-chrome" }];
+
+/** Managed-settings keys that would let another server load beside the gateway; refused (D-190). */
+export const REFUSED_MCP_KEYS = ["managedMcpServers", "allowAllClaudeAiMcps", "allowClaudeInChromeWithManagedMcp", "managedSourcesBehavior"] as const;
+
+/** The one server entry of the managed MCP file. */
+export function gatewayServerEntry(gateway: GatewayInstall): Record<string, unknown> {
+  return { type: "stdio", command: gateway.node, args: [gateway.shim, "--socket", gateway.socket] };
+}
+
+/** Why a gateway configuration cannot be installed (empty: it can). */
+export function gatewayInputRefusals(gateway: GatewayInstall): string[] {
+  const refusals: string[] = [];
+  if (!GATEWAY_NAME.test(gateway.name)) refusals.push(`the gateway's server name ${JSON.stringify(gateway.name)} must be letters, digits and hyphens only (D-190)`);
+  for (const [what, path] of [["node", gateway.node], ["the gateway shim", gateway.shim], ["the gateway socket", gateway.socket]] as const) {
+    if (!path.startsWith("/") || path.includes("${")) refusals.push(`${what} must be an absolute path with no \${...} expansion (D-190)`);
+  }
+  return refusals;
+}
+
+const sameJson = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
+
+/**
+ * Why the managed MCP file does not make JUNO's relay the only server Claude Code loads (empty: it does). `text` is the
+ * file's content, or null when it is missing. The file must hold exactly `{ "mcpServers": { <name>: <entry> } }`.
+ */
+export function managedMcpRefusals(text: string | null, gateway: GatewayInstall): string[] {
+  if (text === null) return [`${MANAGED_MCP_NAME} is missing, so Claude Code's exclusive control of MCP servers is not in force (D-190)`];
+  if (text.includes("${")) return [`${MANAGED_MCP_NAME} holds a \${...} expansion, which the Claude Code user's environment would decide (D-190)`];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return [`${MANAGED_MCP_NAME} is not JSON`];
+  }
+  const record = typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
+  const servers = record !== null && typeof record["mcpServers"] === "object" && record["mcpServers"] !== null && !Array.isArray(record["mcpServers"]) ? (record["mcpServers"] as Record<string, unknown>) : null;
+  if (record === null || servers === null || Object.keys(record).length !== 1) return [`${MANAGED_MCP_NAME} must hold only "mcpServers" (D-190)`];
+  const names = Object.keys(servers);
+  if (names.length !== 1 || names[0] !== gateway.name) return [`${MANAGED_MCP_NAME} must define exactly one server, ${gateway.name}; it defines ${JSON.stringify(names)} (D-190)`];
+  const entry = servers[gateway.name];
+  const expected = gatewayServerEntry(gateway);
+  const keys = typeof entry === "object" && entry !== null && !Array.isArray(entry) ? Object.keys(entry).sort() : [];
+  if (!sameJson(keys, Object.keys(expected).sort()) || !sameJson(Object.keys(expected).map((key) => (entry as Record<string, unknown>)[key]), Object.values(expected))) {
+    return [`${MANAGED_MCP_NAME}'s ${gateway.name} must run exactly ${gateway.node} ${gateway.shim} --socket ${gateway.socket}, with nothing else in its entry (D-190)`];
+  }
+  return [];
+}
+
+/** Why the managed settings could let another MCP server load beside the gateway (empty: they cannot). */
+export function gatewaySettingsRefusals(settings: Record<string, unknown>, gateway: GatewayInstall): string[] {
+  const refusals: string[] = [];
+  for (const key of REFUSED_MCP_KEYS) if (key in settings) refusals.push(`the managed settings set ${key}, which could let another MCP server load beside JUNO's gateway (D-190)`);
+  if (settings["allowManagedMcpServersOnly"] !== true) refusals.push("allowManagedMcpServersOnly is not true: a user's own allowlist could widen which MCP servers load (D-190)");
+  const allowed = settings["allowedMcpServers"];
+  if (!sameJson(allowed, [{ serverCommand: [gateway.node, gateway.shim, "--socket", gateway.socket] }])) refusals.push(`allowedMcpServers must be exactly the gateway relay's command, so no other server matches it (D-190)`);
+  const denied = Array.isArray(settings["deniedMcpServers"]) ? (settings["deniedMcpServers"] as unknown[]) : [];
+  for (const entry of GATEWAY_DENIED) if (!denied.some((have) => sameJson(have, entry))) refusals.push(`deniedMcpServers lacks ${JSON.stringify(entry)}, so a remote or built-in server could load (D-190)`);
+  return refusals;
+}
+
+/** The managed settings with the gateway's MCP keys added (D-190); entries already in the denylist are kept. */
+function withGatewaySettings(settings: Record<string, unknown>, gateway: GatewayInstall): Record<string, unknown> {
+  const denied = Array.isArray(settings["deniedMcpServers"]) ? [...(settings["deniedMcpServers"] as unknown[])] : [];
+  for (const entry of GATEWAY_DENIED) if (!denied.some((have) => sameJson(have, entry))) denied.push(entry);
+  return { ...settings, allowManagedMcpServersOnly: true, allowedMcpServers: [{ serverCommand: [gateway.node, gateway.shim, "--socket", gateway.socket] }], deniedMcpServers: denied };
+}
+
+/** What the gateway install cannot control (D-190), added to NOT_CONTROLLED when a gateway is installed. */
+export const GATEWAY_NOT_CONTROLLED = [
+  "an in-process MCP server (type \"sdk\") that an app or the Agent SDK registers when it starts Claude Code: Claude Code applies no list to it; its calls arrive with source \"sdk\", so JUNO's hook denies them, and a governed session is started from the WSL terminal, where no app registers one (D-190)",
+  "what an MCP tool's description says: the gateway passes descriptions unchanged, and the model reads them (mode B)",
+];
+
 export type HookCommand = { readonly command: string; readonly args: readonly string[] };
 
 /** The hook entry JUNO installs for one event. */
@@ -125,8 +212,11 @@ export const SYSTEM_INSTALL_IO = (claude: string): InstallIo => ({
 
 export type InstallResult = { readonly installed: true; readonly settings: Record<string, unknown>; readonly not_controlled: readonly string[] } | { readonly installed: false; readonly refusals: readonly string[] };
 
-/** Installs JUNO's hook into `file`, or refuses and changes nothing. */
-export async function installHook(file: string, hook: HookCommand, client: string, io: InstallIo): Promise<InstallResult> {
+/**
+ * Installs JUNO's hook into `file`, or refuses and changes nothing. With `gateway`, it also makes JUNO's relay the only
+ * MCP server Claude Code loads: the managed MCP file beside `file`, and the MCP keys of D-190 in the managed settings.
+ */
+export async function installHook(file: string, hook: HookCommand, client: string, io: InstallIo, gateway?: GatewayInstall): Promise<InstallResult> {
   const refusals: string[] = [];
   const where = settingsFileRefusal(file, io.managedSettings);
   if (where !== null) refusals.push(where);
@@ -156,6 +246,14 @@ export async function installHook(file: string, hook: HookCommand, client: strin
   const existingHooks = typeof settings["hooks"] === "object" && settings["hooks"] !== null ? (settings["hooks"] as Record<string, unknown>) : {};
   const otherPre = (Array.isArray(existingHooks["PreToolUse"]) ? (existingHooks["PreToolUse"] as unknown[]) : []).filter((group) => !JSON.stringify(group).includes(JSON.stringify(client)));
   if (otherPre.length > 0) refusals.push(`${file} already has another PreToolUse hook, which could change a call after JUNO judged it; remove it first (D-148)`);
+  const mcpFile = join(dirname(file), MANAGED_MCP_NAME);
+  if (gateway !== undefined) {
+    refusals.push(...gatewayInputRefusals(gateway));
+    for (const key of REFUSED_MCP_KEYS) if (key in settings) refusals.push(`${file} sets ${key}, which could let another MCP server load beside JUNO's gateway; remove it first (D-190)`);
+    // Never silently drop the operator's servers: an existing managed MCP file must already be exactly JUNO's.
+    const existingMcp = io.readSettings(mcpFile);
+    if (existingMcp !== null && gatewayInputRefusals(gateway).length === 0 && managedMcpRefusals(existingMcp, gateway).length > 0) refusals.push(`${mcpFile} already defines MCP servers other than JUNO's gateway; remove them first (D-190)`);
+  }
   if (refusals.length > 0) return { installed: false, refusals };
   const hooks = { ...(typeof settings["hooks"] === "object" && settings["hooks"] !== null ? (settings["hooks"] as Record<string, unknown>) : {}) };
   for (const event of HOOK_EVENTS) {
@@ -163,14 +261,18 @@ export async function installHook(file: string, hook: HookCommand, client: strin
     hooks[event] = [...others, hookEntry(hook)];
   }
   const env = { ...(typeof settings["env"] === "object" && settings["env"] !== null ? (settings["env"] as Record<string, unknown>) : {}), CLAUDE_CODE_DISABLE_FILE_MENTIONS: "1" };
-  const result = { ...settings, hooks, env, allowManagedHooksOnly: true };
-  const check = hookRefusals(result, client);
+  const hooked = { ...settings, hooks, env, allowManagedHooksOnly: true };
+  const result = gateway === undefined ? hooked : withGatewaySettings(hooked, gateway);
+  const check = [...hookRefusals(result, client), ...(gateway === undefined ? [] : gatewaySettingsRefusals(result, gateway))];
   if (check.length > 0) return { installed: false, refusals: check };
+  // The exclusive MCP file first: should the settings write then fail, Claude Code loads only the relay, and the hook
+  // service still passes nothing until `juno hook check --gateway` holds (fail-closed).
+  if (gateway !== undefined) io.writeSettings(mcpFile, `${JSON.stringify({ mcpServers: { [gateway.name]: gatewayServerEntry(gateway) } }, null, 2)}\n`);
   io.writeSettings(file, `${JSON.stringify(result, null, 2)}\n`);
-  return { installed: true, settings: result, not_controlled: NOT_CONTROLLED };
+  return { installed: true, settings: result, not_controlled: gateway === undefined ? NOT_CONTROLLED : [...NOT_CONTROLLED, ...GATEWAY_NOT_CONTROLLED] };
 }
 
-const USAGE = "usage: juno hook install --socket <path> --client <juno-hook.js> [--node <node>] [--claude <claude>] [--settings /etc/claude-code/managed-settings.json]\n       juno hook check --agent-user <name> --runner-user <name> --socket <path> --client <juno-hook.js> --node <node> --state <path> [--state <path> ...] --workspace <path> [--workspace <path> ...] [--source <path> ...] [--anchor <file>] [--settings <file>]\n";
+const USAGE = "usage: juno hook install --socket <path> --client <juno-hook.js> [--node <node>] [--claude <claude>] [--settings /etc/claude-code/managed-settings.json] [--gateway <name> --shim <juno-mcp.js> --gateway-socket <path>]\n       juno hook check --agent-user <name> --runner-user <name> --socket <path> --client <juno-hook.js> --node <node> --state <path> [--state <path> ...] --workspace <path> [--workspace <path> ...] [--source <path> ...] [--anchor <file>] [--settings <file>] [--gateway <name> --shim <juno-mcp.js> --gateway-socket <path>]\n";
 
 /**
  * `juno hook install --socket <path> --client <juno-hook.js> [--node <node>] [--claude <claude>] [--settings <file>]`
@@ -180,7 +282,7 @@ const USAGE = "usage: juno hook install --socket <path> --client <juno-hook.js> 
 export async function runHookInstallCli(args: readonly string[], out: (text: string) => void, err: (text: string) => void, ioFor: (claude: string) => InstallIo = SYSTEM_INSTALL_IO): Promise<number> {
   const [command, ...rest] = args;
   if (command === "check") return runHookCheckCli(rest, out, err);
-  const names = ["--settings", "--socket", "--client", "--node", "--claude"];
+  const names = ["--settings", "--socket", "--client", "--node", "--claude", "--gateway", "--shim", "--gateway-socket"];
   const options = new Map<string, string>();
   for (let index = 0; index < rest.length; index += 2) {
     const name = rest[index] ?? "";
@@ -201,11 +303,19 @@ export async function runHookInstallCli(args: readonly string[], out: (text: str
   const settings = options.get("--settings") ?? io.managedSettings;
   const node = options.get("--node") ?? process.execPath;
   const hook: HookCommand = { command: node, args: [client, "--socket", socket] };
-  const result = await installHook(settings, hook, client, io);
+  const gatewayParts = ["--gateway", "--shim", "--gateway-socket"].map((name) => options.get(name));
+  // All three or none: a gateway named without its relay, or a relay without its name, is bad usage.
+  if (gatewayParts.some((part) => part !== undefined) && gatewayParts.some((part) => part === undefined)) {
+    err(USAGE);
+    return 2;
+  }
+  const [name, shim, gatewaySocket] = gatewayParts;
+  const gateway = name === undefined || shim === undefined || gatewaySocket === undefined ? undefined : { name, node, shim, socket: gatewaySocket };
+  const result = await installHook(settings, hook, client, io, gateway);
   if (!result.installed) {
     err(`juno hook install: refused:\n${result.refusals.map((line) => `  - ${line}`).join("\n")}\n`);
     return 1;
   }
-  out(`JUNO's hook is installed in ${settings}.\nNext: juno hook check, as root, before the first governed session.\nWhat it cannot control:\n${result.not_controlled.map((line) => `  - ${line}`).join("\n")}\n`);
+  out(`JUNO's hook is installed in ${settings}.${gateway === undefined ? "" : `\nJUNO's gateway relay ${gateway.name} is the only MCP server Claude Code loads (${join(dirname(settings), MANAGED_MCP_NAME)}).`}\nNext: juno hook check, as root, before the first governed session.\nWhat it cannot control:\n${result.not_controlled.map((line) => `  - ${line}`).join("\n")}\n`);
   return 0;
 }

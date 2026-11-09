@@ -32,6 +32,7 @@ import { DeclaredSource, type ReadTarget, classifyRead } from "./reads.js";
 import { type FilesystemIo, caseFoldingRefusals } from "./filesystem.js";
 import { windowsFormReason, windowsFormRefusal } from "./paths.js";
 import { rebuildBashCommand } from "./rebuild.js";
+import { GATEWAY_NAME } from "./install.js";
 
 /**
  * Mediated mode C: a Claude Code session governed through its hooks (spec §4.3, §2.3.2, §2.2.2, §7.8; build plan Slice
@@ -128,6 +129,8 @@ export const HookInput = z.object({
   agent_id: z.string().optional(),
   tool_response: z.unknown().optional(),
   error: z.unknown().optional(),
+  /** For an MCP tool: the server's name and where its definition came from (hooks reference, read 2026-11-09, D-190). */
+  mcp_server: z.object({ name: z.string(), source: z.string() }).optional(),
 });
 export type HookInput = z.infer<typeof HookInput>;
 
@@ -194,7 +197,7 @@ type Session = {
   rejections: number;
   floor: Sensitivity;
   /** Calls authorized and not yet reported by PostToolUse: tool_use_id → call_seq and the sensitivity of what it reads. */
-  readonly pending: Map<string, { readonly call_seq: number; readonly reads: Sensitivity }>;
+  readonly pending: Map<string, { readonly call_seq: number | null; readonly reads: Sensitivity; readonly gateway?: true }>;
   /** The session's checkpointed workspaces: the only reversible ones (§2.2.2, D-135). */
   readonly reversible: readonly string[];
 };
@@ -225,6 +228,13 @@ export type MediatedOptions = {
    * configuration can leave the check out.
    */
   readonly filesystem: FilesystemIo;
+  /**
+   * JUNO's gateway relay, by its managed MCP server name (D-190). Only then does the hook let an MCP call through, and
+   * only one whose hook input says it is that server's, defined in the managed MCP file (`source: "enterprise"`): the
+   * gateway judges and journals it. Whoever starts the service gives it only after `juno hook check --gateway` holds.
+   * Without it, every MCP call is denied.
+   */
+  readonly gateway?: { readonly server: string };
 };
 
 export class MediatedError extends Error {
@@ -280,6 +290,7 @@ function unknown(field: string): ReadTarget {
 }
 
 export class MediatedSessions {
+  readonly #gateway: string | undefined;
   readonly #journal: JournalWriter;
   readonly #grants: GrantStore;
   readonly #paths: PathMap;
@@ -294,6 +305,8 @@ export class MediatedSessions {
   readonly #refused = new Map<string, ReadonlyMap<string, string>>();
 
   constructor(options: MediatedOptions) {
+    if (options.gateway !== undefined && !GATEWAY_NAME.test(options.gateway.server)) throw new MediatedError(`the gateway's server name ${JSON.stringify(options.gateway.server)} must be letters, digits and hyphens only (D-190)`);
+    this.#gateway = options.gateway?.server;
     this.#journal = options.journal;
     this.#grants = options.grants;
     this.#paths = options.paths;
@@ -479,6 +492,7 @@ export class MediatedSessions {
       return this.#park(session, "budget_exceeded", { tool: input.tool_name }, true);
     }
     session.calls += 1;
+    if (input.tool_name.startsWith("mcp__")) return this.#mcp(session, input);
 
     const mapped = await this.#map(session, input);
     if (mapped.kind === "reject") return this.#reject(session, mapped.reason, input.tool_name);
@@ -532,6 +546,8 @@ export class MediatedSessions {
       outcome: input.hook_event_name === "PostToolUse" ? "succeeded" : "failed",
       // A result with no call JUNO authorized is recorded as such: the harness acted without a decision from JUNO.
       ...(call === undefined ? { without_authorized_call: true } : {}),
+      // A call the hook passed to JUNO's gateway, which judged it there (D-190).
+      ...(call?.gateway === true ? { judged_by: "gateway" } : {}),
       response: input.hook_event_name === "PostToolUse" ? (input.tool_response ?? null) : (input.error ?? null),
     });
     return { recorded: true };
@@ -699,6 +715,25 @@ export class MediatedSessions {
   /** What a session's call reads, classified by the one classification function (D-162). */
   #classify(session: Session, targets: readonly ReadTarget[]): Promise<Sensitivity> {
     return classifyRead(targets, { sources: session.request.sources, resolver: this.#resolver, view: this.#view });
+  }
+
+  /**
+   * An MCP call (D-190): "no decision" only for the gateway's own tool, from the server the managed MCP file defines, so
+   * the gateway judges it at its boundary and journals it; every other MCP call is `unknown_capability`, as any tool
+   * outside the table. The passed call is recorded here too, and its result, when it comes, is classified as that
+   * tool's result (D-164).
+   */
+  async #mcp(session: Session, input: HookInput): Promise<HookDecision> {
+    const gateway = this.#gateway;
+    const server = input.mcp_server;
+    if (gateway === undefined || !input.tool_name.startsWith(`mcp__${gateway}__`) || server?.name !== gateway || server.source !== "enterprise") {
+      return this.#reject(session, "unknown_capability", input.tool_name);
+    }
+    session.rejections = 0;
+    const reads = await this.#classify(session, [{ kind: "tool_result", tool: input.tool_name }]);
+    session.pending.set(input.tool_use_id ?? `gateway-${String(session.calls)}`, { call_seq: null, reads, gateway: true });
+    this.#append(session.task.id, "note", this.#class(session), SESSION_ACTOR, { type: "gateway_call", tool: input.tool_name, tool_use_id: input.tool_use_id ?? null, mcp_server: server, judged_by: "gateway" });
+    return { decision: "none" };
   }
 
   #reject(session: Session, reason: string, tool: string, callSeq?: number): HookDecision {
