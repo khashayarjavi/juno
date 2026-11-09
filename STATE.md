@@ -3,14 +3,27 @@
 ## Current increment
 **Slice 1.5 — finishing: the operator setup document and the evidence document** (operator instruction of 2026-11-09; D-199). Increment 6, the last increment of the plan, is **merged** (PR #48). Branch `claude/practical-volta-hjzfmz`, fast-forwarded to `main` f323720. Spec v0.6.1. No objection open.
 
-Status (2026-11-09): **both documents written; PR, review and the merge gate next. After that merge, Slice 1.5 is complete and the autopilot STOPS** (the operator's instruction: no roadmap item beyond Slice 1.5).
+Status (2026-11-09): **STOPPED after review round 2 on PR #49 (D-200): your decision needed** (below). Both documents are written; PR #49 is not merged. After it merges, Slice 1.5 is complete and the autopilot stops (your instruction: no roadmap item beyond Slice 1.5).
 - `docs/operator-setup.md`: every operator step, Parts A–H, in the order to do them, click by click, each part ending with a check. The steps that create a credential are marked. Nothing asks you to paste a secret: the anchor push key is now a deploy key made inside WSL, and only its public half goes to GitHub (D-199).
 - `docs/evidence/slice-1.5.md`: what Slice 1.5 proves (each property with its § and its test), what each mode does not protect (§4.3), and every residual recorded during the slice, in plain words.
 - From the PR #48 reviewer's non-blocking notes: the real-binary test now covers all three forged grants; your journal check runs against a fresh clone of `juno-anchors`; two cosmetic leftovers are removed.
 
 - **PR [khashayarjavi/juno#49](https://github.com/khashayarjavi/juno/pull/49).** Review round 1 (head f1b780d; CI green): **DO NOT MERGE**; checks 1–6 PASS, the two document checks FAIL. Every finding is fixed (D-199 item 8). The ones that mattered: the guide had you sign a grant that covers no Claude Code tool, so your first session would have been denied every call; and `juno gateway serve` refused its own `--git` option (a bug from PR #48). Both now have tests.
 
-**Left, in order:** CI green on the new head; review round 2 (CLAUDE.md §7 step 5, limit 5); the merge gate; record the merge; STOP and report.
+### STOP after review round 2 on PR #49 (2026-11-09) — your decision needed (D-200)
+- **Round 2** (fresh reviewer, same prompt; head c0d4be6, CI run 42696079505 green): **DO NOT MERGE.** Checks 1–4, 6 and 8 PASS; check 5 and check 7 FAIL, for one finding.
+- **The finding, in plain words.** When `juno hook serve` or `juno gateway serve` restarts, it starts with no memory of what happened before:
+  - every grant's use count goes back to zero, so a grant capped at 200 uses can be used 200 more times after each restart;
+  - the same session file can be admitted again, and the session gets a fresh tool-call budget and time limit.
+  Each restart and each admission is journalled, so nothing is hidden, but the limits you set are not held across a restart. The setup guide tells you to restart (Part G step 7, Part H step 2), so this matters in real use.
+- **Why this is a STOP.** CLAUDE.md §7 stops the loop when "a round finds a MECHANISM already fixed in an earlier round or recorded in DECISIONS.md". Grant counts that must survive a restart are D-042, met for JUNO's own loop by D-066 (rebuilt from the journal at start). The hook and gateway services lack that existing guard. Following your D-193 ruling on the same kind of finding (a new entry point missing an existing guard), I read it restrictively, as a repeat. So I have not fixed it on my own authority.
+- **The fix I propose (restrictive, structural, as D-193 asked for its class):**
+  1. In the shared session layer, so every mode gets it: when a service opens its journal, rebuild each grant's use count from the calls already journalled under it, and refuse to admit a session id whose journal already holds an admission (each Claude Code session then needs a fresh id, which the guide already says).
+  2. Extend the entry-point test: for every registered service, restart it on the same journal and show that a grant used up before the restart stays used up, and that the same session id is refused.
+  3. The guide's Part H step 2 then says to admit with a fresh session id.
+- **Done in this round anyway (no decision needed):** the reviewer's smaller document points: the copied grant file is made 0600; the session id comes from `/proc/sys/kernel/random/uuid` (`uuidgen` is not installed by Part E); `issued_at` is set to yesterday (UTC); a Windows user name with a space is flagged; the evidence document lists this open finding, D-124's Windows limit and D-130's network-service residual.
+- **Your decision:** authorise the fix above and review round 3 on PR #49 (limit 5, D-157), or tell me to treat it as a new mechanism and continue without a STOP.
+- **Not merged:** PR #49. Slice 1.5's code (Increments 1–6) is all on `main`; only the two documents and these fixes wait.
 
 ### Merges this session (2026-11-09, this session)
 - **PR #48 (Slice 1.5 Increment 6, supersedes #47): merged** as f323720, pinned to head 085158f.

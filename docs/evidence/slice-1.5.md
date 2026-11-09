@@ -50,6 +50,7 @@ Each line is a property of the specification, the section it comes from, and whe
 JUNO runs the model and every call, in sealed containers (no network, non-root, no capabilities, CPU, memory and process limits). It does not protect (§4.3):
 1. **A compromise of the host beyond what signing and anchoring cover** (§3.2, §3.4.1): a kernel or container-runtime escape, or something that takes over the runner. Signed grants mean it cannot fake permission; anchors mean it cannot quietly rewrite what was anchored.
 2. **Code that reaches a program by a way other than the call's arguments** (§2.3.1): for example a program that reads instructions from a file it is allowed to read. JUNO judges which program runs and with which arguments, not what that program then does with its inputs.
+Two more, not in §4.3's table but true of mode A:
 3. **What a call is allowed to do.** A read inside the grant can read everything the grant covers; a write inside a reversible workspace changes it (you can restore the checkpoint).
 4. **The model's own reasoning.** JUNO judges what the model asks to do, never what it thinks.
 
@@ -83,24 +84,27 @@ Each is a limit JUNO states rather than hides. Where a decision number is given,
 
 **Running on your Windows machine (D-130, D-173)**
 1. **Your Windows account is trusted like your signing key.** Any program running as you on Windows can ask Windows' key agent to sign a grant, and can start WSL as root. A governed Claude Code runs in WSL as `juno-agent`, with interop and drive mounting off, so it has no channel to Windows or to your key agent.
-2. **A kernel or WSL escape** (root in the WSL2 kernel, or an escape from the VM to Windows) is not protected.
+2. **A kernel or WSL escape** (root in the WSL2 kernel, an escape from the VM to Windows, or an attack from the distribution on a Windows network service) is not protected.
 3. **Your signing key's agent** never exports the key, but signs for any program running as you (D-093).
-4. **The trust anchor's check** looks at the file `/etc/juno/operator.pub` and its own folder, not the folders above it (D-116, D-194; a reviewer note on PR #35). Part E puts it in `/etc/juno`, root's, under root's `/etc`.
+4. **The runner's "cannot write the trust anchor" check does not work on Windows itself** (D-124), where it refuses to start (fail-closed); the runner runs only in WSL.
+5. **The trust anchor's check** looks at the file `/etc/juno/operator.pub` and its own folder, not the folders above it (D-116, D-194; a reviewer note on PR #35). Part E puts it in `/etc/juno`, root's, under root's `/etc`.
 
 **The journal and its anchors (§3.4.1, D-122, D-126, D-198)**
-5. **Up to one interval of recent history can still be rewritten** by something that can write the journal's storage: entries written since the last anchor (at most a minute by default) are not yet protected. `juno journal check` reports them as "unanchored", never as verified.
-6. **A compromised host can stop JUNO or withhold new entries** (§3.4.1's own residual). It cannot fake past entries that were anchored.
-7. **The anchors depend on GitHub and the network.** If the anchor repository cannot be reached, sessions stop (fail-closed): availability, not safety.
-8. **The push key is on the host.** Anything that takes over `juno-runner` can push new anchors, but cannot rewrite or delete the ones already pushed (the repository's ruleset blocks force-push and deletion). Your GitHub account, which can change that ruleset, is trusted like your Windows account.
-9. **Resume does not compare the chain with the stored anchors before continuing** (D-126). A rewrite is still caught by the next anchor and by `juno journal check`.
-10. **A whole task's journal deleted** leaves its anchors behind, so the check of that task fails, but JUNO cannot list task ids it was never told about (D-027's accepted residual).
+6. **Up to one interval of recent history can still be rewritten** by something that can write the journal's storage: entries written since the last anchor (at most a minute by default) are not yet protected. `juno journal check` reports them as "unanchored", never as verified.
+7. **A compromised host can stop JUNO or withhold new entries** (§3.4.1's own residual). It cannot fake past entries that were anchored.
+8. **The anchors depend on GitHub and the network.** If the anchor repository cannot be reached, sessions stop (fail-closed): availability, not safety.
+9. **The push key is on the host.** Anything that takes over `juno-runner` can push new anchors, but cannot rewrite or delete the ones already pushed (the repository's ruleset blocks force-push and deletion). Your GitHub account, which can change that ruleset, is trusted like your Windows account.
+10. **Resume does not compare the chain with the stored anchors before continuing** (D-126). A rewrite is still caught by the next anchor and by `juno journal check`.
+11. **A whole task's journal deleted** leaves its anchors behind, so the check of that task fails, but JUNO cannot list task ids it was never told about (D-027's accepted residual).
 
 **Paths and reads (D-113, D-157, D-162, D-164, D-174, D-178)**
-11. **A read that meets more than 64 shortcuts** counts at your highest class, so a listing over a large `node_modules` can be stopped under a low clearance (a cost, not a gap).
-12. **The workspace must be WSL's own case-sensitive file system.** A Windows folder is refused (D-178).
+12. **A read that meets more than 64 shortcuts** counts at your highest class, so a listing over a large `node_modules` can be stopped under a low clearance (a cost, not a gap).
+13. **The workspace must be WSL's own case-sensitive file system.** A Windows folder is refused (D-178).
 
 **Verification of a task (mode A, D-067)**
-13. **A write that keeps a file's size and restores its modification time** is not detected by the protected-path listing.
+14. **A write that keeps a file's size and restores its modification time** is not detected by the protected-path listing.
+
+**Open, found in the last review (STOP for the operator; see STATE.md):** when `juno hook serve` or `juno gateway serve` restarts, it does not yet rebuild how many times each grant was used, or which session ids were already admitted, from the journal; the runner does (D-042, D-066). Until that is fixed, a restart lets a grant be used up to its limit again, and lets the same session file be admitted again with a fresh budget. Each restart and each admission is journalled.
 
 **Closed during Slice 1.5** (recorded earlier as residuals, now fixed): two services of one runner pushing anchors to the same repository at once (D-199); symlinks in scope checks (D-047, closed by D-113); hard links (D-156, closed by D-157); an anchor committed but never pushed being counted after a restart (D-126, closed by D-198); hook and gateway journals that were never anchored (closed by D-198).
 

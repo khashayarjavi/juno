@@ -18,7 +18,7 @@ How to open the windows this guide uses:
 - **Runner terminal** (from Part E on): in PowerShell, type `wsl -d Ubuntu-24.04 -u juno-runner` and press Enter. The prompt starts with `juno-runner@`.
 - **Governed terminal** (from Part E step 10 on): Start menu → **Ubuntu 24.04**. It opens as `juno-agent`.
 
-Boxes of commands: paste each box whole into the window named above it and press Enter.
+Boxes of commands: paste each box whole into the window named above it and press Enter. If your Windows user name contains a space, stop before Part E step 13 and tell the agent: the `cmd /c` copy lines need a different form for that.
 
 ---
 
@@ -69,7 +69,7 @@ A grant is a signed permission: "this principal may use these capabilities, on t
    Copy-Item $env:USERPROFILE\juno\docs\examples\grant-claude-code.example.json $env:USERPROFILE\my-grant.json
    notepad $env:USERPROFILE\my-grant.json
    ```
-   It lets the session read, list, write and edit files under `/work/project` (that is `/srv/juno-work/project`) and run the read-only programs your session file names, at most 200 times. In Notepad change only two values: `issued_at`, to today's date (keep the form `2026-11-09T00:00:00.000Z`), and `expires_at`, to the last day it should be valid. Save with **Ctrl+S** and close Notepad.
+   It lets the session read, list, write and edit files under `/work/project` (that is `/srv/juno-work/project`) and run the read-only programs your session file names, at most 200 times. In Notepad change only two values: `issued_at`, to **yesterday's** date (keep the form `2026-11-08T00:00:00.000Z`; yesterday, because the time is UTC and a grant issued in the future is refused), and `expires_at`, to the last day it should be valid. Save with **Ctrl+S** and close Notepad.
 2. Sign it. **PowerShell**, in `$env:USERPROFILE\juno`:
    ```
    cd $env:USERPROFILE\juno
@@ -289,6 +289,7 @@ A `sources` list with folders and the web looks like this:
 1. **Copy your signed grant into the runner's folder** (byte for byte; a grant is only as good as its signature, so the copy cannot weaken it). **PowerShell** (normal):
    ```
    cmd /c "wsl -d Ubuntu-24.04 -u juno-runner --exec /usr/bin/dd of=/var/lib/juno-runner/grants/grant-operator-first.json status=none < %USERPROFILE%\signed-grant.json"
+   wsl -d Ubuntu-24.04 -u juno-runner --exec /usr/bin/chmod 0600 /var/lib/juno-runner/grants/grant-operator-first.json
    ```
    Then, in the runner terminal:
    ```
@@ -299,10 +300,10 @@ A `sources` list with folders and the web looks like this:
    ```
    cp /opt/juno/docs/examples/session.example.json /var/lib/juno-runner/session.json
    chmod 0600 /var/lib/juno-runner/session.json
-   uuidgen
+   cat /proc/sys/kernel/random/uuid
    nano /var/lib/juno-runner/session.json
    ```
-   In nano, change only what the file's comments name: put the UUID `uuidgen` printed into `session_id`; set `sources` and `provider_clearance` as you decided in Part F; keep `grants` as `grant-operator-first` unless you signed another. Save with **Ctrl+O**, Enter, and leave with **Ctrl+X**.
+   In nano, change only what the file's comments name: put the UUID the `cat` line printed into `session_id`; set `sources` and `provider_clearance` as you decided in Part F; keep `grants` as `grant-operator-first` unless you signed another. Save with **Ctrl+O**, Enter, and leave with **Ctrl+X**.
 3. **Start the service.** **Creates a credential:** on its first start the service makes JUNO's journal key (`/var/lib/juno-runner/journal-key`, readable by `juno-runner` only), which signs every anchor. It is not your grant-signing key, and you never handle it. Runner terminal:
    ```
    mkdir -p ~/.config/systemd/user
