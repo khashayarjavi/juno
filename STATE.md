@@ -1,6 +1,34 @@
 # STATE
 
 ## Current increment
+**Slice 1.5 — Increment 6: §4.3's Slice 1.5 acceptance, end to end** (`docs/plans/slice-1.5-build-plan.md`, Increment 6; §4.3 "Acceptance for Slice 1.5", §18 tests 1–5 as regression, §3.4.5, §3.4.1; D-180). Branch `claude/blissful-gates-7hljw0`, fast-forwarded to `main` 34d7439 after PR #46 merged. Spec v0.6.1. No objection open.
+
+Status (2026-11-09): **started; nothing built yet.**
+
+**Left in this increment, in order (plan Increment 6):**
+1. Restrictive follow-ups from round 2's non-blocking notes (to be recorded as D-195):
+   - The start-up check should refuse an owned folder that does not exist yet (the journal, for example) when the nearest existing folder is shared, meaning writable by group or others, even with the sticky bit. Someone could create the folder between the check and the open.
+   - The gateway should forward the arguments exactly as the boundary judged them.
+2. Read from the installed Claude Code binary how a session id is fixed before the first tool call (CLAUDE.md rule 13). If the binary offers no way, record an objection; do not guess.
+3. Build `juno hook serve` and `juno hook admit <session file>`, with the systemd user unit and the example session file. `juno hook serve` runs as the runner, goes through the shared start-up check and session layer, and is registered in the entry-point registry so the entry-point test covers it.
+4. Container test. The real `juno hook serve` runs as the runner, `juno hook admit` admits a session, and the real hook client runs as `juno-agent`. It must show:
+   - an allowed read, journalled;
+   - a denied out-of-grant write, journalled;
+   - a refusal to start on a workspace D-178 refuses.
+5. Run §4.3 acceptance tests 1–4 together with §18 tests 1–5 in one `make verify`. Each test reads the journal back (§3.4.5) and checks the chain against the latest anchor (§3.4.1). The real-binary parts run in one `make mediated-e2e`, against the service the new command started.
+6. Write the operator steps (plan Increment 6) into STATE.md. Then the PR, review and merge gate, and STATE.md records Slice 1.5 complete.
+
+### Merges this session (2026-11-09, later session)
+- **PR #46 (Slice 1.5 Increment 5, supersedes #45): merged** as 34d7439, pinned to head fa0dbf8.
+  - Reviewer round 2 (fresh subagent, P2 verbatim, plus the D-052 to D-054 re-check): **MERGE**. All six checks and the re-check PASS.
+  - CI on fa0dbf8: run 42645073474, `verify` and `verify-rootless` green.
+  - CI on main for 34d7439: run 42647256375, **green**.
+  - Locally: `make verify` GREEN (1,246 unit, 109 container); `make mediated-e2e` 12/12 with the real Claude Code 2.1.319.
+- **Round 2's non-blocking notes**, kept for Increment 6 (item 1 above). Neither is a gap in the documented setup:
+  - A journal folder not yet created under a shared sticky folder could be created by another user between the check and the open. The documented setup uses 0700 runner folders.
+  - The gateway forwards the parsed arguments rather than the judged copy. They hold the same values.
+
+## Previous increment (Slice 1.5 Increment 5, merged as PR #46)
 **Slice 1.5 — Increment 5: gateway mode for MCP (§4.3 mode B)** (`docs/plans/slice-1.5-build-plan.md`, Increment 5; §4.3, §2.3.2, §7.8 E2, §2.2.2 for `external` effects; D-154). Branch `claude/blissful-gates-7hljw0` (this session's only pushable branch); it carries PR #45's commits from `claude/jolly-maxwell-s3mk53` unchanged, and its PR supersedes PR #45. Spec v0.6.1. No objection open.
 
 Status (2026-11-09, later session): **your ruling D-193 is built (D-194); review round 2 is next.** Nothing merged yet.
