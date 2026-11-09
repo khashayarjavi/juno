@@ -27,8 +27,10 @@ export type EntryPoint = {
   readonly id: string;
   /** `command`: a `juno` subcommand; `program`: an executable file of its own; `class`: constructed by other code. */
   readonly kind: "command" | "program" | "class";
-  /** The repo-relative source file that defines it. */
+  /** The repo-relative source file that defines it (for a program: its implementation). */
   readonly module: string;
+  /** For a program: the executable file itself, which only calls the implementation. */
+  readonly program?: string;
   /** For a command, its words (`["gateway", "serve"]`); for a program or class, its exported name. */
   readonly name: string | readonly string[];
   /** The service it starts or belongs to; null for one that starts none. */
@@ -84,10 +86,10 @@ export const ENTRY_POINTS: readonly EntryPoint[] = [
   { id: "hook", kind: "command", module: "packages/mediated/src/install.ts", name: ["hook"], service: null, admits: false, why: "installs or checks Claude Code's root-owned managed settings (D-143, D-173, D-190); serves nothing, admits no session", implementation: runHookInstallCli, run: (args) => runHookInstallCli(args, out, err) },
   { id: "gateway.serve", kind: "command", module: "packages/mediated/src/gateway-cli.ts", name: ["gateway"], service: "gateway", admits: true, implementation: runGatewayCli, run: (args) => runGatewayCli(args, systemGatewayCliIo()) },
   // Programs of their own.
-  { id: "runner.process", kind: "program", module: "packages/runner/src/main.ts", name: "runRunnerMain", service: "runner", admits: false, implementation: runRunnerMain },
-  { id: "juno", kind: "program", module: "packages/runner/src/juno.ts", name: "dispatch", service: null, admits: false, why: "the `juno` command: it runs only the commands in this registry", implementation: dispatch },
-  { id: "juno-hook", kind: "program", module: "packages/mediated/src/juno-hook.ts", name: "main", service: null, admits: false, why: "Claude Code's hook client: relays one hook call to the hook service's socket and fails closed; holds no state (D-142)", implementation: null },
-  { id: "juno-mcp", kind: "program", module: "packages/mediated/src/juno-mcp.ts", name: "main", service: null, admits: false, why: "Claude Code's MCP shim: relays lines to the gateway's socket and fails closed; holds no state (D-188)", implementation: null },
+  { id: "runner.process", kind: "program", module: "packages/runner/src/runner-main.ts", program: "packages/runner/src/main.ts", name: "runRunnerMain", service: "runner", admits: false, implementation: runRunnerMain },
+  { id: "juno", kind: "program", module: "packages/runner/src/entry-points.ts", program: "packages/runner/src/juno.ts", name: "dispatch", service: null, admits: false, why: "the `juno` command: it runs only the commands in this registry", implementation: dispatch },
+  { id: "juno-hook", kind: "program", module: "packages/mediated/src/hook-client.ts", program: "packages/mediated/src/juno-hook.ts", name: "main", service: null, admits: false, why: "Claude Code's hook client: relays one hook call to the hook service's socket and fails closed; holds no state (D-142)", implementation: null },
+  { id: "juno-mcp", kind: "program", module: "packages/mediated/src/mcp-shim.ts", program: "packages/mediated/src/juno-mcp.ts", name: "main", service: null, admits: false, why: "Claude Code's MCP shim: relays lines to the gateway's socket and fails closed; holds no state (D-188)", implementation: null },
   // Classes that start a service or admit sessions.
   { id: "class.Runner", kind: "class", module: "packages/runner/src/runner.ts", name: "Runner", service: "runner", admits: true, implementation: Runner },
   { id: "class.MediatedSessions", kind: "class", module: "packages/mediated/src/session.ts", name: "MediatedSessions", service: "hook", admits: true, implementation: MediatedSessions },

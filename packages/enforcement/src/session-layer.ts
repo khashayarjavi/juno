@@ -70,6 +70,9 @@ const encoder = new TextEncoder();
 
 export type RecordOptions = { readonly actor: string; readonly provider?: string | null; readonly cost?: EntryDraft["cost"] };
 
+export type LayerOpened = { readonly spec: StartupSpec; readonly refusals: readonly string[]; readonly layer: SessionLayer | null };
+const OBSERVERS = new Set<(event: LayerOpened) => void>();
+
 /** Held only by `SessionLayer.open`. */
 const OPENED_BY_CHECK = Symbol("opened by the shared start-up check");
 
@@ -104,8 +107,25 @@ export class SessionLayer {
   static open(spec: StartupSpec, options: { readonly host?: HostIo; readonly clock?: () => Date; readonly journal?: JournalWriterOptions } = {}): SessionLayer {
     const host = options.host ?? systemHostIo();
     const checked = startupCheck(spec, host);
-    if (!checked.ok) throw new StartupRefused(spec.service, checked.refusals);
-    return new SessionLayer(OPENED_BY_CHECK, Object.freeze({ ...spec, workspaces: [...spec.workspaces], state: spec.state.map((item) => ({ ...item })) }), checked.anchor, host, options.clock ?? (() => new Date()), options.journal ?? {});
+    if (!checked.ok) {
+      for (const listener of OBSERVERS) listener({ spec, refusals: checked.refusals, layer: null });
+      throw new StartupRefused(spec.service, checked.refusals);
+    }
+    const layer = new SessionLayer(OPENED_BY_CHECK, Object.freeze({ ...spec, workspaces: [...spec.workspaces], state: spec.state.map((item) => ({ ...item })) }), checked.anchor, host, options.clock ?? (() => new Date()), options.journal ?? {});
+    for (const listener of OBSERVERS) listener({ spec, refusals: [], layer });
+    return layer;
+  }
+
+  /**
+   * Watches every `open` in this process: the spec judged, the refusals (empty when it opened) and the layer. The
+   * entry-point test uses it to see that an entry ran THE shared check and admitted through the layer it got (D-194).
+   * Returns the function that stops watching.
+   */
+  static observe(listener: (event: LayerOpened) => void): () => void {
+    OBSERVERS.add(listener);
+    return () => {
+      OBSERVERS.delete(listener);
+    };
   }
 
   /** Whether `value` is a layer `open` made (no other object passes, whatever its shape). */
