@@ -1,9 +1,10 @@
 import { type Stats, lstatSync, readFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { z } from "zod";
 import { GrantStore, HostPathResolver, type TrustAnchor, Workspace, execFileScript } from "../../enforcement/src/index.js";
 import { JournalWriter } from "../../journal/src/index.js";
 import { type FilesystemIo, systemFilesystemIo } from "./filesystem.js";
-import { GatewaySessionRequest, McpGateway } from "./gateway.js";
+import { GatewaySessionRequest, McpGateway, stateOverlapRefusals } from "./gateway.js";
 import { GatewayService } from "./gateway-service.js";
 import { StdioUpstream } from "./gateway-stdio.js";
 
@@ -17,7 +18,8 @@ import { StdioUpstream } from "./gateway-stdio.js";
  *                      --grant <signed grant file> [--grant <file> ...]
  *
  * It refuses, and starts nothing, when it runs as root (the gateway is the runner's, D-188), when the session file or
- * a grant file could be changed by anyone but its owner and root, when the anchor could be written by this process
+ * a grant file could be changed by anyone but its owner and root, when any of JUNO's state (journal, session and grant
+ * files, anchor, socket folder) overlaps the workspace (D-148, D-192), when the anchor could be written by this process
  * (D-116), when a path is not absolute, or when admission refuses the session. Exit 0 after a clean stop, 1 refused,
  * 2 bad usage.
  */
@@ -85,6 +87,9 @@ export async function runGatewayCli(args: readonly string[], io: GatewayCliIo): 
   for (const [what, path] of [["the session file", session], ["the socket", socket], ["the journal", journalDir], ["the trust anchor", anchor], ["the workspace", workspace], ...grantFiles.map((file) => ["the grant file", file] as const)] as const) {
     if (!path.startsWith("/")) refusals.push(`${what} ${path} is not an absolute path`);
   }
+  // D-148 for mode B (D-192): the journal, the session and grant files, the anchor and the socket's folder lie outside the workspace.
+  const state = [journalDir, session, ...grantFiles, anchor, dirname(socket)];
+  if (refusals.length === 0) refusals.push(...stateOverlapRefusals(workspace, state));
   if (refusals.length === 0) for (const [what, path] of [["the session file", session], ...grantFiles.map((file) => ["the grant file", file] as const)] as const) refusals.push(...ownedRefusals(what, path, io));
   let file: z.output<typeof GatewaySessionFile> | null = null;
   let trust: TrustAnchor | null = null;
@@ -131,6 +136,7 @@ export async function runGatewayCli(args: readonly string[], io: GatewayCliIo): 
     resolver: new HostPathResolver(workspace),
     view: new Workspace(execFileScript(process.execPath, []), "/work", workspace),
     filesystem: io.filesystem,
+    protectedPaths: state.slice(1),
     upstream: (refused) => new StdioUpstream(upstream.program, upstream.argv, { env: { ...upstream.env }, refused }),
   });
   const admitted = await gateway.admit(file.session);

@@ -145,6 +145,19 @@ describe("juno gateway serve (D-191)", () => {
     expect(existsSync(record)).toBe(false);
   });
 
+  // proves D-192 (D-148 for mode B): a journal, session file, grant file, anchor or socket folder inside the workspace is
+  // refused before anything is opened, so no gateway tool call can reach JUNO's own state
+  it.each([
+    ["the journal", "--journal", (): string => join(work, "project", ".journal")],
+    ["the socket", "--socket", (): string => join(work, "sock", "gateway.sock")],
+    ["the anchor", "--anchor", (): string => join(work, "operator.pub")],
+  ])("refuses when %s lies in the workspace", async (_what, option, path) => {
+    const target = io();
+    expect(await runGatewayCli(args({ [option]: path() }), target)).toBe(1);
+    expect(target.said.join("")).toContain("D-148");
+    expect(existsSync(join(work, "project", ".journal"))).toBe(false);
+  });
+
   // proves D-191: without a grant, a socket or the serve verb it is bad usage
   it("is bad usage without every required option", async () => {
     const without = args().filter((_value, index, all) => all[index] !== "--grant" && all[index - 1] !== "--grant");

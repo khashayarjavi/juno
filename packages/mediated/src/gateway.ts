@@ -1,5 +1,6 @@
+import { existsSync, realpathSync } from "node:fs";
 import { z } from "zod";
-import { type DataClass, type Sensitivity, Task, maxSensitivity, pathWithin } from "../../contracts/src/index.js";
+import { type DataClass, type Sensitivity, Task, maxSensitivity, pathWithin, pathsOverlap } from "../../contracts/src/index.js";
 import { type CanonicalPaths, EnforcementBoundary, type GrantStore, type PathResolver, type TaskContext, type Verdict, type Workspace } from "../../enforcement/src/index.js";
 import { type JournalWriter, canonicalJson } from "../../journal/src/index.js";
 import { type Adapter, type CapabilityCall, CapabilityRegistry, RegistryEntry } from "../../registry/src/index.js";
@@ -65,6 +66,8 @@ export const GatewaySessionRequest = z.strictObject({
   provider_clearance: z.enum(["public", "internal", "confidential", "secret"]),
   sources: z.array(DeclaredSource).min(1),
   tools: z.array(GatewayTool).max(256),
+  /** §2.7.1 A4: consecutive rejections that park `rejection_limit`; per session in gateway mode, as in hook mode. */
+  rejection_limit: z.int().min(1).max(10).default(3),
 });
 export type GatewaySessionRequest = z.input<typeof GatewaySessionRequest>;
 
@@ -96,7 +99,35 @@ export type GatewayOptions = {
   /** Starts the upstream; `refused` is called for each request the upstream sent the client, which the gateway refuses (D-186). */
   readonly upstream: (refused: (method: string) => void) => Upstream;
   readonly clock?: () => Date;
+  /**
+   * JUNO's own state on the host besides the journal (D-148, D-192): the session and grant files, the trust anchor, the
+   * socket's folder. The journal's root is always included. None may overlap the workspace the gateway's paths name, or
+   * a tool call could reach it; the gateway refuses to start. Required, so no configuration can leave it out.
+   */
+  readonly protectedPaths: readonly string[];
 };
+
+/** Why JUNO's state overlaps the workspace (empty: none does), each judged as the kernel resolves it (D-148, D-192). */
+export function stateOverlapRefusals(workspace: string, state: readonly string[]): string[] {
+  if (!workspace.startsWith("/")) return [`the workspace ${workspace} is not an absolute path`];
+  const root = realOrGiven(workspace);
+  return state.flatMap((path) => {
+    if (!path.startsWith("/")) return [`JUNO's state ${path} is not an absolute path`];
+    return pathsOverlap(realOrGiven(path), root) ? [`${path} is JUNO's own state and overlaps the gateway's workspace ${workspace}, so a tool call could reach it; move the workspace or the state (D-148, D-192)`] : [];
+  });
+}
+
+/** A path as the kernel resolves it, or as given when it does not exist yet (its nearest existing ancestor resolved). */
+function realOrGiven(path: string): string {
+  let at = path;
+  const rest: string[] = [];
+  while (!existsSync(at) && at !== "/") {
+    rest.unshift(at.slice(at.lastIndexOf("/") + 1));
+    at = at.slice(0, Math.max(at.lastIndexOf("/"), 1));
+  }
+  const base = realpathSync(at);
+  return rest.length === 0 ? base : `${base === "/" ? "" : base}/${rest.join("/")}`;
+}
 
 export class GatewayError extends Error {
   override readonly name = "GatewayError";
@@ -114,9 +145,13 @@ export class McpGateway {
   #initialized = false;
   #admittedAt = 0;
   #calls = 0;
+  #rejections = 0;
   #floor: Sensitivity = "public";
 
   constructor(options: GatewayOptions) {
+    // D-148 for mode B (D-192): JUNO's own state may not overlap the workspace, in either direction, as the kernel resolves both.
+    const overlaps = stateOverlapRefusals(options.view.viewRoot, [options.journal.root, ...options.protectedPaths]);
+    if (overlaps.length > 0) throw new GatewayError(overlaps.join("; "));
     this.#options = options;
     this.#clock = options.clock ?? (() => new Date());
   }
@@ -297,13 +332,11 @@ export class McpGateway {
       this.#append(task.id, "note", this.#class(), GATEWAY_ACTOR, { type: "state", to: "failed", reason: "ttl_expired" });
       return denied("the session's time to live has expired (§6.4)");
     }
-    // §2.5: a tool the operator did not define is a rejection, journalled, never forwarded.
-    if (tool === undefined) {
-      this.#append(task.id, "note", this.#class(), GATEWAY_ACTOR, { type: "rejection", reason: "unknown_capability", tool: toolName, mode: "gateway" });
-      return denied(`JUNO rejected this call: ${toolName} is not a tool the operator defined (§2.5)`);
-    }
+    // §4.3: every call counts against the budget, a call to a tool the operator did not define included (D-192).
     if (this.#calls >= request.budget.tool_calls || now - this.#admittedAt > request.budget.wall_clock_ms) return this.#park(task, "budget_exceeded", { tool: toolName }, true, denied);
     this.#calls += 1;
+    // §2.5: a tool the operator did not define is a rejection, journalled, never forwarded.
+    if (tool === undefined) return this.#reject(task, "unknown_capability", toolName, undefined, `${toolName} is not a tool the operator defined (§2.5)`, denied);
 
     // Every model-written value is synthesized (untrusted); a value the operator listed for that field is a constant.
     const constants: Record<string, { value: string | number | boolean; data_class: DataClass }> = {};
@@ -324,10 +357,8 @@ export class McpGateway {
     const base: TaskContext = { task: { ...task, sensitivity_floor: this.#floor }, constants, synthesis: { sensitivity: this.#floor }, reversible: [], readGate: { reads, clearance: request.provider_clearance } };
     const canonical: CanonicalPaths = await this.#options.resolver.resolve(boundary.pathsToResolve(base, proposal));
     const verdict: Verdict = boundary.authorize({ ...base, canonical }, proposal);
-    if (verdict.outcome === "reject") {
-      this.#append(task.id, "note", this.#class(), GATEWAY_ACTOR, { type: "rejection", reason: verdict.detail.reason, tool: toolName, call_seq: verdict.call_seq, mode: "gateway" });
-      return denied(`JUNO rejected this call: ${verdict.detail.reason}`);
-    }
+    if (verdict.outcome === "reject") return this.#reject(task, verdict.detail.reason, toolName, verdict.call_seq, verdict.detail.reason, denied);
+    this.#rejections = 0;
     if (verdict.outcome === "park") {
       const grantOnly = verdict.detail.reason === "scope_violation" && verdict.detail.untrusted.length > 0;
       return this.#park(task, verdict.detail.reason, { call_seq: verdict.call_seq, tool: toolName, detail: verdict.detail }, !NON_OVERRIDABLE.has(verdict.detail.reason) && !grantOnly, denied);
@@ -347,7 +378,16 @@ export class McpGateway {
     return reply(result.data);
   }
 
+  /** A rejection, journalled; §2.7.1 A4: consecutive rejections park `rejection_limit` (per session in gateway mode). */
+  #reject(task: z.infer<typeof Task>, reason: string, tool: string, callSeq: number | undefined, why: string, denied: (text: string) => Reply): Reply {
+    this.#rejections += 1;
+    this.#append(task.id, "note", this.#class(), GATEWAY_ACTOR, { type: "rejection", reason, tool, ...(callSeq === undefined ? {} : { call_seq: callSeq }), mode: "gateway" });
+    if (this.#request !== null && this.#rejections >= this.#request.rejection_limit) return this.#park(task, "rejection_limit", { tool, last: reason }, true, denied);
+    return denied(`JUNO rejected this call: ${why}`);
+  }
+
   #park(task: z.infer<typeof Task>, reason: string, detail: Record<string, unknown>, overridable: boolean, denied: (text: string) => Reply): Reply {
+    this.#rejections = 0;
     // §4.3 V6-3: a park answers with its reason and is journalled; the remedy applies to the retry.
     this.#append(task.id, "park", this.#class(), GATEWAY_ACTOR, { reason, overridable, mode: "gateway", answer: "isError", ...detail });
     return denied(`JUNO parked this call: ${reason}. ${overridable ? "The operator may remedy it, and the call can then be retried." : "This cannot be overridden (§8.3)."}`);

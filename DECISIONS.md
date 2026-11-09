@@ -2248,3 +2248,20 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   - Restrictive: it refuses, and serves nothing, when it runs as root (the gateway is the runner's, D-130, D-188); when the session file or a grant file is a symbolic link, is not a file, is owned by anyone but root or this process, or is writable by group or others; when any path given is not absolute; when the anchor cannot be loaded (the runner's own `loadTrustAnchor`, which refuses an anchor this process could write, D-116); when a grant file holds no grant; or when admission refuses the session (journalled, as D-187).
   - Not built here: a service manager entry. Increment 6 adds the command that starts JUNO's services on the operator's machine (D-180), and the gateway joins it there.
 - Reason: plan Increment 5 item 3; D8.
+
+## D-192 — Review round 1 on PR #45 (Increment 5): gateway mode's rejection limit and budget, and JUNO's state outside the gateway's workspace (autopilot rulings; STOP under CLAUDE.md §7)
+- Date: 2026-11-09
+- Status: Accepted (fixed with tests); the round's verdict was DO NOT MERGE, and one finding is a STOP (below)
+- Applies to: `packages/mediated/src/gateway.ts`, `gateway-cli.ts`, `session.ts`; `packages/mediated/test/gateway.test.ts`, `gateway-cli.test.ts`, `gateway-hook.test.ts`, `gateway-service.test.ts`
+- Findings (fresh reviewer, P2 verbatim, head 4fc2675):
+  1. **Gateway mode had no rejection limit**, and a call to an undefined tool was rejected before the budget check, so it never counted. §2.7.1 A4: "Three consecutive rejections park `rejection_limit` … In hook and gateway modes the count is per session." §4.3: tool calls are enforced.
+  2. **`juno gateway serve` accepted a journal inside the workspace**, and the reviewer's probe read the journal's entries through a `files.read` gateway call. That breaks §3.4.1 and §3.2. Mode C refuses this at construction (D-148); mode B had no such check.
+  3. (Minor) When the hook passed a call to the gateway, it cleared the hook session's rejection count before the gateway had judged the call. D-190 did not record that.
+- Decision (restrictive):
+  1. A gateway session has `rejection_limit` (1–10, default 3), as a hook session does. Every rejection counts toward it: an undefined tool, and a boundary rejection. The limit parks `rejection_limit` (overridable, as in mode C). A park or a call that proceeds clears the count.
+  2. The budget is checked, and the call counted, before an undefined tool is rejected, so every call counts.
+  3. `McpGateway` takes `protectedPaths` (required) and refuses to start when the journal's root or any protected path overlaps the workspace, in either direction, as the kernel resolves both. A path that does not exist yet is judged at its nearest existing ancestor. `juno gateway serve` runs the same check over the journal, the session and grant files, the anchor and the socket's folder before it opens anything.
+  4. The hook does not clear its count of consecutive rejections when it passes a call to the gateway (it does not know whether the gateway will reject it). The gateway keeps its own count.
+  - Test changed on purpose, kept: `gateway-service.test.ts`'s socket-folder test built its gateway with the temp root as the workspace and its journal inside it, which the new check refuses. Its workspace is now the `work` subfolder. Its assertions are unchanged.
+- **STOP (CLAUDE.md §7: "a round finds a MECHANISM already fixed in an earlier round or recorded in DECISIONS.md").** Finding 2 is D-148's mechanism: JUNO's own state under a workspace root, reachable by a tool call. D-148 fixed it for mode C; the new mode-B entry point lacked it. Read restrictively, that is a repeat of a recorded mechanism, so the loop stops after this round: the fix is built and tested, nothing is merged, and review round 2 waits for the operator.
+- Reason: §2.7.1 A4, §4.3, §3.4.1, §3.2; D-148; D8.

@@ -8,7 +8,7 @@ import { GrantStore, HostPathResolver, type PathResolver, Workspace, execFileScr
 import { JournalWriter, readPayload, readTrajectory } from "../../journal/src/index.js";
 import { TEST_ANCHOR, signed } from "../../enforcement/test/test-keys.js";
 import { systemFilesystemIo } from "../src/filesystem.js";
-import { MCP_REVISION, McpGateway, type GatewaySessionRequest } from "../src/gateway.js";
+import { GatewayError, MCP_REVISION, McpGateway, type GatewaySessionRequest } from "../src/gateway.js";
 import { StdioUpstream, serveStdio } from "../src/gateway-stdio.js";
 
 // Slice 1.5 Increment 5 (spec §4.3 mode B, §2.2.2, §2.5, §7.8 E2; D-154, D-184 to D-187): every tools/call from an MCP
@@ -73,6 +73,7 @@ function gateway(mode = "normal", options: { resolver?: PathResolver; program?: 
     resolver: options.resolver ?? new HostPathResolver(work),
     view: new Workspace(execFileScript(process.execPath, []), "/work", work),
     filesystem: systemFilesystemIo(),
+    protectedPaths: [],
     clock: () => T0,
     upstream: (refused) => new StdioUpstream(options.program ?? process.execPath, options.program === undefined ? [SERVER, work, record, mode] : [], { refused, timeoutMs: 10_000 }),
   });
@@ -301,5 +302,58 @@ describe("the scripted MCP client over the stdio transport (plan Increment 5, en
     expect(answers[3]).toMatchObject({ result: { content: [{ text: "recorded a message to ops@example.com" }] } });
     expect(answers[4]).toMatchObject({ id: null, error: { code: -32700 } });
     expect(received().filter((line) => line.would_send !== undefined)).toEqual([{ would_send: { to: "ops@example.com", body: "y" } }]);
+  });
+});
+
+describe("D-192: §2.7.1 A4 and §4.3 budgets in gateway mode, and JUNO's state outside the gateway's workspace (D-148)", () => {
+  // proves §2.7.1 A4 in gateway mode: three consecutive rejections park rejection_limit, per session
+  it("parks rejection_limit after three consecutive rejections", async () => {
+    const g = gateway();
+    await opened(g);
+    for (let index = 0; index < 2; index += 1) expect(await call(g, "admin.wipe", { path: "/work/project" })).toMatchObject({ result: { isError: true, content: [{ text: expect.stringContaining("not a tool the operator defined") }] } });
+    // A boundary rejection (an argument the capability does not declare) counts too.
+    expect(await call(g, "files.read", { path: "/work/project/notes.txt", extra: "x" })).toMatchObject({ result: { isError: true, content: [{ text: expect.stringContaining("rejection_limit") }] } });
+    expect(entries(g).filter((entry) => entry.kind === "park")).toEqual([expect.objectContaining({ reason: "rejection_limit", mode: "gateway", overridable: true })]);
+    expect(received()).toEqual([]);
+    g.close();
+  });
+
+  // proves §2.7.1 A4: the count is of CONSECUTIVE rejections; a call that proceeds clears it
+  it("clears the count when a call proceeds", async () => {
+    const g = gateway();
+    await opened(g);
+    for (let index = 0; index < 2; index += 1) await call(g, "admin.wipe", { path: "/work/project" });
+    expect(await call(g, "files.read", { path: "/work/project/notes.txt" })).toMatchObject({ result: { content: [{ text: "the notes\n" }] } });
+    for (let index = 0; index < 2; index += 1) await call(g, "admin.wipe", { path: "/work/project" });
+    expect(entries(g).some((entry) => entry.kind === "park")).toBe(false);
+    g.close();
+  });
+
+  // proves §4.3 (tool calls are enforced): a call to a tool the operator did not define counts against the budget
+  it("counts calls to undefined tools against the budget", async () => {
+    const g = gateway();
+    expect(await g.admit(request({ budget: { tool_calls: 2, wall_clock_ms: 3_600_000 }, rejection_limit: 10 }))).toMatchObject({ admitted: true });
+    await g.handle(rpc("initialize", { protocolVersion: MCP_REVISION, capabilities: {}, clientInfo: { name: "scripted", version: "1" } }));
+    for (let index = 0; index < 2; index += 1) await call(g, "admin.wipe", { path: "/work/project" });
+    expect(await call(g, "files.read", { path: "/work/project/notes.txt" })).toMatchObject({ result: { isError: true, content: [{ text: expect.stringContaining("budget_exceeded") }] } });
+    expect(received()).toEqual([]);
+    g.close();
+  });
+
+  // proves §3.4.1 and §3.2 (D-148 for mode B): the gateway refuses to start when the journal, or any of JUNO's state,
+  // overlaps the workspace its tools' paths name, so no tool call can read the journal; judged as the kernel resolves it
+  it("refuses to start when JUNO's state overlaps the workspace", async () => {
+    const { symlinkSync } = await import("node:fs");
+    const make = (journalRoot: string, protectedPaths: readonly string[] = []): McpGateway =>
+      new McpGateway({ journal: JournalWriter.open(journalRoot), grants, resolver: new HostPathResolver(work), view: new Workspace(execFileScript(process.execPath, []), "/work", work), filesystem: systemFilesystemIo(), protectedPaths, upstream: () => { throw new Error("unused"); } });
+    expect(() => make(join(work, "project", ".journal"))).toThrow(GatewayError);
+    expect(() => make(join(dir, "journal-ok"), [join(work, "project", "grant.json")])).toThrow(GatewayError);
+    // The workspace inside JUNO's state is refused too.
+    expect(() => make(join(dir, "journal-ok"), [dir])).toThrow(GatewayError);
+    // A journal named outside the workspace that resolves into it is refused.
+    symlinkSync(join(work, "project"), join(dir, "looks-outside"));
+    expect(() => make(join(dir, "looks-outside", "journal"))).toThrow(GatewayError);
+    // Positive control: state beside the workspace is accepted.
+    expect(() => make(join(dir, "journal-ok"), [join(dir, "session.json")])).not.toThrow();
   });
 });

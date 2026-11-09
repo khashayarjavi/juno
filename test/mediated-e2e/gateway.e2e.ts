@@ -87,7 +87,7 @@ async function startGateway(): Promise<string> {
     grants,
     resolver: new HostPathResolver(workspace),
     view: new Workspace(execFileScript(process.execPath, []), "/work", workspace),
-    filesystem: systemFilesystemIo(),
+    filesystem: systemFilesystemIo(), protectedPaths: [],
     upstream: (refused) => new StdioUpstream(process.execPath, [TEST_SERVER, workspace, record], { refused }),
   });
   const admitted = await gateway.admit({

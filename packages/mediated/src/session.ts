@@ -729,7 +729,8 @@ export class MediatedSessions {
     if (gateway === undefined || !input.tool_name.startsWith(`mcp__${gateway}__`) || server?.name !== gateway || server.source !== "enterprise") {
       return this.#reject(session, "unknown_capability", input.tool_name);
     }
-    session.rejections = 0;
+    // Restrictive (D-192): the hook does not know whether the gateway will reject this call, so passing it on does not
+    // clear the session's count of consecutive rejections (§2.7.1 A4); the gateway keeps its own count.
     const reads = await this.#classify(session, [{ kind: "tool_result", tool: input.tool_name }]);
     session.pending.set(input.tool_use_id ?? `gateway-${String(session.calls)}`, { call_seq: null, reads, gateway: true });
     this.#append(session.task.id, "note", this.#class(session), SESSION_ACTOR, { type: "gateway_call", tool: input.tool_name, tool_use_id: input.tool_use_id ?? null, mcp_server: server, judged_by: "gateway" });

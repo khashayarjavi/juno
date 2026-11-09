@@ -347,6 +347,17 @@ describe("the hook passes only the gateway's own calls (D-190 item 4)", () => {
     expect(notes()).toEqual(expect.arrayContaining([expect.objectContaining({ type: "result_missing" })]));
   });
 
+  // proves §2.7.1 A4 with D-192: passing a call to the gateway does not clear the hook session's count of consecutive
+  // rejections, because the hook does not know whether the gateway will reject it
+  it("does not clear the rejection count when it passes a call to the gateway", async () => {
+    const sessions = await admitted({ server: "juno" });
+    for (let index = 0; index < 2; index += 1) expect(await sessions.preToolUse(mcpCall("mcp__other__x", { name: "other", source: "enterprise" }))).toMatchObject({ reason: expect.stringContaining("unknown_capability") });
+    const passed = mcpCall("mcp__juno__message_send", { name: "juno", source: "enterprise" });
+    expect(await sessions.preToolUse(passed)).toEqual({ decision: "none" });
+    expect(await sessions.postToolUse({ ...passed, hook_event_name: "PostToolUse", tool_response: "parked by the gateway" })).toEqual({ recorded: true });
+    expect(await sessions.preToolUse(mcpCall("mcp__other__x", { name: "other", source: "enterprise" }))).toMatchObject({ reason: expect.stringContaining("rejection_limit") });
+  });
+
   // proves D-190 item 1: the service refuses a gateway name that could be read as another server's prefix
   it("refuses a gateway name with an underscore", () => {
     expect(() => sessionsWith({ server: "ju_no" })).toThrow(MediatedError);
