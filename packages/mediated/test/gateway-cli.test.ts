@@ -36,8 +36,11 @@ function sessionFile(grantId = "g"): Record<string, unknown> {
 
 function io(overrides: Partial<GatewayCliIo> & { stop?: Promise<void> } = {}): GatewayCliIo & { said: string[] } {
   const said: string[] = [];
+  // The process's own uid, so files this test writes are its own; as root (a cloud session), an ordinary uid, since the
+  // command refuses root, and root's files are accepted as the operator's (found by CI, which runs as an ordinary user).
+  const own = typeof process.geteuid === "function" ? process.geteuid() : 1000;
   return {
-    uid: 1000,
+    uid: own === 0 ? 1000 : own,
     lstat: (path): Stats | null => {
       try {
         return lstatSync(path);
@@ -104,9 +107,12 @@ describe("juno gateway serve (D-191)", () => {
     let stop: () => void = () => undefined;
     const stopped = new Promise<void>((resolve) => (stop = resolve));
     const target = io({ stop: stopped });
-    const running = runGatewayCli(args(), target);
+    let finished = false;
+    const running = runGatewayCli(args(), target).finally(() => (finished = true));
     const socket = join(dir, "sock", "gateway.sock");
-    for (let tries = 0; tries < 200 && !existsSync(socket); tries += 1) await new Promise((resolve) => setTimeout(resolve, 25));
+    for (let tries = 0; tries < 400 && !finished && !existsSync(socket); tries += 1) await new Promise((resolve) => setTimeout(resolve, 25));
+    // A command that refused says why here, rather than as a missing socket.
+    expect(finished ? target.said.join("") : "serving").toBe("serving");
     expect((lstatSync(socket).mode & 0o777).toString(8)).toBe("660");
     const answers = await through(socket, [
       { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: MCP_REVISION, capabilities: {}, clientInfo: { name: "scripted", version: "1" } } },
