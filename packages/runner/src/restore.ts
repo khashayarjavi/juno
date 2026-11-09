@@ -1,7 +1,7 @@
 import { z } from "zod";
-import { type AbsolutePath, DataClass as DataClassSchema } from "../../contracts/src/index.js";
+import { type AbsolutePath, type DataClass, DataClass as DataClassSchema } from "../../contracts/src/index.js";
 import { CheckpointStore as Store, type CheckpointStore, ManifestEntry, type Workspace, checkpointId, sameManifest, workloadWorkspace } from "../../enforcement/src/index.js";
-import { type JournalWriter, JournalWriter as Writer, canonicalJson, readPayload, readTrajectory } from "../../journal/src/index.js";
+import { type EntryDraft, JournalWriter as Writer, canonicalJson, readPayload, readTrajectory } from "../../journal/src/index.js";
 import { type CliIo, FILE_IO } from "./grant-cli.js";
 import { acquireRunnerLock } from "./lock.js";
 
@@ -23,7 +23,25 @@ export type RestoreOutcome = { readonly ok: true; readonly root: string } | { re
 
 const encoder = new TextEncoder();
 
-function payloadOf(journal: JournalWriter, ref: string): unknown {
+/**
+ * Where the restore is read from and recorded: the runner's shared session layer (D-194) when the runner restores, or
+ * the operator's journal handle when `juno checkpoint restore` does.
+ */
+export type JournalAccess = {
+  readonly root: string;
+  append(taskId: string, kind: EntryDraft["kind"], dataClass: DataClass, payload: unknown, options: { readonly actor: string }): number;
+};
+
+/** `juno checkpoint restore`'s journal handle: an operator action recorded in the journal (§2.2.2), not a service. */
+export function operatorJournal(writer: Writer): JournalAccess {
+  return {
+    root: writer.root,
+    append: (taskId, kind, dataClass, payload, options) =>
+      writer.append(taskId, { kind, actor: options.actor, provider: null, data_class: dataClass, cost: { tokens_in: 0, tokens_out: 0, tokens_cached: 0, currency: 0, duration_ms: 0 } }, encoder.encode(canonicalJson(payload))).seq,
+  };
+}
+
+function payloadOf(journal: JournalAccess, ref: string): unknown {
   const blob = readPayload(journal.root, ref);
   if (blob.status !== "present") return null;
   return JSON.parse(new TextDecoder().decode(blob.bytes));
@@ -31,7 +49,7 @@ function payloadOf(journal: JournalWriter, ref: string): unknown {
 
 /** Restores `checkpoint` of task `taskId` as `principal`, the task's principal, and journals what happened. */
 export async function restoreCheckpoint(
-  journal: JournalWriter,
+  journal: JournalAccess,
   checkpoints: { readonly workspace: Workspace; readonly store: CheckpointStore },
   taskId: string,
   checkpoint: string,
@@ -68,11 +86,7 @@ export async function restoreCheckpoint(
     else if (!sameManifest(after.snapshot.manifest, manifest)) outcome = { ok: false, reason: "the restored workspace does not match the checkpoint" };
     else outcome = { ok: true, root };
   }
-  journal.append(
-    taskId,
-    { kind: "note", actor: principal, provider: null, data_class: dataClass, cost: { tokens_in: 0, tokens_out: 0, tokens_cached: 0, currency: 0, duration_ms: 0 } },
-    encoder.encode(canonicalJson({ type: "checkpoint_restore", checkpoint, root, principal, outcome: outcome.ok ? "restored" : "failed", ...(outcome.ok ? {} : { reason: outcome.reason }) })),
-  );
+  journal.append(taskId, "note", dataClass, { type: "checkpoint_restore", checkpoint, root, principal, outcome: outcome.ok ? "restored" : "failed", ...(outcome.ok ? {} : { reason: outcome.reason }) }, { actor: principal });
   return outcome;
 }
 
@@ -117,7 +131,7 @@ export async function runCheckpointCli(
     const journal = Writer.open(value("--journal") ?? "");
     lock = acquireRunnerLock(journal.root);
     const workspace = open({ composeFile: (value("--compose") ?? "") as AbsolutePath, project: value("--project") ?? "", service: "workload" });
-    const outcome = await restoreCheckpoint(journal, { workspace, store: storeAt(value("--checkpoints") ?? "") }, taskId, checkpoint, value("--principal") ?? "");
+    const outcome = await restoreCheckpoint(operatorJournal(journal), { workspace, store: storeAt(value("--checkpoints") ?? "") }, taskId, checkpoint, value("--principal") ?? "");
     io.out(`${JSON.stringify(outcome, null, 2)}\n`);
     return outcome.ok ? 0 : 1;
   } catch (error: unknown) {

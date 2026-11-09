@@ -1,27 +1,24 @@
-import { type Stats, lstatSync, readFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { readFileSync } from "node:fs";
 import { z } from "zod";
-import { GrantStore, HostPathResolver, type TrustAnchor, Workspace, execFileScript } from "../../enforcement/src/index.js";
-import { JournalWriter } from "../../journal/src/index.js";
+import { GrantStore, type HostIo, HostPathResolver, SessionLayer, StartupRefused, type StartupSpec, Workspace, execFileScript, systemHostIo } from "../../enforcement/src/index.js";
 import { type FilesystemIo, systemFilesystemIo } from "./filesystem.js";
-import { GatewaySessionRequest, McpGateway, stateOverlapRefusals } from "./gateway.js";
+import { GatewaySessionRequest, McpGateway } from "./gateway.js";
 import { GatewayService } from "./gateway-service.js";
 import { StdioUpstream } from "./gateway-stdio.js";
 
 /**
- * `juno gateway serve` (build plan Slice 1.5 Increment 5 item 3; DECISIONS.md D-188, D-191): run as the runner, it
- * loads the gateway session file the operator wrote, admits the session as a Task, starts the operator's upstream MCP
+ * `juno gateway serve` (build plan Slice 1.5 Increment 5 item 3; DECISIONS.md D-188, D-191, D-194): run as the runner,
+ * it loads the gateway session file the operator wrote, admits the session as a Task, starts the operator's upstream MCP
  * server by `execFile(program, argv)`, and serves the gateway on its Unix socket until it is stopped. Claude Code (or
  * any MCP client) reaches it only through the stdio shim `juno-mcp.js` (D-188).
  *
  *   juno gateway serve --session <file> --socket <path> --journal <dir> --anchor <operator.pub> --workspace <dir>
  *                      --grant <signed grant file> [--grant <file> ...]
  *
- * It refuses, and starts nothing, when it runs as root (the gateway is the runner's, D-188), when the session file or
- * a grant file could be changed by anyone but its owner and root, when any of JUNO's state (journal, session and grant
- * files, anchor, socket folder) overlaps the workspace (D-148, D-192), when the anchor could be written by this process
- * (D-116), when a path is not absolute, or when admission refuses the session. Exit 0 after a clean stop, 1 refused,
- * 2 bad usage.
+ * Before it opens anything it runs THE shared start-up check (D-193, D-194) through `SessionLayer.open`: never root;
+ * none of JUNO's state (journal, session and grant files, anchor, socket and its folder) inside or overlapping the
+ * workspace; nothing anyone else could change; a verified trust anchor. Then the session file is parsed and the session
+ * admitted through the shared session layer. Exit 0 after a clean stop, 1 refused, 2 bad usage.
  */
 
 /** The session file: the gateway session (D-187) and the upstream it fronts. */
@@ -37,10 +34,9 @@ export const GatewaySessionFile = z.strictObject({
 });
 
 export type GatewayCliIo = {
-  readonly uid: number;
-  readonly lstat: (path: string) => Stats | null;
+  /** How the shared start-up check reads the host (D-194). */
+  readonly host: HostIo;
   readonly readFile: (path: string) => string;
-  readonly loadAnchor: (path: string) => TrustAnchor;
   readonly filesystem: FilesystemIo;
   /** Resolves when the gateway should stop (SIGINT or SIGTERM in real use). */
   readonly stopped: () => Promise<void>;
@@ -50,15 +46,24 @@ export type GatewayCliIo = {
 
 const USAGE = "usage: juno gateway serve --session <file> --socket <path> --journal <dir> --anchor <operator.pub> --workspace <dir> --grant <file> [--grant <file> ...]\n";
 
-/** Why a file the operator wrote could be changed by someone else (empty: it cannot). */
-function ownedRefusals(what: string, path: string, io: GatewayCliIo): string[] {
-  const facts = io.lstat(path);
-  if (facts === null) return [`${what} ${path} does not exist`];
-  if (facts.isSymbolicLink()) return [`${what} ${path} is a symbolic link; name the file itself`];
-  if (!facts.isFile()) return [`${what} ${path} is not a file`];
-  if (facts.uid !== 0 && facts.uid !== io.uid) return [`${what} ${path} is owned by uid ${String(facts.uid)}, neither root nor this process; its owner could change what is admitted (D-191)`];
-  if ((facts.mode & 0o022) !== 0) return [`${what} ${path} is writable by group or others (mode ${(facts.mode & 0o7777).toString(8)}), who could change what is admitted (D-191)`];
-  return [];
+/** What `juno gateway serve` asks the shared start-up check to judge (D-194). */
+export function gatewayStartupSpec(options: { readonly session: string; readonly socket: string; readonly journal: string; readonly anchor: string; readonly workspace: string; readonly grants: readonly string[] }): StartupSpec {
+  return {
+    service: "gateway",
+    journal: options.journal,
+    workspaces: [options.workspace],
+    state: [
+      { what: "the session file", path: options.session, kind: "file" },
+      ...options.grants.map((path) => ({ what: "the grant file", path, kind: "file" as const })),
+      { what: "the gateway socket", path: options.socket, kind: "socket" },
+    ],
+    anchor: options.anchor,
+  };
+}
+
+function refused(io: GatewayCliIo, refusals: readonly string[]): number {
+  io.err(`juno gateway serve: refused:\n${refusals.map((line) => `  - ${line}`).join("\n")}\n`);
+  return 1;
 }
 
 /** Admits the session and serves it; returns the exit code once stopped (or at once, when refused). */
@@ -82,62 +87,50 @@ export async function runGatewayCli(args: readonly string[], io: GatewayCliIo): 
     io.err(USAGE);
     return 2;
   }
+  // THE shared start-up check, before anything is opened (D-193, D-194).
+  let layer: SessionLayer;
+  try {
+    layer = SessionLayer.open(gatewayStartupSpec({ session, socket, journal: journalDir, anchor, workspace, grants: grantFiles }), { host: io.host });
+  } catch (error: unknown) {
+    if (error instanceof StartupRefused) return refused(io, error.refusals);
+    return refused(io, [error instanceof Error ? error.message : String(error)]);
+  }
+  const trust = layer.anchor;
+  if (trust === null) return refused(io, ["no verified trust anchor (D-194)"]);
   const refusals: string[] = [];
-  if (io.uid === 0) refusals.push("juno gateway serve must not run as root: the gateway is the runner's, and the runner is not root (D-130, D-188)");
-  for (const [what, path] of [["the session file", session], ["the socket", socket], ["the journal", journalDir], ["the trust anchor", anchor], ["the workspace", workspace], ...grantFiles.map((file) => ["the grant file", file] as const)] as const) {
-    if (!path.startsWith("/")) refusals.push(`${what} ${path} is not an absolute path`);
-  }
-  // D-148 for mode B (D-192): the journal, the session and grant files, the anchor and the socket's folder lie outside the workspace.
-  const state = [journalDir, session, ...grantFiles, anchor, dirname(socket)];
-  if (refusals.length === 0) refusals.push(...stateOverlapRefusals(workspace, state));
-  if (refusals.length === 0) for (const [what, path] of [["the session file", session], ...grantFiles.map((file) => ["the grant file", file] as const)] as const) refusals.push(...ownedRefusals(what, path, io));
   let file: z.output<typeof GatewaySessionFile> | null = null;
-  let trust: TrustAnchor | null = null;
   const grants: unknown[] = [];
-  if (refusals.length === 0) {
+  try {
+    const parsed = GatewaySessionFile.safeParse(JSON.parse(io.readFile(session)));
+    if (parsed.success) file = parsed.data;
+    else refusals.push(`the session file ${session} is not a gateway session: ${parsed.error.message}`);
+  } catch (error: unknown) {
+    refusals.push(`the session file ${session} cannot be read as JSON: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  for (const grantFile of grantFiles) {
     try {
-      const parsed = GatewaySessionFile.safeParse(JSON.parse(io.readFile(session)));
-      if (parsed.success) file = parsed.data;
-      else refusals.push(`the session file ${session} is not a gateway session: ${parsed.error.message}`);
+      grants.push(JSON.parse(io.readFile(grantFile)));
     } catch (error: unknown) {
-      refusals.push(`the session file ${session} cannot be read as JSON: ${error instanceof Error ? error.message : String(error)}`);
-    }
-    try {
-      trust = io.loadAnchor(anchor);
-    } catch (error: unknown) {
-      refusals.push(error instanceof Error ? error.message : String(error));
-    }
-    for (const grantFile of grantFiles) {
-      try {
-        grants.push(JSON.parse(io.readFile(grantFile)));
-      } catch (error: unknown) {
-        refusals.push(`the grant file ${grantFile} cannot be read as JSON: ${error instanceof Error ? error.message : String(error)}`);
-      }
+      refusals.push(`the grant file ${grantFile} cannot be read as JSON: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  if (refusals.length > 0 || file === null || trust === null) {
-    io.err(`juno gateway serve: refused:\n${refusals.map((line) => `  - ${line}`).join("\n")}\n`);
-    return 1;
-  }
+  if (refusals.length > 0 || file === null) return refused(io, refusals);
   const store = new GrantStore(trust);
   for (const grant of grants) {
     try {
       store.add(grant);
     } catch (error: unknown) {
-      io.err(`juno gateway serve: refused:\n  - a grant file holds no valid grant: ${error instanceof Error ? error.message : String(error)}\n`);
-      return 1;
+      return refused(io, [`a grant file holds no valid grant: ${error instanceof Error ? error.message : String(error)}`]);
     }
   }
   const upstream = file.upstream;
-  const journal = JournalWriter.open(journalDir);
   const gateway = new McpGateway({
-    journal,
+    layer,
     grants: store,
     resolver: new HostPathResolver(workspace),
     view: new Workspace(execFileScript(process.execPath, []), "/work", workspace),
     filesystem: io.filesystem,
-    protectedPaths: state.slice(1),
-    upstream: (refused) => new StdioUpstream(upstream.program, upstream.argv, { env: { ...upstream.env }, refused }),
+    upstream: (refusedRequest) => new StdioUpstream(upstream.program, upstream.argv, { env: { ...upstream.env }, refused: refusedRequest }),
   });
   const admitted = await gateway.admit(file.session);
   if (!admitted.admitted) {
@@ -150,9 +143,8 @@ export async function runGatewayCli(args: readonly string[], io: GatewayCliIo): 
   try {
     await service.listen(socket);
   } catch (error: unknown) {
-    io.err(`juno gateway serve: refused:\n  - ${error instanceof Error ? error.message : String(error)}\n`);
     await service.close();
-    return 1;
+    return refused(io, [error instanceof Error ? error.message : String(error)]);
   }
   io.out(`juno gateway: session ${admitted.task_id} admitted; serving ${socket}. Stop with Ctrl+C.\n`);
   await io.stopped();
@@ -161,19 +153,11 @@ export async function runGatewayCli(args: readonly string[], io: GatewayCliIo): 
   return 0;
 }
 
-/** The real process: its uid, the file system, and SIGINT or SIGTERM to stop. */
-export function systemGatewayCliIo(loadAnchor: (path: string) => TrustAnchor): GatewayCliIo {
+/** The real process: the host as it is, the file system, and SIGINT or SIGTERM to stop. */
+export function systemGatewayCliIo(): GatewayCliIo {
   return {
-    uid: typeof process.geteuid === "function" ? process.geteuid() : -1,
-    lstat: (path) => {
-      try {
-        return lstatSync(path);
-      } catch {
-        return null;
-      }
-    },
+    host: systemHostIo(),
     readFile: (path) => readFileSync(path, "utf8"),
-    loadAnchor,
     filesystem: systemFilesystemIo(),
     stopped: () => new Promise((resolve) => {
       process.once("SIGINT", () => resolve());

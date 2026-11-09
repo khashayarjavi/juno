@@ -33,7 +33,7 @@ import {
   type TaskContext,
   type Verdict,
 } from "../../enforcement/src/index.js";
-import { type EntryDraft, JournalIntegrityError, type JournalWriter, anchorOf, canonicalJson, contentAddress, readPayload, readTrajectory, taskDigest, verifyTrajectory } from "../../journal/src/index.js";
+import { type EntryDraft, JournalIntegrityError, anchorOf, canonicalJson, contentAddress, readPayload, readTrajectory, taskDigest, verifyTrajectory } from "../../journal/src/index.js";
 import { AnchorExistsError, type AnchorSink, type JournalKey, sameKey } from "../../journal/src/index.js";
 import { type CapabilityRegistry, type InvocationResult, type RegistryEntry, programShape } from "../../registry/src/index.js";
 import {
@@ -57,10 +57,10 @@ import {
   routable,
   verificationScope,
 } from "./admission.js";
-import { type CheckpointStore, type ContainerRuntime, ManifestEntry, type Workspace, checkpointId, runtimeRefusal } from "../../enforcement/src/index.js";
+import { BUDGET_AXES, type CheckpointStore, type ContainerRuntime, type GovernedSession, ManifestEntry, SessionLayer, type SessionLimits, type Workspace, checkpointId, runtimeRefusal } from "../../enforcement/src/index.js";
 import { type RestoreOutcome, restoreCheckpoint } from "./restore.js";
 import { MAX_PINNED_FILES, PIN_HASH_BATCH, type Pin, changedPins, filesToHash, parseHashes, parseListing, pinsOf, within } from "./pins.js";
-import { type BudgetAxis, NO_SPEND, type Spend, exhaustedAxes, overrunAxes } from "./budget.js";
+import { type BudgetAxis, NO_SPEND, type Spend } from "./budget.js";
 import { type RunnerLock, acquireRunnerLock } from "./lock.js";
 import { ProviderProfile } from "./profile.js";
 import { type ContextItem, type Provider, type ProviderRequest, ProviderResponse, type ToolDefinition } from "./provider.js";
@@ -108,7 +108,12 @@ export type RunOutcome = {
 };
 
 export type RunnerOptions = {
-  readonly journal: JournalWriter;
+  /**
+   * The shared session layer (D-193, D-194), opened by the shared start-up check for the runner service: it holds the
+   * journal, and every admission, budget, rejection limit, park and journal record of every task goes through it. A
+   * host resolver's root must be one of its workspaces.
+   */
+  readonly layer: SessionLayer;
   readonly registry: CapabilityRegistry;
   readonly grants: GrantStore;
   readonly providers: readonly Provider[];
@@ -155,20 +160,13 @@ type TaskRun = {
   readonly admission: AdmittedTask;
   /** `null` when a rebuilt task names a provider this runner does not serve; it cannot run until one does. */
   readonly provider: Provider | null;
-  readonly admittedAt: number;
   readonly admissionClass: DataClass;
-  spent: Spend;
-  runningSince: number | null;
+  /** The shared session layer's session: its spend, budget, rejection count and journal (D-194). */
+  readonly session: GovernedSession;
   readonly context: Contextual[];
   /** Every actor that took part in executing the task; none may verify it (§3.4.4, invariant 3). */
   readonly executingActors: Set<string>;
   turns: number;
-  /**
-   * The consecutive rejections since the count last reset (§2.7.1, A4): each a rejected call's `call_seq`, or the
-   * `turn_seq` of a turn the runner could not read, which counts as one rejection (D-102). Reset when a call proceeds,
-   * when the task parks, and on resume.
-   */
-  rejections: { readonly kind: "call" | "unreadable_turn"; readonly seq: number }[];
   /**
    * The files the verifier hashes, found by the admission listing and fixed then as verifier constants, one slot each
    * (§2.6 "a template slot filled by the runtime", §5.1, D-112), with the listing result's class. `null` until taken.
@@ -321,7 +319,6 @@ export function describeCriterion(criterion: CriterionStatement, entry: Registry
 /** How the plain-words criterion names a hidden value: words, never a quoted placeholder that could be copied (D-087). */
 export const CRITERION_HIDDEN_WORDS = "a value the operator fixed, which you are not shown";
 
-const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 
 function decodeOutput(bytes: Buffer): { text: string | null; base64: string | null } {
@@ -340,7 +337,7 @@ function linesOf(text: string | null): string[] | null {
 }
 
 export class Runner {
-  readonly #journal: JournalWriter;
+  readonly #layer: SessionLayer;
   readonly #registry: CapabilityRegistry;
   readonly #grants: GrantStore;
   readonly #providers: readonly Provider[];
@@ -362,7 +359,14 @@ export class Runner {
 
   /** Takes the journal's runner lock (one runner per journal) and reapplies the recorded quarantines. */
   constructor(options: RunnerOptions) {
-    this.#journal = options.journal;
+    // D-194: only through the shared session layer, opened by the shared start-up check for the runner.
+    this.#layer = SessionLayer.require(options.layer, "runner");
+    this.#layer.requireGrants(options.grants);
+    if (typeof options.resolver.hostRoot === "string") this.#layer.requireWorkspace("the resolver's host root", options.resolver.hostRoot);
+    if (options.checkpoints !== undefined) {
+      if (options.checkpoints.workspace.viewRoot !== "/work") this.#layer.requireWorkspace("the checkpointed workspace", options.checkpoints.workspace.viewRoot);
+      this.#layer.requireState("the checkpoint store", options.checkpoints.store.root);
+    }
     this.#registry = options.registry;
     this.#grants = options.grants;
     this.#providers = options.providers;
@@ -379,7 +383,7 @@ export class Runner {
     if (!Number.isSafeInteger(options.anchoring.intervalMs) || options.anchoring.intervalMs < 1) throw new RunnerError("the anchoring interval must be a positive whole number of milliseconds");
     // §3.4.1 V6-4: the operator key never enters the runner, so the journal key can never be it.
     if (sameKey(options.anchoring.journalKey.publicKey, options.grants.trustAnchor)) throw new RunnerError("the journal key is the operator's grant-signing key; the runner must hold its own (§3.4.1)");
-    this.#lock = acquireRunnerLock(this.#journal.root, this.#clock);
+    this.#lock = acquireRunnerLock(this.#layer.root, this.#clock);
     try {
       this.#reapplyQuarantines();
       this.#rebuildRunnerRecord();
@@ -391,7 +395,7 @@ export class Runner {
       throw error;
     }
     // The runner reaches capabilities only through this boundary.
-    this.#boundary = new EnforcementBoundary({ registry: this.#registry, grants: this.#grants, journal: this.#journal, clock: this.#clock });
+    this.#boundary = this.#layer.boundary(this.#registry, this.#grants, this.#clock);
   }
 
   /** Releases the journal's runner lock. */
@@ -406,7 +410,7 @@ export class Runner {
   /** Spend so far, with the running time up to now. */
   spent(id: string): Spend | undefined {
     const run = this.#runs.get(id);
-    return run === undefined ? undefined : this.#spentNow(run);
+    return run?.session.spent();
   }
 
   /** Admission (§5). Every outcome is journalled under the task's id; a rejected task can never be admitted again under it. */
@@ -417,7 +421,7 @@ export class Runner {
     if (id === null || id.startsWith(RESERVED_ID_PREFIX)) return result;
     let existing: boolean;
     try {
-      existing = this.#runs.has(id) || readTrajectory(this.#journal.root, id).length > 0;
+      existing = this.#runs.has(id) || readTrajectory(this.#layer.root, id).length > 0;
     } catch {
       existing = true;
     }
@@ -428,7 +432,7 @@ export class Runner {
     }
     if (!result.admitted) {
       // Never run, never referenced: recorded at the most restrictive class.
-      this.#append(id, "note", { sensitivity: "secret", integrity: "untrusted" }, { type: "admission", outcome: "rejected", failures: result.failures, request: input });
+      this.#layer.refuse(id, { failures: result.failures, request: input }, RUNNER_ACTOR);
       return result;
     }
     const { admission } = result;
@@ -440,9 +444,7 @@ export class Runner {
       sensitivity: task.sensitivity_floor,
       integrity: admission.criterion === null ? "operator" : minIntegrity("operator", task.criterion_integrity),
     };
-    this.#append(task.id, "note", admissionClass, {
-      type: "admission",
-      outcome: "admitted",
+    const session = this.#layer.admit(task.id, this.#limits(task, admission.rejection_limit), { dataClass: admissionClass, actor: RUNNER_ACTOR, now: () => this.#clock().getTime(), payload: {
       admitted_at: now.toISOString(),
       task,
       criterion: admission.criterion,
@@ -454,19 +456,16 @@ export class Runner {
       warnings: admission.warnings,
       rejection_limit: admission.rejection_limit,
       reversible_workspaces: admission.reversible_workspaces,
-    });
+    } });
     this.#runs.set(task.id, {
       task,
       admission,
       provider,
-      admittedAt: now.getTime(),
       admissionClass,
-      spent: { ...NO_SPEND },
-      runningSince: null,
+      session,
       context: [],
       executingActors: new Set([RUNNER_ACTOR, ENFORCEMENT_ACTOR]),
       turns: 0,
-      rejections: [],
       pinFiles: null,
       checkpoints: new Map(),
     });
@@ -600,17 +599,17 @@ export class Runner {
       provider_available: provider !== null,
       routable: routing,
       sensitivity_floor: run.task.sensitivity_floor,
-      ttl_remaining_ms: run.task.ttl - (now.getTime() - run.admittedAt),
-      spent: this.#spentNow(run),
+      ttl_remaining_ms: run.task.ttl - (now.getTime() - run.session.admittedAt),
+      spent: run.session.spent(),
     });
     if (refused.length > 0) return this.#park(run, "awaiting_grant", this.#runnerClass(run), { phase: "resume", refused });
     if (!routing) {
       return this.#park(run, "routing_unavailable", this.#runnerClass(run), { phase: "resume", provider: run.admission.provider.id, sensitivity_floor: run.task.sensitivity_floor });
     }
     run.task = TaskSchema.parse({ ...run.task, state: "running", runtime_substate: "active" });
-    run.runningSince = this.#clock().getTime();
+    run.session.startClock();
     // §2.7.1: the rejection count resets on resume.
-    run.rejections = [];
+    run.session.clearRejections();
     if (park !== null && park.tool_call !== null) {
       this.#pushContext(run, { role: "tool", content: { tool_call: park.tool_call, outcome: "parked", reason: park.reason, park_seq: park.seq, resumed: true } }, this.#runnerClass(run));
     }
@@ -638,7 +637,7 @@ export class Runner {
       }
       return await this.#loop(run);
     } finally {
-      this.#stopClock(run);
+      run.session.stopClock();
       this.#active = null;
     }
   }
@@ -670,7 +669,7 @@ export class Runner {
   async restoreCheckpoint(id: string, checkpoint: string, principal: string): Promise<RestoreOutcome> {
     if (this.#active === id) throw new RunnerError(`task ${id} is running; a checkpoint is restored only while it is not (§2.2.2)`);
     if (this.#checkpoints === undefined) return { ok: false, reason: "no checkpoint store is configured" };
-    return restoreCheckpoint(this.#journal, this.#checkpoints, id, checkpoint, principal);
+    return restoreCheckpoint(this.#layer, this.#checkpoints, id, checkpoint, principal);
   }
 
   /** The operator closes a task that completed unverified (§6, §6.1): `accepted`, the weakest closure; then anchors it. */
@@ -707,7 +706,7 @@ export class Runner {
    * restart), it counts only if it names the same head. A failure is journalled (`anchor_failed`) and returns false.
    */
   async #anchor(recordId: string): Promise<boolean> {
-    const verdict = verifyTrajectory(this.#journal.root, recordId);
+    const verdict = verifyTrajectory(this.#layer.root, recordId);
     if (!verdict.ok) return false;
     const head = verdict.head;
     if (head === null) return true;
@@ -747,7 +746,7 @@ export class Runner {
       if (this.#ttlExpired(run)) return this.#fail(run, "ttl_expired");
       // §3.4.1 (D-122): at most one interval passes between anchors; a running task whose head cannot be anchored stops.
       if (this.#anchorDue(run.task.id) && !(await this.#anchorRecords(run.task.id))) return this.#fail(run, "anchor_unavailable");
-      const before = exhaustedAxes(this.#spentNow(run), run.task.budget);
+      const before = run.session.exhausted();
       if (before.length > 0) return this.#budgetPark(run, before);
       const provider = run.provider;
       if (provider === null || !routable(run.task.model_policy, run.task.sensitivity_floor, provider.profile)) {
@@ -756,7 +755,7 @@ export class Runner {
 
       const request = this.#assemble(run, provider);
       const turnClass = join([{ sensitivity: run.task.sensitivity_floor, integrity: "derived" }, ...run.context.map((entry) => entry.data_class)]);
-      run.spent.turns += 1;
+      run.session.charge({ turns: 1 });
       run.turns += 1;
       const started = this.#clock().getTime();
       let raw: unknown;
@@ -773,8 +772,7 @@ export class Runner {
       const usage = parsed.success ? parsed.data.usage : { tokens_in: 0, tokens_out: 0, tokens_cached: 0 };
       const { cost } = provider.profile;
       const currency = usage.tokens_in * cost.per_token_in + usage.tokens_out * cost.per_token_out + usage.tokens_cached * cost.per_token_cached;
-      run.spent.tokens += usage.tokens_in + usage.tokens_out + usage.tokens_cached;
-      run.spent.currency += currency;
+      run.session.charge({ tokens: usage.tokens_in + usage.tokens_out + usage.tokens_cached, currency });
       run.executingActors.add(provider.profile.model);
       const turnSeq = this.#append(
         run.task.id,
@@ -800,21 +798,21 @@ export class Runner {
       if (!parsed.success) {
         this.#pushContext(run, { role: "user", content: { turn_seq: turnSeq, error: "the runner could not read that turn", detail: parsed.error.message } }, turnClass);
         // A turn the runner cannot read counts as one rejection and never resets the count (§2.7.1, D-102).
-        run.rejections.push({ kind: "unreadable_turn", seq: turnSeq });
-        if (run.rejections.length >= run.admission.rejection_limit) return this.#rejectionPark(run, turnClass, { turn_seq: turnSeq, not_acted_on: [] });
+        const counted = run.session.reject({ kind: "unreadable_turn", seq: turnSeq }, (marks) => this.#rejectionPark(run, marks, turnClass, { turn_seq: turnSeq, not_acted_on: [] }));
+        if (counted.parked) return counted.result;
         continue;
       }
       const response = parsed.data;
       this.#pushContext(run, { role: "assistant", content: { turn_seq: turnSeq, text: response.text, tool_calls: response.tool_calls } }, turnClass);
 
-      const overrun = overrunAxes(this.#spentNow(run), run.task.budget);
+      const overrun = run.session.overrun();
       if (overrun.length > 0) return this.#budgetPark(run, overrun, { turn_seq: turnSeq, not_acted_on: response.tool_calls.map((call) => call.id) });
       if (response.tool_calls.length === 0) return this.#complete(run, turnSeq);
 
       for (const [index, call] of response.tool_calls.entries()) {
         const rest = response.tool_calls.slice(index + 1).map((later) => later.id);
         if (this.#ttlExpired(run)) return this.#fail(run, "ttl_expired");
-        const clock = exhaustedAxes(this.#spentNow(run), run.task.budget, ["wall_clock_ms"]);
+        const clock = run.session.exhausted(["wall_clock_ms"]);
         if (clock.length > 0) return this.#budgetPark(run, clock, { turn_seq: turnSeq, not_acted_on: [call.id, ...rest] });
 
         const verdict = await this.#authorize(run, toProposal(call), turnClass.sensitivity, "executing");
@@ -824,14 +822,12 @@ export class Runner {
           // the program enum); the model is shown it with those values hidden (D-075). The journal keeps the full detail.
           const shown = hideValues(rejection(call.id, verdict.call_seq, verdict.detail), this.#instructionValues(run));
           this.#pushContext(run, { role: "tool", content: shown }, this.#entryClass(run.task.id, verdict.call_seq));
-          run.rejections.push({ kind: "call", seq: verdict.call_seq });
-          if (run.rejections.length >= run.admission.rejection_limit) {
-            return this.#rejectionPark(run, this.#entryClass(run.task.id, verdict.call_seq), { call_seq: verdict.call_seq, tool_call: call.id, not_acted_on: rest });
-          }
+          const counted = run.session.reject({ kind: "call", seq: verdict.call_seq }, (marks) => this.#rejectionPark(run, marks, this.#entryClass(run.task.id, verdict.call_seq), { call_seq: verdict.call_seq, tool_call: call.id, not_acted_on: rest }));
+          if (counted.parked) return counted.result;
           continue;
         }
         // §2.7.1: the rejection count resets when a call proceeds.
-        run.rejections = [];
+        run.session.clearRejections();
         const { seq, dataClass, payload } = await this.#perform(run, verdict.authorization);
         for (const actor of [verdict.authorization.adapter]) run.executingActors.add(actor);
         this.#pushContext(run, { role: "tool", content: { tool_call: call.id, call_seq: verdict.call_seq, result_seq: seq, ...payload } }, dataClass);
@@ -1005,7 +1001,7 @@ export class Runner {
   /** The pins taken at admission, read back from the journal so a rebuilt task is checked against the same record. */
   #baselinePins(run: TaskRun): Record<string, Pin> | null {
     let pins: Record<string, Pin> | null = null;
-    for (const entry of readTrajectory(this.#journal.root, run.task.id)) {
+    for (const entry of readTrajectory(this.#layer.root, run.task.id)) {
       if (entry.kind !== "note") continue;
       const note = PinsNote.safeParse(this.#payloadOf(entry.payload_ref));
       if (note.success && note.data.phase === "baseline") pins = note.data.pins;
@@ -1026,7 +1022,7 @@ export class Runner {
       verifier_identity: verifier,
       replay_fidelity: run.provider?.profile.replay_fidelity ?? "none",
       artifacts: [],
-      cost_actual: { ...this.#spentNow(run) },
+      cost_actual: { ...run.session.spent() },
     });
     this.#append(task.id, "note", this.#runnerClass(run), { type: "closure", closure });
   }
@@ -1127,25 +1123,27 @@ export class Runner {
   }
 
   /** §2.7.1 (A4): the limit's worth of consecutive rejections parks `rejection_limit` (overridable, §6.2), naming each one. */
-  #rejectionPark(run: TaskRun, dataClass: DataClass, extra: Record<string, unknown>): RunOutcome {
-    return this.#park(run, "rejection_limit", dataClass, { limit: run.admission.rejection_limit, rejections: [...run.rejections], ...extra });
+  #rejectionPark(run: TaskRun, marks: readonly { readonly kind: string; readonly seq: number | null }[], dataClass: DataClass, extra: Record<string, unknown>): RunOutcome {
+    return this.#park(run, "rejection_limit", dataClass, { limit: run.admission.rejection_limit, rejections: [...marks], ...extra });
   }
 
   #budgetPark(run: TaskRun, axes: readonly BudgetAxis[], extra: Record<string, unknown> = {}): RunOutcome {
-    return this.#park(run, "budget_exceeded", this.#runnerClass(run), { axes, spent: this.#spentNow(run), budget: run.task.budget, ...extra });
+    return this.#park(run, "budget_exceeded", this.#runnerClass(run), { axes, spent: run.session.spent(), budget: run.task.budget, ...extra });
   }
 
   #park(run: TaskRun, reason: ParkReason, dataClass: DataClass, detail: Record<string, unknown>, remedy: "grant" | null = null): RunOutcome {
-    this.#stopClock(run);
+    run.session.stopClock();
     const entryClass = join([dataClass, this.#runnerClass(run)]);
-    // §8.2 (A2): a park whose only remedy is a grant is not overridden; §8.3: some reasons never are.
-    const overridable = !NON_OVERRIDABLE.has(reason) && remedy === null;
-    const rules = remedy === null ? { overridable } : { overridable, remedy };
-    this.#append(run.task.id, "park", entryClass, { reason, ...rules, from: run.task.state, ...detail, spent: this.#spentNow(run) });
+    // §8.2 (A2): a park whose only remedy is a grant is not overridden; §8.3: some reasons never are (the shared layer
+    // applies them). The layer journals the park and resets the rejection count (§2.7.1; the task stops either way).
+    run.session.park(reason, remedy === null, entryClass, RUNNER_ACTOR, { ...(remedy === null ? {} : { remedy }), from: run.task.state, ...detail, spent: run.session.spent() });
     run.task = TaskSchema.parse({ ...run.task, state: "parked", runtime_substate: null });
-    // §2.7.1: the rejection count resets when a call parks (and on any park: the task stops either way).
-    run.rejections = [];
     return this.#outcome(run, reason);
+  }
+
+  /** The limits the shared layer enforces for a task in JUNO's own loop: all four budget axes, wall clock only while running (§3.1, D-025). */
+  #limits(task: Task, rejectionLimit: number): SessionLimits {
+    return { rejection_limit: rejectionLimit, ttl: task.ttl, budget: task.budget, metered: BUDGET_AXES, clock: "while_running" };
   }
 
   #fail(run: TaskRun, reason: string): RunOutcome {
@@ -1155,10 +1153,10 @@ export class Runner {
 
   #setState(run: TaskRun, to: TaskState, reason: string, extra: Record<string, unknown> = {}): void {
     const from = run.task.state;
-    if (to !== "running") this.#stopClock(run);
-    this.#append(run.task.id, "note", this.#runnerClass(run), { type: "state", from, to, reason, ...extra, spent: this.#spentNow(run) });
+    if (to !== "running") run.session.stopClock();
+    this.#append(run.task.id, "note", this.#runnerClass(run), { type: "state", from, to, reason, ...extra, spent: run.session.spent() });
     run.task = TaskSchema.parse({ ...run.task, state: to, runtime_substate: to === "running" ? "active" : null });
-    if (to === "running") run.runningSince = this.#clock().getTime();
+    if (to === "running") run.session.startClock();
   }
 
   #outcome(run: TaskRun, reason: string | null): RunOutcome {
@@ -1218,18 +1216,7 @@ export class Runner {
 
   /** TTL is wall time since admission, parked time included (§6.4, D-025). */
   #ttlExpired(run: TaskRun): boolean {
-    return this.#clock().getTime() - run.admittedAt >= run.task.ttl;
-  }
-
-  #spentNow(run: TaskRun): Spend {
-    const running = run.runningSince === null ? 0 : Math.max(0, this.#clock().getTime() - run.runningSince);
-    return { ...run.spent, wall_clock_ms: run.spent.wall_clock_ms + running };
-  }
-
-  #stopClock(run: TaskRun): void {
-    if (run.runningSince === null) return;
-    run.spent.wall_clock_ms += Math.max(0, this.#clock().getTime() - run.runningSince);
-    run.runningSince = null;
+    return run.session.expired();
   }
 
   /** Runner-written facts: never more trusted than `derived`, so no bound reference can lift text into an instruction field through them. */
@@ -1238,7 +1225,7 @@ export class Runner {
   }
 
   #entryClass(taskId: string, seq: number): DataClass {
-    const entry = readTrajectory(this.#journal.root, taskId).find((candidate) => candidate.seq === seq);
+    const entry = readTrajectory(this.#layer.root, taskId).find((candidate) => candidate.seq === seq);
     if (entry === undefined) throw new RunnerError(`task ${taskId} has no entry ${String(seq)}`);
     return entry.data_class;
   }
@@ -1252,8 +1239,8 @@ export class Runner {
     actor: string = RUNNER_ACTOR,
     provider: string | null = null,
   ): number {
-    const draft: EntryDraft = { kind, actor, provider, data_class: dataClass, cost };
-    return this.#journal.append(taskId, draft, encoder.encode(canonicalJson(payload))).seq;
+    // Every record goes through the shared session layer (D-194).
+    return this.#layer.append(taskId, kind, dataClass, payload, { actor, provider, cost });
   }
 
   /** Adds an item to the task's context and journals it, so a rebuilt task sends exactly the same context (D-066). */
@@ -1264,7 +1251,7 @@ export class Runner {
 
   /** The park entry the task is parked on, with the call it stopped at. */
   #lastPark(run: TaskRun): LastPark | null {
-    const entry = readTrajectory(this.#journal.root, run.task.id).findLast((candidate) => candidate.kind === "park");
+    const entry = readTrajectory(this.#layer.root, run.task.id).findLast((candidate) => candidate.kind === "park");
     if (entry === undefined) return null;
     const payload = ParkRecord.parse(this.#payloadOf(entry.payload_ref));
     return {
@@ -1292,7 +1279,7 @@ export class Runner {
   #parkSources(run: TaskRun, callSeq: number, detail: ParkDetail): Record<string, unknown>[] {
     const call = CallRecord.parse(this.#payloadOf(this.#entryAt(run.task.id, callSeq).payload_ref));
     const causing = causingArguments(detail, call.arguments);
-    const admissionSeq = readTrajectory(this.#journal.root, run.task.id)[0]?.seq ?? null;
+    const admissionSeq = readTrajectory(this.#layer.root, run.task.id)[0]?.seq ?? null;
     const lastOperator = run.context.findLastIndex((entry) => entry.data_class.integrity === "operator");
     const possible = run.context
       .slice(lastOperator + 1)
@@ -1314,7 +1301,7 @@ export class Runner {
   }
 
   #entryAt(taskId: string, seq: number): TrajectoryEntry {
-    const entry = readTrajectory(this.#journal.root, taskId).find((candidate) => candidate.seq === seq);
+    const entry = readTrajectory(this.#layer.root, taskId).find((candidate) => candidate.seq === seq);
     if (entry === undefined) throw new RunnerError(`task ${taskId} has no entry ${String(seq)}`);
     return entry;
   }
@@ -1340,7 +1327,7 @@ export class Runner {
   }
 
   #payloadOf(ref: string): unknown {
-    const blob = readPayload(this.#journal.root, ref);
+    const blob = readPayload(this.#layer.root, ref);
     if (blob.status !== "present") throw new RunnerError(`payload ${ref} is ${blob.status}`);
     return JSON.parse(decoder.decode(blob.bytes));
   }
@@ -1356,7 +1343,7 @@ export class Runner {
   #load(id: string): { ok: true; run: TaskRun } | { ok: false; reason: string } {
     let entries: readonly TrajectoryEntry[];
     try {
-      entries = readTrajectory(this.#journal.root, id);
+      entries = readTrajectory(this.#layer.root, id);
     } catch (error: unknown) {
       if (!(error instanceof JournalIntegrityError)) throw error;
       this.#append(RUNNER_RECORD, "note", { sensitivity: "secret", integrity: "derived" }, { type: "task_failed", task: id, reason: "journal_unverifiable", failure: { ...error.failure } });
@@ -1382,14 +1369,12 @@ export class Runner {
       task: record.task,
       admission,
       provider: this.#providers.find((candidate) => candidate.profile.id === record.provider) ?? null,
-      admittedAt: Date.parse(record.admitted_at),
       admissionClass: first.data_class,
-      spent: { ...NO_SPEND },
-      runningSince: null,
+      // §3.4.5: rebuilt from the journal; the shared layer reopens the session (D-194).
+      session: this.#layer.restore(id, this.#limits(record.task, record.rejection_limit), { admittedAt: Date.parse(record.admitted_at), spent: { ...NO_SPEND }, now: () => this.#clock().getTime() }),
       context: [],
       executingActors: new Set([RUNNER_ACTOR, ENFORCEMENT_ACTOR]),
       turns: 0,
-      rejections: [],
       pinFiles: null,
       checkpoints: new Map(),
     };
@@ -1408,7 +1393,7 @@ export class Runner {
       }
       if (entry.kind !== "note" && entry.kind !== "park" && entry.kind !== "resume") continue;
       const body = Replayed.parse(this.#payloadOf(entry.payload_ref));
-      if (body.spent !== undefined) run.spent = { ...body.spent };
+      if (body.spent !== undefined) run.session.setSpent({ ...body.spent });
       if (entry.kind === "park") state = "parked";
       else if (entry.kind === "resume") {
         state = "running";
@@ -1443,7 +1428,7 @@ export class Runner {
     for (const id of this.#grants.ids()) {
       if (this.#grants.invocations(id) > 0) throw new RunnerError(`grant ${id} already has charges; the runner rebuilds every count from its record at start`);
     }
-    for (const entry of readTrajectory(this.#journal.root, RUNNER_RECORD)) {
+    for (const entry of readTrajectory(this.#layer.root, RUNNER_RECORD)) {
       const record = RunnerRecordEntry.safeParse(this.#payloadOf(entry.payload_ref));
       if (!record.success) throw new RunnerError(`the runner record at ${RUNNER_RECORD} entry ${String(entry.seq)} is not readable`);
       if (record.data.type === "grant_charge") {
@@ -1467,8 +1452,8 @@ export class Runner {
 
   /** A quarantine is permanent: the ones recorded before a restart are applied again at start (D-064). */
   #reapplyQuarantines(): void {
-    for (const entry of readTrajectory(this.#journal.root, REGISTRY_RECORD)) {
-      const blob = readPayload(this.#journal.root, entry.payload_ref);
+    for (const entry of readTrajectory(this.#layer.root, REGISTRY_RECORD)) {
+      const blob = readPayload(this.#layer.root, entry.payload_ref);
       if (blob.status !== "present") throw new RunnerError(`the quarantine record at ${REGISTRY_RECORD} entry ${String(entry.seq)} is ${blob.status}`);
       const record = QuarantineRecord.safeParse(JSON.parse(decoder.decode(blob.bytes)));
       if (!record.success) throw new RunnerError(`the quarantine record at ${REGISTRY_RECORD} entry ${String(entry.seq)} is not readable`);

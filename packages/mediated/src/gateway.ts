@@ -1,8 +1,6 @@
-import { existsSync, realpathSync } from "node:fs";
 import { z } from "zod";
-import { type DataClass, type Sensitivity, Task, maxSensitivity, pathWithin, pathsOverlap } from "../../contracts/src/index.js";
-import { type CanonicalPaths, EnforcementBoundary, type GrantStore, type PathResolver, type TaskContext, type Verdict, type Workspace } from "../../enforcement/src/index.js";
-import { type JournalWriter, canonicalJson } from "../../journal/src/index.js";
+import { type DataClass, type Sensitivity, Task, maxSensitivity, pathWithin } from "../../contracts/src/index.js";
+import { type CanonicalPaths, type EnforcementBoundary, type GovernedSession, type GrantStore, type PathResolver, SessionLayer, type TaskContext, type Verdict, type Workspace } from "../../enforcement/src/index.js";
 import { type Adapter, type CapabilityCall, CapabilityRegistry, RegistryEntry } from "../../registry/src/index.js";
 import { type FilesystemIo, caseFoldingRefusals } from "./filesystem.js";
 import { DeclaredSource, type ReadTarget, classifyRead } from "./reads.js";
@@ -26,8 +24,6 @@ export const MCP_REVISION = "2025-11-25";
 export const GATEWAY_ADAPTER = "gateway.mcp";
 const GATEWAY_ACTOR = "juno.gateway";
 const UPSTREAM_ACTOR = "mcp.upstream";
-const NO_COST = { tokens_in: 0, tokens_out: 0, tokens_cached: 0, currency: 0, duration_ms: 0 };
-const encoder = new TextEncoder();
 
 /** The upstream server performs every effect, so the adapter's plan is never run; it shows each value is discrete (§2.4). */
 export const gatewayAdapter: Adapter = {
@@ -91,7 +87,12 @@ const UpstreamInit = z.object({ protocolVersion: z.string(), capabilities: z.obj
 type Reply = { readonly jsonrpc: "2.0"; readonly id: string | number; readonly result?: unknown; readonly error?: { readonly code: number; readonly message: string } };
 
 export type GatewayOptions = {
-  readonly journal: JournalWriter;
+  /**
+   * The shared session layer (D-193, D-194), opened by the shared start-up check for the gateway service: it holds the
+   * journal, and every admission, call, rejection, budget and park of the gateway's session goes through it. Its
+   * workspaces must include the folder the upstream's paths name (`view`'s root), so JUNO's state was judged against it.
+   */
+  readonly layer: SessionLayer;
   readonly grants: GrantStore;
   readonly resolver: PathResolver;
   readonly view: Workspace;
@@ -99,35 +100,7 @@ export type GatewayOptions = {
   /** Starts the upstream; `refused` is called for each request the upstream sent the client, which the gateway refuses (D-186). */
   readonly upstream: (refused: (method: string) => void) => Upstream;
   readonly clock?: () => Date;
-  /**
-   * JUNO's own state on the host besides the journal (D-148, D-192): the session and grant files, the trust anchor, the
-   * socket's folder. The journal's root is always included. None may overlap the workspace the gateway's paths name, or
-   * a tool call could reach it; the gateway refuses to start. Required, so no configuration can leave it out.
-   */
-  readonly protectedPaths: readonly string[];
 };
-
-/** Why JUNO's state overlaps the workspace (empty: none does), each judged as the kernel resolves it (D-148, D-192). */
-export function stateOverlapRefusals(workspace: string, state: readonly string[]): string[] {
-  if (!workspace.startsWith("/")) return [`the workspace ${workspace} is not an absolute path`];
-  const root = realOrGiven(workspace);
-  return state.flatMap((path) => {
-    if (!path.startsWith("/")) return [`JUNO's state ${path} is not an absolute path`];
-    return pathsOverlap(realOrGiven(path), root) ? [`${path} is JUNO's own state and overlaps the gateway's workspace ${workspace}, so a tool call could reach it; move the workspace or the state (D-148, D-192)`] : [];
-  });
-}
-
-/** A path as the kernel resolves it, or as given when it does not exist yet (its nearest existing ancestor resolved). */
-function realOrGiven(path: string): string {
-  let at = path;
-  const rest: string[] = [];
-  while (!existsSync(at) && at !== "/") {
-    rest.unshift(at.slice(at.lastIndexOf("/") + 1));
-    at = at.slice(0, Math.max(at.lastIndexOf("/"), 1));
-  }
-  const base = realpathSync(at);
-  return rest.length === 0 ? base : `${base === "/" ? "" : base}/${rest.join("/")}`;
-}
 
 export class GatewayError extends Error {
   override readonly name = "GatewayError";
@@ -143,17 +116,23 @@ export class McpGateway {
   #tools = new Map<string, { readonly capability: string; readonly reads: string | undefined; readonly constants: Readonly<Record<string, readonly (string | number | boolean)[]>> }>();
   #upstream: Upstream | null = null;
   #initialized = false;
-  #admittedAt = 0;
-  #calls = 0;
-  #rejections = 0;
+  #session: GovernedSession | null = null;
   #floor: Sensitivity = "public";
+  readonly #layer: SessionLayer;
 
   constructor(options: GatewayOptions) {
-    // D-148 for mode B (D-192): JUNO's own state may not overlap the workspace, in either direction, as the kernel resolves both.
-    const overlaps = stateOverlapRefusals(options.view.viewRoot, [options.journal.root, ...options.protectedPaths]);
-    if (overlaps.length > 0) throw new GatewayError(overlaps.join("; "));
+    // D-194: only through the shared session layer, whose start-up check judged JUNO's state against this workspace
+    // (D-148 for mode B, D-192), and whose verified anchor the grant store checks against.
+    this.#layer = SessionLayer.require(options.layer, "gateway");
+    this.#layer.requireWorkspace("the gateway's workspace", options.view.viewRoot);
+    this.#layer.requireGrants(options.grants);
     this.#options = options;
     this.#clock = options.clock ?? (() => new Date());
+  }
+
+  /** The shared session layer this gateway admits and journals through (D-194). */
+  get layer(): SessionLayer {
+    return this.#layer;
   }
 
   get taskId(): string | null {
@@ -209,7 +188,7 @@ export class McpGateway {
       tools.set(tool.tool, { capability: entry.data.capability.id, reads: tool.reads, constants: tool.constants });
     }
     if (failures.length > 0) {
-      this.#append(id, "note", REFUSED_CLASS, GATEWAY_ACTOR, { type: "admission", outcome: "rejected", mode: "gateway", failures });
+      this.#layer.refuse(id, { mode: "gateway", failures }, GATEWAY_ACTOR);
       return { admitted: false, failures };
     }
     const task = Task.parse({
@@ -238,9 +217,16 @@ export class McpGateway {
     this.#request = request;
     this.#task = task;
     this.#tools = tools;
-    this.#boundary = new EnforcementBoundary({ registry, grants: this.#options.grants, journal: this.#options.journal, clock: this.#clock });
-    this.#admittedAt = this.#clock().getTime();
-    this.#append(id, "note", { sensitivity: "internal", integrity: "operator" }, GATEWAY_ACTOR, { type: "admission", outcome: "admitted", mode: "gateway", admitted_at: this.#clock().toISOString(), task, request, unmetered: ["tokens", "currency"] });
+    this.#boundary = this.#layer.boundary(registry, this.#options.grants, this.#clock);
+    // §2.7.1 A4, §4.3: the layer owns the session's rejection limit, its budget (every call, and wall clock from admission) and its journal.
+    this.#session = this.#layer.admit(id, {
+      rejection_limit: request.rejection_limit,
+      ttl: request.ttl,
+      budget: task.budget,
+      metered: ["turns", "wall_clock_ms"],
+      clock: "from_admission",
+      park_fields: { mode: "gateway", answer: "isError" },
+    }, { dataClass: { sensitivity: "internal", integrity: "operator" }, now: () => this.#clock().getTime(), actor: GATEWAY_ACTOR, payload: { mode: "gateway", admitted_at: this.#clock().toISOString(), task, request, unmetered: ["tokens", "currency"] } });
     return { admitted: true, task_id: id };
   }
 
@@ -317,7 +303,8 @@ export class McpGateway {
     const task = this.#task;
     const request = this.#request;
     const boundary = this.#boundary;
-    if (task === null || request === null || boundary === null) return error(-32002, "this gateway has no admitted session, so no call is allowed (§4.3)");
+    const session = this.#session;
+    if (task === null || request === null || boundary === null || session === null) return error(-32002, "this gateway has no admitted session, so no call is allowed (§4.3)");
     if (this.#upstream === null || !this.#initialized) return error(-32002, "initialize first");
     const asked = CallParams.safeParse(params);
     if (!asked.success) return error(-32602, "JUNO could not read this tool call (§4.3 fail-closed)");
@@ -326,17 +313,17 @@ export class McpGateway {
     const tool = this.#tools.get(toolName);
     const denied = (text: string): Reply => reply({ content: [{ type: "text", text }], isError: true });
     if (task.state !== "running") return denied(`this session is ${task.state}; no call is allowed`);
-    const now = this.#clock().getTime();
-    if (now - this.#admittedAt > request.ttl) {
+    // §6.4 and §4.3, in the shared layer: TTL, then the budget, then the call is counted, so every call counts, a call
+    // to a tool the operator did not define included (D-192, D-194).
+    const started = session.beginCall(this.#class(), GATEWAY_ACTOR, { tool: toolName });
+    if (!started.ok && started.reason === "ttl_expired") {
       this.#task = Task.parse({ ...task, state: "failed", runtime_substate: null });
       this.#append(task.id, "note", this.#class(), GATEWAY_ACTOR, { type: "state", to: "failed", reason: "ttl_expired" });
       return denied("the session's time to live has expired (§6.4)");
     }
-    // §4.3: every call counts against the budget, a call to a tool the operator did not define included (D-192).
-    if (this.#calls >= request.budget.tool_calls || now - this.#admittedAt > request.budget.wall_clock_ms) return this.#park(task, "budget_exceeded", { tool: toolName }, true, denied);
-    this.#calls += 1;
+    if (!started.ok) return denied(parkText("budget_exceeded", true));
     // §2.5: a tool the operator did not define is a rejection, journalled, never forwarded.
-    if (tool === undefined) return this.#reject(task, "unknown_capability", toolName, undefined, `${toolName} is not a tool the operator defined (§2.5)`, denied);
+    if (tool === undefined) return this.#reject(session, "unknown_capability", toolName, undefined, `${toolName} is not a tool the operator defined (§2.5)`, denied);
 
     // Every model-written value is synthesized (untrusted); a value the operator listed for that field is a constant.
     const constants: Record<string, { value: string | number | boolean; data_class: DataClass }> = {};
@@ -357,12 +344,14 @@ export class McpGateway {
     const base: TaskContext = { task: { ...task, sensitivity_floor: this.#floor }, constants, synthesis: { sensitivity: this.#floor }, reversible: [], readGate: { reads, clearance: request.provider_clearance } };
     const canonical: CanonicalPaths = await this.#options.resolver.resolve(boundary.pathsToResolve(base, proposal));
     const verdict: Verdict = boundary.authorize({ ...base, canonical }, proposal);
-    if (verdict.outcome === "reject") return this.#reject(task, verdict.detail.reason, toolName, verdict.call_seq, verdict.detail.reason, denied);
-    this.#rejections = 0;
+    if (verdict.outcome === "reject") return this.#reject(session, verdict.detail.reason, toolName, verdict.call_seq, verdict.detail.reason, denied);
     if (verdict.outcome === "park") {
+      // §8.2: a park whose only remedy is a grant is not overridden; the layer applies §8.3's never-overridable reasons.
       const grantOnly = verdict.detail.reason === "scope_violation" && verdict.detail.untrusted.length > 0;
-      return this.#park(task, verdict.detail.reason, { call_seq: verdict.call_seq, tool: toolName, detail: verdict.detail }, !NON_OVERRIDABLE.has(verdict.detail.reason) && !grantOnly, denied);
+      const parked = session.park(verdict.detail.reason, !grantOnly, this.#class(), GATEWAY_ACTOR, { call_seq: verdict.call_seq, tool: toolName, detail: verdict.detail });
+      return denied(parkText(verdict.detail.reason, parked.overridable));
     }
+    session.clearRejections();
     // Proceed: forwarded exactly as judged. The response is untrusted content at the class of what the call read (§1.2).
     const answered = await this.#upstream.request("tools/call", { name: toolName, arguments: args });
     const result = CallResult.safeParse(answered);
@@ -378,35 +367,27 @@ export class McpGateway {
     return reply(result.data);
   }
 
-  /** A rejection, journalled; §2.7.1 A4: consecutive rejections park `rejection_limit` (per session in gateway mode). */
-  #reject(task: z.infer<typeof Task>, reason: string, tool: string, callSeq: number | undefined, why: string, denied: (text: string) => Reply): Reply {
-    this.#rejections += 1;
-    this.#append(task.id, "note", this.#class(), GATEWAY_ACTOR, { type: "rejection", reason, tool, ...(callSeq === undefined ? {} : { call_seq: callSeq }), mode: "gateway" });
-    if (this.#request !== null && this.#rejections >= this.#request.rejection_limit) return this.#park(task, "rejection_limit", { tool, last: reason }, true, denied);
+  /** A rejection, journalled; §2.7.1 A4: the shared layer counts it and parks `rejection_limit` at the limit (per session in gateway mode). */
+  #reject(session: GovernedSession, reason: string, tool: string, callSeq: number | undefined, why: string, denied: (text: string) => Reply): Reply {
+    const seq = this.#append(session.id, "note", this.#class(), GATEWAY_ACTOR, { type: "rejection", reason, tool, ...(callSeq === undefined ? {} : { call_seq: callSeq }), mode: "gateway" });
+    if (session.reject({ kind: "call", seq: callSeq ?? seq }, () => session.park("rejection_limit", true, this.#class(), GATEWAY_ACTOR, { tool, last: reason })).parked) return denied(parkText("rejection_limit", true));
     return denied(`JUNO rejected this call: ${why}`);
-  }
-
-  #park(task: z.infer<typeof Task>, reason: string, detail: Record<string, unknown>, overridable: boolean, denied: (text: string) => Reply): Reply {
-    this.#rejections = 0;
-    // §4.3 V6-3: a park answers with its reason and is journalled; the remedy applies to the retry.
-    this.#append(task.id, "park", this.#class(), GATEWAY_ACTOR, { reason, overridable, mode: "gateway", answer: "isError", ...detail });
-    return denied(`JUNO parked this call: ${reason}. ${overridable ? "The operator may remedy it, and the call can then be retried." : "This cannot be overridden (§8.3)."}`);
   }
 
   #class(): DataClass {
     return { sensitivity: maxSensitivity("internal", this.#floor), integrity: "derived" };
   }
 
-  #append(taskId: string, kind: "note" | "park" | "capability_result", dataClass: DataClass, actor: string, payload: unknown): number {
-    return this.#options.journal.append(taskId, { kind, actor, provider: kind === "capability_result" ? GATEWAY_ADAPTER : null, data_class: dataClass, cost: NO_COST }, encoder.encode(canonicalJson(payload))).seq;
+  /** Journals through the shared session layer (D-194). */
+  #append(taskId: string, kind: "note" | "capability_result", dataClass: DataClass, actor: string, payload: unknown): number {
+    return this.#layer.append(taskId, kind, dataClass, payload, { actor, provider: kind === "capability_result" ? GATEWAY_ADAPTER : null });
   }
 }
 
-/** A refused admission and what is recorded against it: the most restrictive class, as mode A records one. */
-const REFUSED_CLASS: DataClass = { sensitivity: "secret", integrity: "untrusted" };
-
-/** §8.3: parks the operator can never override. */
-const NON_OVERRIDABLE: ReadonlySet<string> = new Set(["integrity_floor", "adapter_quarantined"]);
+/** §4.3 V6-3: a park answers with its reason; the remedy applies to the retry. */
+function parkText(reason: string, overridable: boolean): string {
+  return `JUNO parked this call: ${reason}. ${overridable ? "The operator may remedy it, and the call can then be retried." : "This cannot be overridden (§8.3)."}`;
+}
 
 function idOf(raw: unknown): string | number {
   if (typeof raw === "object" && raw !== null) {

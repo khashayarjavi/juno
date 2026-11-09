@@ -17,7 +17,10 @@ import {
 import {
   type CanonicalPaths,
   type CheckpointStore,
-  EnforcementBoundary,
+  type EnforcementBoundary,
+  type GovernedSession,
+  REFUSED_ADMISSION_CLASS,
+  SessionLayer,
   type Workspace,
   checkpointId,
   type GrantStore,
@@ -26,7 +29,6 @@ import {
   type Verdict,
   readCommandString,
 } from "../../enforcement/src/index.js";
-import { type JournalWriter, canonicalJson } from "../../journal/src/index.js";
 import { type Adapter, type CapabilityCall, CapabilityRegistry, RegistryEntry, loadRegistryEntry } from "../../registry/src/index.js";
 import { DeclaredSource, type ReadTarget, classifyRead } from "./reads.js";
 import { type FilesystemIo, caseFoldingRefusals } from "./filesystem.js";
@@ -51,8 +53,6 @@ import { GATEWAY_NAME } from "./install.js";
 export const HARNESS_ACTOR = "claude-code";
 export const HARNESS_ADAPTER = "harness.claude_code";
 const SESSION_ACTOR = "juno.mediated";
-const NO_COST = { tokens_in: 0, tokens_out: 0, tokens_cached: 0, currency: 0, duration_ms: 0 };
-const encoder = new TextEncoder();
 
 const DEFINITIONS_DIR = fileURLToPath(new URL("../definitions/claude-code/", import.meta.url));
 
@@ -192,9 +192,8 @@ export class PathMap {
 type Session = {
   task: z.infer<typeof Task>;
   readonly request: z.output<typeof SessionRequest>;
-  readonly admittedAt: number;
-  calls: number;
-  rejections: number;
+  /** The shared session layer's session: its rejection limit, budget and journal (D-194). */
+  readonly governed: GovernedSession;
   floor: Sensitivity;
   /** Calls authorized and not yet reported by PostToolUse: tool_use_id → call_seq and the sensitivity of what it reads. */
   readonly pending: Map<string, { readonly call_seq: number | null; readonly reads: Sensitivity; readonly gateway?: true }>;
@@ -203,7 +202,14 @@ type Session = {
 };
 
 export type MediatedOptions = {
-  readonly journal: JournalWriter;
+  /**
+   * The shared session layer (D-193, D-194), opened by the shared start-up check for the hook service: it holds the
+   * journal, judged JUNO's state (the journal, the checkpoint store, the trust anchor, the hook's socket and Claude
+   * Code's settings files, as the starter declared them) against every workspace root, and owns every session's
+   * admission, rejection limit, budget and parks. Every workspace root and the read view's root must be among its
+   * workspaces, and the checkpoint store among its state.
+   */
+  readonly layer: SessionLayer;
   readonly grants: GrantStore;
   readonly paths: PathMap;
   readonly resolver: PathResolver;
@@ -215,13 +221,6 @@ export type MediatedOptions = {
   readonly clock?: () => Date;
   /** Where the host workspace is checkpointed (the same scripts, run on the host) and the store for its content (D-136). */
   readonly checkpoints?: { readonly workspace: Workspace; readonly store: CheckpointStore };
-  /**
-   * JUNO's own state on the host, which no tool call may reach (plan Increment 4 item 10; §3.2 "No selector may name
-   * journal storage"; D-148): the checkpoint store, the trust anchor, the hook's socket directory, Claude Code's settings
-   * files. The journal's root is always included. Each must lie under no workspace root, in any spelling the map knows,
-   * or the sessions refuse to start.
-   */
-  readonly protectedPaths: readonly string[];
   /**
    * How admission reads the file systems under the workspace roots and the registered sources (D-178): every admission
    * refuses one that is not a case-sensitive Linux file system or that holds a case-folding folder. Required, so no
@@ -291,7 +290,7 @@ function unknown(field: string): ReadTarget {
 
 export class MediatedSessions {
   readonly #gateway: string | undefined;
-  readonly #journal: JournalWriter;
+  readonly #layer: SessionLayer;
   readonly #grants: GrantStore;
   readonly #paths: PathMap;
   readonly #resolver: PathResolver;
@@ -307,7 +306,15 @@ export class MediatedSessions {
   constructor(options: MediatedOptions) {
     if (options.gateway !== undefined && !GATEWAY_NAME.test(options.gateway.server)) throw new MediatedError(`the gateway's server name ${JSON.stringify(options.gateway.server)} must be letters, digits and hyphens only (D-190)`);
     this.#gateway = options.gateway?.server;
-    this.#journal = options.journal;
+    // D-194: only through the shared session layer; what this service touches must be what its start-up check judged.
+    this.#layer = SessionLayer.require(options.layer, "hook");
+    for (const root of options.paths.roots) this.#layer.requireWorkspace("the workspace root", root);
+    this.#layer.requireWorkspace("the read view's root", options.view.viewRoot);
+    if (options.checkpoints !== undefined) {
+      this.#layer.requireWorkspace("the checkpointed workspace", options.checkpoints.workspace.viewRoot);
+      this.#layer.requireState("the checkpoint store", options.checkpoints.store.root);
+    }
+    this.#layer.requireGrants(options.grants);
     this.#grants = options.grants;
     this.#paths = options.paths;
     this.#resolver = options.resolver;
@@ -315,11 +322,6 @@ export class MediatedSessions {
     this.#checkpoints = options.checkpoints;
     this.#view = options.view;
     this.#filesystem = options.filesystem;
-    for (const path of [options.journal.root, ...options.protectedPaths]) {
-      if (options.paths.toWork(path) !== null) {
-        throw new MediatedError(`${path} is JUNO's own state and lies under a workspace root, so a tool call could reach it; move the workspace or the state (D-148)`);
-      }
-    }
   }
 
   /** Admits a session as a Task (§4.3 V6-6), or says why not. */
@@ -388,7 +390,7 @@ export class MediatedSessions {
     if (failures.length > 0 || built === null) {
       // Never admitted, never referenced: recorded at the most restrictive class, as mode A records a refused admission.
       if (!this.#sessions.has(id)) {
-        this.#append(id, "note", REFUSED_CLASS, SESSION_ACTOR, { type: "admission", outcome: "rejected", mode: "hook", failures });
+        this.#layer.refuse(id, { mode: "hook", failures }, SESSION_ACTOR);
         this.#refused.set(id, new Map(request.name_map.map((entry) => [entry.name, entry.program])));
       }
       return { admitted: false, failures };
@@ -428,18 +430,29 @@ export class MediatedSessions {
     }
     this.#registries.set(id, built);
     this.#refused.delete(id);
-    const session: Session = { task, request, admittedAt: this.#clock().getTime(), calls: 0, rejections: 0, floor: "public", pending: new Map(), reversible };
-    this.#sessions.set(id, session);
-    this.#append(id, "note", { sensitivity: "internal", integrity: "operator" }, SESSION_ACTOR, {
-      type: "admission",
-      outcome: "admitted",
-      mode: "hook",
-      admitted_at: this.#clock().toISOString(),
-      task,
-      request,
-      // §4.3: tokens and currency are not measured by JUNO; the operator accepted the harness's limits.
-      unmetered: ["tokens", "currency"],
+    // §2.7.1 A4, §4.3, §6.4: the shared layer owns the session's rejection limit, budget (every tool call, and wall clock
+    // from admission), TTL, parks and journal (D-194).
+    const governed = this.#layer.admit(id, {
+      rejection_limit: request.rejection_limit,
+      ttl: request.ttl,
+      budget: task.budget,
+      metered: ["turns", "wall_clock_ms"],
+      clock: "from_admission",
+      park_fields: { mode: "hook", answer: "deny" },
+    }, {
+      dataClass: { sensitivity: "internal", integrity: "operator" },
+      now: () => this.#clock().getTime(), actor: SESSION_ACTOR,
+      payload: {
+        mode: "hook",
+        admitted_at: this.#clock().toISOString(),
+        task,
+        request,
+        // §4.3: tokens and currency are not measured by JUNO; the operator accepted the harness's limits.
+        unmetered: ["tokens", "currency"],
+      },
     });
+    const session: Session = { task, request, governed, floor: "public", pending: new Map(), reversible };
+    this.#sessions.set(id, session);
     for (const checkpoint of checkpoints) this.#append(id, "note", { sensitivity: "internal", integrity: "derived" }, SESSION_ACTOR, { type: "checkpoint", ...checkpoint });
     return { admitted: true, task_id: id };
   }
@@ -475,8 +488,7 @@ export class MediatedSessions {
     const built = this.#registries.get(id);
     if (session === undefined || built === undefined) return deny("this Claude Code session is not admitted to JUNO, so no call is allowed (§4.3)");
     if (session.task.state !== "running") return deny(`this session is ${session.task.state}; no call is allowed`);
-    const now = this.#clock().getTime();
-    if (now - session.admittedAt > session.request.ttl) {
+    if (session.governed.expired()) {
       session.task = Task.parse({ ...session.task, state: "failed", runtime_substate: null });
       this.#append(id, "note", this.#class(session), SESSION_ACTOR, { type: "state", to: "failed", reason: "ttl_expired" });
       return deny("the session's time to live has expired (§6.4)");
@@ -488,10 +500,9 @@ export class MediatedSessions {
       this.#append(id, "note", this.#class(session), SESSION_ACTOR, { type: "result_missing", calls: missing });
       return deny("JUNO did not receive the result of an earlier call; that gap is now recorded. Retry this call");
     }
-    if (session.calls >= session.request.budget.tool_calls || now - session.admittedAt > session.request.budget.wall_clock_ms) {
-      return this.#park(session, "budget_exceeded", { tool: input.tool_name }, true);
-    }
-    session.calls += 1;
+    // §4.3 in the shared layer: the budget is checked and the call counted there; a `budget_exceeded` park is journalled there.
+    const started = session.governed.beginCall(this.#class(session), SESSION_ACTOR, { tool: input.tool_name });
+    if (!started.ok) return deny(parkText("budget_exceeded", "", true));
     if (input.tool_name.startsWith("mcp__")) return this.#mcp(session, input);
 
     const mapped = await this.#map(session, input);
@@ -508,7 +519,7 @@ export class MediatedSessions {
     const canonical: CanonicalPaths = await this.#resolver.resolve(built.boundary.pathsToResolve(base, mapped.proposal));
     const verdict: Verdict = built.boundary.authorize({ ...base, canonical }, mapped.proposal);
     if (verdict.outcome === "proceed") {
-      session.rejections = 0;
+      session.governed.clearRejections();
       session.pending.set(input.tool_use_id ?? `call-${String(verdict.call_seq)}`, { call_seq: verdict.call_seq, reads });
       if (mapped.bash === undefined) return { decision: "none" };
       // D-152: what runs is what was judged. The command Claude Code runs is the one rebuilt from the judged program and
@@ -518,7 +529,7 @@ export class MediatedSessions {
     }
     if (verdict.outcome === "reject") return this.#reject(session, verdict.detail.reason, input.tool_name, verdict.call_seq);
     const grantOnly = verdict.detail.reason === "scope_violation" && verdict.detail.untrusted.length > 0;
-    return this.#park(session, verdict.detail.reason, { call_seq: verdict.call_seq, tool: input.tool_name, detail: verdict.detail }, !NON_OVERRIDABLE.has(verdict.detail.reason) && !grantOnly);
+    return this.#park(session, verdict.detail.reason, { call_seq: verdict.call_seq, tool: input.tool_name, detail: verdict.detail }, !grantOnly);
   }
 
   /** Journals a PostToolUse or PostToolUseFailure result against the call JUNO authorized (plan item 8). */
@@ -604,7 +615,7 @@ export class MediatedSessions {
       const result = registry.register(entry, [harnessAdapter]);
       if (!result.registered) throw new Error(`the Bash name map did not pass registration review: ${JSON.stringify(result.refusals)}`);
     }
-    return { registry, boundary: new EnforcementBoundary({ registry, grants: this.#grants, journal: this.#journal, clock: this.#clock }) };
+    return { registry, boundary: this.#layer.boundary(registry, this.#grants, this.#clock) };
   }
 
   /** Maps a tool call onto a capability proposal (D-141). Every model-written value is synthesized, so `untrusted`. */
@@ -732,42 +743,43 @@ export class MediatedSessions {
     // Restrictive (D-192): the hook does not know whether the gateway will reject this call, so passing it on does not
     // clear the session's count of consecutive rejections (§2.7.1 A4); the gateway keeps its own count.
     const reads = await this.#classify(session, [{ kind: "tool_result", tool: input.tool_name }]);
-    session.pending.set(input.tool_use_id ?? `gateway-${String(session.calls)}`, { call_seq: null, reads, gateway: true });
+    session.pending.set(input.tool_use_id ?? `gateway-${String(session.governed.spent().turns)}`, { call_seq: null, reads, gateway: true });
     this.#append(session.task.id, "note", this.#class(session), SESSION_ACTOR, { type: "gateway_call", tool: input.tool_name, tool_use_id: input.tool_use_id ?? null, mcp_server: server, judged_by: "gateway" });
     return { decision: "none" };
   }
 
+  /** A rejection; §2.7.1 A4: the shared layer counts it and parks `rejection_limit` at the limit (per session in hook mode). */
   #reject(session: Session, reason: string, tool: string, callSeq?: number): HookDecision {
-    session.rejections += 1;
-    if (callSeq === undefined) this.#append(session.task.id, "note", this.#class(session), SESSION_ACTOR, { type: "rejection", tool, reason });
-    // §2.7.1 A4: consecutive rejections park `rejection_limit` (per session in hook mode).
-    if (session.rejections >= session.request.rejection_limit) {
-      session.rejections = 0;
-      return this.#park(session, "rejection_limit", { tool, last: reason }, true);
-    }
+    const seq = callSeq ?? this.#append(session.task.id, "note", this.#class(session), SESSION_ACTOR, { type: "rejection", tool, reason });
+    if (session.governed.reject({ kind: "call", seq }, () => session.governed.park("rejection_limit", true, this.#class(session), SESSION_ACTOR, { tool, last: reason })).parked) return deny(parkText("rejection_limit", "", true));
     return deny(`JUNO rejected this ${tool} call: ${reason}`);
   }
 
+  /** §4.3 V6-3: a park denies the call with its reason and is journalled by the shared layer; the remedy applies to the retry. */
   #park(session: Session, reason: string, detail: Record<string, unknown>, overridable: boolean): HookDecision {
-    session.rejections = 0;
-    // §4.3 V6-3: a park denies the call with its reason and is journalled; the remedy applies to the retry.
-    this.#append(session.task.id, "park", this.#class(session), SESSION_ACTOR, { reason, overridable, mode: "hook", answer: "deny", ...detail });
+    const parked = session.governed.park(reason, overridable, this.#class(session), SESSION_ACTOR, detail);
     const why = typeof detail["why"] === "string" && detail["windows_path"] === true ? ` ${detail["why"]}.` : "";
-    return deny(`JUNO parked this call: ${reason}.${why} ${overridable ? "The operator may remedy it, and the call can then be retried." : "This cannot be overridden (§8.3)."}`);
+    return deny(parkText(reason, why, parked.overridable));
   }
 
   /** An injected Bash command from a session whose admission was refused: recorded against it, never overridable (D-152). */
   #parkRefused(taskId: string, detail: Record<string, unknown>): HookDecision {
-    this.#append(taskId, "park", REFUSED_CLASS, SESSION_ACTOR, { reason: "integrity_floor", overridable: false, mode: "hook", answer: "deny", admitted: false, ...detail });
+    this.#layer.append(taskId, "park", REFUSED_ADMISSION_CLASS, { reason: "integrity_floor", overridable: false, mode: "hook", answer: "deny", admitted: false, ...detail }, { actor: SESSION_ACTOR });
     return deny("JUNO parked this call: integrity_floor. This cannot be overridden (§8.3).");
+  }
+
+  /** The shared session layer this service admits and journals through (D-194). */
+  get layer(): SessionLayer {
+    return this.#layer;
   }
 
   #class(session: Session): DataClass {
     return { sensitivity: maxSensitivity("internal", session.floor), integrity: "derived" };
   }
 
-  #append(taskId: string, kind: "note" | "park" | "capability_result", dataClass: DataClass, actor: string, payload: unknown): number {
-    return this.#journal.append(taskId, { kind, actor, provider: kind === "capability_result" ? HARNESS_ADAPTER : null, data_class: dataClass, cost: NO_COST }, encoder.encode(canonicalJson(payload))).seq;
+  /** Journals through the shared session layer (D-194). */
+  #append(taskId: string, kind: "note" | "capability_result", dataClass: DataClass, actor: string, payload: unknown): number {
+    return this.#layer.append(taskId, kind, dataClass, payload, { actor, provider: kind === "capability_result" ? HARNESS_ADAPTER : null });
   }
 }
 
@@ -782,11 +794,9 @@ type Mapped =
   | { readonly kind: "reject"; readonly reason: string }
   | { readonly kind: "park"; readonly reason: string; readonly detail: Record<string, unknown>; readonly overridable: boolean };
 
-/** A refused admission and what is recorded against it: the most restrictive class, as mode A records one. */
-const REFUSED_CLASS: DataClass = { sensitivity: "secret", integrity: "untrusted" };
-
-/** §8.3: parks the operator can never override, as in mode A. */
-const NON_OVERRIDABLE: ReadonlySet<string> = new Set(["integrity_floor", "adapter_quarantined"]);
+function parkText(reason: string, why: string, overridable: boolean): string {
+  return `JUNO parked this call: ${reason}.${why} ${overridable ? "The operator may remedy it, and the call can then be retried." : "This cannot be overridden (§8.3)."}`;
+}
 
 function proposal(capability: string, args: Record<string, unknown>): Mapped {
   return { kind: "proposal", proposal: { capability, arguments: args }, constants: {} };

@@ -1,32 +1,14 @@
 import { z } from "zod";
-import { AbsolutePath, WORK_NAMESPACE, parseAtBoundary, pathsOverlap } from "../../contracts/src/index.js";
+import { AbsolutePath, parseAtBoundary } from "../../contracts/src/index.js";
 
-const RunnerEnv = z
-  .object({
-    JUNO_JOURNAL_DIR: AbsolutePath,
-    JUNO_WORK_DIR: AbsolutePath,
-    /** The operator's public key (§3.2 C1, D-116, D-125). Without it no grant can be honoured. */
-    JUNO_TRUST_ANCHOR: AbsolutePath.optional(),
-  })
-  .superRefine((env, ctx) => {
-    // §3.4.1: journal storage lies outside the capability namespace and apart from the work volume,
-    // so no path selector can name it (DECISIONS.md D-026).
-    if (pathsOverlap(env.JUNO_JOURNAL_DIR, WORK_NAMESPACE)) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["JUNO_JOURNAL_DIR"],
-        message: `must lie outside the capability namespace ${WORK_NAMESPACE} (spec §3.4.1)`,
-      });
-    }
-    if (pathsOverlap(env.JUNO_JOURNAL_DIR, env.JUNO_WORK_DIR)) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["JUNO_JOURNAL_DIR"],
-        message: "must not contain, or lie inside, JUNO_WORK_DIR (spec §3.4.1)",
-      });
-    }
-  });
-
+const RunnerEnv = z.object({
+  JUNO_JOURNAL_DIR: AbsolutePath,
+  JUNO_WORK_DIR: AbsolutePath,
+  /** The operator's public key (§3.2 C1, D-116, D-125). Without it no grant can be honoured. */
+  JUNO_TRUST_ANCHOR: AbsolutePath.optional(),
+});
+// §3.4.1: that journal storage lies outside the capability namespace and apart from the work volume (D-026) is judged by
+// the shared start-up check (startup.ts), as the kernel resolves both, not here (D-194).
 export type RunnerConfig = {
   readonly journalDir: AbsolutePath;
   readonly workDir: AbsolutePath;

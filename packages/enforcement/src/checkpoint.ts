@@ -220,6 +220,11 @@ export class CheckpointStore {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
   }
 
+  /** Where the content is kept: JUNO's state, judged by the shared start-up check (D-194). */
+  get root(): string {
+    return this.#dir;
+  }
+
   put(bytes: Buffer): string {
     const hash = createHash("sha256").update(bytes).digest("hex");
     try {

@@ -1,7 +1,7 @@
-import { chmodSync, statSync } from "node:fs";
+import { chmodSync } from "node:fs";
 import { type Server, type Socket, createServer } from "node:net";
-import { dirname } from "node:path";
 import type { MediatedSessions } from "./session.js";
+import { SessionLayer } from "../../enforcement/src/index.js";
 
 /**
  * The boundary service for mode C (spec §4.3; DECISIONS.md D-142): a Unix-domain socket on the runner's host. Each
@@ -29,6 +29,8 @@ export class HookService {
    * which the Claude Code user, and only it, connects (D-173; STATE.md Part E).
    */
   constructor(sessions: MediatedSessions, options: { readonly socketMode?: number } = {}) {
+    // D-194: a service runs only on a session layer the shared start-up check opened for it.
+    SessionLayer.require(sessions.layer, "hook");
     this.#sessions = sessions;
     this.#socketMode = options.socketMode ?? 0o600;
     this.#server = createServer((socket) => {
@@ -41,12 +43,14 @@ export class HookService {
    * else could replace the socket (D-173). After it listens, the socket gets the service's socket mode.
    */
   listen(path: string): Promise<void> {
-    // An absolute path only: Node reads a bare number as a TCP port, which would listen on the network (D-144, D-148).
-    if (!path.startsWith("/")) return Promise.reject(new Error("the hook service listens only on an absolute Unix socket path"));
-    const folder = statSync(dirname(path));
-    if ((folder.mode & 0o022) !== 0) return Promise.reject(new Error(`the socket's folder ${dirname(path)} is writable by group or others, so the socket could be replaced (D-173)`));
     const mode = this.#socketMode;
-    if ((mode & 0o007) !== 0 || (mode & ~0o660) !== 0) return Promise.reject(new Error("the socket's mode may give at most read and write to its owner and group (D-173)"));
+    // D-194: only a socket the shared start-up check judged, its folder still writable by no one else, and a mode of at
+    // most 0660; an absolute path only, since Node reads a bare number as a TCP port (D-144, D-148, D-173).
+    try {
+      this.#sessions.layer.requireSocket(path, mode);
+    } catch (error: unknown) {
+      return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+    }
     return new Promise((resolve, reject) => {
       this.#server.once("error", reject);
       this.#server.listen(path, () => {
