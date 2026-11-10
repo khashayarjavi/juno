@@ -341,6 +341,13 @@ A `sources` list with folders and the web looks like this:
 
 A session JUNO did not admit is denied every call. Each new Claude Code session needs its own `session_id` (step 2) and `juno hook admit` (step 5).
 
+**What a restart does (D-201).** Every time the service starts, it first checks its whole journal against the anchors in `juno-anchors`. Then it rebuilds everything from the journal. So after a restart:
+- a session you admitted earlier is still admitted, with the tool calls and time it had already used; you do not admit it again, and JUNO refuses if you try (`is already admitted`);
+- every grant keeps the number of uses it already had;
+- a new piece of work still needs a new `session_id` and a new `juno hook admit`.
+
+If the journal was changed, cut or deleted, if an anchor disagrees with it, or if `juno-anchors` cannot be reached, **the service refuses to start** and says which record and why (see "When something goes wrong").
+
 ## Part H — optional: govern an MCP server through JUNO's gateway (mode B)
 
 Only if you want Claude Code to use an MCP server (a tool server such as a mail or ticket system) under JUNO's control. The gateway needs a definition of each tool the server offers; writing those is not click-by-click work. **Ask the agent to write the gateway session file for your server and the grant to sign for it** (D-187, D-191). Sign that grant as in Part C and copy it in as in Part G step 1. Then:
@@ -357,7 +364,7 @@ Only if you want Claude Code to use an MCP server (a tool server such as a mail 
    systemctl --user restart juno-hook.service
    grep -c -- '--gateway juno' ~/.config/systemd/user/juno-hook.service
    ```
-   **Check:** the last line prints `1`, and `systemctl --user status juno-hook.service --no-pager` shows `active (running)`. Admit your Claude Code session again (Part G step 5): a restart forgets admitted sessions.
+   **Check:** the last line prints `1`, and `systemctl --user status juno-hook.service --no-pager` shows `active (running)`. Sessions you admitted before the restart are still admitted, with what they had already used (D-201); do not admit them again.
 3. **A clone of `juno-anchors` of the gateway's own** (the hook service keeps using its clone; both push to the same repository safely, D-199). Runner terminal (replace `<you>`):
    ```
    git clone git@github.com:<you>/juno-anchors.git /var/lib/juno-runner/juno-anchors-gateway
@@ -367,6 +374,7 @@ Only if you want Claude Code to use an MCP server (a tool server such as a mail 
    /opt/node22/bin/node /opt/juno/dist/runner/src/juno.js gateway serve --session /var/lib/juno-runner/gateway-session.json --socket /var/lib/juno-hook/gateway.sock --journal /var/lib/juno-runner/gateway-journal --anchor /etc/juno/operator.pub --workspace /srv/juno-work --journal-key /var/lib/juno-runner/journal-key --anchors /var/lib/juno-runner/juno-anchors-gateway --git /usr/bin/git --grant /var/lib/juno-runner/grants/<grant file>
    ```
    **Check:** it prints `juno gateway: session gateway-<id> admitted; serving /var/lib/juno-hook/gateway.sock`. Leave this terminal open; **Ctrl+C** stops the gateway (it anchors what is pending as it stops).
+   When you start the gateway again with the same session file, it prints `was admitted before this start; it goes on from its journal` instead: the same session continues with the calls and time it had already used (D-201). To begin a fresh gateway session, ask the agent for a session file with a new `session_id`; a changed file under the old id is refused.
 5. **Check the separation with the gateway.** Admin terminal: Part G step 4's `hook check`, with ` --gateway juno --shim /opt/juno/dist/mediated/src/juno-mcp.js --gateway-socket /var/lib/juno-hook/gateway.sock` added at the end.
    **Check:** it prints `separated from the runner` and `JUNO's gateway relay juno is the only MCP server Claude Code can load`.
 
@@ -375,7 +383,8 @@ Only if you want Claude Code to use an MCP server (a tool server such as a mail 
 - A check does not show what it says: stop, and send the agent the last 15 lines on screen. Do not work around it.
 - The hook service will not start: `journalctl --user -u juno-hook.service --no-pager | tail -20` (runner terminal) lists every refusal.
 - Claude Code says JUNO blocked every call: the service is not running (`systemctl --user status juno-hook.service`), or the session was not admitted (Part G step 5). JUNO fails closed: when in doubt, it blocks.
-- The anchor repository cannot be reached (no internet, or the push key removed): sessions stop, and the journal records `anchor_failed`. Fix the connection, restart the service, and admit a new session.
+- The anchor repository cannot be reached (no internet, or the push key removed): sessions stop, and the journal records `anchor_failed`. A stopped session stays stopped. Fix the connection, restart the service, and admit a new session with a new `session_id`. While the repository cannot be reached the service does not start at all.
+- The service refuses to start and names a journal record that `does not verify`, `disagrees with its off-host anchors`, or `is not named by the journal's own record`: the journal on this machine is not the one JUNO wrote and anchored. **Do not delete or repair anything.** Send the agent the refusal lines. JUNO will not start on that journal again. To keep working, keep the old folder as evidence and give the service a new, empty journal folder: in `~/.config/systemd/user/juno-hook.service` change `--journal /var/lib/juno-runner/journal` to a new name (for example `--journal /var/lib/juno-runner/journal-2`), then `systemctl --user daemon-reload` and `systemctl --user start juno-hook.service`. On a new journal every grant's use count starts again; that is your own decision, made by this step. Never move or rename a journal folder that is in use: JUNO refuses a journal that is not at the path it was written at.
 
 ## What each part protects, and what it does not
 

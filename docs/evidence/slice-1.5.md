@@ -31,6 +31,8 @@ Each line is a property of the specification, the section it comes from, and whe
 | 11 | Claude Code cannot load an MCP server other than JUNO's gateway, wherever the user defines one | §4.3 mode B, D-190 | real binary: three planted definitions (the project's, the user's and the local scope's) never start |
 | 12 | Paths are judged as the kernel resolves them: symlinks, hard links, case-folding file systems | §2.7.1 C4, D-113, D-157, D-178 | the kernel-oracle and property tests in `packages/mediated/test/` |
 | 13 | §18's five Slice 1 acceptance tests still pass | §18 | `test/acceptance/acceptance.test.ts`, same run |
+| 14 | A restart forgets nothing JUNO enforces: with restarts at any points, every mode reaches the same decisions and the same journal as with none (grant use, admitted ids, budgets, rejection counts, parks) | §3.2, §3.4.5, §5, D-201 | `packages/runner/test/restart.property.test.ts` (own loop, hook, gateway); shown failing before the fix in `docs/evidence/d201-restart/` |
+| 15 | A service refuses to start when its journal was changed, cut, replaced, deleted or added to, when an anchor disagrees, or when the anchors cannot be read | §3.4.1, §3.4.2, D-201 | `packages/runner/test/entry-points.test.ts`, part F, for every registered service |
 
 ## What untrusted content can and cannot choose (§2.2.2)
 
@@ -94,8 +96,8 @@ Each is a limit JUNO states rather than hides. Where a decision number is given,
 7. **A compromised host can stop JUNO or withhold new entries** (§3.4.1's own residual). It cannot fake past entries that were anchored.
 8. **The anchors depend on GitHub and the network.** If the anchor repository cannot be reached, sessions stop (fail-closed): availability, not safety.
 9. **The push key is on the host.** Anything that takes over `juno-runner` can push new anchors, but cannot rewrite or delete the ones already pushed (the repository's ruleset blocks force-push and deletion). Your GitHub account, which can change that ruleset, is trusted like your Windows account.
-10. **Resume does not compare the chain with the stored anchors before continuing** (D-126). A rewrite is still caught by the next anchor and by `juno journal check`.
-11. **A whole task's journal deleted** leaves its anchors behind, so the check of that task fails, but JUNO cannot list task ids it was never told about (D-027's accepted residual).
+10. **A running service does not compare a task's chain with the stored anchors before each resume** (D-126). Every start does compare the whole journal with its anchors (D-201); a rewrite under a running service is caught by the next anchor, the next start and `juno journal check`.
+11. **A record deleted from the journal is found at the next start** when it had been anchored: the journal's own record names every record, and the deleted one's anchors remain (D-202). One deleted before its first anchor is item 15.
 
 **Paths and reads (D-113, D-157, D-162, D-164, D-174, D-178)**
 12. **A read that meets more than 64 shortcuts** counts at your highest class, so a listing over a large `node_modules` can be stopped under a low clearance (a cost, not a gap).
@@ -104,9 +106,14 @@ Each is a limit JUNO states rather than hides. Where a decision number is given,
 **Verification of a task (mode A, D-067)**
 14. **A write that keeps a file's size and restores its modification time** is not detected by the protected-path listing.
 
-**Open, found in the last review (STOP for the operator; see STATE.md):** when `juno hook serve` or `juno gateway serve` restarts, it does not yet rebuild how many times each grant was used, or which session ids were already admitted, from the journal; the runner does (D-042, D-066). Until that is fixed, a restart lets a grant be used up to its limit again, and lets the same session file be admitted again with a fresh budget. Each restart and each admission is journalled.
+**Restarts (D-201, D-202)**
+15. **Entries newer than a record's last anchor** (at most one interval, or since `juno-anchors` was last reachable) can be changed or removed before a restart without JUNO noticing; that includes a record created and deleted within that time. This is §3.4.1's stated bound, and the reason the interval is short.
+16. **A grant's use is counted per journal.** The hook service and the gateway each keep their own journal, so a grant used through both is counted by each.
+17. **A refused start is repaired by hand:** a new, empty journal folder, where every count starts again by your own visible act (`docs/operator-setup.md`, "When something goes wrong").
+18. **No command revokes a grant in a running service.** You withdraw a grant by removing or re-signing its file and restarting the service.
+19. **A gateway call in flight when the gateway is killed** is in the journal as a call with no result.
 
-**Closed during Slice 1.5** (recorded earlier as residuals, now fixed): two services of one runner pushing anchors to the same repository at once (D-199); symlinks in scope checks (D-047, closed by D-113); hard links (D-156, closed by D-157); an anchor committed but never pushed being counted after a restart (D-126, closed by D-198); hook and gateway journals that were never anchored (closed by D-198).
+**Closed during Slice 1.5** (recorded earlier as residuals, now fixed): a restarted hook or gateway service forgetting grant use and admitted sessions (D-200, closed by D-201 and D-202: every service verifies its journal against its anchors at start and rebuilds from it); two services of one runner pushing anchors to the same repository at once (D-199); symlinks in scope checks (D-047, closed by D-113); hard links (D-156, closed by D-157); an anchor committed but never pushed being counted after a restart (D-126, closed by D-198); hook and gateway journals that were never anchored (closed by D-198).
 
 ## What is not in Slice 1.5
 
