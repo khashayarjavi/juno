@@ -493,7 +493,11 @@ export class Runner {
     );
     // §3.4.1 (D-122): the interval is recorded in the journal, and a task whose head cannot be anchored does not start.
     // The shared session layer journals the `anchoring` note and anchors the head, as in every mode (D-198).
-    if (!(await run.session.anchor(this.#runnerClass(run), { force: true })) || !(await this.#layer.anchorHead(RUNNER_RECORD, { sensitivity: "internal", integrity: "derived" }))) return this.#fail(run, "anchor_unavailable");
+    if (!(await run.session.anchor(this.#runnerClass(run), { force: true })) || !(await this.#layer.anchorHead(RUNNER_RECORD, { sensitivity: "internal", integrity: "derived" }))) {
+      // The task never ran; the runner is free for the next one, as it is after a restart (D-203).
+      this.#active = null;
+      return this.#fail(run, "anchor_unavailable");
+    }
     return this.#continue(run);
   }
 

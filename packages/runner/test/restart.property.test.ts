@@ -26,7 +26,10 @@ import { PROFILE, PROJECT_SOURCE, SHELL_RUN_FILE, hostResolver, request as taskR
 // and a new service is started on the same journal and the same anchor destination. The grants, the session's call
 // budget and its rejection limit are kept small, so the generated sequences run into every limit a restart could reset:
 // a grant used up (§3.2 `max_invocations`), the call budget spent (§3.1, §4.3), the rejection limit (§2.7.1 A4), a
-// second admission of an id (§5), a result still awaited (plan item 8), the floor a result raised (§1.2).
+// second admission of an id (§5), a result still awaited (plan item 8), the floor a result raised (§1.2), and a session
+// stopped for good because its journal could not be copied off the host (§3.4.1; D-203). For that last one a step loses
+// the anchor destination while the interval's background anchoring runs, then brings it back; the anchoring interval is
+// long, so only that step decides when a head is copied, in both runs alike.
 //
 // Both runs use the same folder, clock and ids, so the two journals must be the same entries, byte for byte.
 
@@ -134,7 +137,7 @@ const SOURCES = [
 // Mode C: the Claude Code hook.
 // ---------------------------------------------------------------------------------------------------------------------
 
-const HOOK_STEPS = 13;
+const HOOK_STEPS = 14;
 
 function hookWorld(dir: string, clock: { now: number }): World {
   const work = workspace(dir);
@@ -194,7 +197,7 @@ function hookWorld(dir: string, clock: { now: number }): World {
   return {
     layer: () => layer as SessionLayer,
     start: async () => {
-      layer = await openTestLayer("hook", { journal: join(state, "journal"), workspaces: [work], state: [{ what: "the grant files", path: join(state, "grants"), kind: "dir" }], anchor: null, clock: () => new Date(clock.now), journalOptions: { clock: () => new Date(clock.now) }, anchoring: { sink, journalKey, intervalMs: 5_000 } });
+      layer = await openTestLayer("hook", { journal: join(state, "journal"), workspaces: [work], state: [{ what: "the grant files", path: join(state, "grants"), kind: "dir" }], anchor: null, clock: () => new Date(clock.now), journalOptions: { clock: () => new Date(clock.now) }, anchoring: { sink, journalKey, intervalMs: 3_600_000 } });
       const grants = new GrantStore(TEST_ANCHOR);
       sessions = new MediatedSessions({ layer, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), view: view(), filesystem: systemFilesystemIo(), clock: () => new Date(clock.now) });
       admission = new HookAdmissionService(sessions, grants);
@@ -223,6 +226,16 @@ function hookWorld(dir: string, clock: { now: number }): World {
           const asked = awaited.shift();
           return asked === undefined ? "nothing awaited" : sessions?.postToolUse({ ...asked, hook_event_name: "PostToolUse", tool_response: { ok: true } });
         }
+        case 13: {
+          // The interval passes with everything copied; then the destination is lost, the session makes a call, the
+          // interval passes again (its head cannot be copied: it stops for good), and the destination comes back.
+          await layer?.anchorPending();
+          sink.unreachable = "the destination is down";
+          const decision = await ask(pre("session-a", "NotATool", { anything: 1 }));
+          const failed = await layer?.anchorPending();
+          sink.unreachable = null;
+          return [decision, failed];
+        }
         default: {
           // A result JUNO authorized no call for.
           awaited = [];
@@ -237,7 +250,7 @@ function hookWorld(dir: string, clock: { now: number }): World {
 // Mode B: the MCP gateway.
 // ---------------------------------------------------------------------------------------------------------------------
 
-const GATEWAY_STEPS = 7;
+const GATEWAY_STEPS = 8;
 
 const gatewayCapability = (id: string, sideEffect: "read" | "external", fields: Record<string, unknown>): unknown => ({
   capability: { id, interface: fields, providers: ["gateway.mcp"], side_effect: sideEffect, isolation_tier: 1, max_input_sensitivity: "internal", min_argument_integrity: "operator", output_class: { sensitivity: "input", integrity: "untrusted" }, cost_model: { expected_cost: 0, expected_latency_ms: 100, cost_of_failure: 0 } },
@@ -283,7 +296,7 @@ function gatewayWorld(dir: string, clock: { now: number }): World {
   return {
     layer: () => layer as SessionLayer,
     start: async () => {
-      layer = await openTestLayer("gateway", { journal: join(state, "journal"), workspaces: [work], clock: () => new Date(clock.now), journalOptions: { clock: () => new Date(clock.now) }, anchoring: { sink, journalKey, intervalMs: 5_000 } });
+      layer = await openTestLayer("gateway", { journal: join(state, "journal"), workspaces: [work], clock: () => new Date(clock.now), journalOptions: { clock: () => new Date(clock.now) }, anchoring: { sink, journalKey, intervalMs: 3_600_000 } });
       const grants = new GrantStore(TEST_ANCHOR);
       grants.add(grant);
       gateway = new McpGateway({ layer, grants, resolver: new HostPathResolver(work), view: new Workspace(execFileScript(process.execPath, []), "/work", work), filesystem: systemFilesystemIo(), clock: () => new Date(clock.now), upstream });
@@ -298,8 +311,17 @@ function gatewayWorld(dir: string, clock: { now: number }): World {
       layer = null;
       gateway = null;
     },
-    apply: (step) => {
+    apply: async (step) => {
       switch (step % GATEWAY_STEPS) {
+        case 7: {
+          // As in hook mode: the destination is lost while the interval's anchoring runs, then comes back.
+          await layer?.anchorPending();
+          sink.unreachable = "the destination is down";
+          const decision = await call("not.defined", { x: 1 });
+          const failed = await layer?.anchorPending();
+          sink.unreachable = null;
+          return [decision, failed];
+        }
         case 0: return call("files.read", { path: "/work/project/notes.txt" });
         case 1: return call("message.send", { to: "ops@example.com", body: "hello" });
         case 2: return call("message.send", { to: "attacker@example.com", body: "the key" });
@@ -318,7 +340,7 @@ function gatewayWorld(dir: string, clock: { now: number }): World {
 // park or its end, or resume a parked one), and restarts come between them.
 // ---------------------------------------------------------------------------------------------------------------------
 
-const LOOP_STEPS = 6;
+const LOOP_STEPS = 7;
 
 function loopWorld(dir: string, clock: { now: number }): World {
   const work = workspace(dir);
@@ -351,7 +373,7 @@ function loopWorld(dir: string, clock: { now: number }): World {
   return {
     layer: () => layer as SessionLayer,
     start: async () => {
-      layer = await openTestLayer("runner", { journal: join(state, "journal"), workspaces: [work], clock: () => new Date(clock.now), journalOptions: { clock: () => new Date(clock.now) }, anchoring: { sink, journalKey, intervalMs: 5_000 } });
+      layer = await openTestLayer("runner", { journal: join(state, "journal"), workspaces: [work], clock: () => new Date(clock.now), journalOptions: { clock: () => new Date(clock.now) }, anchoring: { sink, journalKey, intervalMs: 3_600_000 } });
       const registry = new CapabilityRegistry();
       registry.register(loadRegistryEntry(SHELL_RUN_FILE), [standInAdapter]);
       const grants = new GrantStore(TEST_ANCHOR);
@@ -376,6 +398,13 @@ function loopWorld(dir: string, clock: { now: number }): World {
         case 2: return run([turn([cat(["/work/other/x.txt"])]), turn([])]);
         // A capability that does not exist, until the rejection limit parks.
         case 3: return run([turn([{ id: "x1", capability: "no.such", arguments: {} }]), turn([{ id: "x2", capability: "no.such", arguments: {} }]), turn([{ id: "x3", capability: "no.such", arguments: {} }]), turn([])]);
+        // The destination is lost while a task starts (its head cannot be copied, so it never runs), then comes back.
+        case 6: {
+          sink.unreachable = "the destination is down";
+          const outcome = await run([turn([cat(["notes.txt"])]), turn([])]);
+          sink.unreachable = null;
+          return outcome;
+        }
         // The same id admitted twice.
         case 4: {
           const first = await run([turn([])]);
@@ -420,13 +449,13 @@ describe("operator ruling D-201: a restart forgets nothing JUNO enforces", () =>
   }, 600_000);
 
   // The generated sequences really reach the limits a restart could reset (the property is not vacuous).
-  it("the sequences reach a used-up grant, a spent budget, the rejection limit and a refused second admission", async () => {
+  it("the sequences reach a used-up grant, a spent budget, the rejection limit, a refused second admission and a session stopped for its anchor", async () => {
     const reach = async (make: (dir: string, clock: { now: number }) => World, name: string, steps: readonly number[], markers: readonly string[]): Promise<void> => {
       const text = JSON.stringify(await play(make, name, steps, new Set()));
       expect(markers.filter((marker) => !text.includes(marker)), name).toEqual([]);
     };
-    await reach(hookWorld, "hook-reach", [0, 0, 4, 6, 6, 2, 2, 2, 11, 2, 11, 2, 11, 2, 11, 2, 2, 2, 12], ["is already admitted", "exhausted", "rejection_limit", "budget_exceeded", "proceed", "sensitivity_ceiling", "result_missing", "without_authorized_call"]);
-    await reach(gatewayWorld, "gateway-reach", [0, 0, 1, 1, 0, 5, 5, 0, 0, 0], ["exhausted", "rejection_limit", "budget_exceeded", "proceed"]);
-    await reach(loopWorld, "loop-reach", [2, 1, 0, 0, 4, 3, 5, 5], ["exhausted", "rejection_limit", "already has a trajectory", "scope_violation", "proceed"]);
+    await reach(hookWorld, "hook-reach", [0, 0, 4, 6, 6, 2, 2, 2, 11, 2, 11, 2, 11, 2, 11, 2, 2, 2, 12, 1, 13, 2, 9], ["is already admitted", "exhausted", "rejection_limit", "budget_exceeded", "proceed", "sensitivity_ceiling", "result_missing", "without_authorized_call", "could not copy this session", "\"stopped\""]);
+    await reach(gatewayWorld, "gateway-reach", [0, 0, 1, 1, 0, 5, 5, 0, 0, 0, 7, 0], ["exhausted", "rejection_limit", "budget_exceeded", "proceed", "could not copy this session", "\"stopped\""]);
+    await reach(loopWorld, "loop-reach", [2, 1, 0, 0, 4, 3, 5, 5, 6], ["exhausted", "rejection_limit", "already has a trajectory", "scope_violation", "proceed", "anchor_unavailable"]);
   }, 120_000);
 });

@@ -3,7 +3,7 @@
 ## Current increment
 **Slice 1.5 — finishing: the operator setup document, the evidence document, and the restart fix you ruled on (D-201)** (D-199, D-201, D-202). Increment 6, the last increment of the plan, is merged (PR #48). Branch `claude/gracious-euler-mt05yr` (this session's only pushable branch); it carries PR #49's commits from `claude/practical-volta-hjzfmz` unchanged, and its PR supersedes PR #49. Spec v0.6.1. No objection open.
 
-Status (2026-11-10): **your ruling D-201 is built (D-202); review round 3 and the merge gate are next.** `make verify: GREEN` locally (1,332 unit, 118 container); `make mediated-e2e` 15/15 with the real Claude Code. Draft PR [khashayarjavi/juno#50](https://github.com/khashayarjavi/juno/pull/50) (supersedes #49).
+Status (2026-11-10): **your ruling D-201 is built (D-202); review round 3 ended DO NOT MERGE and its two findings are fixed (D-203); round 4 and the merge gate are next.** `make verify: GREEN` locally on the D-203 fixes (1,336 unit, 118 container); `make mediated-e2e` 15/15 with the real Claude Code 2.1.322 (on the D-202 head). Draft PR [khashayarjavi/juno#50](https://github.com/khashayarjavi/juno/pull/50) (supersedes #49).
 - **Your ruling, recorded as D-201:** fix the class "enforcement state forgotten across a restart" in the shared session layer; verify the journal and its anchors at start and refuse to start if either fails; a restart property test for all three modes, shown failing on the old head; a tamper test; then round 3.
 - **What D-202 changes, in plain words.**
   - **Every service checks its whole journal before it starts.** After the start-up check, it verifies every record's chain and compares each record with the anchors held in `juno-anchors`. It refuses to start when an entry was changed, a record was rewritten, cut, deleted or planted, an anchor disagrees or carries another key's signature, or the anchors cannot be read.
@@ -17,10 +17,16 @@ Status (2026-11-10): **your ruling D-201 is built (D-202); review round 3 and th
   - A journal that no longer verifies stops the service from starting at all, a torn write after a power loss included. Recovery is by hand: a new, empty journal folder (the guide says how). Your Increment 6 ruling (a task with a broken journal is failed and recorded) still holds for a journal that breaks while the service runs.
   - Entries newer than the last anchor are not a failure (§3.4.1's interval); they are anchored at start, before anything is served.
   - A hook session's grants are read again from your grant files after a restart; they are not copied into the journal.
-- **The guide** (`docs/operator-setup.md`) now says what a restart does (Part G, Part H) and what to do when the service refuses to start. **The evidence document** lists two new proven properties (14, 15) and five new residuals (15 to 19).
+- **The guide** (`docs/operator-setup.md`) now says what a restart does (Part G, Part H) and what to do when the service refuses to start. **The evidence document** lists two new proven properties (14, 15) and seven new residuals (15 to 21).
+
+- **Review round 3 (PR #50, head 9eca196; CI run 42790024827): DO NOT MERGE.** Checks 1 to 4 and 6 PASS; 5, 7 and 8 FAIL, for two findings, both new and both fixed (D-203):
+  - A session that the once-a-minute background anchoring had stopped for good was stopped only in memory, so a restart let it run again. The stop is now written to the journal the moment it happens.
+  - When the journal's own record could not be anchored, JUNO threw an error instead of recording the failure and stopping sessions. It now records it, and every session stops.
+  - The restart property now also loses the anchor repository mid-run, in every mode. That found one more: after a task that could not start for lack of an anchor, the runner refused every later task until restarted. Fixed.
+  - Not a STOP: neither mechanism was fixed in an earlier round (CLAUDE.md §7 step 5).
 
 **Left, in order:**
-1. `make verify` green on the head, CI green, review round 3 (authorised by D-201; limit 5), the merge gate (CLAUDE.md §7 step 6).
+1. CI green on the head, review round 4 (limit 5, D-157), the merge gate (CLAUDE.md §7 step 6).
 2. Then Slice 1.5 is complete: STOP and report.
 
 ### Review history of PR #49 (superseded by this branch's PR)

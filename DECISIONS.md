@@ -2439,3 +2439,24 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   - A gateway call that was forwarded when the gateway was killed is in the journal as a call with no result.
 - Reason: D-201; D-193, D-194 (one mechanism for every mode); §3.4.1, §3.4.2, §3.4.5, §3.2, §5, §2.7.1 A4, §4.3; D-042, D-056, D-066, D-152; D8.
 
+## D-203 — Review round 3 on PR #50: a stop for good is journalled when it happens; a failed anchor of the journal's own record is journalled, not thrown (autopilot rulings)
+- Date: 2026-11-10
+- Status: Accepted (fixed with tests; the restart property extended)
+- Applies to: `packages/enforcement/src/session-layer.ts`; `packages/runner/src/runner.ts`; `packages/runner/test/restart.property.test.ts`, `entry-points.test.ts` (part E); `docs/evidence/slice-1.5.md`, `docs/operator-setup.md`, `docs/examples/session.example.json`
+- **Round 3** (fresh reviewer, the review prompt verbatim plus D-199's two document checks; PR #50 head 9eca196): **DO NOT MERGE.** Checks 1 to 4 and 6 PASS; checks 5, 7 and 8 FAIL, for two findings:
+  - **A.** A session the interval's background anchoring stopped for good was stopped in memory only; the mode journalled the stop at the session's next call. A restart in between let the session run again.
+  - **B.** When the journal's own record (D-202 item 3) could not be anchored, the layer threw instead of journalling `anchor_failed`; the background anchoring then ended without stopping any session, and a service's stop threw.
+- **Not a STOP (CLAUDE.md §7 step 5).** Both are new mechanisms inside the class the operator ruled on in D-201: A is a stop the layer never journalled (not the grant counts or admissions of D-200); B came with D-202's new record. Neither was fixed in an earlier round. Fixed with the most restrictive option, the property test extended, review continues (round 4 of 5).
+- Decision (autopilot rulings):
+  1. **The layer journals a stop at the moment it stops a session** (a `stopped` note in the session's record, with the reason), whoever stops it: a call, or the background anchoring. The journal is on the host and does not need the destination. A session rebuilt from its journal (any mode, `resume` and `restore`) is stopped if its record holds that note, or a mode's `state: failed` note for `anchor_unavailable`.
+  2. **The journal's own record is a record like any other for anchoring:** its failed anchor is journalled in it and answered, never thrown.
+  3. **When the journal's own record cannot be anchored, every session of the journal stops** (restrictive): that record names every record, so no session's history is fully off the host.
+  4. **If the background anchoring itself fails to run, every session stops** (fail-closed), instead of an unhandled error.
+  5. **Found by the extended property, in the own loop:** a task whose head could not be anchored at start was failed, but the runner still held it as its running task and refused every later task until it was restarted. The runner now frees itself when it fails such a task, as a restarted runner is free.
+- **Tests.**
+  - The restart property gains a step in each mode that loses the anchor destination while the interval's anchoring runs (hook, gateway) or while a task starts (own loop), and brings it back. With restarts at any points the decisions and the journal are still the same; the reach test checks a session really is stopped for its anchor in each mode. The anchoring interval in these runs is long, so that step alone decides when a head is copied, the same in both runs.
+  - `entry-points.test.ts` part E, for every mode: a failed background anchor is journalled in every record, the journal's own included; nothing is thrown, at the interval or when the service stops; every session is stopped and the stop is in its journal.
+- **Also from the round (documents):** the evidence document gains the residual on which anchor repository a service is given (it was in D-202 and missing there) and one on two services given one journal folder; the guide says a journal folder written before this change needs a new folder; the example session file names `/proc/sys/kernel/random/uuid` like the guide.
+- **Left as recorded residuals:** a hook session that cannot be rebuilt is denied every call, and an injected command from it is denied without an `integrity_floor` park of its own (no name map can be read for it). D-202 ruling 4 still waits for the operator's confirmation.
+- Reason: D-201, D-202; D-198 items 2 to 4; §3.4.1; CLAUDE.md §7 step 5; D8.
+

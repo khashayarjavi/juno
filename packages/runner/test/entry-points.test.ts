@@ -806,6 +806,23 @@ describe("D-198 E: every mode's journal is anchored through the shared session l
       expect(layer.session(id)?.stopped ?? "anchor_unavailable").toBe("anchor_unavailable");
     });
 
+    // proves §3.4.1 (D-198, D-203): when the interval's background anchoring finds the destination gone, the failure is
+    // journalled in every record it could not copy, the journal's own record included, nothing is thrown, and every
+    // session stops for good, with the stop in its journal (so a restart finds it)
+    it(`${entry.id}: a failed background anchor is journalled, the journal's own record included, and stops every session in the journal`, async () => {
+      const anchors = new MemoryAnchorSink();
+      const { layer, id } = await driver.drive(anchors, 3_600_000);
+      anchors.unreachable = "the destination is gone";
+      const failed = await layer.anchorPending();
+      expect(failed).toContain(layer.journalRecord);
+      expect(noteTypes(layer.root, layer.journalRecord)).toContain("anchor_failed");
+      expect(layer.sessions().map((session) => session.stopped)).toEqual(layer.sessions().map(() => "anchor_unavailable"));
+      expect(layer.sessions().length).toBeGreaterThan(0);
+      expect(noteTypes(layer.root, id)).toContain("stopped");
+      // A service's last act anchors what is pending: it answers what it could not copy, and does not throw either.
+      expect(await layer.close()).toContain(layer.journalRecord);
+    });
+
     // proves §3.4.1 (D-198): a session whose head cannot be anchored at admission is never run
     it(`${entry.id}: a session that cannot be anchored when it starts never runs a call`, async () => {
       const anchors = new MemoryAnchorSink();

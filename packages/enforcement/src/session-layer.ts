@@ -493,8 +493,13 @@ export class SessionLayer {
   /** A journal record outside any session (the runner's and registry's own records). */
   append(taskId: string, kind: EntryDraft["kind"], dataClass: DataClass, payload: unknown, options: RecordOptions): number {
     if (taskId === this.#indexId) throw new SessionLayerError("the journal's own record is written only by the session layer (D-202)");
+    return this.#write(taskId, kind, dataClass, payload, options);
+  }
+
+  /** Every journal write of this layer; the journal's own record is written only from inside the layer. */
+  #write(taskId: string, kind: EntryDraft["kind"], dataClass: DataClass, payload: unknown, options: RecordOptions): number {
     // D-202: a record is named in the journal's own record before its first entry is written.
-    if (!this.#known.has(taskId)) {
+    if (taskId !== this.#indexId && !this.#known.has(taskId)) {
       this.#journal.append(this.#indexId, { kind: "note", actor: LAYER_ACTOR, provider: null, data_class: INDEX_CLASS, cost: NO_COST }, encoder.encode(canonicalJson({ type: "record", task: taskId })));
       this.#written.set(this.#indexId, INDEX_CLASS);
       this.#known.add(taskId);
@@ -545,7 +550,8 @@ export class SessionLayer {
       }
     } catch (error: unknown) {
       const recordClass = dataClass ?? this.#written.get(recordId) ?? { sensitivity: "internal" as const, integrity: "derived" as const };
-      this.append(recordId, "note", recordClass, { type: "anchor_failed", seq: head.seq, head: head.hash, reason: error instanceof Error ? error.message : String(error) }, { actor: ANCHOR_ACTOR });
+      // The journal's own record is a record like any other here (D-203): its failed anchor is journalled in it.
+      this.#write(recordId, "note", recordClass, { type: "anchor_failed", seq: head.seq, head: head.hash, reason: error instanceof Error ? error.message : String(error) }, { actor: ANCHOR_ACTOR });
       return false;
     }
     this.#anchored.set(recordId, { seq: head.seq, at: now.getTime() });
@@ -575,15 +581,26 @@ export class SessionLayer {
     for (const recordId of [...this.#written.keys()]) {
       if (!(await this.anchorHead(recordId))) failed.push(recordId);
     }
-    for (const session of this.#sessions.values()) if (failed.includes(session.id)) session.stop("anchor_unavailable");
+    // §3.4.1: a session whose head cannot be anchored stops for good. The journal's own record names every record, so
+    // when it cannot be anchored no session's history is fully off the host, and every session stops (D-203).
+    const all = failed.includes(this.#indexId);
+    for (const session of this.#sessions.values()) if (all || failed.includes(session.id)) session.stop("anchor_unavailable");
     return failed;
+  }
+
+  /** The class a record's own notes are written at: that of its last entry. */
+  classOf(recordId: string): DataClass {
+    return this.#written.get(recordId) ?? INDEX_CLASS;
   }
 
   /** Starts anchoring every pending record once per interval, in the background; `close` stops it (D-198). */
   startAnchoring(): void {
     if (this.#timer !== null) return;
     this.#timer = setInterval(() => {
-      void this.anchorPending();
+      // Fail-closed (D-203): if the anchoring itself cannot run, no session goes on.
+      this.anchorPending().catch(() => {
+        for (const session of this.#sessions.values()) session.stop("anchor_unavailable");
+      });
     }, this.#anchoring.intervalMs);
     this.#timer.unref();
   }
@@ -616,8 +633,23 @@ export class SessionLayer {
     const session = new GovernedSession(this, taskId, this.mode, limits, state.admittedAt, { ...state.spent }, state.now ?? (() => this.now()));
     // D-201: the `anchoring` note is written once per session; a session whose journal already holds it does not write it again.
     if (this.#sessions.get(taskId)?.anchoringNoted === true || this.#noted(taskId)) session.noteAnchoring();
+    // D-203: a stop for good is for good; it is in the journal, and a session rebuilt from it is still stopped.
+    const stopped = this.#sessions.get(taskId)?.stopped ?? this.#stoppedIn(taskId);
+    if (stopped !== null) session.restoreStop(stopped);
     this.#sessions.set(taskId, session);
     return session;
+  }
+
+  /** The stop for good a record journals (`stopped`, or a mode's `state: failed` for `anchor_unavailable`), or null. */
+  #stoppedIn(taskId: string): string | null {
+    for (const { entry, payload } of this.#recovered.get(taskId)?.entries ?? []) {
+      if (entry.kind !== "note") continue;
+      const type = field(payload, "type");
+      const reason = field(payload, "reason");
+      if (type === "stopped" && typeof reason === "string") return reason;
+      if (type === "state" && field(payload, "to") === "failed" && reason === "anchor_unavailable") return "anchor_unavailable";
+    }
+    return null;
   }
 
   #noted(taskId: string): boolean {
@@ -633,7 +665,7 @@ export class SessionLayer {
    *     every call parked before the boundary (a park that names no judged call, other than `budget_exceeded` and
    *     `rejection_limit`, which count nothing, and an injected command parked before the call was counted, D-152);
    *   - the consecutive rejections (§2.7.1 A4): each rejection since the last park or the last call that proceeded;
-   *   - a stop for good (`anchor_unavailable`, §3.4.1).
+   *   - a stop for good (`anchor_unavailable`, §3.4.1), which the layer journals at the moment it stops the session.
    * Answers the session and its record, from which the mode rebuilds what only it knows (its floor, its pending calls).
    * Null when the journal holds no admission under this id.
    */
@@ -645,7 +677,7 @@ export class SessionLayer {
     if (!Number.isFinite(admittedAt)) throw new SessionLayerError(`the admission of ${taskId} records no admission time, so its limits cannot be rebuilt (D-201)`);
     let turns = 0;
     let rejections: RejectionMark[] = [];
-    let stopped: string | null = null;
+    const stopped = this.#stoppedIn(taskId);
     for (const { entry, payload } of record.entries) {
       const judged = field(payload, "call_seq") !== undefined && field(payload, "call_seq") !== null;
       if (entry.kind === "capability_call") {
@@ -663,13 +695,13 @@ export class SessionLayer {
         else if (type === "rejection" && !judged) {
           turns += 1;
           rejections.push({ kind: "call", seq: entry.seq });
-        } else if (type === "state" && field(payload, "to") === "failed" && field(payload, "reason") === "anchor_unavailable") stopped = "anchor_unavailable";
+        }
       }
     }
     const session = new GovernedSession(this, taskId, this.mode, limits, admittedAt, { ...NO_SPEND, turns }, options.now ?? (() => this.now()));
     session.setRejections(rejections);
     if (this.#noted(taskId)) session.noteAnchoring();
-    if (stopped !== null) session.stop(stopped);
+    if (stopped !== null) session.restoreStop(stopped);
     this.#sessions.set(taskId, session);
     return { session, record };
   }
@@ -783,6 +815,15 @@ export class GovernedSession {
 
   /** Stops the session for good: no call starts again (a session whose head cannot be anchored stops, §3.4.1, D-198). */
   stop(reason: string): void {
+    if (this.#stopped !== null) return;
+    this.#stopped = reason;
+    // D-203: the stop is journalled when it happens, whoever stops the session (a call, or the interval's anchoring in
+    // the background), so a restart finds it. The journal is on this host; it does not need the destination.
+    this.#layer.append(this.id, "note", this.#layer.classOf(this.id), { type: "stopped", reason }, { actor: ANCHOR_ACTOR });
+  }
+
+  /** The stop the journal already records (a session rebuilt from it); journals nothing. */
+  restoreStop(reason: string): void {
     this.#stopped ??= reason;
   }
 

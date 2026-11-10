@@ -112,6 +112,8 @@ Each is a limit JUNO states rather than hides. Where a decision number is given,
 17. **A refused start is repaired by hand:** a new, empty journal folder, where every count starts again by your own visible act (`docs/operator-setup.md`, "When something goes wrong").
 18. **No command revokes a grant in a running service.** You withdraw a grant by removing or re-signing its file and restarting the service.
 19. **A gateway call in flight when the gateway is killed** is in the journal as a call with no result.
+20. **Which anchor repository a service uses is your configuration.** Pointing a service at a different repository is trusted like your account; JUNO compares the journal with the repository it is given.
+21. **Nothing stops two services being given one journal folder.** The guide gives each its own; two on one folder would both write the journal's own record.
 
 **Closed during Slice 1.5** (recorded earlier as residuals, now fixed): a restarted hook or gateway service forgetting grant use and admitted sessions (D-200, closed by D-201 and D-202: every service verifies its journal against its anchors at start and rebuilds from it); two services of one runner pushing anchors to the same repository at once (D-199); symlinks in scope checks (D-047, closed by D-113); hard links (D-156, closed by D-157); an anchor committed but never pushed being counted after a restart (D-126, closed by D-198); hook and gateway journals that were never anchored (closed by D-198).
 
