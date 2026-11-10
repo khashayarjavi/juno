@@ -3,7 +3,7 @@
 ## Current increment
 **Slice 1.5 — finishing: the operator setup document, the evidence document, and the restart fix you ruled on (D-201)** (D-199, D-201, D-202). Increment 6, the last increment of the plan, is merged (PR #48). Branch `claude/gracious-euler-mt05yr` (this session's only pushable branch); it carries PR #49's commits from `claude/practical-volta-hjzfmz` unchanged, and its PR supersedes PR #49. Spec v0.6.1. No objection open.
 
-Status (2026-11-10): **your ruling D-201 is built (D-202); review round 3 and the merge gate are next.** `make verify` is running on this head as this is written; its result is recorded here before the review starts.
+Status (2026-11-10): **your ruling D-201 is built (D-202); review round 3 and the merge gate are next.** `make verify: GREEN` locally (1,332 unit, 118 container); `make mediated-e2e` 15/15 with the real Claude Code. Draft PR [khashayarjavi/juno#50](https://github.com/khashayarjavi/juno/pull/50) (supersedes #49).
 - **Your ruling, recorded as D-201:** fix the class "enforcement state forgotten across a restart" in the shared session layer; verify the journal and its anchors at start and refuse to start if either fails; a restart property test for all three modes, shown failing on the old head; a tamper test; then round 3.
 - **What D-202 changes, in plain words.**
   - **Every service checks its whole journal before it starts.** After the start-up check, it verifies every record's chain and compares each record with the anchors held in `juno-anchors`. It refuses to start when an entry was changed, a record was rewritten, cut, deleted or planted, an anchor disagrees or carries another key's signature, or the anchors cannot be read.
