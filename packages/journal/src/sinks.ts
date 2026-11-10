@@ -19,6 +19,11 @@ export interface AnchorSink {
   append(anchor: Anchor): Promise<void>;
   /** The stored anchors of a task (by its digest), as raw JSON values: the checker parses and verifies them. */
   list(task: string): Promise<unknown[]>;
+  /**
+   * The stored anchors of several tasks, read from the destination once (a service's start-up check of its whole
+   * journal, D-202). A destination that cannot be reached fails the whole listing.
+   */
+  listMany(tasks: readonly string[]): Promise<Map<string, unknown[]>>;
 }
 
 export class AnchorSinkError extends Error {
@@ -109,6 +114,12 @@ export class ContainerAnchorSink implements AnchorSink {
     if (result.exitCode !== 0) throw new AnchorSinkError(`the anchor store did not list: ${result.stderr.toString("utf8").trim()}`);
     return parseList(result.stdout.toString("utf8"));
   }
+
+  async listMany(tasks: readonly string[]): Promise<Map<string, unknown[]>> {
+    const listed = new Map<string, unknown[]>();
+    for (const task of tasks) listed.set(task, await this.list(task));
+    return listed;
+  }
 }
 
 async function outbound(args: readonly string[], file = "docker"): Promise<{ exitCode: number | null; stdout: Buffer; stderr: Buffer }> {
@@ -197,5 +208,12 @@ export class GitAnchorSink implements AnchorSink {
     await this.#run(["pull", "--rebase", "--quiet"]);
     await this.#push();
     return readAnchorDirectory(this.#clone, task);
+  }
+
+  /** One pull and one push, then every task is read from the clone, which now holds what the destination holds. */
+  async listMany(tasks: readonly string[]): Promise<Map<string, unknown[]>> {
+    await this.#run(["pull", "--rebase", "--quiet"]);
+    await this.#push();
+    return new Map(tasks.map((task) => [task, readAnchorDirectory(this.#clone, task)]));
   }
 }

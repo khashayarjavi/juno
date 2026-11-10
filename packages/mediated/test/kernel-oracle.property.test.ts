@@ -58,7 +58,7 @@ let runs = 0;
 const rank = (level: Sensitivity): number => sensitivityRank(level);
 const identity = (stat: Stats): string => `${String(stat.dev)}:${String(stat.ino)}`;
 
-beforeAll(() => {
+beforeAll(async () => {
   box = realpathSync(mkdtempSync(join(tmpdir(), "juno-kernel-oracle-")));
   state = mkdtempSync(join(tmpdir(), "juno-kernel-oracle-state-"));
   work = join(box, "work");
@@ -71,7 +71,7 @@ beforeAll(() => {
   writeFileSync(join(work, "other", "plain.txt"), "unregistered\n");
   writeFileSync(join(work, "other", "pub", "readme.txt"), "public\n");
   writeFileSync(join(box, "outside", "host.txt"), "outside the workspace\n");
-  layer = openTestLayer("hook", { journal: join(state, "journal"), workspaces: [work], state: [{ what: "JUNO's state", path: state, kind: "path" }] });
+  layer = await openTestLayer("hook", { journal: join(state, "journal"), workspaces: [work], state: [{ what: "JUNO's state", path: state, kind: "path" }] });
   journal = { root: layer.root };
   const grants = new GrantStore(TEST_ANCHOR);
   // Every declared path source is in scope (§5.4 check 4 refuses a grant beyond them), so step 4 passes for every read
@@ -508,7 +508,7 @@ describe("D-178: a case-folded folder, against the kernel where it can fold case
       // D-178: the check and admission refuse this workspace.
       const io = systemFilesystemIo();
       expect((await caseFoldingRefusals([{ what: "the workspace", path: cfWork }], io)).join(" ")).toMatch(/case-folding attribute|without regard to case/);
-      const folded = new MediatedSessions({ layer: openTestLayer("hook", { journal: join(state, "journal-casefold"), workspaces: [cfWork] }), grants: new GrantStore(TEST_ANCHOR), paths: new PathMap([cfWork]), resolver: new HostPathResolver(cfWork), view: new Workspace(execFileScript(process.execPath, []), "/work", cfWork), filesystem: io, clock: () => T0 });
+      const folded = new MediatedSessions({ layer: await openTestLayer("hook", { journal: join(state, "journal-casefold"), workspaces: [cfWork] }), grants: new GrantStore(TEST_ANCHOR), paths: new PathMap([cfWork]), resolver: new HostPathResolver(cfWork), view: new Workspace(execFileScript(process.execPath, []), "/work", cfWork), filesystem: io, clock: () => T0 });
       const admitted = await folded.admit({ session_id: "casefold-real", principal: PRINCIPAL, attendance: "gated", ttl: 60_000, grants: [], budget: { tool_calls: 1, wall_clock_ms: 60_000 }, unmetered_accepted: true, provider_clearance: "secret", sources: SOURCES, name_map: NAME_MAP });
       expect(admitted).toMatchObject({ admitted: false });
       // D-182, past admission: every case spelling of every place, classified by JUNO, against what the kernel opens.

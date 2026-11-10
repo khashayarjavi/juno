@@ -7,8 +7,8 @@ import { toProposal } from "../src/translate.js";
 import { CAT, type Harness, OPERATOR_CRITERION, PROFILE, PROJECT_SOURCE, SHELL_RUN_FILE, grant, harness, request, standInAdapter } from "./helpers.js";
 
 let h: Harness;
-beforeEach(() => {
-  h = harness();
+beforeEach(async () => {
+  h = await harness();
 });
 afterEach(() => {
   h.cleanup();

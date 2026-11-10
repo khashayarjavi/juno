@@ -11,8 +11,8 @@ import { HIDDEN_VALUE, MAX_UNREAD_CHARS, REGISTRY_RECORD, RUNNER_ACTOR, Runner, 
 import { CAT, DAY_MS, type Harness, OPERATOR_CRITERION, PRINCIPAL, PROFILE, SHELL_RUN_FILE, harness, request, shellRun, standInAdapter, turn, writeWork } from "./helpers.js";
 
 let h: Harness;
-beforeEach(() => {
-  h = harness();
+beforeEach(async () => {
+  h = await harness();
 });
 afterEach(() => {
   h.cleanup();
@@ -241,7 +241,7 @@ describe("verification and closure (§3.4.4, §6.1)", () => {
       },
     };
     h.cleanup();
-    h = harness(breaking);
+    h = await harness(breaking);
     const { runner, provider } = h.runner([
       () => {
         generation = "after";
@@ -435,7 +435,7 @@ describe("the turn loop (build plan Increment 5)", () => {
       }
     }
     h.cleanup();
-    h = harness();
+    h = await harness();
     const registry = new NoInvoke();
     expect(registry.register(loadRegistryEntry(SHELL_RUN_FILE), [standInAdapter]).registered).toBe(true);
     const { runner } = h.runner([turn([shellRun(["notes.txt"])]), turn([])], { registry });
@@ -473,7 +473,7 @@ describe("one runner per journal, and quarantines that survive a restart (D-025,
       },
     };
     h.cleanup();
-    h = harness(evasive);
+    h = await harness(evasive);
     const { runner } = h.runner([turn([shellRun(["notes.txt"])])]);
     admitted(runner);
     expect((await runner.run("task-1")).reason).toBe("adapter_quarantined");
@@ -609,7 +609,7 @@ describe("Slice 1.2: what the executing model is offered (D-075), continued", ()
     // A constant fixed for the verifier only is never offered to the executing model, nor resolvable by it.
     const verifierOnly = { ...withCriterion, constants: { ...withCriterion.constants, secret: { value: "done.txt", actors: ["verifier"] } } };
     h.cleanup();
-    h = harness();
+    h = await harness();
     const second = h.runner([turn([shellRun([{ slot: "secret" }])]), turn()]);
     admitted(second.runner, verifierOnly);
     await second.runner.run("task-1");
@@ -677,7 +677,7 @@ describe("Slice 1.2: an unreadable answer is journaled (D-077)", () => {
     expect(JSON.stringify(provider.requests[1]?.context)).toContain("the runner could not read that turn");
 
     h.cleanup();
-    h = harness();
+    h = await harness();
     const { runner: tight } = h.runner([refusal, refusal, refusal]);
     admitted(tight, { budget: { tokens: 1_000_000, currency: 100, wall_clock_ms: 60 * 60 * 1000, turns: 2 } });
     expect(await tight.run("task-1")).toMatchObject({ state: "parked", reason: "budget_exceeded" });

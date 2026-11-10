@@ -11,8 +11,8 @@ import { type Harness, OPERATOR_CRITERION, harness, request, shellRun, turn, wri
  */
 
 let h: Harness;
-beforeEach(() => {
-  h = harness();
+beforeEach(async () => {
+  h = await harness();
 });
 afterEach(() => {
   h.cleanup();

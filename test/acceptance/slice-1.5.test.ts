@@ -309,7 +309,7 @@ describe("§4.3 acceptance test 4 (modes A and C): a forged grant is not honoure
   // proves §4.3 test 4 / §3.2 in mode A: the runner, its workloads in containers, honours none of the three forgeries:
   // admission is refused and journalled, and nothing runs
   it("mode A: refuses each forged grant at admission, and the chain agrees with its anchors", async () => {
-    const layer = openTestLayer("runner", { journal: join(state, "journal-t4a"), workspaces: [], anchoring: anchoring() });
+    const layer = await openTestLayer("runner", { journal: join(state, "journal-t4a"), workspaces: [], anchoring: anchoring() });
     const registry = new CapabilityRegistry();
     const definition = RegistryEntry.parse(JSON.parse(readFileSync(fileURLToPath(new URL("../../packages/registry/definitions/shell.run.json", import.meta.url)), "utf8")));
     expect(registry.register(definition, [new WorkloadExecFileAdapter({ composeFile, project, service: "workload" })])).toMatchObject({ registered: true });

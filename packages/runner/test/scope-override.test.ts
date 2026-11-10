@@ -10,8 +10,8 @@ import { type Harness, grant, harness, request, shellRun, turn } from "./helpers
  */
 
 let h: Harness;
-beforeEach(() => {
-  h = harness();
+beforeEach(async () => {
+  h = await harness();
   // The task's own grant reaches only the inbox, so notes.txt in the project is outside its scope.
   h.grants.add(grant({ id: "grant-inbox", resource_scope: [{ kind: "path", prefix: "/work/project/inbox" }] }));
 });

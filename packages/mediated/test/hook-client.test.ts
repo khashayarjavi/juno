@@ -132,7 +132,7 @@ describe("the hook service and client together (§4.3 mode C, D-142)", () => {
         revoked_at: null,
       }),
     );
-    const sessions = new MediatedSessions({ layer: openTestLayer("hook", { journal: join(dir, "journal"), workspaces: [join(dir, "work")], state: [{ what: "the hook socket", path: socketPath, kind: "socket" }] }), grants, paths: new PathMap([join(dir, "work")]), resolver: new HostPathResolver(join(dir, "work")), view: new Workspace(execFileScript(process.execPath, []), "/work", join(dir, "work")), filesystem: systemFilesystemIo() });
+    const sessions = new MediatedSessions({ layer: await openTestLayer("hook", { journal: join(dir, "journal"), workspaces: [join(dir, "work")], state: [{ what: "the hook socket", path: socketPath, kind: "socket" }] }), grants, paths: new PathMap([join(dir, "work")]), resolver: new HostPathResolver(join(dir, "work")), view: new Workspace(execFileScript(process.execPath, []), "/work", join(dir, "work")), filesystem: systemFilesystemIo() });
     await sessions.admit({
       session_id: "s-1",
       principal: "alireza",

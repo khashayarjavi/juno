@@ -279,7 +279,7 @@ export async function runScenario(scenario: Scenario, index: number, groq: GroqP
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(dir, { recursive: true });
   const journalRoot = join(dir, "journal");
-  const layer = openTestLayer("runner", { journal: journalRoot, workspaces: [] });
+  const layer = await openTestLayer("runner", { journal: journalRoot, workspaces: [] });
   const started = new Date();
   await freshWork(scenario.files);
   const runners: Runner[] = [];

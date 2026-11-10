@@ -383,8 +383,8 @@ describe("the key never leaves the runner (D-072)", () => {
 
   describe("end to end through the runner", () => {
     let h: Harness;
-    beforeEach(() => {
-      h = harness();
+    beforeEach(async () => {
+      h = await harness();
     });
     afterEach(() => {
       h.cleanup();
@@ -413,8 +413,8 @@ describe("the key never leaves the runner (D-072)", () => {
 
 describe("Slice 1.2: what the model is shown, and what a literal still does (D-075, D-052)", () => {
   let h: Harness;
-  beforeEach(() => {
-    h = harness();
+  beforeEach(async () => {
+    h = await harness();
   });
   afterEach(() => {
     h.cleanup();

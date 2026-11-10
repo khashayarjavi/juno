@@ -42,7 +42,7 @@ writeFileSync("/opt/fake-claude/claude", "#!/usr/local/bin/node\nprocess.stdout.
 // §3.4.1 (D-198): the service anchors its journal. This image has no git, so a root-owned stand-in (fake-git.mjs) pushes
 // to a stand-in destination beside the clone; the start-up check judges it like the real /usr/bin/git.
 mkdirSync("/opt/fake-git", { mode: 0o755 });
-writeFileSync("/opt/fake-git/git", readFileSync("/t/fake-git.mjs", "utf8").replace(/^/, "#!/usr/local/bin/node\n"), { mode: 0o755 });
+writeFileSync("/opt/fake-git/git", readFileSync("/t/fake-git.mjs", "utf8"), { mode: 0o755 });
 chmodSync("/opt/fake-git/git", 0o755);
 
 // The trust anchor: public, root's.

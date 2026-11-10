@@ -69,7 +69,7 @@ const lastResult = (request: ProviderRequest): { result_seq: number; stdout: str
 const hostDir = mkdtempSync(join(tmpdir(), "juno-acceptance-"));
 const journalRoot = join(hostDir, "journal");
 // The runner on the host, its workloads in containers (D-065): no workspace on the host for the start-up check to judge.
-const layer = openTestLayer("runner", { journal: journalRoot, workspaces: [] });
+const layer = await openTestLayer("runner", { journal: journalRoot, workspaces: [] });
 const clock = { now: new Date() };
 const T0 = clock.now.getTime();
 

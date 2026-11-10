@@ -95,7 +95,7 @@ const entries = (g: McpGateway) => readTrajectory(journal.root, g.taskId ?? "").
   return { kind: entry.kind, data_class: entry.data_class, ...(blob.status === "present" ? (JSON.parse(new TextDecoder().decode(blob.bytes)) as Record<string, unknown>) : {}) };
 });
 
-beforeEach(() => {
+beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "juno-gateway-"));
   work = join(dir, "work");
   record = join(dir, "server-record.jsonl");
@@ -104,7 +104,7 @@ beforeEach(() => {
   writeFileSync(join(work, "project", "notes.txt"), "the notes\n");
   writeFileSync(join(work, "project", "secrets", "key.txt"), "the key\n");
   writeFileSync(join(work, "other", "x.txt"), "elsewhere\n");
-  layer = openTestLayer("gateway", { journal: join(dir, "journal"), workspaces: [work] });
+  layer = await openTestLayer("gateway", { journal: join(dir, "journal"), workspaces: [work] });
   journal = { root: layer.root };
   grants = new GrantStore(TEST_ANCHOR);
   grants.add(signed(grantRecord("grant-gw")));
@@ -349,18 +349,19 @@ describe("D-192: §2.7.1 A4 and §4.3 budgets in gateway mode, and JUNO's state 
   // refuses a workspace that check did not judge.)
   it("refuses to start when JUNO's state overlaps the workspace", async () => {
     const { symlinkSync } = await import("node:fs");
-    const make = (journalRoot: string, state: readonly string[] = []): McpGateway =>
-      new McpGateway({ layer: openTestLayer("gateway", { journal: journalRoot, workspaces: [work], state: state.map((path) => ({ what: "JUNO's state", path, kind: "path" as const })) }), grants, resolver: new HostPathResolver(work), view: new Workspace(execFileScript(process.execPath, []), "/work", work), filesystem: systemFilesystemIo(), upstream: () => { throw new Error("unused"); } });
-    expect(() => make(join(work, "project", ".journal"))).toThrow(StartupRefused);
-    expect(() => make(join(dir, "journal-ok"), [join(work, "project", "grant.json")])).toThrow(StartupRefused);
+    const make = async (journalRoot: string, state: readonly string[] = []): Promise<McpGateway> =>
+      new McpGateway({ layer: await openTestLayer("gateway", { journal: journalRoot, workspaces: [work], state: state.map((path) => ({ what: "JUNO's state", path, kind: "path" as const })) }), grants, resolver: new HostPathResolver(work), view: new Workspace(execFileScript(process.execPath, []), "/work", work), filesystem: systemFilesystemIo(), upstream: () => { throw new Error("unused"); } });
+    await expect(make(join(work, "project", ".journal"))).rejects.toThrow(StartupRefused);
+    await expect(make(join(dir, "journal-ok"), [join(work, "project", "grant.json")])).rejects.toThrow(StartupRefused);
     // The workspace inside JUNO's state is refused too.
-    expect(() => make(join(dir, "journal-ok"), [dir])).toThrow(StartupRefused);
+    await expect(make(join(dir, "journal-ok"), [dir])).rejects.toThrow(StartupRefused);
     // A journal named outside the workspace that resolves into it is refused.
     symlinkSync(join(work, "project"), join(dir, "looks-outside"));
-    expect(() => make(join(dir, "looks-outside", "journal"))).toThrow(StartupRefused);
+    await expect(make(join(dir, "looks-outside", "journal"))).rejects.toThrow(StartupRefused);
     // A gateway whose workspace the check did not judge is refused.
-    expect(() => new McpGateway({ layer: openTestLayer("gateway", { journal: join(dir, "journal-other"), workspaces: [join(dir, "elsewhere")] }), grants, resolver: new HostPathResolver(work), view: new Workspace(execFileScript(process.execPath, []), "/work", work), filesystem: systemFilesystemIo(), upstream: () => { throw new Error("unused"); } })).toThrow(/not a workspace the start-up check judged/);
+    const elsewhere = await openTestLayer("gateway", { journal: join(dir, "journal-other"), workspaces: [join(dir, "elsewhere")] });
+    expect(() => new McpGateway({ layer: elsewhere, grants, resolver: new HostPathResolver(work), view: new Workspace(execFileScript(process.execPath, []), "/work", work), filesystem: systemFilesystemIo(), upstream: () => { throw new Error("unused"); } })).toThrow(/not a workspace the start-up check judged/);
     // Positive control: state beside the workspace is accepted.
-    expect(() => make(join(dir, "journal-ok"), [join(dir, "session.json")])).not.toThrow();
+    await expect(make(join(dir, "journal-ok"), [join(dir, "session.json")])).resolves.toBeInstanceOf(McpGateway);
   });
 });

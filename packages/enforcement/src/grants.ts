@@ -92,6 +92,25 @@ export class GrantStore {
     return this.#used.get(id) ?? 0;
   }
 
+  /**
+   * Sets every grant's use count from the journal (D-202): the shared session layer calls it once, when a service
+   * starts, with the calls the journal shows each grant authorized. A count is kept by grant id, whether or not the
+   * grant is stored yet, so a grant added later starts from what it already used. The store must hold no charge yet:
+   * the journal is the only count.
+   */
+  restoreUse(counts: ReadonlyMap<string, number>): void {
+    if (this.#used.size > 0) throw new GrantStoreError("the grant store already has charges; every count is rebuilt from the journal when a service starts (D-202)");
+    for (const [id, count] of counts) {
+      if (!Number.isSafeInteger(count) || count < 0) throw new GrantStoreError(`grant ${id} has no usable count in the journal`);
+      if (count > 0) this.#used.set(id, count);
+    }
+  }
+
+  /** Every grant's use count, by grant id. */
+  use(): ReadonlyMap<string, number> {
+    return new Map(this.#used);
+  }
+
   /** Charges one authorized call to a grant. */
   charge(id: string): void {
     if (!this.#grants.has(id)) throw new GrantStoreError(`grant ${id} is not stored`);

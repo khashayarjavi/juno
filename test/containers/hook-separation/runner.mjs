@@ -16,7 +16,7 @@ mkdirSync(`${state}/grants`, { mode: 0o700 });
 mkdirSync(`${state}/checkpoints`, { mode: 0o700 });
 writeFileSync(`${state}/grants/grant-cc.json`, "{\"id\":\"grant-cc\"}\n", { mode: 0o600 });
 // The shared start-up check, on the real host as the runner (uid 1000), then the shared session layer (D-194).
-const layer = SessionLayer.open({
+const layer = await SessionLayer.open({
   service: "hook",
   journal: `${state}/journal`,
   workspaces: ["/srv/work"],

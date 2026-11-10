@@ -1,0 +1,78 @@
+ RUN  v5.0.5 <checkout of 2bbf936>
+ ❯ packages/runner/test/restart.property.test.ts (4 tests | 2 failed) 56706ms
+   ❯ operator ruling D-201: a restart forgets nothing JUNO enforces (4)
+     × hook mode: the same decisions and the same journal with restarts at any points 3442ms
+     × gateway mode: the same decisions and the same journal with restarts at any points 4410ms
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+ FAIL  packages/runner/test/restart.property.test.ts > operator ruling D-201: a restart forgets nothing JUNO enforces > hook mode: the same decisions and the same journal with restarts at any points
+Error: Property failed after 1 tests
+{ seed: 20261110, path: "0:0:0:0:0:0:2:0:0", endOnFailure: true }
+Counterexample: [{"steps":[0,0,0,0],"restarts":[13]}]
+Shrunk 8 time(s)
+Hint: Enable verbose mode in order to have the list of all failing values encountered during the run
+ ❯ buildError node_modules/fast-check/lib/fast-check.js:2469:16
+ ❯ asyncThrowIfFailed node_modules/fast-check/lib/fast-check.js:2481:8
+Caused by: AssertionError: expected [ { admitted: true, …(1) }, …(4) ] to deeply equal [ { admitted: true, …(1) }, …(4) ]
+- Expected
++ Received
+@@ -2,14 +2,12 @@
+    {
+      "admitted": true,
+      "task_id": "session-session-a",
+    },
+    {
+-     "admitted": false,
+-     "failures": [
+-       "session session-a is already admitted",
+-     ],
++     "admitted": true,
++     "task_id": "session-session-a",
+    },
+    {
+      "admitted": false,
+      "failures": [
+        "session session-a is already admitted",
+ ❯ sameWithAndWithoutRestarts packages/runner/test/restart.property.test.ts:95:31
+ ❯ AsyncProperty.run node_modules/fast-check/lib/fast-check.js:1217:19
+ ❯ asyncPropertyExecution node_modules/fast-check/lib/fast-check.js:2564:14
+ ❯ asyncRunIt node_modules/fast-check/lib/fast-check.js:2557:15
+ ❯ packages/runner/test/restart.property.test.ts:409:5
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+ FAIL  packages/runner/test/restart.property.test.ts > operator ruling D-201: a restart forgets nothing JUNO enforces > gateway mode: the same decisions and the same journal with restarts at any points
+Error: Property failed after 1 tests
+{ seed: 20261110, path: "0:0:0:0:0:0:0", endOnFailure: true }
+Counterexample: [{"steps":[0,0,0,0],"restarts":[0]}]
+Shrunk 6 time(s)
+Hint: Enable verbose mode in order to have the list of all failing values encountered during the run
+ ❯ buildError node_modules/fast-check/lib/fast-check.js:2469:16
+ ❯ asyncThrowIfFailed node_modules/fast-check/lib/fast-check.js:2481:8
+Caused by: AssertionError: expected [ [ { …(11) }, { …(11) }, …(10) ] ] to deeply equal [ [ { …(11) }, { …(11) }, …(8) ] ]
+- Expected
++ Received
+@@ -221,10 +221,232 @@
+        "seq": 1,
+        "task_id": "gateway-gw-1",
+        "timestamp": "2026-11-10T09:00:00.000Z",
+      },
+      {
++       "actor": "juno.gateway",
++       "cost": {
++         "currency": 0,
++         "duration_ms": 0,
++         "tokens_cached": 0,
++         "tokens_in": 0,
++         "tokens_out": 0,
++       },
++       "data_class": {
++         "integrity": "operator",
++         "sensitivity": "internal",
++       },
++       "hash_prev": "sha256:16fa89ead6df7369493ea88221044a55f275828ec59562d4ceca018ffff261e2",
++       "kind": "note",
++       "payload": {
++         "admitted_at": "2026-11-10T09:00:00.000Z",
++         "mode": "gateway",
++         "outcome": "admitted",
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+ Test Files  1 failed (1)
+      Tests  2 failed | 2 passed (4)

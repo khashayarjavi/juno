@@ -86,7 +86,7 @@ const PROJECT_SOURCE = { id: "project", selector: { kind: "path", prefix: "/work
 async function startGateway(): Promise<string> {
   const id = `e2e-${randomUUID().slice(0, 8)}`;
   const gateway = new McpGateway({
-    layer: openTestLayer("gateway", { journal: join(host, "journal"), workspaces: [workspace], state: [{ what: "the gateway socket", path: gatewaySocket, kind: "socket" }] }),
+    layer: await openTestLayer("gateway", { journal: join(host, "journal"), workspaces: [workspace], state: [{ what: "the gateway socket", path: gatewaySocket, kind: "socket" }] }),
     grants,
     resolver: new HostPathResolver(workspace),
     view: new Workspace(execFileScript(process.execPath, []), "/work", workspace),
@@ -172,7 +172,7 @@ beforeAll(async () => {
   chmodSync(sockets, 0o2750);
   chmodSync(managed, 0o755);
   // The shared start-up check judges JUNO's state against the host workspace and the name Claude Code uses for it (D-194).
-  layer = openTestLayer("hook", { journal: join(host, "journal"), workspaces: [workspace, "/workspace"], state: [{ what: "the hook socket", path: hookSocket, kind: "socket" }, { what: "Claude Code's home", path: home, kind: "path" }] });
+  layer = await openTestLayer("hook", { journal: join(host, "journal"), workspaces: [workspace, "/workspace"], state: [{ what: "the hook socket", path: hookSocket, kind: "socket" }, { what: "Claude Code's home", path: home, kind: "path" }] });
   journal = { root: layer.root };
   grants = new GrantStore(TEST_ANCHOR);
   grants.add(grant("grant-cc", ["cc.read"]));

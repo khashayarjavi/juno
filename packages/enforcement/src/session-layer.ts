@@ -1,15 +1,21 @@
+import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
-import { type Budget, type DataClass, pathWithin } from "../../contracts/src/index.js";
+import { type Budget, type DataClass, type TrajectoryEntry, pathWithin } from "../../contracts/src/index.js";
 import {
   AnchorExistsError,
   type AnchorSink,
+  type ChainVerdict,
   type EntryDraft,
   type JournalKey,
   JournalWriter,
   type JournalWriterOptions,
+  type StoredRecord,
   anchorOf,
   canonicalJson,
+  checkAnchors,
   contentAddress,
+  listRecords,
+  readPayload,
   sameKey,
   taskDigest,
   verifyTrajectory,
@@ -34,7 +40,42 @@ import { type HostIo, type ServiceName, type StartupSpec, StartupRefused, laterF
  *     overridable, whatever the mode asks).
  * Mode classes take a `SessionLayer` and refuse anything else (`SessionLayer.require`), and check that the workspaces,
  * state and sockets they use are the ones the start-up check judged.
+ *
+ * Nothing is forgotten across a restart (operator ruling D-201; DECISIONS.md D-202). `open`, after the start-up check and
+ * before it hands out the layer, verifies every record of the journal (§3.4.2) and compares each with the anchors held
+ * off the host (§3.4.1); a record that does not verify, one the journal's own record does not name, one that contradicts
+ * an anchor, anchors of a record the journal no longer holds, or a destination that cannot be read, refuses the start.
+ * Only then is state rebuilt from the journal, here, for every mode: each grant's use count (`requireGrants`), every
+ * admitted id (`admit` refuses it again), and each session's spend, consecutive rejections and stop (`resume`).
  */
+
+/** The reserved prefix of JUNO's own records (the runner's `RESERVED_ID_PREFIX`); no task or session id may start with it. */
+const OWN_RECORD_PREFIX = "juno.";
+
+/**
+ * The id of a journal's own record (D-202): one note per record the journal ever held, written before that record's
+ * first entry, chained and anchored like every record. It is named after the journal's folder, so two journals that
+ * anchor to one repository never share it. At start, a record the journal holds that it does not name was not written
+ * by JUNO, and anchors of a record it names that the journal no longer holds show a deleted record.
+ */
+export function journalRecordId(journalRoot: string): string {
+  return `${OWN_RECORD_PREFIX}journal.${createHash("sha256").update(realOrGiven(journalRoot), "utf8").digest("hex").slice(0, 32)}`;
+}
+
+/** One journal entry with its payload as the journal stores it (parsed JSON), or `undefined` when it cannot be read. */
+export type RecoveredEntry = { readonly entry: TrajectoryEntry; readonly payload: unknown };
+
+/** One record of the journal as it stood, verified, when the service started. */
+export type RecoveredRecord = {
+  readonly id: string;
+  readonly entries: readonly RecoveredEntry[];
+  /** The payload of the note that admitted it, or null for a record that admitted nothing (a refused admission, JUNO's own records). */
+  readonly admission: Readonly<Record<string, unknown>> | null;
+};
+
+function field(payload: unknown, name: string): unknown {
+  return typeof payload === "object" && payload !== null ? (payload as Record<string, unknown>)[name] : undefined;
+}
 
 export const BUDGET_AXES = ["tokens", "currency", "wall_clock_ms", "turns"] as const;
 export type BudgetAxis = (typeof BUDGET_AXES)[number];
@@ -106,6 +147,10 @@ export type RejectionMark = { readonly kind: string; readonly seq: number | null
 
 const NO_COST = { tokens_in: 0, tokens_out: 0, tokens_cached: 0, currency: 0, duration_ms: 0 };
 const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+/** The actor of the journal's own record (D-202). */
+export const LAYER_ACTOR = "juno.session-layer";
+const INDEX_CLASS: DataClass = { sensitivity: "internal", integrity: "derived" };
 
 export type RecordOptions = { readonly actor: string; readonly provider?: string | null; readonly cost?: EntryDraft["cost"] };
 
@@ -135,6 +180,16 @@ export class SessionLayer {
   /** Anchoring runs one at a time, so two anchors of one record never race. */
   #anchorQueue: Promise<unknown> = Promise.resolve();
   #timer: ReturnType<typeof setInterval> | null = null;
+  /** This journal's own record (D-202). */
+  readonly #indexId: string;
+  /** Every record this journal's own record names: the ones found at start and the ones written since. */
+  readonly #known = new Set<string>();
+  /** The records as they stood, verified against their anchors, when the layer opened (D-201). */
+  readonly #recovered = new Map<string, RecoveredRecord>();
+  /** The grant stores whose use counts were set from the journal (D-201). */
+  readonly #adopted = new WeakSet<GrantStore>();
+  /** The store last given its counts. */
+  #counted: GrantStore | null = null;
 
   private constructor(token: symbol, spec: StartupSpec, anchor: TrustAnchor | null, host: HostIo, clock: () => Date, journal: JournalWriterOptions, anchoring: Anchoring) {
     // Only `open` holds the token, so no code can make a layer without the start-up check (D-194).
@@ -146,13 +201,16 @@ export class SessionLayer {
     this.#workspaces = spec.workspaces.map((path) => ({ path, real: realOrGiven(path) }));
     this.#anchoring = anchoring;
     this.#journal = JournalWriter.open(spec.journal, journal);
+    this.#indexId = journalRecordId(this.#journal.root);
   }
 
   /**
-   * Runs the shared start-up check for `spec` and, only if it passes, opens the journal and returns the layer. Throws
-   * `StartupRefused` with every refusal otherwise, having opened nothing.
+   * Runs the shared start-up check for `spec` and, only if it passes, opens the journal; then verifies the journal's
+   * chains and its off-host anchors, and only if both hold rebuilds what the journal records and returns the layer
+   * (operator ruling D-201). Throws `StartupRefused` with every refusal otherwise; a start refused by the start-up
+   * check has opened nothing, and one refused for its journal or anchors hands out no layer, so nothing is served.
    */
-  static open(spec: StartupSpec, options: { readonly anchoring: Anchoring | ((journalRoot: string) => Anchoring); readonly host?: HostIo; readonly clock?: () => Date; readonly journal?: JournalWriterOptions }): SessionLayer {
+  static async open(spec: StartupSpec, options: { readonly anchoring: Anchoring | ((journalRoot: string) => Anchoring); readonly host?: HostIo; readonly clock?: () => Date; readonly journal?: JournalWriterOptions }): Promise<SessionLayer> {
     const host = options.host ?? systemHostIo();
     const checked = startupCheck(spec, host);
     const refuse = (refusals: readonly string[]): never => {
@@ -176,8 +234,154 @@ export class SessionLayer {
     }
     if (refusals.length > 0 || anchoring === undefined || !checked.ok) return refuse(refusals);
     const layer = new SessionLayer(OPENED_BY_CHECK, Object.freeze({ ...spec, workspaces: [...spec.workspaces], state: spec.state.map((item) => ({ ...item })) }), checked.anchor, host, options.clock ?? (() => new Date()), options.journal ?? {}, anchoring);
+    // D-201: the journal and its anchors are verified before anything is rebuilt, admitted or served.
+    let unverified: string[];
+    try {
+      unverified = await layer.#recover();
+    } catch (error: unknown) {
+      unverified = [`the journal could not be verified: ${error instanceof Error ? error.message : String(error)} (§3.4.1, D-201)`];
+    }
+    if (unverified.length > 0) return refuse(unverified);
     for (const listener of OBSERVERS) listener({ spec, refusals: [], layer });
     return layer;
+  }
+
+  /**
+   * Verifies the whole journal against itself and against the anchors held off the host, then rebuilds from it (operator
+   * ruling D-201; D-202). Answers every reason the service may not start; empty when it may.
+   *   1. Every record's chain verifies (§3.4.2), and its folder is named by the id its entries carry.
+   *   2. Every record is one the journal's own record names (it is written before a record's first entry).
+   *   3. For the journal's own record and every record it names, each anchor the destination holds carries the journal
+   *      key's signature and agrees with the entry at its seq (§3.4.1); a record whose anchors exist while the journal
+   *      holds fewer entries, or none, was cut or deleted. Entries after a record's latest anchor are within the interval
+   *      §3.4.1 leaves unanchored: they are not a contradiction, and they are anchored now, before anything is served.
+   *   4. A destination that cannot be read verifies nothing, so the start is refused.
+   */
+  async #recover(): Promise<string[]> {
+    const refusals: string[] = [];
+    const stored = new Map<string, StoredRecord>();
+    for (const record of listRecords(this.#journal.root)) {
+      if (!record.verdict.ok) refusals.push(`journal record ${record.taskId ?? record.digest} does not verify: ${record.verdict.failure.code} (${record.verdict.failure.message}) (§3.4.2)`);
+      else if (record.taskId !== null) stored.set(record.taskId, record);
+    }
+    if (refusals.length > 0) return refusals;
+    const named: string[] = [];
+    for (const item of this.#read(this.#indexId, stored.get(this.#indexId)?.verdict)) {
+      const task = field(item.payload, "task");
+      if (item.entry.kind === "note" && field(item.payload, "type") === "record" && typeof task === "string") named.push(task);
+      else refusals.push(`the journal's own record has an entry (seq ${String(item.entry.seq)}) that is not one JUNO writes there (D-202)`);
+    }
+    for (const id of stored.keys()) {
+      if (id !== this.#indexId && !named.includes(id)) refusals.push(`journal record ${id} is not named by the journal's own record, so this journal did not write it (D-202)`);
+    }
+    const ids = [this.#indexId, ...new Set(named)];
+    let anchors: Map<string, unknown[]>;
+    try {
+      anchors = await this.#anchoring.sink.listMany(ids.map((id) => taskDigest(id)));
+    } catch (error: unknown) {
+      return [...refusals, `the anchor destination could not be read, so the journal cannot be checked against its anchors: ${error instanceof Error ? error.message : String(error)} (§3.4.1, D-201)`];
+    }
+    for (const id of ids) {
+      const held = anchors.get(taskDigest(id)) ?? [];
+      if (held.length === 0) continue;
+      const chain: ChainVerdict = stored.get(id)?.verdict ?? { ok: true, entries: [], head: null };
+      const check = checkAnchors(id, chain, held, this.#anchoring.journalKey.publicKey);
+      if (check.ok) {
+        const latest = held.find((anchor) => field(anchor, "seq") === check.anchored_seq);
+        this.#anchored.set(id, { seq: check.anchored_seq, at: Date.parse(String(field(latest, "at"))) });
+        continue;
+      }
+      const failure = check.failure;
+      const what =
+        failure.code === "truncated" ? `an anchor names its entry ${String(failure.anchor_seq)}, but the journal holds ${String(failure.chain_length)} entries: entries were removed`
+        : failure.code === "rewritten" ? `its entry ${String(failure.anchor_seq)} is not the one anchored off the host: history at or before it was rewritten`
+        : failure.code === "anchor_invalid" ? `a stored anchor is not valid: ${failure.reason}`
+        : failure.code;
+      refusals.push(`journal record ${id} disagrees with its off-host anchors: ${what} (§3.4.1, D-201)`);
+    }
+    if (refusals.length > 0) return refusals;
+    // Verified. Only now is anything rebuilt (D-201).
+    for (const id of ids) {
+      const record = stored.get(id);
+      if (id !== this.#indexId) this.#known.add(id);
+      if (record === undefined || !record.verdict.ok) continue;
+      const entries = this.#read(id, record.verdict);
+      const last = entries.at(-1);
+      if (last !== undefined) this.#written.set(id, last.entry.data_class);
+      if (id === this.#indexId) continue;
+      for (const item of entries) {
+        if ((item.entry.kind === "note" || item.entry.kind === "park" || item.entry.kind === "capability_call" || item.entry.kind === "resume") && item.payload === undefined) {
+          refusals.push(`journal record ${id} entry ${String(item.entry.seq)} has no readable payload, so what it records cannot be rebuilt (§3.4.5, D-201)`);
+        }
+      }
+      const admission = entries.find((item) => item.entry.kind === "note" && field(item.payload, "type") === "admission" && field(item.payload, "outcome") === "admitted");
+      this.#recovered.set(id, { id, entries, admission: admission === undefined ? null : (admission.payload as Readonly<Record<string, unknown>>) });
+    }
+    if (refusals.length > 0) return refusals;
+    // §3.4.1: what was written and not yet copied off the host is copied before the service serves anything.
+    const unanchored = await this.anchorPending();
+    return unanchored.map((id) => `journal record ${id} could not be anchored off the host (journalled as anchor_failed), so the service does not start (§3.4.1, D-201)`);
+  }
+
+  /** A verified record's entries with their payloads. */
+  #read(id: string, verdict: ChainVerdict | undefined): RecoveredEntry[] {
+    if (verdict === undefined || !verdict.ok) return [];
+    return verdict.entries.map((entry) => {
+      if (entry.task_id !== id) return { entry, payload: undefined };
+      const blob = readPayload(this.#journal.root, entry.payload_ref);
+      if (blob.status !== "present") return { entry, payload: undefined };
+      try {
+        return { entry, payload: JSON.parse(decoder.decode(blob.bytes)) as unknown };
+      } catch {
+        return { entry, payload: undefined };
+      }
+    });
+  }
+
+  /** This journal's own record's id (D-202). */
+  get journalRecord(): string {
+    return this.#indexId;
+  }
+
+  /**
+   * The records as the journal held them, verified against their anchors, when this layer opened (D-201): what a mode
+   * rebuilds its sessions from. Empty for a journal opened for the first time.
+   */
+  recovered(): readonly RecoveredRecord[] {
+    return [...this.#recovered.values()];
+  }
+
+  /** Whether the journal already holds an admission under this id: an id is admitted once, across restarts (D-201). */
+  admitted(taskId: string): boolean {
+    const record = this.#recovered.get(taskId);
+    return this.#sessions.has(taskId) || (record !== undefined && record.admission !== null);
+  }
+
+  /**
+   * Every grant's use count, as the journal records it now (§3.2 `max_invocations`; D-201): one use per call the
+   * boundary let proceed under the grant, in any record of any mode. The boundary journals that call in the same step
+   * as it charges the grant, so the count in the journal and the count in a running service are the same number.
+   *
+   * At start every record has just been verified. Later, a record changed under a running service no longer verifies
+   * (its task is failed when it is next touched, D-056) and cannot be counted; a count is then never lower than the one
+   * the store this layer last counted for holds, so no use is forgotten that way either.
+   */
+  grantUse(): Map<string, number> {
+    const used = new Map<string, number>();
+    for (const id of this.#known) {
+      const verdict = verifyTrajectory(this.#journal.root, id);
+      if (!verdict.ok) continue;
+      for (const entry of verdict.entries) {
+        if (entry.kind !== "capability_call") continue;
+        const blob = readPayload(this.#journal.root, entry.payload_ref);
+        if (blob.status !== "present") throw new SessionLayerError(`journal record ${id} entry ${String(entry.seq)} has no readable payload, so grant use cannot be counted (D-201)`);
+        const payload: unknown = JSON.parse(decoder.decode(blob.bytes));
+        const grant = field(payload, "grant");
+        if (typeof grant === "string" && field(field(payload, "verdict"), "outcome") === "proceed") used.set(grant, (used.get(grant) ?? 0) + 1);
+      }
+    }
+    for (const [grant, count] of this.#counted?.use() ?? []) used.set(grant, Math.max(used.get(grant) ?? 0, count));
+    return used;
   }
 
   /**
@@ -236,6 +440,12 @@ export class SessionLayer {
   /** A grant store must check signatures against the verified anchor, when one was configured (§3.2, D-116, D-194). */
   requireGrants(grants: GrantStore): void {
     if (this.#anchor !== null && !this.#anchor.equals(grants.trustAnchor)) throw new SessionLayerError("the grant store does not check grants against the trust anchor the start-up check verified (§3.2, D-194)");
+    // D-201: a store a mode brings starts from the use the journal records, never from zero. Every mode passes its
+    // store here before it can get a boundary, so no mode can leave it out.
+    if (this.#adopted.has(grants)) return;
+    grants.restoreUse(this.grantUse());
+    this.#adopted.add(grants);
+    this.#counted = grants;
   }
 
   /** Throws unless `path` is one of the workspaces the start-up check judged, or inside one, lexically and as the kernel resolves it (D-194). */
@@ -282,6 +492,13 @@ export class SessionLayer {
 
   /** A journal record outside any session (the runner's and registry's own records). */
   append(taskId: string, kind: EntryDraft["kind"], dataClass: DataClass, payload: unknown, options: RecordOptions): number {
+    if (taskId === this.#indexId) throw new SessionLayerError("the journal's own record is written only by the session layer (D-202)");
+    // D-202: a record is named in the journal's own record before its first entry is written.
+    if (!this.#known.has(taskId)) {
+      this.#journal.append(this.#indexId, { kind: "note", actor: LAYER_ACTOR, provider: null, data_class: INDEX_CLASS, cost: NO_COST }, encoder.encode(canonicalJson({ type: "record", task: taskId })));
+      this.#written.set(this.#indexId, INDEX_CLASS);
+      this.#known.add(taskId);
+    }
     const draft: EntryDraft = { kind, actor: options.actor, provider: options.provider ?? null, data_class: dataClass, cost: options.cost ?? NO_COST };
     const seq = this.#journal.append(taskId, draft, encoder.encode(canonicalJson(payload))).seq;
     this.#written.set(taskId, dataClass);
@@ -383,9 +600,10 @@ export class SessionLayer {
     return this.append(taskId, "note", REFUSED_ADMISSION_CLASS, { type: "admission", outcome: "rejected", ...payload }, { actor });
   }
 
-  /** Admits a session: journals its admission and opens it. An id is admitted once. */
+  /** Admits a session: journals its admission and opens it. An id is admitted once, across restarts too (D-201). */
   admit(taskId: string, limits: SessionLimits, admission: { readonly dataClass: DataClass; readonly payload: Record<string, unknown>; readonly actor: string; readonly now?: () => number }): GovernedSession {
     if (this.#sessions.has(taskId)) throw new SessionLayerError(`session ${taskId} is already open`);
+    if (this.admitted(taskId)) throw new SessionLayerError(`the journal already holds an admission of ${taskId}; an id is admitted once (D-201)`);
     const now = admission.now ?? (() => this.now());
     const session = new GovernedSession(this, taskId, this.mode, limits, now(), { ...NO_SPEND }, now);
     this.append(taskId, "note", admission.dataClass, { type: "admission", outcome: "admitted", ...admission.payload }, { actor: admission.actor });
@@ -396,8 +614,64 @@ export class SessionLayer {
   /** Reopens a session rebuilt from its journal (the own loop's resume); journals nothing. */
   restore(taskId: string, limits: SessionLimits, state: { readonly admittedAt: number; readonly spent: Spend; readonly now?: () => number }): GovernedSession {
     const session = new GovernedSession(this, taskId, this.mode, limits, state.admittedAt, { ...state.spent }, state.now ?? (() => this.now()));
+    // D-201: the `anchoring` note is written once per session; a session whose journal already holds it does not write it again.
+    if (this.#sessions.get(taskId)?.anchoringNoted === true || this.#noted(taskId)) session.noteAnchoring();
     this.#sessions.set(taskId, session);
     return session;
+  }
+
+  #noted(taskId: string): boolean {
+    return this.#recovered.get(taskId)?.entries.some((item) => item.entry.kind === "note" && field(item.payload, "type") === "anchoring") === true;
+  }
+
+  /**
+   * Reopens a hook or gateway session exactly as its journal leaves it (operator ruling D-201), for every mediated
+   * mode the same way; journals nothing. From the record verified at start it rebuilds:
+   *   - the admission time, so the time limit and the wall-clock budget go on from admission, not from the restart;
+   *   - the calls counted against the budget: every call the boundary judged (`capability_call`), every call rejected
+   *     before it (a `rejection` note that names no judged call), every call passed to the gateway (`gateway_call`), and
+   *     every call parked before the boundary (a park that names no judged call, other than `budget_exceeded` and
+   *     `rejection_limit`, which count nothing, and an injected command parked before the call was counted, D-152);
+   *   - the consecutive rejections (§2.7.1 A4): each rejection since the last park or the last call that proceeded;
+   *   - a stop for good (`anchor_unavailable`, §3.4.1).
+   * Answers the session and its record, from which the mode rebuilds what only it knows (its floor, its pending calls).
+   * Null when the journal holds no admission under this id.
+   */
+  resume(taskId: string, limits: SessionLimits, options: { readonly now?: () => number } = {}): { readonly session: GovernedSession; readonly record: RecoveredRecord } | null {
+    const record = this.#recovered.get(taskId);
+    if (record === undefined || record.admission === null) return null;
+    if (this.#sessions.has(taskId)) throw new SessionLayerError(`session ${taskId} is already open`);
+    const admittedAt = Date.parse(String(record.admission["admitted_at"]));
+    if (!Number.isFinite(admittedAt)) throw new SessionLayerError(`the admission of ${taskId} records no admission time, so its limits cannot be rebuilt (D-201)`);
+    let turns = 0;
+    let rejections: RejectionMark[] = [];
+    let stopped: string | null = null;
+    for (const { entry, payload } of record.entries) {
+      const judged = field(payload, "call_seq") !== undefined && field(payload, "call_seq") !== null;
+      if (entry.kind === "capability_call") {
+        turns += 1;
+        const outcome = field(field(payload, "verdict"), "outcome");
+        if (outcome === "reject") rejections.push({ kind: "call", seq: entry.seq });
+        else if (outcome === "proceed") rejections = [];
+      } else if (entry.kind === "park") {
+        const reason = field(payload, "reason");
+        if (!judged && reason !== "budget_exceeded" && reason !== "rejection_limit" && field(payload, "command") === undefined) turns += 1;
+        rejections = [];
+      } else if (entry.kind === "note") {
+        const type = field(payload, "type");
+        if (type === "gateway_call") turns += 1;
+        else if (type === "rejection" && !judged) {
+          turns += 1;
+          rejections.push({ kind: "call", seq: entry.seq });
+        } else if (type === "state" && field(payload, "to") === "failed" && field(payload, "reason") === "anchor_unavailable") stopped = "anchor_unavailable";
+      }
+    }
+    const session = new GovernedSession(this, taskId, this.mode, limits, admittedAt, { ...NO_SPEND, turns }, options.now ?? (() => this.now()));
+    session.setRejections(rejections);
+    if (this.#noted(taskId)) session.noteAnchoring();
+    if (stopped !== null) session.stop(stopped);
+    this.#sessions.set(taskId, session);
+    return { session, record };
   }
 
   session(taskId: string): GovernedSession | undefined {
@@ -455,6 +729,21 @@ export class GovernedSession {
   spent(): Spend {
     const running = this.#runningSince === null ? 0 : Math.max(0, this.#now() - this.#runningSince);
     return { ...this.#spent, wall_clock_ms: this.#spent.wall_clock_ms + running };
+  }
+
+  /** Whether this session's `anchoring` note is in its journal. */
+  get anchoringNoted(): boolean {
+    return this.#anchoringNoted;
+  }
+
+  /** The `anchoring` note is already in this session's journal (a session rebuilt from it, D-201). */
+  noteAnchoring(): void {
+    this.#anchoringNoted = true;
+  }
+
+  /** Sets the consecutive rejections the journal records (a session rebuilt from it, D-201). */
+  setRejections(marks: readonly RejectionMark[]): void {
+    this.#rejections = [...marks];
   }
 
   /** Sets the spend recorded in the journal (the own loop's rebuild). */

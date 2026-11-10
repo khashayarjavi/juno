@@ -65,9 +65,9 @@ describe("parseRunnerConfig", () => {
     [{ JUNO_JOURNAL_DIR: "/srv", JUNO_WORK_DIR: "/srv/work" }],
     [{ JUNO_JOURNAL_DIR: "/srv/work/journal", JUNO_WORK_DIR: "/srv/work" }],
     [{ JUNO_JOURNAL_DIR: "/srv/journal", JUNO_WORK_DIR: "/srv/journal" }],
-  ])("rejects journal storage overlapping the capability namespace or the work volume: %j", (env) => {
+  ])("rejects journal storage overlapping the capability namespace or the work volume: %j", async (env) => {
     const said: string[] = [];
-    expect(runRunnerMain({ ...ANCHORING, ...env }, { host: ordinaryHost(), anchoring: testAnchoring(), out: (text) => said.push(text), err: (text) => said.push(text) })).toBe(1);
+    expect(await runRunnerMain({ ...ANCHORING, ...env }, { host: ordinaryHost(), anchoring: testAnchoring(), out: (text) => said.push(text), err: (text) => said.push(text) })).toBe(1);
     expect(said.join("")).toMatch(/capability namespace|overlaps the workspace/);
     expect(existsSync(join(env.JUNO_JOURNAL_DIR, "tasks"))).toBe(false);
   });

@@ -5,10 +5,11 @@ import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { GrantStore, type HostIo, HostPathResolver, type LayerOpened, SERVICES, type ServiceName, SessionLayer, StartupRefused, Workspace, execFileScript } from "../../enforcement/src/index.js";
-import { MemoryAnchorSink, testAnchoring } from "../../enforcement/test/anchoring.js";
+import { MemoryAnchorSink, testAnchoring, testJournalKey } from "../../enforcement/test/anchoring.js";
 import { ordinaryHost, openTestLayer } from "../../enforcement/test/layer.js";
 import { TEST_ANCHOR, signed } from "../../enforcement/test/test-keys.js";
-import { checkAnchors, readPayload, readTrajectory, taskDigest, verifyTrajectory } from "../../journal/src/index.js";
+import { type JournalKey, JournalWriter, anchorOf, anchorPath, checkAnchors, listRecords, readPayload, readTrajectory, taskDigest, verifyTrajectory } from "../../journal/src/index.js";
+import { entriesFile, taskDir } from "../../journal/src/layout.js";
 import { systemFilesystemIo } from "../../mediated/src/filesystem.js";
 import { MCP_REVISION, McpGateway, type Upstream } from "../../mediated/src/gateway.js";
 import { type GatewayCliIo, runGatewayCli } from "../../mediated/src/gateway-cli.js";
@@ -35,6 +36,10 @@ import { harness, request as runnerRequest, turn } from "./helpers.js";
  *      workspace;
  *   D. drives every registered mode that admits sessions (own loop, hook, gateway) and requires the shared layer to hold
  *      the session, count its rejections to the limit and park it there, and count its calls to the budget.
+ *   E. requires every mode's journal to be anchored through the shared layer (D-198);
+ *   F. restarts every registered service on its own journal (operator ruling D-201): it starts again and forgets
+ *      nothing, and it refuses to start, opening no layer, when the journal was changed, cut, replaced or deleted, when
+ *      an anchor disagrees, when a record was planted, or when the anchors cannot be read.
  * Every entry the registry says starts a service or admits a session must have a probe here, or the test fails.
  */
 
@@ -206,6 +211,8 @@ type Fixture = { dir: string; work: string; journal: string; anchor: string; ses
 let fx: Fixture;
 /** The anchor destination every probe's layer uses (D-198); a fresh one per test. */
 let sink: MemoryAnchorSink;
+/** The journal key every probe's service uses; one per test, kept across a service's restarts (D-201). */
+let journalKey: JournalKey;
 let events: LayerOpened[];
 let stopObserving: () => void;
 
@@ -221,10 +228,11 @@ function gatewaySession(overrides: Record<string, unknown> = {}): Record<string,
   return { session_id: "probe", principal: PRINCIPAL, attendance: "autonomous", ttl: 3_600_000, grants: ["g"], budget: { tool_calls: 4, wall_clock_ms: 3_600_000 }, unmetered_accepted: true, provider_clearance: "internal", sources: [SOURCE], tools: [{ tool: "message.send", entry: SEND }], rejection_limit: 2, ...overrides };
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   const dir = mkdtempSync(join(tmpdir(), "juno-entry-"));
   fx = { dir, work: join(dir, "work"), journal: join(dir, "journal"), anchor: join(dir, "anchor", "operator.pub"), session: join(dir, "session.json"), grant: join(dir, "grant.json"), sockets: join(dir, "sock"), socket: join(dir, "sock", "service.sock"), keys: join(dir, "journal-key"), clone: join(dir, "juno-anchors") };
   sink = new MemoryAnchorSink();
+  journalKey = testJournalKey();
   mkdirSync(join(fx.work, "project"), { recursive: true });
   writeFileSync(join(fx.work, "project", "notes.txt"), "notes\n");
   mkdirSync(fx.sockets, { mode: 0o700 });
@@ -264,7 +272,7 @@ const COMMAND_PROBES: Readonly<Record<string, CommandProbe>> = {
     run: async (implementation, host, paths) => {
       const at = { ...fx, ...paths };
       const said: string[] = [];
-      const io: GatewayCliIo = { host, readFile: (path) => readFileSync(path, "utf8"), filesystem: systemFilesystemIo(), anchoring: testAnchoring({ sink }), stopped: () => Promise.resolve(), out: (text) => said.push(text), err: (text) => said.push(text) };
+      const io: GatewayCliIo = { host, readFile: (path) => readFileSync(path, "utf8"), filesystem: systemFilesystemIo(), anchoring: testAnchoring({ sink, journalKey }), stopped: () => Promise.resolve(), out: (text) => said.push(text), err: (text) => said.push(text) };
       const code = await (implementation as typeof runGatewayCli)(["serve", "--session", at.session, "--socket", at.socket, "--journal", at.journal, "--anchor", at.anchor, "--workspace", at.work, "--journal-key", at.keys, "--anchors", at.clone, "--grant", at.grant], io);
       return { code, said: said.join("") };
     },
@@ -284,7 +292,7 @@ const COMMAND_PROBES: Readonly<Record<string, CommandProbe>> = {
         host,
         filesystem: systemFilesystemIo(),
         runtime: () => Promise.resolve({ cgroupDriver: "systemd", cgroupVersion: "2", rootless: true }),
-        anchoring: testAnchoring({ sink }),
+        anchoring: testAnchoring({ sink, journalKey }),
         // Once it serves, the operator admits a session through the admission socket, then it stops.
         ready: () => {
           admitting = runHookAdmitCli(["--control", control, sessionFile], { out: (text) => said.push(text), err: (text) => said.push(text) });
@@ -306,11 +314,11 @@ const COMMAND_PROBES: Readonly<Record<string, CommandProbe>> = {
     admitted: (layer) => expect(layer.sessions().map((session) => [session.id, session.mode])).toEqual([["session-probe", "hook"]]),
   },
   "runner.process": {
-    run: (implementation, host, paths) => {
+    run: async (implementation, host, paths) => {
       const at = { ...fx, ...paths };
       const said: string[] = [];
-      const code = (implementation as typeof runRunnerMain)({ JUNO_JOURNAL_DIR: at.journal, JUNO_WORK_DIR: at.work, JUNO_TRUST_ANCHOR: at.anchor, JUNO_JOURNAL_KEY_DIR: at.keys, JUNO_ANCHOR_CLONE: at.clone }, { host, anchoring: testAnchoring({ sink }), out: (text) => said.push(text), err: (text) => said.push(text) });
-      return Promise.resolve({ code, said: said.join("") });
+      const code = await (implementation as typeof runRunnerMain)({ JUNO_JOURNAL_DIR: at.journal, JUNO_WORK_DIR: at.work, JUNO_TRUST_ANCHOR: at.anchor, JUNO_JOURNAL_KEY_DIR: at.keys, JUNO_ANCHOR_CLONE: at.clone }, { host, anchoring: testAnchoring({ sink, journalKey }), out: (text) => said.push(text), err: (text) => said.push(text) });
+      return { code, said: said.join("") };
     },
     loosenState: () => {
       mkdirSync(fx.journal, { mode: 0o777 });
@@ -425,8 +433,8 @@ function sessionsOn(layer: unknown, work = fx.work): MediatedSessions {
 function gatewayOn(layer: unknown, work = fx.work): McpGateway {
   return new McpGateway({ layer: layer as SessionLayer, grants: grantsOf(gatewayGrant()), resolver: new HostPathResolver(work), view: view(work), filesystem: systemFilesystemIo(), upstream });
 }
-function runnerOn(layer: unknown, work = fx.work): Runner {
-  const h = harness();
+async function runnerOn(layer: unknown, work = fx.work): Promise<Runner> {
+  const h = await harness();
   try {
     return new Runner({ layer: layer as SessionLayer, registry: h.registry, grants: h.grants, providers: [], sources: [], resolver: new HostPathResolver(work) });
   } finally {
@@ -435,7 +443,7 @@ function runnerOn(layer: unknown, work = fx.work): Runner {
 }
 
 const CLASS_PROBES: Readonly<Record<string, ClassProbe>> = {
-  "class.Runner": { build: async (layer) => Promise.resolve(runnerOn(layer)), state: [] },
+  "class.Runner": { build: async (layer) => runnerOn(layer), state: [] },
   "class.MediatedSessions": { build: async (layer) => Promise.resolve(sessionsOn(layer)), state: [] },
   "class.McpGateway": { build: async (layer) => Promise.resolve(gatewayOn(layer)), state: [] },
   "class.HookAdmissionService": {
@@ -490,7 +498,7 @@ describe("D-194 C: every registered class runs only on a layer the shared check 
     const service = entry.service;
     // proves D-194 (positive control): on a layer the check opened for its service and workspace, it starts
     it(`${entry.id}: starts on a layer opened for the ${service} service`, async () => {
-      const layer = openTestLayer(service, { journal: fx.journal, workspaces: [fx.work], state: stateOf(probe) });
+      const layer = await openTestLayer(service, { journal: fx.journal, workspaces: [fx.work], state: stateOf(probe) });
       await expect(probe.build(layer)).resolves.toBeDefined();
     });
 
@@ -502,14 +510,14 @@ describe("D-194 C: every registered class runs only on a layer the shared check 
 
     // proves D-193: a layer opened for another service is refused
     it(`${entry.id}: refuses a layer opened for another service`, async () => {
-      const other = openTestLayer(OTHER[service], { journal: fx.journal, workspaces: [fx.work], state: stateOf(probe) });
+      const other = await openTestLayer(OTHER[service], { journal: fx.journal, workspaces: [fx.work], state: stateOf(probe) });
       await expect(probe.build(other)).rejects.toThrow(/was opened for the .* service, not the/);
     });
 
     // proves D-148 / D-194: a layer whose check did not judge the workspace (or socket) this class uses is refused
     it(`${entry.id}: refuses a workspace or socket the shared check did not judge`, async () => {
       const elsewhere = join(fx.dir, "elsewhere");
-      const layer = openTestLayer(service, { journal: fx.journal, workspaces: [elsewhere] });
+      const layer = await openTestLayer(service, { journal: fx.journal, workspaces: [elsewhere] });
       await expect(probe.build(layer)).rejects.toThrow(/not a workspace the start-up check judged|not one the start-up check judged/);
     });
   }
@@ -556,7 +564,7 @@ const unknownCall = (n: number): unknown => ({ id: `bad-${String(n)}`, capabilit
 const MODE_DRIVERS: Readonly<Record<ServiceName, ModeDriver>> = {
   runner: {
     rejections: async (afterFirst) => {
-      const h = harness();
+      const h = await harness();
       const { runner } = h.runner([turn([unknownCall(1)]), turn([unknownCall(2)])]);
       expect(runner.admit(runnerRequest({ rejection_limit: 2 }))).toMatchObject({ admitted: true });
       await runner.run("task-1");
@@ -564,7 +572,7 @@ const MODE_DRIVERS: Readonly<Record<ServiceName, ModeDriver>> = {
       return { layer: h.layer, id: "task-1", parks: parksIn(h.journal.root, "task-1") };
     },
     budget: async (calls) => {
-      const h = harness();
+      const h = await harness();
       const { runner } = h.runner(Array.from({ length: calls + 1 }, (_, index) => turn([unknownCall(100 + index)])));
       expect(runner.admit(runnerRequest({ rejection_limit: 10, budget: { tokens: 1_000_000, currency: 100, wall_clock_ms: 3_600_000, turns: calls } }))).toMatchObject({ admitted: true });
       await runner.run("task-1");
@@ -573,7 +581,7 @@ const MODE_DRIVERS: Readonly<Record<ServiceName, ModeDriver>> = {
   },
   hook: {
     rejections: async (afterFirst) => {
-      const layer = openTestLayer("hook", { journal: fx.journal, workspaces: [fx.work] });
+      const layer = await openTestLayer("hook", { journal: fx.journal, workspaces: [fx.work] });
       const sessions = sessionsOn(layer);
       expect(await sessions.admit(hookRequest("probe"))).toMatchObject({ admitted: true });
       await sessions.preToolUse(hookCall("probe", "Frobnicate"));
@@ -582,7 +590,7 @@ const MODE_DRIVERS: Readonly<Record<ServiceName, ModeDriver>> = {
       return { layer, id: "session-probe", parks: parksIn(layer.root, "session-probe") };
     },
     budget: async (calls) => {
-      const layer = openTestLayer("hook", { journal: fx.journal, workspaces: [fx.work] });
+      const layer = await openTestLayer("hook", { journal: fx.journal, workspaces: [fx.work] });
       const sessions = sessionsOn(layer);
       expect(await sessions.admit(hookRequest("budget", { rejection_limit: 10, budget: { tool_calls: calls, wall_clock_ms: 3_600_000 } }))).toMatchObject({ admitted: true });
       for (let index = 0; index <= calls; index += 1) await sessions.preToolUse(hookCall("budget", "Frobnicate"));
@@ -591,7 +599,7 @@ const MODE_DRIVERS: Readonly<Record<ServiceName, ModeDriver>> = {
   },
   gateway: {
     rejections: async (afterFirst) => {
-      const layer = openTestLayer("gateway", { journal: fx.journal, workspaces: [fx.work] });
+      const layer = await openTestLayer("gateway", { journal: fx.journal, workspaces: [fx.work] });
       const gateway = await openedGateway(layer);
       await gatewayCall(gateway, "admin.wipe", 2);
       afterFirst(layer, "gateway-probe");
@@ -599,7 +607,7 @@ const MODE_DRIVERS: Readonly<Record<ServiceName, ModeDriver>> = {
       return { layer, id: "gateway-probe", parks: parksIn(layer.root, "gateway-probe") };
     },
     budget: async (calls) => {
-      const layer = openTestLayer("gateway", { journal: fx.journal, workspaces: [fx.work] });
+      const layer = await openTestLayer("gateway", { journal: fx.journal, workspaces: [fx.work] });
       const gateway = await openedGateway(layer, { session_id: "budget", rejection_limit: 10, budget: { tool_calls: calls, wall_clock_ms: 3_600_000 } });
       for (let index = 0; index <= calls; index += 1) await gatewayCall(gateway, "admin.wipe", 10 + index);
       return { layer, id: "gateway-budget", parks: parksIn(layer.root, "gateway-budget") };
@@ -671,14 +679,14 @@ const proceededAfterStop = (stops: readonly boolean[]): number => {
 const ANCHOR_DRIVERS: Readonly<Record<ServiceName, AnchorDriver>> = {
   runner: {
     drive: async (anchors, intervalMs) => {
-      const h = harness(undefined, { anchoring: { sink: anchors, intervalMs } });
+      const h = await harness(undefined, { anchoring: { sink: anchors, intervalMs } });
       const { runner } = h.runner([turn([unknownCall(1)]), turn([])]);
       expect(runner.admit(runnerRequest())).toMatchObject({ admitted: true });
       await runner.run("task-1");
       return { layer: h.layer, id: "task-1" };
     },
     cutOff: async (anchors) => {
-      const h = harness(undefined, { anchoring: { sink: anchors, intervalMs: 1 } });
+      const h = await harness(undefined, { anchoring: { sink: anchors, intervalMs: 1 } });
       const { runner, provider } = h.runner([
         () => {
           anchors.unreachable = "the destination is gone";
@@ -696,14 +704,14 @@ const ANCHOR_DRIVERS: Readonly<Record<ServiceName, AnchorDriver>> = {
   },
   hook: {
     drive: async (anchors, intervalMs) => {
-      const layer = openTestLayer("hook", { journal: fx.journal, workspaces: [fx.work], anchoring: testAnchoring({ sink: anchors, intervalMs }) });
+      const layer = await openTestLayer("hook", { journal: fx.journal, workspaces: [fx.work], anchoring: testAnchoring({ sink: anchors, intervalMs }) });
       const sessions = sessionsOn(layer);
       expect(await sessions.admit(hookRequest("anchored"))).toMatchObject({ admitted: true });
       await sessions.preToolUse(hookCall("anchored", "Frobnicate"));
       return { layer, id: "session-anchored" };
     },
     cutOff: async (anchors) => {
-      const layer = openTestLayer("hook", { journal: fx.journal, workspaces: [fx.work], anchoring: testAnchoring({ sink: anchors, intervalMs: 1 }) });
+      const layer = await openTestLayer("hook", { journal: fx.journal, workspaces: [fx.work], anchoring: testAnchoring({ sink: anchors, intervalMs: 1 }) });
       const sessions = sessionsOn(layer);
       const admitted = (await sessions.admit(hookRequest("cut"))).admitted;
       anchors.unreachable = "the destination is gone";
@@ -721,13 +729,13 @@ const ANCHOR_DRIVERS: Readonly<Record<ServiceName, AnchorDriver>> = {
   },
   gateway: {
     drive: async (anchors, intervalMs) => {
-      const layer = openTestLayer("gateway", { journal: fx.journal, workspaces: [fx.work], anchoring: testAnchoring({ sink: anchors, intervalMs }) });
+      const layer = await openTestLayer("gateway", { journal: fx.journal, workspaces: [fx.work], anchoring: testAnchoring({ sink: anchors, intervalMs }) });
       const gateway = await openedGateway(layer);
       await gatewayCall(gateway, "admin.wipe", 2);
       return { layer, id: "gateway-probe" };
     },
     cutOff: async (anchors) => {
-      const layer = openTestLayer("gateway", { journal: fx.journal, workspaces: [fx.work], anchoring: testAnchoring({ sink: anchors, intervalMs: 1 }) });
+      const layer = await openTestLayer("gateway", { journal: fx.journal, workspaces: [fx.work], anchoring: testAnchoring({ sink: anchors, intervalMs: 1 }) });
       const gateway = await openedGateway(layer);
       anchors.unreachable = "the destination is gone";
       await new Promise((resolve) => setTimeout(resolve, 5));
@@ -753,10 +761,10 @@ describe("D-198 E: every mode's journal is anchored through the shared session l
   // proves §3.4.1 (D-198): no service gets a layer, and so a journal, without an anchor destination and a journal key;
   // the refusal is the shared check's own and nothing is opened
   for (const service of SERVICES) {
-    it(`${service}: the shared layer will not open without anchoring`, () => {
+    it(`${service}: the shared layer will not open without anchoring`, async () => {
       const spec = { service, journal: fx.journal, workspaces: [fx.work], state: [], anchor: null };
-      expect(() => SessionLayer.open(spec, { host: ordinaryHost() } as unknown as Parameters<typeof SessionLayer.open>[1])).toThrow(StartupRefused);
-      expect(() => SessionLayer.open(spec, { host: ordinaryHost(), anchoring: { ...testAnchoring(), intervalMs: 0 } })).toThrow(/interval/);
+      await expect(SessionLayer.open(spec, { host: ordinaryHost() } as unknown as Parameters<typeof SessionLayer.open>[1])).rejects.toThrow(StartupRefused);
+      await expect(SessionLayer.open(spec, { host: ordinaryHost(), anchoring: { ...testAnchoring(), intervalMs: 0 } })).rejects.toThrow(/interval/);
       expect(events.map((event) => event.layer)).toEqual([null, null]);
       expect(existsSync(fx.journal)).toBe(false);
     });
@@ -767,7 +775,7 @@ describe("D-198 E: every mode's journal is anchored through the shared session l
     it(`${service}: the shared layer refuses the operator's key as the journal key`, async () => {
       const { TEST_OPERATOR_KEY } = await import("../../enforcement/test/test-keys.js");
       const spec = { service, journal: fx.journal, workspaces: [fx.work], state: [], anchor: fx.anchor };
-      expect(() => SessionLayer.open(spec, { host: ordinaryHost(), anchoring: testAnchoring({ journalKey: { privateKey: TEST_OPERATOR_KEY, publicKey: TEST_ANCHOR } }) })).toThrow(/operator's grant-signing key/);
+      await expect(SessionLayer.open(spec, { host: ordinaryHost(), anchoring: testAnchoring({ journalKey: { privateKey: TEST_OPERATOR_KEY, publicKey: TEST_ANCHOR } }) })).rejects.toThrow(/operator's grant-signing key/);
     });
   }
 
@@ -801,9 +809,14 @@ describe("D-198 E: every mode's journal is anchored through the shared session l
     // proves §3.4.1 (D-198): a session whose head cannot be anchored at admission is never run
     it(`${entry.id}: a session that cannot be anchored when it starts never runs a call`, async () => {
       const anchors = new MemoryAnchorSink();
-      anchors.unreachable = "no destination";
+      // D-201: a service whose anchor destination cannot be read does not start at all (part F). So the destination is
+      // lost after the service started and before the session does.
+      const lost = (): void => {
+        anchors.unreachable = "no destination";
+      };
       if (service === "runner") {
-        const h = harness(undefined, { anchoring: { sink: anchors } });
+        const h = await harness(undefined, { anchoring: { sink: anchors } });
+        lost();
         const { runner, provider } = h.runner([turn([unknownCall(1)])]);
         expect(runner.admit(runnerRequest())).toMatchObject({ admitted: true });
         expect(await runner.run("task-1")).toMatchObject({ state: "failed", reason: "anchor_unavailable" });
@@ -811,17 +824,192 @@ describe("D-198 E: every mode's journal is anchored through the shared session l
         return;
       }
       if (service === "hook") {
-        const layer = openTestLayer("hook", { journal: fx.journal, workspaces: [fx.work], anchoring: testAnchoring({ sink: anchors }) });
+        const layer = await openTestLayer("hook", { journal: fx.journal, workspaces: [fx.work], anchoring: testAnchoring({ sink: anchors }) });
+        lost();
         const sessions = sessionsOn(layer);
         expect(await sessions.admit(hookRequest("never"))).toMatchObject({ admitted: false });
         expect(await sessions.preToolUse(hookCall("never", "Read"))).toMatchObject({ decision: "deny" });
         expect(noteTypes(layer.root, "session-never")).toContain("anchor_failed");
         return;
       }
-      const layer = openTestLayer("gateway", { journal: fx.journal, workspaces: [fx.work], anchoring: testAnchoring({ sink: anchors }) });
+      const layer = await openTestLayer("gateway", { journal: fx.journal, workspaces: [fx.work], anchoring: testAnchoring({ sink: anchors }) });
+      lost();
       const gateway = gatewayOn(layer);
       expect(await gateway.admit(gatewaySession())).toMatchObject({ admitted: false });
       expect(noteTypes(layer.root, "gateway-probe")).toContain("anchor_failed");
     });
+  }
+});
+
+// ------------------------------------------------------------------------------------------------------------------
+// F. Operator ruling D-201: at start, after the start-up check, every service verifies the journal chain and its off-host
+//    anchors, and refuses to start if either fails; only then is anything rebuilt.
+// ------------------------------------------------------------------------------------------------------------------
+
+/** The record each service's first run leaves in its journal, beside the journal's own record. */
+const RECORD_OF: Readonly<Record<string, string>> = { "gateway.serve": "gateway-probe", "hook.serve": "session-probe", "runner.process": "task-1" };
+
+/** One way the journal or its anchors can be wrong when a service starts again. */
+type Tamper = { readonly name: string; readonly arrange: (record: string) => void; readonly text: RegExp };
+
+const journalAbs = (): string => fx.journal;
+const forgedEntry = { kind: "note" as const, actor: "someone", provider: null, data_class: { sensitivity: "internal" as const, integrity: "derived" as const }, cost: { tokens_in: 0, tokens_out: 0, tokens_cached: 0, currency: 0, duration_ms: 0 } };
+
+const TAMPERS: readonly Tamper[] = [
+  {
+    // One character of one stored entry is changed: the chain no longer verifies (§3.4.2).
+    name: "an entry of the journal was changed",
+    arrange: (record) => {
+      const file = entriesFile(journalAbs() as never, record);
+      const text = readFileSync(file, "utf8");
+      writeFileSync(file, text.replace(/"actor":"[^"]+"/, '"actor":"someone-else"'));
+    },
+    text: /does not verify/,
+  },
+  {
+    // The record is replaced by a different one whose chain verifies on its own: only the anchors show it (§3.4.1).
+    name: "a record was rewritten wholesale, with every hash recomputed",
+    arrange: (record) => {
+      const length = readTrajectory(journalAbs(), record).length;
+      rmSync(taskDir(journalAbs() as never, record), { recursive: true });
+      const writer = JournalWriter.open(journalAbs());
+      for (let seq = 0; seq < length; seq += 1) writer.append(record, forgedEntry, new TextEncoder().encode(JSON.stringify({ type: "admission", outcome: "rejected", forged: seq })));
+    },
+    text: /disagrees with its off-host anchors: .*rewritten/,
+  },
+  {
+    // The record's folder is deleted: the journal's own record names it and its anchors are off the host.
+    name: "a record was deleted",
+    arrange: (record) => rmSync(taskDir(journalAbs() as never, record), { recursive: true }),
+    text: /disagrees with its off-host anchors: .*entries were removed/,
+  },
+  {
+    // The whole journal is deleted, as if the service had never run: the anchors of its own record remain.
+    name: "the whole journal was deleted",
+    arrange: () => rmSync(journalAbs(), { recursive: true }),
+    text: /disagrees with its off-host anchors: .*entries were removed/,
+  },
+  {
+    // The destination holds an anchor, signed with the journal key, that names another head at an anchored entry.
+    name: "an anchor disagrees with the journal",
+    arrange: (record) => {
+      const verdict = verifyTrajectory(journalAbs(), record);
+      if (!verdict.ok) throw new Error("the record does not verify before the test changes anything");
+      const path = [...sink.stored.keys()].find((key) => key.startsWith(`${taskDigest(record)}/`));
+      const stored = path === undefined ? undefined : sink.stored.get(path);
+      if (path === undefined || stored === undefined) throw new Error("the record has no anchor");
+      sink.stored.set(path, anchorOf(record, { seq: stored.seq, hash: `sha256:${"0".repeat(64)}` }, new Date(stored.at), journalKey.privateKey));
+      expect(anchorPath(stored.task, stored.seq)).toBe(path);
+    },
+    text: /disagrees with its off-host anchors: .*rewritten/,
+  },
+  {
+    // An anchor of the record was not signed with this journal's key.
+    name: "an anchor does not carry the journal key's signature",
+    arrange: (record) => {
+      const path = [...sink.stored.keys()].find((key) => key.startsWith(`${taskDigest(record)}/`));
+      const stored = path === undefined ? undefined : sink.stored.get(path);
+      if (path === undefined || stored === undefined) throw new Error("the record has no anchor");
+      sink.stored.set(path, anchorOf(record, { seq: stored.seq, hash: stored.head }, new Date(stored.at), testJournalKey().privateKey));
+    },
+    text: /disagrees with its off-host anchors: .*signature/,
+  },
+  {
+    // A record JUNO did not write is planted in the journal: an admission nobody made.
+    name: "a record was planted in the journal",
+    arrange: () => {
+      JournalWriter.open(journalAbs()).append("session-planted", forgedEntry, new TextEncoder().encode(JSON.stringify({ type: "admission", outcome: "admitted" })));
+    },
+    text: /not named by the journal's own record/,
+  },
+  {
+    // The anchors cannot be read, so nothing can be verified.
+    name: "the anchor destination cannot be read",
+    arrange: () => {
+      sink.unreachable = "the destination is down";
+    },
+    text: /anchor destination could not be read/,
+  },
+];
+
+describe("D-201 F: every service verifies its journal and its anchors before it starts, and forgets nothing", () => {
+  const starting = serviceEntries.filter((entry) => entry.kind !== "class");
+
+  /** The service's first run: it starts, admits what its probe admits, and stops, leaving a journal and its anchors. */
+  async function firstRun(entry: (typeof starting)[number]): Promise<string> {
+    const probe = COMMAND_PROBES[entry.id];
+    const record = RECORD_OF[entry.id];
+    if (probe === undefined || record === undefined) throw new Error(`no restart probe for ${entry.id}`);
+    if (entry.id === "runner.process") {
+      // The runner process admits nothing itself; the Runner class writes its journal, through a layer on the same
+      // journal, anchors and journal key.
+      const layer = await SessionLayer.open({ service: "runner", journal: fx.journal, workspaces: [fx.work], state: [], anchor: fx.anchor }, { host: ordinaryHost(), anchoring: testAnchoring({ sink, journalKey }) });
+      const h = await harness();
+      try {
+        const runner = new Runner({ layer, registry: h.registry, grants: h.grants, providers: [], sources: [], resolver: new HostPathResolver(fx.work) });
+        // A refused admission is a record too: journalled under the task's id and anchored.
+        expect(runner.admit(runnerRequest())).toMatchObject({ admitted: false });
+        runner.close();
+      } finally {
+        h.cleanup();
+      }
+      expect(await layer.close()).toEqual([]);
+    } else {
+      const run = await probe.run(entry.implementation, ordinaryHost(), {});
+      expect(run, run.said).toMatchObject({ code: 0 });
+    }
+    expect(listRecords(fx.journal).map((item) => item.taskId)).toContain(record);
+    expect((await sink.list(taskDigest(record))).length).toBeGreaterThan(0);
+    events.length = 0;
+    return record;
+  }
+
+  // proves D-193's rule for this part: every registered service that starts has a restart probe
+  it("has a restart probe for every registered command or program that starts a service", () => {
+    expect(starting.map((entry) => entry.id).filter((id) => RECORD_OF[id] === undefined || COMMAND_PROBES[id] === undefined)).toEqual([]);
+  });
+
+  for (const entry of starting) {
+    const probe = COMMAND_PROBES[entry.id];
+    if (probe === undefined) continue;
+
+    // proves D-201 (positive control): on an untouched journal the service starts again; the session it admitted is
+    // still open and is not admitted a second time (§5: an id is admitted once)
+    it(`${entry.id}: starts again on its own journal, and admits nothing twice`, async () => {
+      const record = await firstRun(entry);
+      const before = readTrajectory(fx.journal, record).length;
+      const run = await probe.run(entry.implementation, ordinaryHost(), {});
+      expect(run, run.said).toMatchObject({ code: 0 });
+      const opened = events.filter((event) => event.spec.service === entry.service);
+      expect(opened.map((event) => event.refusals)).toEqual([[]]);
+      // No second admission was journalled under the id.
+      const admissions = readTrajectory(fx.journal, record).filter((item) => {
+        const blob = readPayload(fx.journal, item.payload_ref);
+        const payload = blob.status === "present" ? (JSON.parse(new TextDecoder().decode(blob.bytes)) as Record<string, unknown>) : {};
+        return payload["type"] === "admission";
+      });
+      expect(admissions).toHaveLength(1);
+      expect(readTrajectory(fx.journal, record).length).toBe(before);
+      if (entry.id === "hook.serve") expect(run.said).toMatch(/1 session\(s\) admitted before this start go on from the journal[^]*session probe is already admitted/);
+      if (entry.id === "gateway.serve") expect(run.said).toMatch(/goes on from its journal/);
+      if (entry.admits) expect(opened[0]?.layer?.sessions().map((session) => session.id)).toEqual([record]);
+    }, 30_000);
+
+    for (const tamper of TAMPERS) {
+      // proves D-201: the service refuses to start (fail-closed); the refusal is the shared layer's own, no layer is
+      // handed out, and so nothing is rebuilt, admitted or served
+      it(`${entry.id}: refuses to start when ${tamper.name}`, async () => {
+        const record = await firstRun(entry);
+        tamper.arrange(record);
+        const run = await probe.run(entry.implementation, ordinaryHost(), {});
+        expect(run.code, run.said).toBe(1);
+        expect(run.said).toMatch(tamper.text);
+        const opened = events.filter((event) => event.spec.service === entry.service);
+        expect(opened).toHaveLength(1);
+        expect(opened[0]?.layer).toBeNull();
+        expect(opened[0]?.refusals.join("\n")).toMatch(tamper.text);
+        expect(run.said).not.toMatch(/serving|ready/);
+      }, 30_000);
+    }
   }
 });

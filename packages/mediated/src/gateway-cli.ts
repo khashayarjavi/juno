@@ -112,7 +112,7 @@ export async function runGatewayCli(args: readonly string[], io: GatewayCliIo): 
   // THE shared start-up check, before anything is opened (D-193, D-194).
   let layer: SessionLayer;
   try {
-    layer = SessionLayer.open(gatewayStartupSpec({ session, socket, journal: journalDir, anchor, workspace, grants: grantFiles, anchoring }), { host: io.host, anchoring: io.anchoring ?? ((root) => gitAnchoring(anchoring, root)) });
+    layer = await SessionLayer.open(gatewayStartupSpec({ session, socket, journal: journalDir, anchor, workspace, grants: grantFiles, anchoring }), { host: io.host, anchoring: io.anchoring ?? ((root) => gitAnchoring(anchoring, root)) });
   } catch (error: unknown) {
     if (error instanceof StartupRefused) return refused(io, error.refusals);
     return refused(io, [error instanceof Error ? error.message : String(error)]);
@@ -156,7 +156,7 @@ export async function runGatewayCli(args: readonly string[], io: GatewayCliIo): 
   });
   const admitted = await gateway.admit(file.session);
   if (!admitted.admitted) {
-    io.err(`juno gateway serve: the session was not admitted (journalled):\n${admitted.failures.map((line) => `  - ${line}`).join("\n")}\n`);
+    io.err(`juno gateway serve: the session was not admitted:\n${admitted.failures.map((line) => `  - ${line}`).join("\n")}\n`);
     gateway.close();
     await layer.close();
     return 1;
@@ -171,7 +171,9 @@ export async function runGatewayCli(args: readonly string[], io: GatewayCliIo): 
   }
   // §3.4.1 (D-198): every record is anchored at most one interval after it is written, and once more when the gateway stops.
   layer.startAnchoring();
-  io.out(`juno gateway: session ${admitted.task_id} admitted; serving ${socket}. Stop with Ctrl+C.\n`);
+  io.out(admitted.resumed === true
+    ? `juno gateway: session ${admitted.task_id} was admitted before this start; it goes on from its journal, with the budget and limits it had (D-201); serving ${socket}. Stop with Ctrl+C.\n`
+    : `juno gateway: session ${admitted.task_id} admitted; serving ${socket}. Stop with Ctrl+C.\n`);
   await io.stopped();
   await service.close();
   const unanchored = await layer.close();

@@ -10,8 +10,8 @@ import { type Harness, harness, request, shellRun, turn } from "./helpers.js";
  */
 
 let h: Harness;
-beforeEach(() => {
-  h = harness();
+beforeEach(async () => {
+  h = await harness();
 });
 afterEach(() => {
   h.cleanup();
@@ -88,14 +88,14 @@ describe("§2.7.1 A4: the rejection limit", () => {
     expect(parks()[0]).toMatchObject({ limit: 1 });
 
     h.cleanup();
-    h = harness();
+    h = await harness();
     const nine = Array.from({ length: 9 }, () => turn([rejected()]));
     const ten = h.runner([...nine, turn([])]);
     admitted(ten.runner, { rejection_limit: 10 });
     expect((await ten.runner.run("task-1")).state).toBe("complete_unverified");
 
     h.cleanup();
-    h = harness();
+    h = await harness();
     const tenth = h.runner([...Array.from({ length: 10 }, () => turn([rejected()])), turn([])]);
     admitted(tenth.runner, { rejection_limit: 10 });
     expect((await tenth.runner.run("task-1")).reason).toBe("rejection_limit");

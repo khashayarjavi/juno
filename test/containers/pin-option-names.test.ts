@@ -76,7 +76,7 @@ beforeAll(async () => {
   const usage = { tokens_in: 10, tokens_out: 5, tokens_cached: 0 };
   const provider = new ScriptedProvider(profile, [{ model: profile.model, model_version: profile.model_version, text: "done", tool_calls: [], usage }]);
   runner = new Runner({
-    layer: openTestLayer("runner", { journal: journalRoot, workspaces: [] }),
+    layer: await openTestLayer("runner", { journal: journalRoot, workspaces: [] }),
     registry,
     grants,
     providers: [provider],

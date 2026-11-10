@@ -55,7 +55,7 @@ export function openTestLayer(
     readonly journalOptions?: JournalWriterOptions;
     readonly anchoring?: Anchoring;
   },
-): SessionLayer {
+): Promise<SessionLayer> {
   return SessionLayer.open(
     { service, journal: options.journal, workspaces: options.workspaces, state: options.state ?? [], anchor: options.anchor ?? null },
     { host: ordinaryHost(), anchoring: options.anchoring ?? testAnchoring(), ...(options.clock === undefined ? {} : { clock: options.clock }), ...(options.journalOptions === undefined ? {} : { journal: options.journalOptions }) },

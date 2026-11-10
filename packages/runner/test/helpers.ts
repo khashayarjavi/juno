@@ -193,7 +193,7 @@ export type Harness = {
 };
 
 /** `anchoring`: parts of the layer's anchoring to set (D-198: anchoring belongs to the session layer, not the runner). */
-export function harness(adapter: Adapter = standInAdapter, options: { readonly anchoring?: Partial<Anchoring> } = {}): Harness {
+export async function harness(adapter: Adapter = standInAdapter, options: { readonly anchoring?: Partial<Anchoring> } = {}): Promise<Harness> {
   const dir = mkdtempSync(join(tmpdir(), "juno-runner-"));
   standInRoot = join(dir, "work");
   writeWork(WORK_FILES);
@@ -201,7 +201,7 @@ export function harness(adapter: Adapter = standInAdapter, options: { readonly a
   const anchoring = { ...testAnchoring({ sink: anchors }), ...options.anchoring };
   const now = { value: new Date(Date.parse(T0) + 60 * 60 * 1000) };
   // The layer and the runner share the harness's clock, so anchoring intervals are measured on it (D-198).
-  const layer = openTestLayer("runner", { journal: join(dir, "journal"), workspaces: [join(dir, "work")], state: [{ what: "the checkpoint store", path: join(dir, "checkpoints"), kind: "dir" }], anchoring, clock: () => now.value });
+  const layer = await openTestLayer("runner", { journal: join(dir, "journal"), workspaces: [join(dir, "work")], state: [{ what: "the checkpoint store", path: join(dir, "checkpoints"), kind: "dir" }], anchoring, clock: () => now.value });
   const journal = { root: layer.root };
   const registry = new CapabilityRegistry();
   const registered = registry.register(loadRegistryEntry(SHELL_RUN_FILE), [adapter]);

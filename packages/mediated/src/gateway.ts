@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { type DataClass, type Sensitivity, Task, maxSensitivity, pathWithin } from "../../contracts/src/index.js";
-import { type CanonicalPaths, type EnforcementBoundary, type GovernedSession, type GrantStore, type PathResolver, REFUSED_ADMISSION_CLASS, SessionLayer, type TaskContext, type Verdict, type Workspace } from "../../enforcement/src/index.js";
+import { type CanonicalPaths, type EnforcementBoundary, type GovernedSession, type GrantStore, type PathResolver, REFUSED_ADMISSION_CLASS, SessionLayer, type SessionLimits, type TaskContext, type Verdict, type Workspace } from "../../enforcement/src/index.js";
+import { canonicalJson } from "../../journal/src/index.js";
 import { type Adapter, type CapabilityCall, CapabilityRegistry, RegistryEntry } from "../../registry/src/index.js";
 import { type FilesystemIo, caseFoldingRefusals } from "./filesystem.js";
 import { DeclaredSource, type ReadTarget, classifyRead } from "./reads.js";
@@ -143,8 +144,15 @@ export class McpGateway {
     return this.#task;
   }
 
-  /** Admits the session as a Task (§4.3 V6-6), or says why not; a refusal is journalled at the most restrictive class. */
-  async admit(input: unknown): Promise<{ readonly admitted: true; readonly task_id: string } | { readonly admitted: false; readonly failures: readonly string[] }> {
+  /**
+   * Admits the session as a Task (§4.3 V6-6), or says why not; a refusal is journalled at the most restrictive class.
+   *
+   * An id is admitted once (operator ruling D-201). When the journal already holds this id's admission (the gateway
+   * was restarted), nothing is admitted again: the same session goes on exactly as its journal leaves it (`resumed`),
+   * with the budget, time limit, rejections and floor it had. That needs the session file to declare the very session
+   * that was admitted; a changed one is refused and needs a new `session_id`.
+   */
+  async admit(input: unknown): Promise<{ readonly admitted: true; readonly task_id: string; readonly resumed?: true } | { readonly admitted: false; readonly failures: readonly string[] }> {
     const parsed = GatewaySessionRequest.safeParse(input);
     if (!parsed.success) return { admitted: false, failures: [parsed.error.message] };
     const request = parsed.data;
@@ -187,6 +195,34 @@ export class McpGateway {
       if (!result.registered) failures.push(`tool ${tool.tool} did not pass registration review: ${JSON.stringify(result.refusals)}`);
       tools.set(tool.tool, { capability: entry.data.capability.id, reads: tool.reads, constants: tool.constants });
     }
+    if (this.#task === null && this.#layer.admitted(id)) {
+      // D-201: never a second admission. The record is the admitted session's, so nothing is added to it for a refusal.
+      const record = this.#layer.recovered().find((candidate) => candidate.id === id);
+      const admission = record?.admission ?? null;
+      if (record === undefined || admission === null || admission["mode"] !== "gateway" || canonicalJson(admission["request"]) !== canonicalJson(request)) {
+        failures.unshift(`the journal already holds an admission of ${id}, and this session file does not declare that same session; an id is admitted once, so a new or changed session needs a new session_id (D-201)`);
+      }
+      if (failures.length > 0) return { admitted: false, failures };
+      let task = Task.parse(admission?.["task"]);
+      let floor: Sensitivity = "public";
+      for (const { entry, payload } of record?.entries ?? []) {
+        if (entry.kind === "capability_result") floor = maxSensitivity(floor, entry.data_class.sensitivity);
+        const state = z.object({ type: z.literal("state"), to: z.literal("failed") }).safeParse(payload);
+        if (entry.kind === "note" && state.success) task = Task.parse({ ...task, state: "failed", runtime_substate: null });
+        // A quarantine is permanent (§2.4, D-064): the ones this session's journal records are applied again.
+        const parked = z.object({ capability: z.string(), verdict: z.object({ reason: z.literal("adapter_quarantined"), adapter: z.string(), observation: z.unknown() }) }).safeParse(payload);
+        if (entry.kind === "capability_call" && parked.success) registry.quarantine({ capability: parked.data.capability, adapter: parked.data.verdict.adapter, observation: parked.data.verdict.observation as never });
+      }
+      const resumed = this.#layer.resume(id, gatewayLimits(request, task.budget), { now: () => this.#clock().getTime() });
+      if (resumed === null) return { admitted: false, failures: [`the journal holds no admission of ${id}`] };
+      this.#request = request;
+      this.#task = task;
+      this.#tools = tools;
+      this.#floor = floor;
+      this.#boundary = this.#layer.boundary(registry, this.#options.grants, this.#clock);
+      this.#session = resumed.session;
+      return { admitted: true, task_id: id, resumed: true };
+    }
     if (failures.length > 0) {
       this.#layer.refuse(id, { mode: "gateway", failures }, GATEWAY_ACTOR);
       // §3.4.1 (D-198): a refused admission is anchored too; a failure is journalled by the layer.
@@ -221,14 +257,7 @@ export class McpGateway {
     this.#tools = tools;
     this.#boundary = this.#layer.boundary(registry, this.#options.grants, this.#clock);
     // §2.7.1 A4, §4.3: the layer owns the session's rejection limit, its budget (every call, and wall clock from admission) and its journal.
-    this.#session = this.#layer.admit(id, {
-      rejection_limit: request.rejection_limit,
-      ttl: request.ttl,
-      budget: task.budget,
-      metered: ["turns", "wall_clock_ms"],
-      clock: "from_admission",
-      park_fields: { mode: "gateway", answer: "isError" },
-    }, { dataClass: { sensitivity: "internal", integrity: "operator" }, now: () => this.#clock().getTime(), actor: GATEWAY_ACTOR, payload: { mode: "gateway", admitted_at: this.#clock().toISOString(), task, request, unmetered: ["tokens", "currency"] } });
+    this.#session = this.#layer.admit(id, gatewayLimits(request, task.budget), { dataClass: { sensitivity: "internal", integrity: "operator" }, now: () => this.#clock().getTime(), actor: GATEWAY_ACTOR, payload: { mode: "gateway", admitted_at: this.#clock().toISOString(), task, request, unmetered: ["tokens", "currency"] } });
     // §3.4.1 (D-198): the shared layer records the interval and anchors the admitted session's head before its first
     // call; a session whose head cannot be anchored is never run.
     if (!(await this.#session.anchor(this.#class(), { force: true }))) {
@@ -403,6 +432,11 @@ export class McpGateway {
   #append(taskId: string, kind: "note" | "capability_result", dataClass: DataClass, actor: string, payload: unknown): number {
     return this.#layer.append(taskId, kind, dataClass, payload, { actor, provider: kind === "capability_result" ? GATEWAY_ADAPTER : null });
   }
+}
+
+/** §2.7.1 A4, §4.3, §6.4: a gateway session's limits, the same at admission and when it is rebuilt from its journal (D-201). */
+function gatewayLimits(request: z.output<typeof GatewaySessionRequest>, budget: z.infer<typeof Task>["budget"]): SessionLimits {
+  return { rejection_limit: request.rejection_limit, ttl: request.ttl, budget, metered: ["turns", "wall_clock_ms"], clock: "from_admission", park_fields: { mode: "gateway", answer: "isError" } };
 }
 
 /** §4.3 V6-3: a park answers with its reason; the remedy applies to the retry. */

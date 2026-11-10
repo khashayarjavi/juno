@@ -1384,19 +1384,17 @@ export class Runner {
   }
 
   /**
-   * Grant charges and failed tasks survive a restart (D-066). The store must
-   * hold no charges yet: the runner's record is the only count.
+   * Failed tasks survive a restart (D-066). Grant charges do too, through the
+   * shared session layer (D-201).
    */
   #rebuildRunnerRecord(): void {
-    for (const id of this.#grants.ids()) {
-      if (this.#grants.invocations(id) > 0) throw new RunnerError(`grant ${id} already has charges; the runner rebuilds every count from its record at start`);
-    }
     for (const entry of readTrajectory(this.#layer.root, RUNNER_RECORD)) {
       const record = RunnerRecordEntry.safeParse(this.#payloadOf(entry.payload_ref));
       if (!record.success) throw new RunnerError(`the runner record at ${RUNNER_RECORD} entry ${String(entry.seq)} is not readable`);
-      if (record.data.type === "grant_charge") {
-        if (this.#grants.get(record.data.grant) !== undefined) this.#grants.charge(record.data.grant);
-      } else if (record.data.type === "task_failed") this.#unverifiable.set(record.data.task, record.data.reason);
+      // D-201: every grant's use count is rebuilt by the shared session layer, for every mode, from the calls the journal
+      // shows each grant authorized (`requireGrants`, in the constructor). The `grant_charge` notes stay as the runner's
+      // record that a charge was durable before its effect (D-066); they are no longer a second count.
+      if (record.data.type === "task_failed") this.#unverifiable.set(record.data.task, record.data.reason);
     }
   }
 

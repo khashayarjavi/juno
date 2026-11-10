@@ -29,7 +29,7 @@ const holder = (fields: Record<string, unknown> = {}): string =>
 
 let root: AbsolutePath;
 let lockPath: string;
-beforeEach(() => {
+beforeEach(async () => {
   root = mkdtempSync(join(tmpdir(), "juno-lock-")) as AbsolutePath;
   lockPath = join(root, LOCK_FILE);
 });
@@ -181,8 +181,8 @@ describe("a stale runner lock is cleared only when its owner is provably dead (D
 
 describe("the runner records a cleared lock (D-069)", () => {
   let h: Harness;
-  beforeEach(() => {
-    h = harness();
+  beforeEach(async () => {
+    h = await harness();
   });
   afterEach(() => {
     h.cleanup();

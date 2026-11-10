@@ -1,3 +1,4 @@
+#!/usr/local/bin/node
 // Test-only stand-in for git in the anchor path (D-198), for containers whose image has no git (D-001: nothing is
 // downloaded into an image). JUNO's GitAnchorSink runs `git -C <clone> -c ... -c ... <command> ...`. Here `pull`, `add`
 // and `commit` succeed and do nothing; `push` copies every anchor file in the clone to the stand-in destination

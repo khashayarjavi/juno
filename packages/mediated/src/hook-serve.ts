@@ -121,7 +121,7 @@ export async function runHookServeCli(args: readonly string[], io: HookServeIo):
   // THE shared start-up check, before anything is opened; the two checks above open nothing either (D-193, D-194).
   let layer: SessionLayer;
   try {
-    layer = SessionLayer.open(hookStartupSpec({ socket, control, journal, anchor, workspace, checkpoints, protect, anchoring }), { host: io.host, anchoring: io.anchoring ?? ((root) => gitAnchoring(anchoring, root)) });
+    layer = await SessionLayer.open(hookStartupSpec({ socket, control, journal, anchor, workspace, checkpoints, protect, anchoring }), { host: io.host, anchoring: io.anchoring ?? ((root) => gitAnchoring(anchoring, root)) });
   } catch (error: unknown) {
     return refused(io, "serve", error instanceof StartupRefused ? error.refusals : [error instanceof Error ? error.message : String(error)]);
   }
@@ -157,6 +157,10 @@ export async function runHookServeCli(args: readonly string[], io: HookServeIo):
   }
   // §3.4.1 (D-198): every record is anchored at most one interval after it is written, and once more when the service stops.
   layer.startAnchoring();
+  // D-201: sessions admitted before this start go on from the journal; they are never admitted again.
+  const rebuilt = sessions.rebuilt;
+  if (rebuilt.sessions.length > 0) io.out(`juno hook: ${String(rebuilt.sessions.length)} session(s) admitted before this start go on from the journal, with the budget and limits they had (D-201).\n`);
+  for (const [id, why] of rebuilt.failed) io.err(`juno hook: ${id} could not be rebuilt from the journal and stays closed: ${why}\n`);
   io.out(`juno hook: serving ${socket}; admit a session with: juno hook admit --control ${control} <session file>. Stop with Ctrl+C.\n`);
   io.ready?.({ layer });
   await io.stopped();
