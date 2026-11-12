@@ -310,7 +310,9 @@ export class SessionLayer {
       if (last !== undefined) this.#written.set(id, last.entry.data_class);
       if (id === this.#indexId) continue;
       for (const item of entries) {
-        if ((item.entry.kind === "note" || item.entry.kind === "park" || item.entry.kind === "capability_call" || item.entry.kind === "resume") && item.payload === undefined) {
+        // Every entry's payload must be there and readable, whatever its kind (D-204): the chain and the anchors cover the
+        // entries, and a payload removed or damaged in the blob store would otherwise be state silently dropped.
+        if (item.payload === undefined) {
           refusals.push(`journal record ${id} entry ${String(item.entry.seq)} has no readable payload, so what it records cannot be rebuilt (§3.4.5, D-201)`);
         }
       }

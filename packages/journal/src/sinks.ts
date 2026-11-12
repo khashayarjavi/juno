@@ -207,6 +207,7 @@ export class GitAnchorSink implements AnchorSink {
     // host. Push first, so what is listed is what the destination holds; a push that fails fails the listing.
     await this.#run(["pull", "--rebase", "--quiet"]);
     await this.#push();
+    await this.#appendOnly();
     return readAnchorDirectory(this.#clone, task);
   }
 
@@ -214,6 +215,23 @@ export class GitAnchorSink implements AnchorSink {
   async listMany(tasks: readonly string[]): Promise<Map<string, unknown[]>> {
     await this.#run(["pull", "--rebase", "--quiet"]);
     await this.#push();
+    await this.#appendOnly();
     return new Map(tasks.map((task) => [task, readAnchorDirectory(this.#clone, task)]));
+  }
+
+  /**
+   * The destination's protection keeps every commit, but an ordinary commit can still remove or change an anchor file,
+   * and the files are what is read (D-204). So the whole history is read too: anchors are only ever added, and a
+   * history in which any commit (a merge included) deletes, changes or renames an anchor file is not a destination the
+   * journal can be checked against. Such a commit can never be taken back out of a protected history, so the refusal
+   * stays until the operator acts. A history that cannot be read is refused the same way.
+   */
+  async #appendOnly(): Promise<void> {
+    const result = await outbound(["-C", this.#clone, "log", "-m", "--diff-filter=DMRT", "--format=", "--name-only"], this.#git);
+    if (result.exitCode !== 0) throw new AnchorSinkError(`the anchor repository's history could not be read: ${result.stderr.toString("utf8").trim()}`);
+    const touched = [...new Set(result.stdout.toString("utf8").split("\n").map((line) => line.trim()).filter((line) => /^[0-9a-f]{64}\/[0-9]{12}\.json$/.test(line)))];
+    if (touched.length > 0) {
+      throw new AnchorSinkError(`the anchor repository's history removes or changes ${String(touched.length)} anchor file(s) (${touched[0] ?? ""}); anchors are only ever added, so this repository can no longer vouch for the journal (§3.4.1, D-204)`);
+    }
   }
 }

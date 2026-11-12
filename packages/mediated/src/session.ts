@@ -306,6 +306,8 @@ export class MediatedSessions {
   readonly #refused = new Map<string, ReadonlyMap<string, string>>();
   /** Sessions the journal admitted that could not be rebuilt at start, and why: they stay closed, and are never admitted again (D-201). */
   readonly #unrestored = new Map<string, string>();
+  /** Grant files a rebuilt session's admission named that could not be read again at start; those grants are absent. */
+  readonly #grantWarnings: string[] = [];
 
   constructor(options: MediatedOptions) {
     if (options.gateway !== undefined && !GATEWAY_NAME.test(options.gateway.server)) throw new MediatedError(`the gateway's server name ${JSON.stringify(options.gateway.server)} must be letters, digits and hyphens only (D-190)`);
@@ -341,8 +343,8 @@ export class MediatedSessions {
   }
 
   /** The sessions rebuilt from the journal when this service started, and the ones that could not be (D-201). */
-  get rebuilt(): { readonly sessions: readonly string[]; readonly failed: ReadonlyMap<string, string> } {
-    return { sessions: [...this.#sessions.keys()], failed: this.#unrestored };
+  get rebuilt(): { readonly sessions: readonly string[]; readonly failed: ReadonlyMap<string, string>; readonly grants: readonly string[] } {
+    return { sessions: [...this.#sessions.keys()], failed: this.#unrestored, grants: [...this.#grantWarnings] };
   }
 
   /**
@@ -384,22 +386,27 @@ export class MediatedSessions {
   #restore(record: RecoveredRecord): void {
     const admitted = z.object({ task: Task, request: SessionRequest, grant_files: z.array(z.string()).default([]) }).parse(record.admission);
     const request = admitted.request;
-    for (const file of admitted.grant_files) this.loadGrant(file);
+    for (const file of admitted.grant_files) {
+      const loaded = this.loadGrant(file);
+      if (!loaded.ok) this.#grantWarnings.push(...loaded.failures.map((why) => `${record.id}: ${why}`));
+    }
     const built = this.#registryFor(request);
     let task = admitted.task;
     let floor: Sensitivity = "public";
     const pending: Session["pending"] = new Map();
     const Pending = z.object({ call_seq: z.int().nullable().default(null), tool_use_id: z.string().nullable().default(null), reads: SensitivitySchema });
+    if (request.reversible_workspaces.length > 0 && this.#checkpoints === undefined) throw new MediatedError("the session has reversible workspaces and this service has no checkpoint store (D-136)");
     for (const { entry, payload } of record.entries) {
+      // The floor comes from the chained entry itself, never from its payload (D-204).
+      if (entry.kind === "capability_result") floor = maxSensitivity(floor, entry.data_class.sensitivity);
       const body = z.record(z.string(), z.unknown()).safeParse(payload);
-      if (!body.success) continue;
+      if (!body.success) throw new MediatedError(`entry ${String(entry.seq)} has no readable payload`);
       const type = body.data["type"];
       if (entry.kind === "capability_call") {
         const verdict = z.object({ capability: z.string(), verdict: z.object({ reason: z.literal("adapter_quarantined"), adapter: z.string(), observation: z.unknown() }) }).safeParse(payload);
         // A quarantine is permanent (§2.4, D-064): the ones this session's journal records are applied again.
         if (verdict.success) built.registry.quarantine({ capability: verdict.data.capability, adapter: verdict.data.verdict.adapter, observation: verdict.data.verdict.observation as never });
       } else if (entry.kind === "capability_result") {
-        floor = maxSensitivity(floor, entry.data_class.sensitivity);
         pending.delete(typeof body.data["tool_use_id"] === "string" ? body.data["tool_use_id"] : "");
       } else if (entry.kind === "note" && (type === "updated_input" || type === "authorized" || type === "gateway_call")) {
         const call = Pending.parse(payload);
@@ -871,8 +878,8 @@ export class MediatedSessions {
     // Restrictive (D-192): the hook does not know whether the gateway will reject this call, so passing it on does not
     // clear the session's count of consecutive rejections (§2.7.1 A4); the gateway keeps its own count.
     const reads = await this.#classify(session, [{ kind: "tool_result", tool: input.tool_name }]);
-    session.pending.set(input.tool_use_id ?? `gateway-${String(session.governed.spent().turns)}`, { call_seq: null, reads, gateway: true });
-    this.#append(session.task.id, "note", this.#class(session), SESSION_ACTOR, { type: "gateway_call", tool: input.tool_name, tool_use_id: input.tool_use_id ?? null, mcp_server: server, judged_by: "gateway", reads });
+    const seq = this.#append(session.task.id, "note", this.#class(session), SESSION_ACTOR, { type: "gateway_call", tool: input.tool_name, tool_use_id: input.tool_use_id ?? null, mcp_server: server, judged_by: "gateway", reads });
+    session.pending.set(input.tool_use_id ?? `gateway-${String(seq)}`, { call_seq: null, reads, gateway: true });
     return { decision: "none" };
   }
 

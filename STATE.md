@@ -3,7 +3,7 @@
 ## Current increment
 **Slice 1.5 — finishing: the operator setup document, the evidence document, and the restart fix you ruled on (D-201)** (D-199, D-201, D-202). Increment 6, the last increment of the plan, is merged (PR #48). Branch `claude/gracious-euler-mt05yr` (this session's only pushable branch); it carries PR #49's commits from `claude/practical-volta-hjzfmz` unchanged, and its PR supersedes PR #49. Spec v0.6.1. No objection open.
 
-Status (2026-11-10): **your ruling D-201 is built (D-202); review round 3 ended DO NOT MERGE and its two findings are fixed (D-203); round 4 and the merge gate are next.** `make verify: GREEN` locally on the D-203 fixes (1,336 unit, 118 container); `make mediated-e2e` 15/15 with the real Claude Code 2.1.322 (on the D-202 head). Draft PR [khashayarjavi/juno#50](https://github.com/khashayarjavi/juno/pull/50) (supersedes #49).
+Status (2026-11-10): **your ruling D-201 is built (D-202); review rounds 3 and 4 each ended DO NOT MERGE and their findings are fixed (D-203, D-204); round 5, the last, and the merge gate are next.** `make verify: GREEN` locally on the D-204 fixes (1,340 unit, 118 container); `make mediated-e2e` 15/15 with the real Claude Code 2.1.322 and the real git. Draft PR [khashayarjavi/juno#50](https://github.com/khashayarjavi/juno/pull/50) (supersedes #49).
 - **Your ruling, recorded as D-201:** fix the class "enforcement state forgotten across a restart" in the shared session layer; verify the journal and its anchors at start and refuse to start if either fails; a restart property test for all three modes, shown failing on the old head; a tamper test; then round 3.
 - **What D-202 changes, in plain words.**
   - **Every service checks its whole journal before it starts.** After the start-up check, it verifies every record's chain and compares each record with the anchors held in `juno-anchors`. It refuses to start when an entry was changed, a record was rewritten, cut, deleted or planted, an anchor disagrees or carries another key's signature, or the anchors cannot be read.
@@ -17,7 +17,7 @@ Status (2026-11-10): **your ruling D-201 is built (D-202); review round 3 ended 
   - A journal that no longer verifies stops the service from starting at all, a torn write after a power loss included. Recovery is by hand: a new, empty journal folder (the guide says how). Your Increment 6 ruling (a task with a broken journal is failed and recorded) still holds for a journal that breaks while the service runs.
   - Entries newer than the last anchor are not a failure (§3.4.1's interval); they are anchored at start, before anything is served.
   - A hook session's grants are read again from your grant files after a restart; they are not copied into the journal.
-- **The guide** (`docs/operator-setup.md`) now says what a restart does (Part G, Part H) and what to do when the service refuses to start. **The evidence document** lists two new proven properties (14, 15) and seven new residuals (15 to 21).
+- **The guide** (`docs/operator-setup.md`) now says what a restart does (Part G, Part H) and what to do when the service refuses to start. **The evidence document** lists two new proven properties (14, 15) and nine new residuals (15 to 23).
 
 - **Review round 3 (PR #50, head 9eca196; CI run 42790024827): DO NOT MERGE.** Checks 1 to 4 and 6 PASS; 5, 7 and 8 FAIL, for two findings, both new and both fixed (D-203):
   - A session that the once-a-minute background anchoring had stopped for good was stopped only in memory, so a restart let it run again. The stop is now written to the journal the moment it happens.
@@ -25,8 +25,14 @@ Status (2026-11-10): **your ruling D-201 is built (D-202); review round 3 ended 
   - The restart property now also loses the anchor repository mid-run, in every mode. That found one more: after a task that could not start for lack of an anchor, the runner refused every later task until restarted. Fixed.
   - Not a STOP: neither mechanism was fixed in an earlier round (CLAUDE.md §7 step 5).
 
+- **Review round 4 (PR #50, head 3e31d71; CI run 42794173859 green): DO NOT MERGE.** Checks 1 to 4 and 6 PASS; 5, 7 and 8 FAIL, for two findings, both new and both fixed (D-204):
+  - A restarted hook service forgot how sensitive a session's reading had become when one stored result was missing from the journal's storage. A service now refuses to start if any stored record content is missing, and the hook takes that level from the chained entry itself.
+  - Someone holding the anchor push key could delete anchor files from `juno-anchors` with an ordinary commit, then delete the journal, and the service started as new. JUNO now reads the repository's whole history at every start and refuses a repository where an anchor was ever removed or changed. Proven with the real git.
+  - **Two limits you should know (evidence items 22 and 23):** the runner's own clone of `juno-anchors` is on the same machine, so whoever takes over the runner account could point it at another repository; only your own check against a fresh copy from GitHub (Part G step 7) shows that. Closing it needs the repository pinned where the runner cannot change it, which is not in Slice 1.5.
+  - Round 4 was cut off by a usage limit twice before it produced a verdict (2026-11-10); it was run again on 2026-11-12.
+
 **Left, in order:**
-1. CI green on the head, review round 4 (limit 5, D-157), the merge gate (CLAUDE.md §7 step 6).
+1. `make verify` and CI green on the head, review round 5 (the last: limit 5, D-157; a DO NOT MERGE there is a STOP), the merge gate (CLAUDE.md §7 step 6).
 2. Then Slice 1.5 is complete: STOP and report.
 
 ### Review history of PR #49 (superseded by this branch's PR)

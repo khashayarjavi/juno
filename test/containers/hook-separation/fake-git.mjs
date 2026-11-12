@@ -17,7 +17,8 @@ for (let index = 0; index < args.length; index += 1) {
   else rest.push(args[index]);
 }
 const command = rest[0];
-if (clone === null || !["pull", "add", "commit", "push"].includes(command)) {
+// `log` (the history check, D-204) prints nothing: this stand-in keeps no history and never removes an anchor.
+if (clone === null || !["pull", "add", "commit", "push", "log"].includes(command)) {
   process.stderr.write(`fake git: unsupported ${JSON.stringify(args)}\n`);
   process.exit(2);
 }

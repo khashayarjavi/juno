@@ -95,4 +95,29 @@ describe("§3.4.1: the git anchor destination (D-122)", () => {
     await git(["clone", "--quiet", remote, reader]);
     expect((readAnchorDirectory(reader, taskDigest("task-git")) as { seq: number }[]).map((anchor) => anchor.seq)).toEqual([1, 4]);
   });
+
+  // proves §3.4.1 (D-204): the destination keeps every commit, but an ordinary commit can still remove an anchor file,
+  // and the push is accepted. The sink reads the history too, so such a repository no longer vouches for anything: the
+  // listing a service's start-up check depends on fails, for every task, and stays failed
+  it("refuses a repository whose history removes or changes an anchor, even by an ordinary accepted push", async () => {
+    const fresh = join(dir, "clone-intact");
+    await git(["clone", "--quiet", remote, fresh]);
+    const sink = new GitAnchorSink({ clone: fresh });
+    await sink.append(anchorOf("task-kept", head(1), new Date("2026-11-04T11:00:00Z"), key.privateKey));
+    await sink.append(anchorOf("task-gone", head(1), new Date("2026-11-04T11:01:00Z"), key.privateKey));
+    // Positive control: an intact history lists.
+    expect((await sink.listMany([taskDigest("task-kept"), taskDigest("task-gone")])).get(taskDigest("task-gone"))).toHaveLength(1);
+    // Whoever holds the push key removes one task's anchors with a normal commit; the protected destination accepts it.
+    const attacker = join(dir, "attacker");
+    await git(["clone", "--quiet", remote, attacker]);
+    expect((await git(["-C", attacker, "rm", "-r", "--quiet", taskDigest("task-gone")])).exitCode).toBe(0);
+    expect((await git(["-C", attacker, "commit", "--quiet", "-m", "tidy"])).exitCode).toBe(0);
+    expect((await git(["-C", attacker, "push", "--quiet", "origin", "main"])).exitCode).toBe(0);
+    await expect(sink.listMany([taskDigest("task-gone")])).rejects.toThrow(/history removes or changes 1 anchor file/);
+    await expect(sink.list(taskDigest("task-kept"))).rejects.toThrow(/history removes or changes/);
+    // Putting the file back does not undo it: the removal is in the history for good.
+    await git(["-C", attacker, "revert", "--no-edit", "HEAD"]);
+    expect((await git(["-C", attacker, "push", "--quiet", "origin", "main"])).exitCode).toBe(0);
+    await expect(sink.list(taskDigest("task-gone"))).rejects.toThrow(/history removes or changes/);
+  });
 });

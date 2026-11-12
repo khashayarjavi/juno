@@ -9,7 +9,7 @@ import { MemoryAnchorSink, testAnchoring, testJournalKey } from "../../enforceme
 import { ordinaryHost, openTestLayer } from "../../enforcement/test/layer.js";
 import { TEST_ANCHOR, signed } from "../../enforcement/test/test-keys.js";
 import { type JournalKey, JournalWriter, anchorOf, anchorPath, checkAnchors, listRecords, readPayload, readTrajectory, taskDigest, verifyTrajectory } from "../../journal/src/index.js";
-import { entriesFile, taskDir } from "../../journal/src/layout.js";
+import { blobFile, entriesFile, taskDir } from "../../journal/src/layout.js";
 import { systemFilesystemIo } from "../../mediated/src/filesystem.js";
 import { MCP_REVISION, McpGateway, type Upstream } from "../../mediated/src/gateway.js";
 import { type GatewayCliIo, runGatewayCli } from "../../mediated/src/gateway-cli.js";
@@ -938,6 +938,17 @@ const TAMPERS: readonly Tamper[] = [
       JournalWriter.open(journalAbs()).append("session-planted", forgedEntry, new TextEncoder().encode(JSON.stringify({ type: "admission", outcome: "admitted" })));
     },
     text: /not named by the journal's own record/,
+  },
+  {
+    // The payload one entry names is removed from the blob store: the chain and the anchors still agree, but what the
+    // entry records can no longer be rebuilt (D-204).
+    name: "a stored payload was removed",
+    arrange: (record) => {
+      const entry = readTrajectory(journalAbs(), record).at(-1);
+      if (entry === undefined) throw new Error("the record has no entry");
+      rmSync(blobFile(journalAbs() as never, entry.payload_ref));
+    },
+    text: /has no readable payload/,
   },
   {
     // The anchors cannot be read, so nothing can be verified.

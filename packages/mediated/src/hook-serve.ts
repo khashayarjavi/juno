@@ -160,6 +160,7 @@ export async function runHookServeCli(args: readonly string[], io: HookServeIo):
   // D-201: sessions admitted before this start go on from the journal; they are never admitted again.
   const rebuilt = sessions.rebuilt;
   if (rebuilt.sessions.length > 0) io.out(`juno hook: ${String(rebuilt.sessions.length)} session(s) admitted before this start go on from the journal, with the budget and limits they had (D-201).\n`);
+  for (const why of rebuilt.grants) io.err(`juno hook: a grant file could not be read again, so its grant is absent until the service is restarted with the file in place: ${why}\n`);
   for (const [id, why] of rebuilt.failed) io.err(`juno hook: ${id} could not be rebuilt from the journal and stays closed: ${why}\n`);
   io.out(`juno hook: serving ${socket}; admit a session with: juno hook admit --control ${control} <session file>. Stop with Ctrl+C.\n`);
   io.ready?.({ layer });
