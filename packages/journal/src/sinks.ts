@@ -223,11 +223,13 @@ export class GitAnchorSink implements AnchorSink {
    * The destination's protection keeps every commit, but an ordinary commit can still remove or change an anchor file,
    * and the files are what is read (D-204). So the whole history is read too: anchors are only ever added, and a
    * history in which any commit (a merge included) deletes, changes or renames an anchor file is not a destination the
-   * journal can be checked against. Such a commit can never be taken back out of a protected history, so the refusal
+   * journal can be checked against. Rename detection is turned off (`--no-renames`), so a renamed anchor is listed as
+   * what it is here, a file deleted under its own name (D-205); with it on, git lists only the new name.
+   * Such a commit can never be taken back out of a protected history, so the refusal
    * stays until the operator acts. A history that cannot be read is refused the same way.
    */
   async #appendOnly(): Promise<void> {
-    const result = await outbound(["-C", this.#clone, "log", "-m", "--diff-filter=DMRT", "--format=", "--name-only"], this.#git);
+    const result = await outbound(["-C", this.#clone, "log", "-m", "--no-renames", "--diff-filter=DMT", "--format=", "--name-only"], this.#git);
     if (result.exitCode !== 0) throw new AnchorSinkError(`the anchor repository's history could not be read: ${result.stderr.toString("utf8").trim()}`);
     const touched = [...new Set(result.stdout.toString("utf8").split("\n").map((line) => line.trim()).filter((line) => /^[0-9a-f]{64}\/[0-9]{12}\.json$/.test(line)))];
     if (touched.length > 0) {

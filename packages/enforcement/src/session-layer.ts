@@ -269,6 +269,8 @@ export class SessionLayer {
     for (const item of this.#read(this.#indexId, stored.get(this.#indexId)?.verdict)) {
       const task = field(item.payload, "task");
       if (item.entry.kind === "note" && field(item.payload, "type") === "record" && typeof task === "string") named.push(task);
+      // D-203 journals a failed anchor of this record in it; that note is JUNO's own and names no record (D-205).
+      else if (item.entry.kind === "note" && item.entry.actor === ANCHOR_ACTOR && field(item.payload, "type") === "anchor_failed") continue;
       else refusals.push(`the journal's own record has an entry (seq ${String(item.entry.seq)}) that is not one JUNO writes there (D-202)`);
     }
     for (const id of stored.keys()) {

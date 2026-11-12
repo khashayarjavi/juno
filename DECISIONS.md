@@ -2477,3 +2477,18 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
 - **Left as noted, not changed:** the journal's own record is anchored by the interval and at stop, not at each new entry (evidence item 15); a call that throws between being counted and being journalled is counted by the running service and not by the journal (one call, toward the restrictive side while running); the test stand-in for git stays in the test stack's compose file (D-202).
 - Reason: D-201 to D-203; §3.4.1 ("a destination whose history the host's credentials cannot rewrite"), §3.4.5; D-122, D-126; CLAUDE.md §7 step 5, rule 13 (the git options are proven by the test, not assumed); D8.
 
+## D-205 — STOP after review round 5 on PR #50: the round limit is reached, and one finding repeats D-204's mechanism
+- Date: 2026-11-12
+- Status: Open (STOP for the operator's decision). The round's two findings are fixed with tests; the fixes are not reviewed.
+- Applies to: `packages/journal/src/sinks.ts`; `packages/enforcement/src/session-layer.ts`; tests: `packages/journal/test/git-sink.test.ts`, `packages/runner/test/entry-points.test.ts` (part F); `docs/operator-setup.md`, `docs/evidence/slice-1.5.md`
+- **Round 5** (fresh reviewer, the same prompt as rounds 3 and 4; PR #50 head 74b08c6, CI run 43250936745 green): **DO NOT MERGE.** Checks 1 to 4 and 6 PASS; checks 5, 7 and 8 FAIL, for two findings, both reproduced by the reviewer:
+  - **A (a repeat).** D-204's history check missed an anchor hidden by **renaming** it: git lists a renamed file under its new name only, and the check kept only names that look like anchors. D-204 item 3 said renames were refused; they were not.
+  - **B (new).** D-203 journals a failed anchor in the journal's own record; D-202's start check accepted only `record` notes there. So after an outage of the anchor repository that reached that record, every later start was refused for good, and the only way on was a new journal folder.
+- **Why STOP (CLAUDE.md §7):** "five review rounds ... still end DO NOT MERGE", and finding A is "a MECHANISM already fixed in an earlier round" (D-204). PR #50 is not merged.
+- **Done anyway, as D-192 did, so a further round can start at once if the operator authorises one:**
+  1. The history is read with rename detection off (`git log -m --no-renames --diff-filter=DMT --name-only`), so a renamed anchor file or folder is listed as the deleted file it is. Proven with the real git for a renamed file and a renamed folder, beside the deletion test.
+  2. The start check accepts, in the journal's own record, the `anchor_failed` note the layer itself writes there (actor `juno.anchoring`); anything else there still refuses the start. New test for every service: after such an outage the service does not start while the destination is down, starts again once it is back, still refuses a second admission, and starts a second time.
+  3. The guide says a restart works on the same journal once the repository is reachable; the evidence document gains residual 24 (a service given a new journal folder starts as new).
+- **For the operator to decide:** authorise a further review round on PR #50 (the limit of 5, D-157, is used up), or direct otherwise. Also still open for confirmation: D-202 ruling 4 (a refused start is repaired by hand, on a new journal folder), and the residual in evidence items 22 and 24 (the runner's clone and the service's settings are on the host; only the operator's check against GitHub shows a journal replaced together with them).
+- Reason: CLAUDE.md §7 STOP list; D-157, D-192, D-201 to D-204; §3.4.1; rule 13 (git's behaviour is proven by the test).
+

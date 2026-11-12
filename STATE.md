@@ -3,7 +3,22 @@
 ## Current increment
 **Slice 1.5 — finishing: the operator setup document, the evidence document, and the restart fix you ruled on (D-201)** (D-199, D-201, D-202). Increment 6, the last increment of the plan, is merged (PR #48). Branch `claude/gracious-euler-mt05yr` (this session's only pushable branch); it carries PR #49's commits from `claude/practical-volta-hjzfmz` unchanged, and its PR supersedes PR #49. Spec v0.6.1. No objection open.
 
-Status (2026-11-10): **your ruling D-201 is built (D-202); review rounds 3 and 4 each ended DO NOT MERGE and their findings are fixed (D-203, D-204); round 5, the last, and the merge gate are next.** `make verify: GREEN` locally on the D-204 fixes (1,340 unit, 118 container); `make mediated-e2e` 15/15 with the real Claude Code 2.1.322 and the real git. Draft PR [khashayarjavi/juno#50](https://github.com/khashayarjavi/juno/pull/50) (supersedes #49).
+Status (2026-11-12): **STOPPED after review round 5 on PR #50 (D-205): your decision needed** (below). Your ruling D-201 is built (D-202 to D-205). PR #50 is not merged. `make verify: GREEN` locally on the D-205 fixes (1,345 unit, 118 container); `make mediated-e2e` 15/15 with the real Claude Code 2.1.322 on the head before them (74b08c6).
+
+### STOP after review round 5 on PR #50 (2026-11-12) — your decision needed (D-205)
+- **Why this is a STOP.** CLAUDE.md §7 stops the loop when five review rounds still end DO NOT MERGE, and when a round finds a mechanism already fixed in an earlier round. Round 5 did both.
+- **Round 5** (fresh reviewer, same prompt; head 74b08c6, CI run 43250936745 green): **DO NOT MERGE.** Checks 1 to 4 and 6 PASS; 5, 7 and 8 FAIL, for two findings:
+  1. **A repeat of round 4's finding.** Round 4 found that someone holding the anchor push key could delete anchor files from `juno-anchors` and then delete the journal. My fix read the repository's history for deletions, but missed a file that is **renamed** instead of deleted. So the same trick still worked with a rename.
+  2. **New.** After an outage of `juno-anchors` at the wrong moment (a session admitted, then the service stopped while GitHub was unreachable), JUNO refused to start on that journal ever again. Fail-closed, but the only way on was a new journal folder, where every grant count starts again.
+- **What I did anyway, so a further round can start at once (as in D-192). Not reviewed.**
+  - Renames are now caught: a renamed anchor file or folder is read as the deletion it is. Proven with the real git.
+  - After such an outage the service starts again on the same journal once the repository is reachable. New test for every service.
+- **Your decision:** authorise a further review round on PR #50 (the limit of 5 is used up), or tell me otherwise.
+- **Two more things for you to confirm, unchanged by this STOP:**
+  - A journal that no longer verifies stops the service from starting, and recovery is by hand: a new, empty journal folder (D-202 ruling 4).
+  - **A limit that Slice 1.5 does not close (evidence items 22 and 24):** the runner's clone of `juno-anchors` and the service's settings are on the same machine as the journal. Whoever takes over the runner account could replace the journal together with them, and the service would start as new. Only your own check against a fresh copy from GitHub (guide, Part G step 7) shows that. Closing it needs the anchor repository pinned somewhere the runner cannot change.
+- **Review rounds on this work so far:** round 3 (two findings, D-203), round 4 (two findings, D-204), round 5 (two findings, D-205). Each round's findings were reproduced by the reviewer and fixed with tests. Rounds 4 and 5 were each cut off by a usage limit and run again from the start.
+
 - **Your ruling, recorded as D-201:** fix the class "enforcement state forgotten across a restart" in the shared session layer; verify the journal and its anchors at start and refuse to start if either fails; a restart property test for all three modes, shown failing on the old head; a tamper test; then round 3.
 - **What D-202 changes, in plain words.**
   - **Every service checks its whole journal before it starts.** After the start-up check, it verifies every record's chain and compares each record with the anchors held in `juno-anchors`. It refuses to start when an entry was changed, a record was rewritten, cut, deleted or planted, an anchor disagrees or carries another key's signature, or the anchors cannot be read.
@@ -17,7 +32,7 @@ Status (2026-11-10): **your ruling D-201 is built (D-202); review rounds 3 and 4
   - A journal that no longer verifies stops the service from starting at all, a torn write after a power loss included. Recovery is by hand: a new, empty journal folder (the guide says how). Your Increment 6 ruling (a task with a broken journal is failed and recorded) still holds for a journal that breaks while the service runs.
   - Entries newer than the last anchor are not a failure (§3.4.1's interval); they are anchored at start, before anything is served.
   - A hook session's grants are read again from your grant files after a restart; they are not copied into the journal.
-- **The guide** (`docs/operator-setup.md`) now says what a restart does (Part G, Part H) and what to do when the service refuses to start. **The evidence document** lists two new proven properties (14, 15) and nine new residuals (15 to 23).
+- **The guide** (`docs/operator-setup.md`) now says what a restart does (Part G, Part H) and what to do when the service refuses to start. **The evidence document** lists two new proven properties (14, 15) and ten new residuals (15 to 24).
 
 - **Review round 3 (PR #50, head 9eca196; CI run 42790024827): DO NOT MERGE.** Checks 1 to 4 and 6 PASS; 5, 7 and 8 FAIL, for two findings, both new and both fixed (D-203):
   - A session that the once-a-minute background anchoring had stopped for good was stopped only in memory, so a restart let it run again. The stop is now written to the journal the moment it happens.
@@ -32,7 +47,7 @@ Status (2026-11-10): **your ruling D-201 is built (D-202); review rounds 3 and 4
   - Round 4 was cut off by a usage limit twice before it produced a verdict (2026-11-10); it was run again on 2026-11-12.
 
 **Left, in order:**
-1. `make verify` and CI green on the head, review round 5 (the last: limit 5, D-157; a DO NOT MERGE there is a STOP), the merge gate (CLAUDE.md §7 step 6).
+1. Your decision on the STOP above. If you authorise it: CI green on the head, a further review round, the merge gate (CLAUDE.md §7 step 6).
 2. Then Slice 1.5 is complete: STOP and report.
 
 ### Review history of PR #49 (superseded by this branch's PR)

@@ -963,6 +963,31 @@ const TAMPERS: readonly Tamper[] = [
 describe("D-201 F: every service verifies its journal and its anchors before it starts, and forgets nothing", () => {
   const starting = serviceEntries.filter((entry) => entry.kind !== "class");
 
+  // proves D-203 with D-201 (D-205): an outage of the anchor destination while a new record waits for its first anchor
+  // leaves an `anchor_failed` note in the journal's own record. That note is JUNO's own: once the destination is back,
+  // the service starts again on the same journal, and what was admitted is still admitted.
+  for (const service of SERVICES) {
+    it(`${service}: starts again after an outage that reached the journal's own record`, async () => {
+      const spec = { service, journal: fx.journal, workspaces: [fx.work], state: [], anchor: fx.anchor };
+      const open = (): Promise<SessionLayer> => SessionLayer.open(spec, { host: ordinaryHost(), anchoring: testAnchoring({ sink, journalKey }) });
+      const layer = await open();
+      const limits = { rejection_limit: 2, ttl: 3_600_000, budget: { tokens: 0, currency: 0, wall_clock_ms: 3_600_000, turns: 5 }, metered: ["turns", "wall_clock_ms"] as const, clock: "from_admission" as const };
+      layer.admit("session-kept", limits, { dataClass: { sensitivity: "internal", integrity: "operator" }, payload: { admitted_at: new Date().toISOString() }, actor: "test" });
+      sink.unreachable = "the destination is down";
+      expect(await layer.close()).toContain(layer.journalRecord);
+      expect(noteTypes(fx.journal, layer.journalRecord)).toContain("anchor_failed");
+      // While the destination is down, nothing starts.
+      await expect(open()).rejects.toThrow(/anchor destination could not be read/);
+      sink.unreachable = null;
+      const again = await open();
+      expect(again.admitted("session-kept")).toBe(true);
+      expect(() => again.admit("session-kept", limits, { dataClass: { sensitivity: "internal", integrity: "operator" }, payload: {}, actor: "test" })).toThrow(/admitted once/);
+      // And a second restart is as good as the first.
+      expect(await again.close()).toEqual([]);
+      expect((await open()).admitted("session-kept")).toBe(true);
+    });
+  }
+
   /** The service's first run: it starts, admits what its probe admits, and stops, leaving a journal and its anchors. */
   async function firstRun(entry: (typeof starting)[number]): Promise<string> {
     const probe = COMMAND_PROBES[entry.id];

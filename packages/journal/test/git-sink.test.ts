@@ -120,4 +120,35 @@ describe("§3.4.1: the git anchor destination (D-122)", () => {
     expect((await git(["-C", attacker, "push", "--quiet", "origin", "main"])).exitCode).toBe(0);
     await expect(sink.list(taskDigest("task-gone"))).rejects.toThrow(/history removes or changes/);
   });
+
+  // proves §3.4.1 (D-205): an anchor file moved to another name, or its folder moved, is an anchor removed; git's rename
+  // detection would list only the new name, so the history is read with it off
+  it.each([
+    ["one anchor file renamed", (task: string) => ["mv", `${task}/000000000001.json`, `${task}/000000000001.json.old`]],
+    ["a task's folder renamed", (task: string) => ["mv", task, `old-${task}`]],
+  ])("refuses a repository whose history hides an anchor by renaming: %s", async (name, move) => {
+    const base = join(dir, `rename-${name.replace(/[^a-z]/g, "")}`);
+    const bare = `${base}.git`;
+    expect((await git(["init", "--bare", "--quiet", bare])).exitCode).toBe(0);
+    await git(["-C", bare, "config", "receive.denyNonFastForwards", "true"]);
+    await git(["-C", bare, "config", "receive.denyDeletes", "true"]);
+    const seed = `${base}-seed`;
+    await git(["clone", "--quiet", bare, seed]);
+    writeFileSync(join(seed, "README.md"), "JUNO journal anchors\n");
+    await git(["-C", seed, "add", "README.md"]);
+    await git(["-C", seed, "commit", "--quiet", "-m", "start"]);
+    expect((await git(["-C", seed, "push", "--quiet", "origin", "main"])).exitCode).toBe(0);
+    const runner = `${base}-runner`;
+    await git(["clone", "--quiet", bare, runner]);
+    const sink = new GitAnchorSink({ clone: runner });
+    const task = taskDigest("task-renamed");
+    await sink.append(anchorOf("task-renamed", head(1), new Date("2026-11-04T12:00:00Z"), key.privateKey));
+    expect(await sink.list(task)).toHaveLength(1);
+    const attacker = `${base}-attacker`;
+    await git(["clone", "--quiet", bare, attacker]);
+    expect((await git(["-C", attacker, ...move(task)])).exitCode).toBe(0);
+    expect((await git(["-C", attacker, "commit", "--quiet", "-m", "tidy"])).exitCode).toBe(0);
+    expect((await git(["-C", attacker, "push", "--quiet", "origin", "main"])).exitCode).toBe(0);
+    await expect(sink.listMany([task])).rejects.toThrow(/history removes or changes 1 anchor file/);
+  });
 });
