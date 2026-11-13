@@ -251,18 +251,33 @@ JUNO copies a fingerprint of its journal to this repository at least once a minu
    wsl -d Ubuntu-24.04 -u juno-runner --exec /usr/bin/cat /home/juno-runner/.ssh/juno_anchors.pub | Set-Clipboard
    ```
    Then on `juno-anchors`: **Settings → Deploy keys → Add deploy key**. Title: `juno-runner`. Click in the Key box and press **Ctrl+V**: it shows one line starting `ssh-ed25519` and ending `juno-anchors-push`. (If it shows anything else, for example `BEGIN OPENSSH PRIVATE KEY`, stop: that is the private half; clear the box and tell the agent.) Tick **Allow write access**. Click **Add key**.
-5. **Clone it for the runner.** Runner terminal; replace `<you>` with your GitHub user name:
+5. **Check the push key reaches GitHub.** Runner terminal:
    ```
    ssh -T git@github.com
    ```
-   The first time, it asks whether to trust GitHub's host key and shows a fingerprint. Open GitHub's page "GitHub's SSH key fingerprints" (docs.github.com, search for that title) and compare the fingerprint shown with the one listed there for ED25519; type `yes` only if they match exactly. It then prints `Hi <you>/juno-anchors! You've successfully authenticated, but GitHub does not provide shell access.` Then:
-   ```
-   git clone git@github.com:<you>/juno-anchors.git /var/lib/juno-runner/juno-anchors
-   git -C /var/lib/juno-runner/juno-anchors push --dry-run
-   ```
+   The first time, it asks whether to trust GitHub's host key and shows a fingerprint. Open GitHub's page "GitHub's SSH key fingerprints" (docs.github.com, search for that title) and compare the fingerprint shown with the one listed there for ED25519; type `yes` only if they match exactly. It then prints `Hi <you>/juno-anchors! You've successfully authenticated, but GitHub does not provide shell access.` Keep GitHub's page open for the next step. (You do not clone the repository: JUNO keeps its own copy and rebuilds it from GitHub at every start.)
 6. **Check the protection without touching history.** On GitHub: **Settings → Rules → Rulesets → protect-history** shows **Active**, the default branch as target, and both protections ticked. Do not try to delete or force-push anything to test it.
+7. **Pin the repository where `juno-runner` cannot change it (D-206, D-208).** Which repository JUNO anchors to, and which server it believes is GitHub, are written in two files that belong to root. `juno-runner` can read them and cannot change them, so nothing that takes over `juno-runner` can point JUNO at another repository. Admin terminal:
+   ```
+   ssh-keyscan -t ed25519 github.com 2>/dev/null | sudo tee /etc/juno/anchors_known_hosts
+   ssh-keygen -lf /etc/juno/anchors_known_hosts
+   ```
+   The second line prints one line containing `SHA256:` and 43 more characters. Compare it, character by character, with the ED25519 fingerprint on GitHub's page from step 5. **If they differ, stop and tell the agent.** If they match, select the whole `SHA256:...` text and copy it. Then:
+   ```
+   sudo cp /opt/juno/docs/examples/anchors.example.json /etc/juno/anchors.json
+   sudo nano /etc/juno/anchors.json
+   ```
+   In nano, change three things and nothing else:
+   - in `url`, replace `<you>` with your GitHub user name;
+   - replace the whole `<the ED25519 fingerprint ...>` text with the `SHA256:...` you copied;
+   - replace the whole `<the day you made your signing key ...>` text with the day you did Part B, written like `2026-11-13T00:00:00Z`. This is the journal's *recovery epoch*: JUNO refuses, on this journal, every grant signed before it. For your first journal it only has to be earlier than your first grant.
+   Save with **Ctrl+O**, Enter, and leave with **Ctrl+X**. Then:
+   ```
+   sudo chown root:root /etc/juno/anchors.json /etc/juno/anchors_known_hosts
+   sudo chmod 0644 /etc/juno/anchors.json /etc/juno/anchors_known_hosts
+   ```
 
-**Check:** step 5's `ssh -T` line names `juno-anchors`, and `push --dry-run` prints `Everything up-to-date`.
+**Check:** step 5's `ssh -T` line names `juno-anchors`. `ls -l /etc/juno/anchors.json /etc/juno/anchors_known_hosts` shows `root root` and `-rw-r--r--` on both lines. Part G step 4's `juno hook check` judges both files again and says so.
 
 ## Part F — what Claude Code may read (read once, about 10 minutes)
 
@@ -317,7 +332,7 @@ A `sources` list with folders and the web looks like this:
    ```
    sudo /opt/node22/bin/node /opt/juno/dist/runner/src/juno.js hook check --agent-user juno-agent --runner-user juno-runner --socket /var/lib/juno-hook/hook.sock --client /opt/juno/dist/mediated/src/juno-hook.js --node /opt/node22/bin/node --state /var/lib/juno-runner --workspace /srv/juno-work --anchor /etc/juno/operator.pub
    ```
-   **Check:** it prints `separated from the runner` and `case-sensitive Linux file system`.
+   **Check:** it prints `separated from the runner`, `case-sensitive Linux file system`, and `The anchor repository and its host key are pinned in root's own file`. If it refuses with a line about `the anchor pin`, redo Part D step 7 and send the agent the refusal line if it stays.
 5. **Admit the session.** Runner terminal:
    ```
    /opt/node22/bin/node /opt/juno/dist/runner/src/juno.js hook admit --control /var/lib/juno-runner/admit.sock /var/lib/juno-runner/session.json
@@ -336,7 +351,7 @@ A `sources` list with folders and the web looks like this:
    rm -rf ~/anchors-check
    git clone --quiet https://github.com/<you>/juno-anchors.git ~/anchors-check
    ```
-   Stopping the service anchors what is pending. Then run the `Check its journal with:` line from step 5, but with `--anchors ~/anchors-check` in place of `--anchors /var/lib/juno-runner/juno-anchors`.
+   Stopping the service anchors what is pending. Then run the `Check its journal with:` line from step 5, but with `--anchors ~/anchors-check` in place of `--anchors /var/lib/juno-runner/juno-anchors`. (That folder is only JUNO's own copy of the repository; JUNO rebuilds it from GitHub at every start and never trusts it.)
    **Check:** it prints JSON with `"ok": true` and `"unanchored": 0`. Then start the service again: `systemctl --user start juno-hook.service`.
 
 A session JUNO did not admit is denied every call. Each new Claude Code session needs its own `session_id` (step 2) and `juno hook admit` (step 5).
@@ -347,6 +362,14 @@ A session JUNO did not admit is denied every call. Each new Claude Code session 
 - a new piece of work still needs a new `session_id` and a new `juno hook admit`.
 
 If the journal was changed, cut or deleted, if an anchor disagrees with it, or if `juno-anchors` cannot be reached, **the service refuses to start** and says which record and why (see "When something goes wrong").
+
+**What every start checks against GitHub (D-206, D-208).** At every start the service fetches `juno-anchors` afresh from the address in `/etc/juno/anchors.json`, accepting only the server whose key is in `/etc/juno/anchors_known_hosts`. It compares its own copy (`/var/lib/juno-runner/juno-anchors`), its journal and its settings with what GitHub holds:
+- a copy that is not a copy of your repository, or that holds anything but anchors GitHub lacks, refuses the start;
+- a journal folder that `/etc/juno/anchors.json` does not name refuses the start. Only you, as root, add one there;
+- an empty or different journal where GitHub holds anchors of the journal that was there refuses the start.
+So replacing the journal, the copy and the service's settings together does not make the service start as new.
+
+**One failure is repaired for you: a power loss in the middle of a write (D-206).** If the machine lost power, or the service was killed, while it was writing the last line of the journal, the next start finds that last line incomplete. If everything before it verifies and agrees with GitHub, the service drops the incomplete line, records that it did (`recovered_truncation`), and starts. It then prints a line beginning `the journal's last entry was left incomplete`, and **every grant used by a session that was open at that moment is exhausted for good**: its calls are refused until you sign a new grant (Part C, with a new `id`) and admit a new session under it. This is deliberate: JUNO cannot know whether the lost line was a use of one of those grants.
 
 ## Part H — optional: govern an MCP server through JUNO's gateway (mode B)
 
@@ -365,17 +388,18 @@ Only if you want Claude Code to use an MCP server (a tool server such as a mail 
    grep -c -- '--gateway juno' ~/.config/systemd/user/juno-hook.service
    ```
    **Check:** the last line prints `1`, and `systemctl --user status juno-hook.service --no-pager` shows `active (running)`. Sessions you admitted before the restart are still admitted, with what they had already used (D-201); do not admit them again.
-3. **A clone of `juno-anchors` of the gateway's own** (the hook service keeps using its clone; both push to the same repository safely, D-199). Runner terminal (replace `<you>`):
+3. **Add the gateway's journal folder to the pin.** The gateway keeps a journal of its own, and a journal folder may anchor only if `/etc/juno/anchors.json` names it. Admin terminal:
    ```
-   git clone git@github.com:<you>/juno-anchors.git /var/lib/juno-runner/juno-anchors-gateway
+   sudo nano /etc/juno/anchors.json
    ```
+   In the `journals` list, after the line for `/var/lib/juno-runner/journal`, add a comma at the end of that line and then a new line: `{ "path": "/var/lib/juno-runner/gateway-journal", "recovery_epoch": "<the same time as the line above>" }`. Save with **Ctrl+O**, Enter, **Ctrl+X**. (The gateway makes its own copy of `juno-anchors`; you do not clone anything.)
 4. **Start the gateway.** Runner terminal, with the session file the agent wrote at `/var/lib/juno-runner/gateway-session.json` and its signed grant in `/var/lib/juno-runner/grants/`:
    ```
-   /opt/node22/bin/node /opt/juno/dist/runner/src/juno.js gateway serve --session /var/lib/juno-runner/gateway-session.json --socket /var/lib/juno-hook/gateway.sock --journal /var/lib/juno-runner/gateway-journal --anchor /etc/juno/operator.pub --workspace /srv/juno-work --journal-key /var/lib/juno-runner/journal-key --anchors /var/lib/juno-runner/juno-anchors-gateway --git /usr/bin/git --grant /var/lib/juno-runner/grants/<grant file>
+   /opt/node22/bin/node /opt/juno/dist/runner/src/juno.js gateway serve --session /var/lib/juno-runner/gateway-session.json --socket /var/lib/juno-hook/gateway.sock --journal /var/lib/juno-runner/gateway-journal --anchor /etc/juno/operator.pub --workspace /srv/juno-work --journal-key /var/lib/juno-runner/journal-key --anchors /var/lib/juno-runner/juno-anchors-gateway --anchor-pin /etc/juno/anchors.json --git /usr/bin/git --grant /var/lib/juno-runner/grants/<grant file>
    ```
    **Check:** it prints `juno gateway: session gateway-<id> admitted; serving /var/lib/juno-hook/gateway.sock`. Leave this terminal open; **Ctrl+C** stops the gateway (it anchors what is pending as it stops).
    When you start the gateway again with the same session file, it prints `was admitted before this start; it goes on from its journal` instead: the same session continues with the calls and time it had already used (D-201). To begin a fresh gateway session, ask the agent for a session file with a new `session_id`; a changed file under the old id is refused.
-5. **Check the separation with the gateway.** Admin terminal: Part G step 4's `hook check`, with ` --gateway juno --shim /opt/juno/dist/mediated/src/juno-mcp.js --gateway-socket /var/lib/juno-hook/gateway.sock` added at the end.
+5. **Check the separation with the gateway.** Admin terminal: Part G step 4's `hook check`, with ` --state /var/lib/juno-runner/gateway-journal --gateway juno --shim /opt/juno/dist/mediated/src/juno-mcp.js --gateway-socket /var/lib/juno-hook/gateway.sock` added at the end.
    **Check:** it prints `separated from the runner` and `JUNO's gateway relay juno is the only MCP server Claude Code can load`.
 
 ## When something goes wrong
@@ -384,8 +408,16 @@ Only if you want Claude Code to use an MCP server (a tool server such as a mail 
 - The hook service will not start: `journalctl --user -u juno-hook.service --no-pager | tail -20` (runner terminal) lists every refusal.
 - Claude Code says JUNO blocked every call: the service is not running (`systemctl --user status juno-hook.service`), or the session was not admitted (Part G step 5). JUNO fails closed: when in doubt, it blocks.
 - The anchor repository cannot be reached (no internet, or the push key removed): sessions stop, and the journal records `anchor_failed`. A stopped session stays stopped. Fix the connection, restart the service (it starts again on the same journal once the repository can be reached), and admit a new session with a new `session_id`. While the repository cannot be reached the service does not start at all.
-- The service refuses to start saying `the anchor repository's history removes or changes` an anchor file: someone with the push key committed a deletion or a change to `juno-anchors`. GitHub keeps that commit for good, so JUNO will not trust that repository again. **Do not delete anything.** Send the agent the refusal lines; the way on is a new anchor repository (Part D again, under a new name) and a new journal folder, with the old ones kept as evidence.
-- The service refuses to start and names a journal record that `does not verify`, `disagrees with its off-host anchors`, `has no readable payload`, or `is not named by the journal's own record`: the journal on this machine is not the one JUNO wrote and anchored. **Do not delete or repair anything.** Send the agent the refusal lines. JUNO will not start on that journal again. To keep working, keep the old folder as evidence and give the service a new, empty journal folder: in `~/.config/systemd/user/juno-hook.service` change `--journal /var/lib/juno-runner/journal` to a new name (for example `--journal /var/lib/juno-runner/journal-2`), then `systemctl --user daemon-reload` and `systemctl --user start juno-hook.service`. On a new journal every grant's use count starts again; that is your own decision, made by this step. Never move or rename a journal folder that is in use: JUNO refuses a journal that is not at the path it was written at. The same refusal appears for a journal folder written by a JUNO version from before 2026-11-10 (it has no record of its own records); give the service a new folder in the same way.
+- The service prints `the journal's last entry was left incomplete`: a power loss or a crash interrupted one write. The service has repaired it and is running. The grants it lists are exhausted: sign new grants with new `id`s (Part C), copy them in (Part G step 1), and admit new sessions under them (Part G steps 2 and 5).
+- The service refuses to start saying `the anchor repository's history removes or changes` an anchor file: someone with the push key committed a deletion or a change to `juno-anchors`. GitHub keeps that commit for good, so JUNO will not trust that repository again. **Do not delete anything.** Send the agent the refusal lines; the way on is a new anchor repository (Part D again, under a new name, with a new `/etc/juno/anchors.json`) and a manual recovery (below), with the old ones kept as evidence.
+- The service refuses to start saying `the local anchor clone ... disagrees with the pinned repository`: the folder `/var/lib/juno-runner/juno-anchors` is not a copy of your `juno-anchors`. **Do not delete it.** Send the agent the refusal lines. JUNO did not write that; something else on the machine did.
+- The service refuses to start saying `is not a journal folder the anchor pin ... names`, or a line about `the anchor pin`: the service's settings name a journal folder, or a pin file, that you did not set up as root. If you did not change `~/.config/systemd/user/juno-hook.service` yourself, send the agent the refusal lines before changing anything.
+- The service refuses to start and names a journal record that `does not verify`, `disagrees with its off-host anchors`, `has no readable payload`, or `is not named by the journal's own record`: the journal on this machine is not the one JUNO wrote and anchored. **Do not delete or repair anything.** Send the agent the refusal lines. JUNO will not start on that journal again. The same refusal (`the anchor pin names a recovery epoch for this journal ... but the journal records none`) appears for a journal folder written by a JUNO version from before 2026-11-13. The way on, in both cases, is a **manual recovery** (D-206):
+  1. Keep the old journal folder as evidence. Never move or rename it.
+  2. Admin terminal: `date -u +%Y-%m-%dT%H:%M:%SZ` prints the time now; copy it. Then `sudo nano /etc/juno/anchors.json` and add a new line to the `journals` list (a comma after the line before it): `{ "path": "/var/lib/juno-runner/journal-2", "recovery_epoch": "<the time you copied>" }`. Save and leave. Only root can do this step; that is what makes the recovery your act.
+  3. Runner terminal: in `~/.config/systemd/user/juno-hook.service` change `--journal /var/lib/juno-runner/journal` to `--journal /var/lib/juno-runner/journal-2`, then `systemctl --user daemon-reload` and `systemctl --user start juno-hook.service`.
+  4. **Every grant you signed before that time is now refused** on the new journal (`was issued before this journal's recovery epoch`). Sign new grants (Part C; the time you sign them is after the recovery) and copy them in (Part G step 1).
+  5. Use new `session_id`s (Part G step 2). A session id that was used on the old journal cannot be used again: its fingerprints are already in `juno-anchors`, and JUNO never replaces one.
 
 ## What each part protects, and what it does not
 

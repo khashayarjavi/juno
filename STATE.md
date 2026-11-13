@@ -3,16 +3,26 @@
 ## Current increment
 **Slice 1.5 — finishing: your rulings of 2026-11-13 (D-206) on recovery and on the pinned anchor repository, then review rounds 6 and 7** (D-199, D-201 to D-206). Increment 6, the last increment of the plan, is merged (PR #48). Branch `claude/busy-bell-icjgn3` (this session's only pushable branch); it carries PR #50's commits from `claude/gracious-euler-mt05yr` unchanged, and its PR supersedes PR #50. Spec v0.6.1. No objection open.
 
-Status (2026-11-13): **your three rulings are recorded as D-206; building them is in progress.** Nothing merged yet.
-- **Ruling 1, recovery:** a torn last write is dropped at start and recorded (`recovered_truncation`), and every grant used by a session open at the crash is exhausted; any other failure still refuses the start; a manual recovery to a new journal records a recovery epoch and refuses every grant signed before it. **Not built yet.**
-- **Ruling 2, the pinned anchor repository:** the repository's URL and GitHub's host-key fingerprint in a root-owned file; every start fetches from it and compares; a clone, settings or journal that disagree refuse the start. **Not built yet.**
+Status (2026-11-13): **your rulings 1 and 2 are built (D-207, D-208); `make verify` and the review rounds are next.** Nothing merged yet.
+- **Ruling 1, recovery (D-207).**
+  - *A power loss in the middle of a write.* At the next start, if only the journal's last entry is incomplete and everything before it verifies and agrees with the anchors, the service drops that entry, records it (`recovered_truncation`, in the journal's own record and in the record that lost it), and starts. Every grant held or used by a session open at that moment is exhausted for good; a newly signed grant (a new id) works. The service prints which grants.
+  - *Tested with a simulated power loss:* in the real journal writer, the power is lost before every single file operation of an append, and again with half of each write on disk; the service must start after each one.
+  - *Anything else still refuses the start,* and no byte of the journal is changed: for example a cut entry made to look torn that an anchor already names.
+  - *Manual recovery.* A new journal records a **recovery epoch** as its first entry: the time you gave when you, as root, registered the new journal folder. Every grant signed before it is refused, at admission and at every call. Tested through the real gateway and hook commands: the old grant is refused, a newly signed one is accepted.
+- **Ruling 2, the pinned anchor repository (D-208). Evidence items 22 and 24 are closed.**
+  - A root-owned file, `/etc/juno/anchors.json`, names the repository's SSH address, GitHub's host-key fingerprint (with the key in a root-owned `anchors_known_hosts` file), the runner's push key, and the journal folders that may anchor there. The start-up check of every service and `juno hook check` both verify it; a pin that is not root's is refused.
+  - Every start fetches the repository afresh from the pinned address, accepting only the pinned host key, with none of the runner's own git or SSH settings. The local clone is only a cache: it is compared, then replaced. A clone that is not a copy of your repository refuses the start.
+  - **The test you asked for, for every service, with the real git:** the journal, the journal key and the clone replaced together; the settings pointed at a new journal, key and clone; the settings pointed at a pin of the runner's own. None starts as new.
+  - One thing I added because the test cannot pass without it (autopilot ruling in D-208): the journal folders are listed in the same root-owned file. A service pointed at a new, empty journal folder would otherwise look exactly like a first start. This is also what makes a manual recovery your act as root.
+- **What this does not close (evidence item 25):** the pin stops *JUNO* from starting as new. Whoever takes over the `juno-runner` account can still stop the service or run a program of their own. Your check against a fresh copy from GitHub (guide, Part G step 7) remains the check that counts.
+- **New for you in the guide** (`docs/operator-setup.md`): Part D step 7 (write the two root-owned files and compare the fingerprint with GitHub's page); you no longer clone `juno-anchors` yourself; Part H step 3 (add the gateway's journal folder to the pin); "When something goes wrong" now has the torn-write message and the manual recovery, step by step.
+- **Found while testing, kept (fail-closed):** a session or task id used before a manual recovery cannot be used after it, because its fingerprints are already in `juno-anchors` and are never replaced. Use new ids (the guide says so).
+- **A journal written before today needs the manual recovery once** (it records no recovery epoch).
 - **Ruling 3:** review rounds 6 and 7, then the merge gate, then STOP.
 
 **Left, in order:**
-1. Build ruling 1 with its two tests (simulated power loss mid-append; an old grant refused after a manual recovery).
-2. Build ruling 2 with its test (clone, settings and journal replaced together do not start as new).
-3. Update `docs/operator-setup.md` and `docs/evidence/slice-1.5.md`; `make verify` green; open the PR that supersedes #50.
-4. Review round 6 (and 7 if needed), the merge gate (CLAUDE.md §7 step 6). Then Slice 1.5 is complete: STOP and report.
+1. `make verify` green and `make mediated-e2e` on the head; open the PR that supersedes #50; CI green.
+2. Review round 6 (and 7 if needed), the merge gate (CLAUDE.md §7 step 6). Then Slice 1.5 is complete: STOP and report.
 
 ## Earlier status (2026-11-12, before your rulings)
 ### STOP after review round 5 on PR #50 (2026-11-12) — your decision needed (D-205)

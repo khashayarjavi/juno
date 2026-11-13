@@ -1,0 +1,10 @@
+{
+  "url": "git@github.com:<you>/juno-anchors.git",
+  "branch": "main",
+  "host_key_fingerprint": "<the ED25519 fingerprint from GitHub's page, starting SHA256:>",
+  "known_hosts": "/etc/juno/anchors_known_hosts",
+  "push_key": "/home/juno-runner/.ssh/juno_anchors",
+  "journals": [
+    { "path": "/var/lib/juno-runner/journal", "recovery_epoch": "<the day you made your signing key, as 2026-11-13T00:00:00Z>" }
+  ]
+}

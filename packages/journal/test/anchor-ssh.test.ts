@@ -157,4 +157,13 @@ describe("D-206 item 2: the anchor pin file", () => {
     expect(() => parseAnchorPin(JSON.stringify({ ...ssh, url: "/srv/anchors.git" }))).toThrow(/local path url has no host key/);
     expect(() => parseAnchorPin("not json")).toThrow(/not JSON/);
   });
+
+  // proves D-208: the example the operator copies (docs/operator-setup.md, Part D step 7) is a pin once its three
+  // placeholders are filled in, and is refused as it ships
+  it("ships an example pin that needs only the operator's three values", () => {
+    const example = readFileSync(new URL("../../../docs/examples/anchors.example.json", import.meta.url), "utf8");
+    expect(() => parseAnchorPin(example)).toThrow();
+    const filled = example.replace("<you>", "operator").replace(/<the ED25519 fingerprint[^>]*>/, sshFingerprint(blob())).replace(/<the day you made[^>]*>/, "2026-11-13T00:00:00Z");
+    expect(parseAnchorPin(filled)).toMatchObject({ transport: "ssh", host: "github.com", known_hosts: "/etc/juno/anchors_known_hosts", push_key: "/home/juno-runner/.ssh/juno_anchors" });
+  });
 });
