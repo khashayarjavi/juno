@@ -1,11 +1,24 @@
 # STATE
 
 ## Current increment
-**1.5-setup — the follow-up you authorised before you run the setup guide (your rulings of 2026-11-13, D-214).** Slice 1.5 is complete and merged (PR #52, cd8d9b5). Branch `claude/focused-goodall-yow05e` (this session's only pushable branch, D-215); it carries PR #53's STATE.md commit, and its PR supersedes PR #53. Spec v0.6.1. No objection open.
+**1.5-setup is complete and merged** (your rulings of 2026-11-13, D-214). The autopilot has STOPPED, as the ruling directs: nothing further is started. Spec v0.6.1. No objection open.
 
-Status (2026-11-13, this session): **all five rulings built as D-216, with tests. `make verify: GREEN` on 4b0c172's code (1,452 unit, 118 container; afa8ad9 adds only DECISIONS.md and STATE.md). Draft PR [khashayarjavi/juno#54](https://github.com/khashayarjavi/juno/pull/54) supersedes #53. Review round 1 next.** Nothing merged yet.
+**For Part A step 4 of the guide, the commit hash is: `dbb272f21988f94cfbf4a849e408de29df0586ce`** (the merge of PR #54 into main).
 
-**Review round 1 (head f9e18ed): DO NOT MERGE, one finding, fixed (D-217).** Your admin-run check read the anchor files but not the repository's history. Whoever holds the runner's push key could replace a session's anchors with an ordinary commit, swap the key file, and the check passed; the evidence document had recorded that as failing safe. The check now refuses any history that ever removed, changed or renamed an anchor file (as the services already did, D-204), a shallow clone, and a clone edited after cloning. Not a STOP: it needs the runner account, which your rulings make a residual; it is fixed rather than only recorded because the record was wrong and the fix is small. After the fix: `make verify: GREEN` on f5398e7 (1,454 unit, 118 container); `make mediated-e2e` 15/15 with the real Claude Code 2.1.325. **Review round 2 (head 9239fba): MERGE**, with three small notes, done before merging (D-218): a stale sentence here, a test that now checks each stop is journalled, and the history check now also counting ignored files. Round 3 reviews the new head.
+### Merges this session (2026-11-13)
+- **PR [khashayarjavi/juno#54](https://github.com/khashayarjavi/juno/pull/54) (1.5-setup, supersedes #53): merged** as dbb272f21988f94cfbf4a849e408de29df0586ce, pinned to head 5cac38e.
+  - **Review round 3** (fresh reviewer, the review prompt verbatim): **MERGE** on 5cac38e. All six checks PASS.
+  - **CI on 5cac38e:** run 43513373811, `verify` and `verify-rootless` green.
+  - **CI on main for dbb272f:** run 43515012702 (result below).
+  - **Locally:**
+    - `make verify: GREEN` on 5cac38e (1,454 unit, 118 container).
+    - `make mediated-e2e` 15/15 with the real Claude Code 2.1.325, on f5398e7. 5cac38e changes only a test assertion, the history check's treatment of ignored files, and documents.
+  - PR #53 is left open and untouched; #54 carried its commit.
+- **Review history of PR #54:**
+  - **Round 1** (f9e18ed): DO NOT MERGE, one finding, fixed (D-217). Your admin-run check read the anchor files but not their history. It now reads the history.
+  - **Round 2** (9239fba): MERGE, with three notes, done before merging (D-218).
+  - **Round 3** (5cac38e): MERGE.
+- **This branch, after the merge:** it adds this record. It also marks evidence residual 23 closed by D-217; round 3 noted that it still said the check does not read history. The branch's draft PR is the post-merge record, like #53, and is not merged by the autopilot.
 
 ### What 1.5-setup changes, in plain words
 1. **Installing JUNO without a second GitHub sign-in (ruling 1).** You clone JUNO once on Windows, where Git for Windows signs you in through the browser, and check out the exact commit I give you. You pack it into one file (`juno.bundle`). Part E copies that file into WSL as root's read-only file, and both copies of JUNO (`~/juno` for `juno-runner`, `/opt/juno` for root) are cloned from it. After each clone you compare the printed hash with the one I gave you. Tested in CI with the real git and `dd`.
@@ -21,7 +34,7 @@ Status (2026-11-13, this session): **all five rulings built as D-216, with tests
    - Found while doing it: the old steps said admission would report an exhausted grant; it does not. Calls are refused with `exhausted`. The guide now says what JUNO actually prints.
    - Round 8's note 5 (the start-up check judges the git program and its own folder; `juno hook check` judges every folder up to `/`) was not in your ruling and is unchanged.
 
-**Left, in order:** review rounds (up to 5); the merge gate; then STOP and report the merge commit hash in full, for Part A step 4.
+**Left:** nothing in 1.5-setup. Your next step is the guide itself, starting at Part A, with the commit hash above. Possible follow-up, not started (D-217): pin the journal's public key where only root can change it.
 
 ## Slice 1.5 — completion record
 ### Merges this session (2026-11-13)
