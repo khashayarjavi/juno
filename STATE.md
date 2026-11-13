@@ -1,18 +1,38 @@
 # STATE
 
 ## Current increment
-**Slice 1.5 — finishing: your rulings of 2026-11-13 (D-206) on recovery and on the pinned anchor repository, then review rounds 6 and 7** (D-199, D-201 to D-206). Increment 6, the last increment of the plan, is merged (PR #48). Branch `claude/busy-bell-icjgn3` (this session's only pushable branch); it carries PR #50's commits from `claude/gracious-euler-mt05yr` unchanged, and its PR supersedes PR #50. Spec v0.6.1. No objection open.
+**Slice 1.5 is complete** (operator ruling D-211 item 3). Its last PR, [khashayarjavi/juno#52](https://github.com/khashayarjavi/juno/pull/52) (supersedes #51), is merged. The autopilot has STOPPED, as the ruling directs: nothing beyond Slice 1.5 is started. Spec v0.6.1. No objection open.
 
-Status (2026-11-13, latest session): **D-211's fixes are built as D-213, with tests. `make verify: GREEN` on dac663f (1,441 unit, 118 container); `make mediated-e2e` 15/15 with the real Claude Code. Draft PR [khashayarjavi/juno#52](https://github.com/khashayarjavi/juno/pull/52) supersedes #51. Review round 8 is next.** Nothing merged. Branch `claude/trusting-gauss-xqjm3m` (this session's only pushable branch, D-212); it carries PR #51's commits unchanged and its PR will supersede PR #51.
+### Merges this session (2026-11-13)
+- **PR #52: merged** as cd8d9b5, pinned to head 8235abd.
+  - Reviewer round 8 (fresh subagent, the review prompt verbatim plus checks of D-211's rulings): **MERGE**. Checks 1 to 9 PASS; no FAIL.
+  - CI on 8235abd: run 43496875511, `verify` and `verify-rootless` green.
+  - CI on main for cd8d9b5: run 43498440016, `verify` and `verify-rootless` **green**.
+  - Locally: `make verify: GREEN` on dac663f (1,441 unit, 118 container; 8235abd adds only STATE.md); `make mediated-e2e` 15/15 with the real Claude Code.
+  - PRs #49, #50 and #51 are left open and untouched; #52 carried their commits.
 
-### What D-213 changes, in plain words
+### Round 8's non-blocking notes (for the operator; not built, because the ruling ends the slice at MERGE)
+1. **Wording to correct:** evidence property 18, evidence item 26a and the comment in `packages/journal/src/sinks.ts` (the class comment, point 4) say no setting of the clone's own is read "before or during a run". The reviewer showed two ways the runner account can still make git read other settings. Both are fail-closed: the read-back stops every session, or the start is refused. Accurate wording: the clone's settings are *not relied on*, because every anchor is confirmed against the pinned repository.
+   - **R1:** a `.git/commondir` file pointing at another repository's settings gets past the byte check of `.git/config`. The read-back caught it: every session stopped and nothing reached the pinned repository.
+   - **R2:** at start, the old clone is read with `git ls-remote` and `git fetch`, which read that clone's settings. The reviewer found no setting that runs a program there; a bad setting makes the start refuse.
+   Both need control of the runner account, so under D-211 item 2 they are residuals, not defects. They should be recorded as evidence items.
+2. **A test of the read-back comparison itself** (a push that "succeeds" but never reaches the pinned repository). The reviewer's `commondir` reproduction exercises it and it works; no test in the repository does.
+3. `packages/enforcement/test/recovery.test.ts` around line 348: one `expect(...).toBeDefined()` line asserts nothing. The assertions after it carry the test.
+4. The guide's steps after a torn write:
+   - they do not cover the gateway (Part H);
+   - they do not say the message appears in `journalctl` / `systemctl status`;
+   - their "yesterday" date would be refused within a day of a manual recovery (Part C's note covers it only by reference).
+5. The start-up check judges the pinned git program and its own folder; `juno hook check` judges every folder up to `/`.
+
+### What D-213 changed, in plain words
 1. **Git is named only in root's own pin file** (`"git": "/usr/bin/git"` in `/etc/juno/anchors.json`), and must be root's file. The services no longer accept `--git`. (Round 7 F1.)
-2. **Anchoring reads no git settings at all.** JUNO only runs git in repositories it has just made itself, and checks their settings have not changed before every command. It asks GitHub where the branch is with no repository in play, and reads every anchor back from what GitHub holds after pushing. If that fails, every session stops. (F2.)
-3. **The journal is opened once, from a folder handle, following no symbolic link.** A running service keeps writing to the folder it opened, whatever is done to the path afterwards. (F3, which repeated round 6's mechanism.)
+2. **Anchoring does not rely on the clone's git settings.** JUNO only runs git in repositories it has just made itself, and checks their settings have not changed before every command. It asks GitHub where the branch is with no repository in play, and reads every anchor back from what GitHub holds after pushing. If that fails, every session stops. (F2.)
+3. **The journal is opened once, from a folder handle, following no symbolic link.** A running service keeps writing to the folder it opened, whatever is done to the path afterwards. (F3.)
 4. **The power-loss repair is atomic.** What it will do, and the grants it exhausts, are saved before the incomplete entry is removed. Tested by cutting the power at every step of the repair, and again and again. (F4.)
-5. **The guide:** the first journal's epoch is now a fixed early date, so Part D can be done any day after Part C. The steps after a torn write are written out click by click. **The evidence document** now states the trust boundary (item 25) and says exactly what holds.
-
-Tests: round 7's four reproductions pass as regression tests (`packages/enforcement/test/round7.test.ts`, the real git), and three new power-loss tests pass. Unit: 1,438 before the last 3 git tests were added.
+5. **The guide:**
+   - The first journal's epoch is a fixed early date, so Part D can be done any day after Part C.
+   - The steps after a torn write are click by click.
+   - **The trust boundary (D-211 item 2):** the `juno-runner` account is part of JUNO's enforcement boundary. An attack that needs control of it is a recorded residual on the same machine: it cannot forge grants (your key is out of its reach) or erase anchored history (append-only, pinned remote), and your own check against a fresh copy from GitHub (guide, Part G step 7) detects it. It is stated in the guide and as evidence item 25.
 
 ### Your rulings of 2026-11-13 on D-210 (D-211)
 1. Build D-210's fixes (git path only in the root-owned pin; anchoring reads no git configuration, pushes to the pinned URL and reads every anchor back from it; the journal opened from a directory handle with no symbolic link followed; the power-loss repair atomic and tested at every step; the guide and evidence document).
