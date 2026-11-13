@@ -4,3 +4,5 @@
 !build/stage/
 # The anchor store script is copied as source: it is plain JavaScript, not built (D-122).
 !containers/anchor-store.mjs
+# The test stack's anchor pin for the runner image, root's own there (D-208).
+!containers/runner-test-anchors.json

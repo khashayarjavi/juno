@@ -33,6 +33,7 @@ RUN ["chown", "node:node", "/var/lib/juno-runner"]
 # is JUNO's test stack (the operator's runner runs on the host, D-065), it has no git and no network, so the pin names
 # the stand-in destination the test stack's stand-in git copies to, and the test stack's journal folders. The
 # operator's own pin is written by the operator, as root (docs/operator-setup.md, Part D).
+RUN ["mkdir", "-m", "0755", "/etc/juno"]
 COPY --chmod=0644 containers/runner-test-anchors.json /etc/juno/anchors.json
 
 USER node

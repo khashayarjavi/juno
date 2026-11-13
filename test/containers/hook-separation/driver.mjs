@@ -47,7 +47,7 @@ writeFileSync("/opt/fake-git/git", readFileSync("/t/fake-git.mjs", "utf8"), { mo
 chmodSync("/opt/fake-git/git", 0o755);
 
 // The trust anchor: public, root's.
-mkdirSync("/etc/juno", { mode: 0o755 });
+mkdirSync("/etc/juno", { recursive: true, mode: 0o755 });
 // The operator's key pair is made here for this run; the private key never leaves this process (it signs the grant below).
 const operator = generateKeyPairSync("ed25519");
 writeFileSync("/etc/juno/operator.pub", operator.publicKey.export({ type: "spki", format: "pem" }), { mode: 0o444 });
