@@ -3,7 +3,7 @@
 ## Current increment
 **Slice 1.5 — finishing: your rulings of 2026-11-13 (D-206) on recovery and on the pinned anchor repository, then review rounds 6 and 7** (D-199, D-201 to D-206). Increment 6, the last increment of the plan, is merged (PR #48). Branch `claude/busy-bell-icjgn3` (this session's only pushable branch); it carries PR #50's commits from `claude/gracious-euler-mt05yr` unchanged, and its PR supersedes PR #50. Spec v0.6.1. No objection open.
 
-Status (2026-11-13, latest session): **D-211's fixes are built as D-213, with tests; `make verify` and review rounds 8 to 10 are next.** Nothing merged. Branch `claude/trusting-gauss-xqjm3m` (this session's only pushable branch, D-212); it carries PR #51's commits unchanged and its PR will supersede PR #51.
+Status (2026-11-13, latest session): **D-211's fixes are built as D-213, with tests. `make verify: GREEN` on dac663f (1,441 unit, 118 container); `make mediated-e2e` 15/15 with the real Claude Code. Draft PR [khashayarjavi/juno#52](https://github.com/khashayarjavi/juno/pull/52) supersedes #51. Review round 8 is next.** Nothing merged. Branch `claude/trusting-gauss-xqjm3m` (this session's only pushable branch, D-212); it carries PR #51's commits unchanged and its PR will supersede PR #51.
 
 ### What D-213 changes, in plain words
 1. **Git is named only in root's own pin file** (`"git": "/usr/bin/git"` in `/etc/juno/anchors.json`), and must be root's file. The services no longer accept `--git`. (Round 7 F1.)
@@ -19,7 +19,7 @@ Tests: round 7's four reproductions pass as regression tests (`packages/enforcem
 2. **Trust boundary.** The runner account is part of JUNO's enforcement boundary. An attack that needs control of the runner account is a recorded residual on the same machine. It cannot forge grants (your key is out of its reach) or erase anchored history (append-only, pinned remote), and your own check against a fresh copy from GitHub (guide Part G step 7) detects it. A review finding that needs control of the runner account is recorded as a residual, not a STOP.
 3. Review rounds 8 to 10 are authorised. On MERGE: the merge gate, then Slice 1.5 is complete.
 
-**Left, in order:** `make verify` green on the final head; the PR superseding #51; review rounds 8 to 10; the merge gate; then STOP: Slice 1.5 complete.
+**Left, in order:** review rounds 8 to 10 on PR #52; the merge gate; then STOP: Slice 1.5 complete.
 
 ### STOP after review round 7 on PR #51 (2026-11-13) — your decision needed (D-210)
 - **Why this is a STOP.** Round 7 was the last round your ruling D-206 authorised, and it ended DO NOT MERGE. One of its findings (F3) also brings back round 6's mechanism, which CLAUDE.md §7 makes a STOP on its own.
