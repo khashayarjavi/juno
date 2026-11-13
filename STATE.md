@@ -1,8 +1,27 @@
 # STATE
 
 ## Current increment
-**Slice 1.5 is complete** (operator ruling D-211 item 3). Its last PR, [khashayarjavi/juno#52](https://github.com/khashayarjavi/juno/pull/52) (supersedes #51), is merged. The autopilot has STOPPED, as the ruling directs: nothing beyond Slice 1.5 is started. Spec v0.6.1. No objection open.
+**1.5-setup — the follow-up you authorised before you run the setup guide (your rulings of 2026-11-13, D-214).** Slice 1.5 is complete and merged (PR #52, cd8d9b5). Branch `claude/focused-goodall-yow05e` (this session's only pushable branch, D-215); it carries PR #53's STATE.md commit, and its PR supersedes PR #53. Spec v0.6.1. No objection open.
 
+Status (2026-11-13, this session): **all five rulings built as D-216, with tests. `make verify` running; review next.** Nothing merged yet.
+
+### What 1.5-setup changes, in plain words
+1. **Installing JUNO without a second GitHub sign-in (ruling 1).** You clone JUNO once on Windows, where Git for Windows signs you in through the browser, and check out the exact commit I give you. You pack it into one file (`juno.bundle`). Part E copies that file into WSL as root's read-only file, and both copies of JUNO (`~/juno` for `juno-runner`, `/opt/juno` for root) are cloned from it. After each clone you compare the printed hash with the one I gave you. Tested in CI with the real git and `dd`.
+2. **The check that counts runs from your admin account (ruling 2).** Part G step 7: you clone `juno-anchors` from GitHub into a folder of your own, root copies the journal into it, and the check runs as you, not as `juno-runner` and not as root, with a clean environment (`env -i`) and only `/opt/node22` and `/opt/juno`. A test shows the check gives exactly the same answer on such a copy as on the original, for an honest, a rewritten and a cut journal. Evidence item 25 says this is the check that counts.
+3. **Your Windows account (ruling 3).** A box at the top of the guide, "Rules for your Windows account". Your signing key now lives on a USB stick: it is loaded into Windows' key agent only to sign and removed straight after (`ssh-add -D`; `ssh-add -l` then prints `The agent has no identities.`).
+   - **What I found, from Microsoft:** Windows' agent does *not* keep a key only in memory. Microsoft's OpenSSH maintainers state it stores every added key in your user's registry, encrypted, until removed. So the old wording ("never leaves Windows' agent", "delete the file") was wrong, and is corrected. This narrows D-093; it does not close it.
+4. **OpenSSH's version (ruling 4): 8.2 or later.** Part A prints `ssh -V`. OpenSSH's release notes give 8.1 for signing with a key held by the agent, but 8.1's source code refuses one option JUNO's signing passes; 8.2 to 8.8 accept it. If yours is older, Part A says to run Windows Update, and otherwise to stop and send me the line. A failed signing now tells you to remove the key and send me the `ssh -V` line.
+5. **Round 8's notes (ruling 5), all done:**
+   - The evidence document says the clone's settings are "not relied on" (no longer "never read"), with the reviewer's two cases as residuals 35 and 36. Both fail closed.
+   - A new test: a push that git reports as done but that never reaches GitHub stops every session. It fails with the read-back switched off.
+   - The `recovery.test.ts` line that could not fail is now one that can.
+   - The guide's power-loss steps cover the gateway too, say where the message appears, and give the rule and one command for `issued_at`.
+   - Found while doing it: the old steps said admission would report an exhausted grant; it does not. Calls are refused with `exhausted`. The guide now says what JUNO actually prints.
+   - Round 8's note 5 (the start-up check judges the git program and its own folder; `juno hook check` judges every folder up to `/`) was not in your ruling and is unchanged.
+
+**Left, in order:** `make verify` GREEN; open the PR (supersedes #53); review rounds (up to 5); the merge gate; then STOP and report the merge commit hash in full, for Part A step 4.
+
+## Slice 1.5 — completion record
 ### Merges this session (2026-11-13)
 - **PR #52: merged** as cd8d9b5, pinned to head 8235abd.
   - Reviewer round 8 (fresh subagent, the review prompt verbatim plus checks of D-211's rulings): **MERGE**. Checks 1 to 9 PASS; no FAIL.
