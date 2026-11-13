@@ -1,10 +1,20 @@
 # STATE
 
 ## Current increment
-**Slice 1.5 — finishing: the operator setup document, the evidence document, and the restart fix you ruled on (D-201)** (D-199, D-201, D-202). Increment 6, the last increment of the plan, is merged (PR #48). Branch `claude/gracious-euler-mt05yr` (this session's only pushable branch); it carries PR #49's commits from `claude/practical-volta-hjzfmz` unchanged, and its PR supersedes PR #49. Spec v0.6.1. No objection open.
+**Slice 1.5 — finishing: your rulings of 2026-11-13 (D-206) on recovery and on the pinned anchor repository, then review rounds 6 and 7** (D-199, D-201 to D-206). Increment 6, the last increment of the plan, is merged (PR #48). Branch `claude/busy-bell-icjgn3` (this session's only pushable branch); it carries PR #50's commits from `claude/gracious-euler-mt05yr` unchanged, and its PR supersedes PR #50. Spec v0.6.1. No objection open.
 
-Status (2026-11-12): **STOPPED after review round 5 on PR #50 (D-205): your decision needed** (below). Your ruling D-201 is built (D-202 to D-205). PR #50 is not merged. `make verify: GREEN` locally on the D-205 fixes (1,345 unit, 118 container); `make mediated-e2e` 15/15 with the real Claude Code 2.1.322 on the head before them (74b08c6).
+Status (2026-11-13): **your three rulings are recorded as D-206; building them is in progress.** Nothing merged yet.
+- **Ruling 1, recovery:** a torn last write is dropped at start and recorded (`recovered_truncation`), and every grant used by a session open at the crash is exhausted; any other failure still refuses the start; a manual recovery to a new journal records a recovery epoch and refuses every grant signed before it. **Not built yet.**
+- **Ruling 2, the pinned anchor repository:** the repository's URL and GitHub's host-key fingerprint in a root-owned file; every start fetches from it and compares; a clone, settings or journal that disagree refuse the start. **Not built yet.**
+- **Ruling 3:** review rounds 6 and 7, then the merge gate, then STOP.
 
+**Left, in order:**
+1. Build ruling 1 with its two tests (simulated power loss mid-append; an old grant refused after a manual recovery).
+2. Build ruling 2 with its test (clone, settings and journal replaced together do not start as new).
+3. Update `docs/operator-setup.md` and `docs/evidence/slice-1.5.md`; `make verify` green; open the PR that supersedes #50.
+4. Review round 6 (and 7 if needed), the merge gate (CLAUDE.md §7 step 6). Then Slice 1.5 is complete: STOP and report.
+
+## Earlier status (2026-11-12, before your rulings)
 ### STOP after review round 5 on PR #50 (2026-11-12) — your decision needed (D-205)
 - **Why this is a STOP.** CLAUDE.md §7 stops the loop when five review rounds still end DO NOT MERGE, and when a round finds a mechanism already fixed in an earlier round. Round 5 did both.
 - **Round 5** (fresh reviewer, same prompt; head 74b08c6, CI run 43250936745 green): **DO NOT MERGE.** Checks 1 to 4 and 6 PASS; 5, 7 and 8 FAIL, for two findings:
@@ -45,10 +55,6 @@ Status (2026-11-12): **STOPPED after review round 5 on PR #50 (D-205): your deci
   - Someone holding the anchor push key could delete anchor files from `juno-anchors` with an ordinary commit, then delete the journal, and the service started as new. JUNO now reads the repository's whole history at every start and refuses a repository where an anchor was ever removed or changed. Proven with the real git.
   - **Two limits you should know (evidence items 22 and 23):** the runner's own clone of `juno-anchors` is on the same machine, so whoever takes over the runner account could point it at another repository; only your own check against a fresh copy from GitHub (Part G step 7) shows that. Closing it needs the repository pinned where the runner cannot change it, which is not in Slice 1.5.
   - Round 4 was cut off by a usage limit twice before it produced a verdict (2026-11-10); it was run again on 2026-11-12.
-
-**Left, in order:**
-1. Your decision on the STOP above. If you authorise it: CI green on the head, a further review round, the merge gate (CLAUDE.md §7 step 6).
-2. Then Slice 1.5 is complete: STOP and report.
 
 ### Review history of PR #49 (superseded by this branch's PR)
 - Round 1 (head f1b780d): DO NOT MERGE; fixed (D-199 item 8).

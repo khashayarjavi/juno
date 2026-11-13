@@ -2492,3 +2492,16 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
 - **For the operator to decide:** authorise a further review round on PR #50 (the limit of 5, D-157, is used up), or direct otherwise. Also still open for confirmation: D-202 ruling 4 (a refused start is repaired by hand, on a new journal folder), and the residual in evidence items 22 and 24 (the runner's clone and the service's settings are on the host; only the operator's check against GitHub shows a journal replaced together with them).
 - Reason: CLAUDE.md §7 STOP list; D-157, D-192, D-201 to D-204; §3.4.1; rule 13 (git's behaviour is proven by the test).
 
+
+## D-206 — Operator rulings of 2026-11-13 on D-205's STOP: recovery after a torn write and after a manual recovery; the anchor repository pinned where the runner cannot change it; rounds 6 and 7 authorised
+- Date: 2026-11-13
+- Status: Accepted (operator ruling; built as D-207 and D-208)
+- Applies to: the shared session layer and start-up check, the git anchor destination, `juno hook check`, `docs/operator-setup.md`, `docs/evidence/slice-1.5.md`; CLAUDE.md §7 step 5 for this PR
+- **The rulings, as given.**
+  1. **Recovery (amends D-202 ruling 4).**
+     - *Torn final write.* At start, if every entry before an incomplete last entry verifies and matches the off-host anchors, the service drops the incomplete entry and records a `recovered_truncation` entry. Every grant used by any session open at the crash is then treated as exhausted until the operator signs a new one. Tested with a simulated power loss mid-append.
+     - *Anything else.* Any other verification or anchor failure still refuses the start. Manual recovery to a new journal invalidates every grant issued before it: the new journal records a recovery epoch, and grants signed before that epoch are refused. Tested: an old grant is refused after a manual recovery. The operator guide is updated.
+  2. **Evidence items 22 and 24 are closed.** The anchor repository's URL and GitHub's SSH host-key fingerprint live in a root-owned file outside the runner's reach (like the managed settings), checked by the start-up check and by `juno hook check`. The local clone is a cache: every start fetches from the pinned URL with the pinned host key and compares; a local clone, settings or journal that disagree with the remote refuses the start. Tested: replacing the clone, the service settings and the journal together does not make the service start as new. The guide and the evidence document are updated.
+  3. **Review rounds 6 and 7 on PR #50 are authorised,** after 1 and 2 are built. Merge through the gate on MERGE; then Slice 1.5 is complete: STOP and report.
+- **Branch.** This session can push only `claude/busy-bell-icjgn3` (D-028). It carries PR #50's commits from `claude/gracious-euler-mt05yr` unchanged, and its PR supersedes PR #50, as #50 superseded #49. Rounds 6 and 7 run on that PR; they are the rounds this ruling authorises.
+- Reason: operator instruction of 2026-11-13; D-200 to D-205; §3.4.1, §3.2; CLAUDE.md §7.
