@@ -20,9 +20,10 @@ Status (2026-11-13): **your rulings 1 and 2 are built (D-207, D-208); `make veri
 - **A journal written before today needs the manual recovery once** (it records no recovery epoch).
 - **Ruling 3:** review rounds 6 and 7, then the merge gate, then STOP.
 
+**Done:** `make verify: GREEN` on head 80a2925 (1,419 unit, 118 container); `make mediated-e2e` 15/15 (real Claude Code); draft PR [khashayarjavi/juno#51](https://github.com/khashayarjavi/juno/pull/51) supersedes #50; CI run 43379238330 on 80a2925: `verify` and `verify-rootless` green. Review round 6 started (cut off once by a usage limit, resumed 2026-11-13 11:12 UTC).
+
 **Left, in order:**
-1. `make verify` green and `make mediated-e2e` on the head; open the PR that supersedes #50; CI green.
-2. Review round 6 (and 7 if needed), the merge gate (CLAUDE.md §7 step 6). Then Slice 1.5 is complete: STOP and report.
+1. Review round 6 (and 7 if needed), the merge gate (CLAUDE.md §7 step 6). Then Slice 1.5 is complete: STOP and report.
 
 ## Earlier status (2026-11-12, before your rulings)
 ### STOP after review round 5 on PR #50 (2026-11-12) — your decision needed (D-205)
