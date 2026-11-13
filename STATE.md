@@ -3,7 +3,14 @@
 ## Current increment
 **Slice 1.5 — finishing: your rulings of 2026-11-13 (D-206) on recovery and on the pinned anchor repository, then review rounds 6 and 7** (D-199, D-201 to D-206). Increment 6, the last increment of the plan, is merged (PR #48). Branch `claude/busy-bell-icjgn3` (this session's only pushable branch); it carries PR #50's commits from `claude/gracious-euler-mt05yr` unchanged, and its PR supersedes PR #50. Spec v0.6.1. No objection open.
 
-Status (2026-11-13, later): **STOPPED after review round 7 on PR #51 (D-210): your decision needed.** Nothing merged.
+Status (2026-11-13, latest session): **your rulings on D-210 are recorded (D-211); building the fixes is under way (to be D-213).** Nothing merged. Branch now `claude/trusting-gauss-xqjm3m` (this session's only pushable branch, D-212); it carries PR #51's commits unchanged and its PR will supersede PR #51.
+
+### Your rulings of 2026-11-13 on D-210 (D-211)
+1. Build D-210's fixes (git path only in the root-owned pin; anchoring reads no git configuration, pushes to the pinned URL and reads every anchor back from it; the journal opened from a directory handle with no symbolic link followed; the power-loss repair atomic and tested at every step; the guide and evidence document).
+2. **Trust boundary.** The runner account is part of JUNO's enforcement boundary. An attack that needs control of the runner account is a recorded residual on the same machine. It cannot forge grants (your key is out of its reach) or erase anchored history (append-only, pinned remote), and your own check against a fresh copy from GitHub (guide Part G step 7) detects it. A review finding that needs control of the runner account is recorded as a residual, not a STOP.
+3. Review rounds 8 to 10 are authorised. On MERGE: the merge gate, then Slice 1.5 is complete.
+
+**Left, in order:** build the five fixes with tests (each of round 7's reproductions must pass); `make verify` green; PR superseding #51; review rounds 8 to 10; merge gate.
 
 ### STOP after review round 7 on PR #51 (2026-11-13) — your decision needed (D-210)
 - **Why this is a STOP.** Round 7 was the last round your ruling D-206 authorised, and it ended DO NOT MERGE. One of its findings (F3) also brings back round 6's mechanism, which CLAUDE.md §7 makes a STOP on its own.

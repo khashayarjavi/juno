@@ -2599,3 +2599,24 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   4. F4: `recovered_truncation` is written durably before the cut (the repair then completes from that record if interrupted); a test loses the power at every file operation of the repair itself.
   5. The guide: the epoch from a fixed early date for the first journal (any date before Part B; the signing key is new), and the new-grant steps after a torn write written out click by click.
 - Reason: CLAUDE.md §7 STOP list; D-206 ("review rounds 6 and 7 ... are authorised"); D-157, D-209.
+
+## D-211 — Operator rulings of 2026-11-13 on D-210's STOP: build D-210's fixes; the runner account is inside the enforcement boundary; rounds 8 to 10 authorised
+- Date: 2026-11-13
+- Status: Accepted (operator ruling; built as D-213)
+- Applies to: the git anchor destination, the anchor pin, the shared start-up check and session layer, the journal's opening and repair, `docs/operator-setup.md`, `docs/evidence/slice-1.5.md`, STATE.md; CLAUDE.md §7 step 5 and the STOP list for this PR
+- **The rulings, as given.**
+  1. **Build D-210's fixes.**
+     - The git program's absolute path lives only in the root-owned pin file; the service settings cannot name it.
+     - Anchoring ignores the local clone's own git configuration (no system, global or repository config is read), pushes to the pinned URL explicitly, and reads every anchor back from the pinned remote after pushing; a failed read-back stops every session.
+     - The journal is opened without following a symbolic link in any path component, from a directory handle.
+     - The power-loss repair is atomic: its record and the list of exhausted grants are written and made durable before the incomplete entry is removed; a second power loss at any step of the repair leaves the grants exhausted. Tested by cutting power at every step of the repair.
+     - The guide and the evidence document are fixed as round 7 listed.
+  2. **Trust boundary** (recorded in the evidence document and STATE.md). The runner account is part of JUNO's enforcement boundary. An attack that requires control of the runner account is a recorded residual on the same machine; it cannot forge grants (operator key out of reach) or erase anchored history (append-only, pinned remote), and it is detected by the operator's independent check against a fresh copy from GitHub (guide Part G step 7). **A review finding that requires control of the runner account is recorded as a residual, not a STOP.**
+  3. **Up to three more review rounds (8 to 10) on PR #51 are authorised** under ruling 2. Merge through the gate on MERGE; then Slice 1.5 is complete: STOP and report.
+- Reason: operator instruction of 2026-11-13; D-210; §3.4.1, §3.4.2, §3.2; CLAUDE.md §7.
+
+## D-212 — The finishing work continues on this session's branch; PR #51 is superseded (as D-028, D-206)
+- Date: 2026-11-13
+- Status: Accepted
+- Decision: this session can push only `claude/trusting-gauss-xqjm3m`. It carries PR #51's commits from `claude/busy-bell-icjgn3` unchanged, and its PR supersedes PR #51, as #51 superseded #50. Rounds 8 to 10 of D-211 run on that PR; they are the rounds the ruling authorises "on PR #51". PR #51 is left open and untouched.
+- Reason: as D-028; a push to any other name would be refused.
