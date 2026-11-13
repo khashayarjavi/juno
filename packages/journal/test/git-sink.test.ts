@@ -274,10 +274,12 @@ describe("D-206 item 2: the anchor repository is the pinned one, and the local c
         expect(await seqs(sink, "task-d")).toEqual(seq === 2 ? [1, 2] : [1, 2, 3]);
       }
     } finally {
-      for (const [name, value] of [["HOME", saved.HOME], ["GIT_CONFIG_GLOBAL", saved.GLOBAL], ["GIT_DIR", saved.DIR]] as const) {
-        if (value === undefined) delete process.env[name];
-        else process.env[name] = value;
-      }
+      if (saved.HOME === undefined) delete process.env["HOME"];
+      else process.env["HOME"] = saved.HOME;
+      if (saved.GLOBAL === undefined) delete process.env["GIT_CONFIG_GLOBAL"];
+      else process.env["GIT_CONFIG_GLOBAL"] = saved.GLOBAL;
+      if (saved.DIR === undefined) delete process.env["GIT_DIR"];
+      else process.env["GIT_DIR"] = saved.DIR;
     }
     expect(await held(bare, "task-d")).toEqual([1, 2, 3]);
     expect(await held(other, "task-d")).toEqual([]);

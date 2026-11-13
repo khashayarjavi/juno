@@ -7,6 +7,7 @@
 import { execFile } from "node:child_process";
 import { createHash, generateKeyPairSync } from "node:crypto";
 import { appendFileSync, chmodSync, chownSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { Buffer } from "node:buffer";
 import process from "node:process";
 import { TextDecoder } from "node:util";
 import { promisify } from "node:util";
