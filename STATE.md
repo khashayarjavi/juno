@@ -9,7 +9,7 @@
 - **PR [khashayarjavi/juno#54](https://github.com/khashayarjavi/juno/pull/54) (1.5-setup, supersedes #53): merged** as dbb272f21988f94cfbf4a849e408de29df0586ce, pinned to head 5cac38e.
   - **Review round 3** (fresh reviewer, the review prompt verbatim): **MERGE** on 5cac38e. All six checks PASS.
   - **CI on 5cac38e:** run 43513373811, `verify` and `verify-rootless` green.
-  - **CI on main for dbb272f:** run 43515012702 (result below).
+  - **CI on main for dbb272f:** run 43515012702, `verify` and `verify-rootless` **green**.
   - **Locally:**
     - `make verify: GREEN` on 5cac38e (1,454 unit, 118 container).
     - `make mediated-e2e` 15/15 with the real Claude Code 2.1.325, on f5398e7. 5cac38e changes only a test assertion, the history check's treatment of ignored files, and documents.
