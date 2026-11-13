@@ -203,6 +203,8 @@ describe("juno hook serve and juno hook admit (plan Increment 6, D-180, D-196)",
   // proves D-180: without every required option it is bad usage, and an unreachable service is a refusal
   it("is bad usage without its options, and refuses when the service is not running", async () => {
     expect(await runHookServeCli(["--socket", join(sockets, "hook.sock")], { ...quiet, host: ordinaryHost(), filesystem: systemFilesystemIo(), runtime: () => Promise.reject(new Error("unused")), stopped: () => Promise.resolve() })).toBe(2);
+    // proves D-211 item 1 (D-213): the git program is named only in the root-owned pin; `--git` is not an option any more
+    expect(await runHookServeCli([...args(), "--git", "/usr/bin/git"], { ...quiet, host: ordinaryHost(), filesystem: systemFilesystemIo(), runtime: () => Promise.reject(new Error("unused")), stopped: () => Promise.resolve() })).toBe(2);
     expect(await runHookAdmitCli(["--control", join(sockets, "missing.sock"), join(dir, "state", "session.json")], quiet)).toBe(1);
     expect(said.join("")).toMatch(/not reachable/);
   });

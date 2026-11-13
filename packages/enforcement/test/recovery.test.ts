@@ -1,4 +1,5 @@
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -59,6 +60,15 @@ vi.mock("node:fs", async (importOriginal) => {
       if (step()) lose();
       real.renameSync(from, to);
     }) as typeof real.renameSync,
+    // The repair's own steps (D-213): cutting the incomplete entry off, and removing its record of the repair.
+    ftruncateSync: ((fd: number, length?: number) => {
+      if (step()) lose();
+      real.ftruncateSync(fd, length);
+    }) as typeof real.ftruncateSync,
+    rmSync: ((path: string, options?: Parameters<typeof real.rmSync>[1]) => {
+      if (step()) lose();
+      real.rmSync(path, options);
+    }) as typeof real.rmSync,
   };
   return { ...wrapped, default: wrapped };
 });
@@ -273,4 +283,110 @@ describe("D-206 item 1: any other verification or anchor failure still refuses t
       writeFileSync(headFile(journal as never, "session-open"), readFileSync(headFile(journal as never, "session-open"), "utf8").replace(/"seq":[0-9]+/, '"seq":0'));
     }, /does not verify/);
   });
+});
+
+/**
+ * Operator ruling D-211 item 1 (review round 7 finding F4; DECISIONS.md D-213): the repair is atomic. The machine comes
+ * back after the first power loss (a cut-short line in an open session's record), and the power is lost again at every
+ * file operation of the start that repairs it, one run per operation, until a start runs to its end. After each, the
+ * service starts with the power on: the grant of the session open at the first crash is exhausted, the repair is recorded
+ * once in the journal's own record, nothing of its own record is left behind, and every record verifies against its
+ * anchors.
+ */
+/** The first power loss's cut-short line, as the repair records what it dropped. */
+const FIRST_CUT = '{"cut":"sho';
+const FIRST_CUT_SHA256 = createHash("sha256").update(FIRST_CUT, "utf8").digest("hex");
+
+/**
+ * The first torn write is recorded exactly once in the journal's own record, exhausting g-open. A power loss while the
+ * repair wrote its own note into the session's record tears that note: it is a torn write of its own, repaired and
+ * recorded by the next start. Any such further record must be of exactly that (a dropped `recovered_truncation` note)
+ * and exhaust the same grants.
+ */
+function expectRepairRecorded(layer: SessionLayer, when: string): void {
+  const repairs = notes(layer.journalRecord).filter((note) => note["type"] === "recovered_truncation");
+  const first = repairs.filter((note) => note["dropped_sha256"] === FIRST_CUT_SHA256);
+  expect(first, when).toHaveLength(1);
+  expect(first[0], when).toMatchObject({ record: "session-open", dropped_bytes: Buffer.byteLength(FIRST_CUT), open_sessions: ["session-open"] });
+  expect(first[0]?.["exhausted_grants"], when).toContain("g-open");
+  for (const other of repairs.filter((note) => note["dropped_sha256"] !== FIRST_CUT_SHA256)) {
+    expect(other, when).toMatchObject({ exhausted_grants: first[0]?.["exhausted_grants"] });
+    expect([layer.journalRecord, "session-open"], when).toContain(other["record"]);
+  }
+}
+
+describe("D-211 item 1: a second power loss at any step of the repair leaves the grants exhausted", () => {
+  for (const half of [false, true]) {
+    // proves D-211 item 1 (§3.4.1, §3.2): the repair's record is durable before the incomplete entry is removed
+    it(`power lost at every operation of the repairing start${half ? ", half of each write on disk" : ""}`, async () => {
+      const reached = new Set<string>();
+      let at = 1;
+      for (; at < 1000; at += 1) {
+        rmSync(journal, { recursive: true, force: true });
+        sink = new MemoryAnchorSink();
+        await seeded();
+        // The first power loss: a cut-short line in the open session's record.
+        appendFileSync(entriesFile(journal as never, "session-open"), FIRST_CUT);
+        // The second, at operation `at` of the start that repairs it.
+        Object.assign(fault, { armed: true, at, count: 0, half, fired: false });
+        try {
+          await open();
+        } catch (error: unknown) {
+          if (!(error instanceof Error) || !/simulated power loss/.test(error.message)) throw error;
+        } finally {
+          fault.armed = false;
+        }
+        if (!fault.fired) break;
+        reached.add(existsSync(join(journal, "recovery-pending.json")) ? "record of the repair on disk" : "no record of the repair on disk");
+        // The power stays on now.
+        const third = await open();
+        expect(third.recovery === null ? "nothing repaired by this start" : "repaired", `operation ${String(at)}`).toBeDefined();
+        expect(refusedGrants(storeOn(third)), `operation ${String(at)}`).toMatchObject({ "g-open": "exhausted" });
+        expect(refusedGrants(storeOn(third))["g-closed"], `operation ${String(at)}`).toBeUndefined();
+        expectRepairRecorded(third, `operation ${String(at)}`);
+        expect(existsSync(join(journal, "recovery-pending.json")), `operation ${String(at)}`).toBe(false);
+        for (const id of [third.journalRecord, "session-open", "session-closed"]) {
+          const check = checkAnchors(id, verifyTrajectory(journal, id), await sink.list(taskDigest(id)), journalKey.publicKey);
+          expect(check, `${id} at operation ${String(at)}`).toMatchObject({ ok: true });
+        }
+        expect(await third.close()).toEqual([]);
+        // And once more: still exhausted, nothing more to repair.
+        const fourth = await open();
+        expect(fourth.recovery).toBeNull();
+        expect(refusedGrants(storeOn(fourth))).toMatchObject({ "g-open": "exhausted" });
+        await fourth.close();
+      }
+      // Every operation of the repairing start was tried, and the run reached both sides of the record's writing.
+      expect(at).toBeGreaterThan(10);
+      expect([...reached].sort()).toEqual(["no record of the repair on disk", "record of the repair on disk"]);
+    }, 600_000);
+  }
+
+  // proves D-211 item 1: power lost again and again, each time at the first operation not yet survived, never loses the exhaustion
+  it("power lost at successive operations of successive repairing starts", async () => {
+    await seeded();
+    appendFileSync(entriesFile(journal as never, "session-open"), FIRST_CUT);
+    let survived = 0;
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      Object.assign(fault, { armed: true, at: survived + 1, count: 0, half: attempt % 2 === 1, fired: false });
+      let finished: SessionLayer | null = null;
+      try {
+        finished = await open();
+      } catch (error: unknown) {
+        if (!(error instanceof Error) || !/simulated power loss/.test(error.message)) throw error;
+      } finally {
+        fault.armed = false;
+      }
+      if (finished !== null) {
+        await finished.close();
+        break;
+      }
+      survived += 1;
+    }
+    const last = await open();
+    expect(refusedGrants(storeOn(last))).toMatchObject({ "g-open": "exhausted" });
+    expectRepairRecorded(last, "after the last start");
+    expect(existsSync(join(journal, "recovery-pending.json"))).toBe(false);
+    await last.close();
+  }, 600_000);
 });
