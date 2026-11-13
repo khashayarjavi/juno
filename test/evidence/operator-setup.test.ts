@@ -192,6 +192,10 @@ describe("D-214 item 2: the check that counts runs from the admin account", () =
     // The commands after stopping the service are the admin terminal's; nothing of the check is done as juno-runner.
     expect(step.indexOf("**admin terminal**")).toBeGreaterThan(step.indexOf("systemctl --user stop juno-hook.service"));
     expect(step).not.toContain("~/anchors-check");
+    // D-217: the check reads the fresh clone's history, and the operator's check line requires it.
+    expect(step).toContain('`"history": "checked"`');
+    expect(step).not.toContain("--no-history");
+    expect(step).not.toMatch(/git clone[^\n]*--depth/);
     expect(step).toContain("A check run as `juno-runner` does not count.");
   });
 });
