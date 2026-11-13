@@ -99,7 +99,9 @@ describe("D-206 item 2 (D-209): a journal reached through a symbolic link is not
 /**
  * Review round 6 on PR #51, finding D2 (DECISIONS.md D-209): the guide's own dates must give grants the grant store
  * honours. Part C issues the first grant yesterday (UTC midnight); Part D step 7 sets the first journal's recovery epoch
- * two days ago; after a manual recovery the epoch is the time `date -u` printed, and new grants are issued at that time.
+ * to a fixed early date, so the first grant is honoured however many days pass between Part C and Part D (review round
+ * 7, D-210, D-213); after a manual recovery the epoch is the time `date -u` printed, and new grants are issued at that
+ * time. After a torn write, the new grants are issued yesterday as in Part C, after the first journal's epoch.
  */
 describe("D-206 item 1 (D-209): the operator guide's dates give grants JUNO honours", () => {
   const guide = readFileSync(new URL("../../../docs/operator-setup.md", import.meta.url), "utf8");
@@ -118,7 +120,8 @@ describe("D-206 item 1 (D-209): the operator guide's dates give grants JUNO hono
   // proves D-206 item 1 with §3.2: the guide says what this test assumes
   it("is what the guide tells the operator to do", () => {
     expect(guide).toContain("`issued_at`, to **yesterday's** date");
-    expect(guide).toContain("date -u -d '2 days ago' +%Y-%m-%dT00:00:00Z");
+    expect(guide).toContain("text with exactly `2020-01-01T00:00:00Z`");
+    expect(guide).not.toContain("2 days ago");
     expect(guide).toContain("date -u +%Y-%m-%dT%H:%M:%SZ");
     expect(guide).toContain("set `issued_at` to **the time you copied in step 2**");
   });
@@ -126,7 +129,9 @@ describe("D-206 item 1 (D-209): the operator guide's dates give grants JUNO hono
   // proves D-206 item 1 with §3.2: the first journal honours the first grant; after a recovery, a grant issued at the
   // recovery time is honoured and one issued as on the first day (yesterday) is refused
   it("honours the first grant, refuses a pre-recovery grant, and honours one issued at the recovery", () => {
-    expect(reason(midnight(2), midnight(1))).toBe("honoured");
+    expect(reason("2020-01-01T00:00:00Z", midnight(1))).toBe("honoured");
+    // Part D done any number of days after Part C (round 7): the fixed epoch is still earlier than the first grant.
+    expect(reason("2020-01-01T00:00:00Z", midnight(30))).toBe("honoured");
     const recovery = new Date(Date.now() - 60_000).toISOString().replace(/\.[0-9]{3}Z$/, "Z");
     expect(reason(recovery, midnight(1))).toBe("issued_before_recovery");
     expect(reason(recovery, recovery)).toBe("honoured");

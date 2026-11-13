@@ -164,7 +164,7 @@ describe("D-206 item 2: the anchor pin file", () => {
   it("ships an example pin that needs only the operator's three values", () => {
     const example = readFileSync(new URL("../../../docs/examples/anchors.example.json", import.meta.url), "utf8");
     expect(() => parseAnchorPin(example)).toThrow();
-    const filled = example.replace("<you>", "operator").replace(/<the ED25519 fingerprint[^>]*>/, sshFingerprint(blob())).replace(/<two days ago[^>]*>/, "2026-11-13T00:00:00Z");
+    const filled = example.replace("<you>", "operator").replace(/<the ED25519 fingerprint[^>]*>/, sshFingerprint(blob())).replace(/<an early date[^>]*>/, "2020-01-01T00:00:00Z");
     expect(parseAnchorPin(filled)).toMatchObject({ transport: "ssh", host: "github.com", known_hosts: "/etc/juno/anchors_known_hosts", push_key: "/home/juno-runner/.ssh/juno_anchors", git: "/usr/bin/git" });
   });
 });

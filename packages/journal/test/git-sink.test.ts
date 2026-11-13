@@ -1,10 +1,10 @@
 import { generateKeyPairSync } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { executeOutbound } from "../../registry/src/index.js";
-import { AnchorExistsError, GitAnchorSink, type PinnedRepository, anchorOf, readAnchorDirectory, taskDigest } from "../src/index.js";
+import { AnchorExistsError, AnchorReadBackError, GitAnchorSink, type PinnedRepository, anchorOf, readAnchorDirectory, taskDigest } from "../src/index.js";
 
 /**
  * §3.4.1 (v0.6.1, D-094, D-098; D-122): the real destination is a public git repository whose history is protected
@@ -352,3 +352,67 @@ describe("D-206 item 2: the anchor repository is the pinned one, and the local c
   });
 });
 
+
+/**
+ * Operator ruling D-211 item 1 (review round 7 finding F2; DECISIONS.md D-213), with the real git: the destination reads
+ * no git settings of the repository it works in, asks the pinned address with no repository at all, and reads every
+ * anchor back from what the pinned repository's commit names.
+ */
+describe("D-211 item 1: no repository settings are read, and every anchor is read back (D-213)", () => {
+  /** A fresh pinned repository with one seed commit (earlier tests deliberately leave the shared one refused). */
+  async function freshRemote(name: string): Promise<string> {
+    const bare = join(dir, `${name}.git`);
+    await git(["init", "--bare", "--quiet", bare]);
+    const seed = join(dir, `${name}-seed`);
+    await git(["clone", "--quiet", bare, seed]);
+    writeFileSync(join(seed, "README.md"), "JUNO journal anchors\n");
+    await git(["-C", seed, "add", "README.md"]);
+    await git(["-C", seed, "commit", "--quiet", "-m", "start"]);
+    await git(["-C", seed, "push", "--quiet", "origin", "main"]);
+    return bare;
+  }
+
+  // proves CLAUDE.md rule 13 for D-213: git asked with GIT_DIR naming no repository reads no repository's settings,
+  // even when started inside a clone whose settings send the pinned URL elsewhere
+  it("the real git, given no repository, answers for the pinned URL whatever the folder's own settings say", async () => {
+    const elsewhere = join(dir, "elsewhere.git");
+    await git(["init", "--bare", "--quiet", elsewhere]);
+    const redirected = join(dir, "redirected");
+    await git(["clone", "--quiet", remote, redirected]);
+    await git(["-C", redirected, "config", `url.${elsewhere}.insteadOf`, remote]);
+    const env = { PATH: "/usr/bin:/bin", HOME: "/nonexistent", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+    const pinned = await freshRemote("pinned-ls");
+    await git(["-C", redirected, "config", `url.${elsewhere}.insteadOf`, pinned]);
+    const inside = await executeOutbound({ file: "/usr/bin/git", args: ["ls-remote", "--", pinned, "refs/heads/main"] }, { env, cwd: redirected });
+    expect(inside.stdout.toString("utf8")).toBe(""); // the folder's settings sent it to the empty repository
+    const none = await executeOutbound({ file: "/usr/bin/git", args: ["ls-remote", "--", pinned, "refs/heads/main"] }, { env: { ...env, GIT_DIR: "/nonexistent/juno-no-repository" }, cwd: redirected });
+    expect(none.exitCode).toBe(0);
+    expect(none.stdout.toString("utf8")).toMatch(/^[0-9a-f]{40}\trefs\/heads\/main\n$/);
+  });
+
+  // proves D-211 item 1: a setting added to the clone after the start is found before git reads it; nothing is pushed
+  it("refuses to run git in its clone once the clone's settings were changed, and pushes nothing", async () => {
+    const pinned = await freshRemote("pinned-settings");
+    const own = join(dir, "clone-settings");
+    const sink = new GitAnchorSink({ clone: own, pin: pinOf(pinned) });
+    await sink.append(anchorOf("task-settings", head(1), new Date(), key.privateKey));
+    const before = (await git(["--git-dir", pinned, "rev-parse", "main"])).stdout;
+    writeFileSync(join(own, ".git", "config"), `${readFileSync(join(own, ".git", "config"), "utf8")}[core]\n\tsshCommand = /bin/false\n`);
+    await expect(sink.append(anchorOf("task-settings", head(2), new Date(), key.privateKey))).rejects.toBeInstanceOf(AnchorReadBackError);
+    await expect(sink.list(taskDigest("task-settings"))).rejects.toBeInstanceOf(AnchorReadBackError);
+    expect((await git(["--git-dir", pinned, "rev-parse", "main"])).stdout).toBe(before);
+  });
+
+  // proves D-211 item 1: an anchor file changed in the clone's folder is never read as an anchor
+  it("refuses an anchor file in the clone that is not the one the pinned repository holds", async () => {
+    const pinned = await freshRemote("pinned-files");
+    const own = join(dir, "clone-files");
+    const sink = new GitAnchorSink({ clone: own, pin: pinOf(pinned) });
+    await sink.append(anchorOf("task-files", head(1), new Date(), key.privateKey));
+    const file = join(own, taskDigest("task-files"), "000000000001.json");
+    writeFileSync(file, readFileSync(file, "utf8").replace(/"seq":1/, '"seq":7'));
+    // Fail-closed either way: git refuses to bring a clone with changed files up to date, and were it brought up to
+    // date, the file would not be the blob the pinned repository's commit names. The changed anchor is never returned.
+    await expect(sink.list(taskDigest("task-files"))).rejects.toThrow(/cannot pull|not the one the pinned repository holds/);
+  });
+});

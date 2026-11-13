@@ -6,6 +6,6 @@
   "push_key": "/home/juno-runner/.ssh/juno_anchors",
   "git": "/usr/bin/git",
   "journals": [
-    { "path": "/var/lib/juno-runner/journal", "recovery_epoch": "<two days ago: the line Part D step 7 has you print>" }
+    { "path": "/var/lib/juno-runner/journal", "recovery_epoch": "<an early date: Part D step 7 gives it>" }
   ]
 }
