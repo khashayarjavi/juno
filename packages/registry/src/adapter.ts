@@ -36,14 +36,18 @@ const MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
  * shell. A non-zero exit is a result, not an error. Failing to start the
  * program at all (for example, it does not exist) rejects.
  */
-export function executeOutbound(invocation: OutboundInvocation, options: { readonly env?: Readonly<Record<string, string>> } = {}): Promise<InvocationResult> {
+export function executeOutbound(invocation: OutboundInvocation, options: { readonly env?: Readonly<Record<string, string>>; readonly timeoutMs?: number } = {}): Promise<InvocationResult> {
   return new Promise((resolve, reject) => {
     const child = execFile(
       invocation.file,
       [...invocation.args],
       // `env`, when given, is the program's whole environment: nothing of this process's own is passed on (D-208).
+      // `timeoutMs`, when given, ends the program (SIGKILL) once it has run that long and answers at once, with no exit
+      // code (so not a success), without waiting for programs it started (git's ssh, D-209) to let go of its output;
+      // those see their input close when it ends.
       { encoding: "buffer", maxBuffer: MAX_OUTPUT_BYTES, shell: false, ...(options.env === undefined ? {} : { env: { ...options.env } }) },
       (error, stdout, stderr) => {
+        if (timer !== null) clearTimeout(timer);
         if (error === null) {
           resolve({ exitCode: 0, signal: null, stdout, stderr });
         } else if (typeof error.code === "string") {
@@ -56,5 +60,14 @@ export function executeOutbound(invocation: OutboundInvocation, options: { reado
     );
     // No capability has a stdin channel: the program sees end of input at once instead of waiting on it.
     child.stdin?.end();
+    const timer =
+      options.timeoutMs === undefined || child.pid === undefined
+        ? null
+        : setTimeout(() => {
+            child.kill("SIGKILL");
+            child.stdout?.destroy();
+            child.stderr?.destroy();
+            resolve({ exitCode: null, signal: "SIGKILL", stdout: Buffer.alloc(0), stderr: Buffer.from(`ended after ${String(options.timeoutMs)} ms\n`) });
+          }, options.timeoutMs);
   });
 }

@@ -22,8 +22,14 @@ Status (2026-11-13): **your rulings 1 and 2 are built (D-207, D-208); `make veri
 
 **Done:** `make verify: GREEN` on head 80a2925 (1,419 unit, 118 container); `make mediated-e2e` 15/15 (real Claude Code); draft PR [khashayarjavi/juno#51](https://github.com/khashayarjavi/juno/pull/51) supersedes #50; CI run 43379238330 on 80a2925: `verify` and `verify-rootless` green. Review round 6 started (cut off once by a usage limit, resumed 2026-11-13 11:12 UTC).
 
+- **Review round 6 (head 80a2925, CI green): DO NOT MERGE, three new findings, all fixed with tests (D-209).** In plain words:
+  - JUNO's SSH helper did not pass git's traffic through, so with your real GitHub pin every service would have hung at start. Now proven end to end: the real git, through the real helper, to a stand-in SSH server carrying the git protocol. Also, a git command that runs over two minutes now counts as a failure, so a silent server refuses the start instead of hanging it.
+  - The guide's dates made your first grant (and every grant after a recovery) refused. The guide now gives commands that print the right dates, and a test checks the guide's text against what JUNO accepts.
+  - A folder above the journal replaced by a symbolic link made the service start as new. A journal path may now hold no symbolic link at all.
+  - Not a STOP: none repeats an earlier round's mechanism. Round 7 is the last you authorised.
+
 **Left, in order:**
-1. Review round 6 (and 7 if needed), the merge gate (CLAUDE.md §7 step 6). Then Slice 1.5 is complete: STOP and report.
+1. `make verify` green on the head, CI green, review round 7, the merge gate (CLAUDE.md §7 step 6). Then Slice 1.5 is complete: STOP and report. If round 7 says DO NOT MERGE, STOP and report.
 
 ## Earlier status (2026-11-12, before your rulings)
 ### STOP after review round 5 on PR #50 (2026-11-12) — your decision needed (D-205)

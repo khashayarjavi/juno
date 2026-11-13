@@ -124,9 +124,9 @@ export class ContainerAnchorSink implements AnchorSink {
   }
 }
 
-async function outbound(args: readonly string[], file = "docker", env?: Readonly<Record<string, string>>): Promise<{ exitCode: number | null; stdout: Buffer; stderr: Buffer }> {
+async function outbound(args: readonly string[], file = "docker", env?: Readonly<Record<string, string>>, timeoutMs?: number): Promise<{ exitCode: number | null; stdout: Buffer; stderr: Buffer }> {
   try {
-    return await executeOutbound({ file, args }, env === undefined ? {} : { env });
+    return await executeOutbound({ file, args }, { ...(env === undefined ? {} : { env }), ...(timeoutMs === undefined ? {} : { timeoutMs }) });
   } catch (error: unknown) {
     throw new AnchorSinkError(`the anchor destination could not be reached: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -157,6 +157,12 @@ export type PinnedRepository = {
 };
 
 const ANCHOR_FILE = /^[0-9a-f]{64}\/[0-9]{12}\.json$/;
+
+/**
+ * How long one git command may run (review round 6 on PR #51, note 3; D-209): a server that never answers refuses the
+ * start, as an unreachable one does, instead of holding it for ever. Two minutes covers a slow fetch of a large history.
+ */
+export const GIT_TIMEOUT_MS = 120_000;
 
 /** The executable git is given as `GIT_SSH` (anchor-ssh.ts): beside this module in the built code. */
 export function defaultSshWrapper(): string {
@@ -192,8 +198,10 @@ export class GitAnchorSink implements AnchorSink {
   #started: Promise<void> | null = null;
   /** Whether the pinned branch exists in the repository. */
   #born = false;
+  /** How long one git command may run before it is ended and counted as a failure (review round 6, note 3). */
+  readonly #timeoutMs: number;
 
-  constructor(options: { readonly clone: string; readonly git?: string; readonly pin: PinnedRepository; readonly ssh?: { readonly wrapper?: string; readonly program?: string } }) {
+  constructor(options: { readonly clone: string; readonly git?: string; readonly pin: PinnedRepository; readonly ssh?: { readonly wrapper?: string; readonly program?: string }; readonly timeoutMs?: number }) {
     this.#clone = parseAtBoundary("anchor repository clone", AbsolutePath, options.clone);
     if (pathsOverlap(this.#clone, WORK_NAMESPACE)) throw new AnchorSinkError(`the anchor clone ${this.#clone} lies in the capability namespace ${WORK_NAMESPACE}`);
     this.#git = options.git ?? "git";
@@ -201,6 +209,8 @@ export class GitAnchorSink implements AnchorSink {
     if (pin === undefined || pin === null || typeof pin.url !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(pin.branch) || pin.url.startsWith("-")) throw new AnchorSinkError("the anchor destination needs the pinned repository address and branch (D-208)");
     if (pin.transport === "ssh" && (pin.knownHosts === null || pin.pushKey === null)) throw new AnchorSinkError("an SSH anchor repository needs the pinned host key file and push key (D-208)");
     this.#pin = pin;
+    this.#timeoutMs = options.timeoutMs ?? GIT_TIMEOUT_MS;
+    if (!Number.isSafeInteger(this.#timeoutMs) || this.#timeoutMs < 1) throw new AnchorSinkError("the git time limit must be a positive whole number of milliseconds");
     // Git's whole environment (D-208): nothing of the runner's own (no GIT_* variable, no HOME configuration) reaches it.
     this.#env = {
       PATH: `${dirname(process.execPath)}:/usr/bin:/bin`,
@@ -227,8 +237,10 @@ export class GitAnchorSink implements AnchorSink {
   }
 
   async #try(repo: string, args: readonly string[]): Promise<{ exitCode: number | null; stdout: string; stderr: string }> {
-    const result = await outbound(["-C", repo, "-c", "user.name=juno-runner", "-c", "user.email=juno-runner@localhost", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", ...args], this.#git, this.#env);
-    return { exitCode: result.exitCode, stdout: result.stdout.toString("utf8"), stderr: result.stderr.toString("utf8") };
+    const result = await outbound(["-C", repo, "-c", "user.name=juno-runner", "-c", "user.email=juno-runner@localhost", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", ...args], this.#git, this.#env, this.#timeoutMs);
+    // A git command ended by the time limit has no exit code: it is a failure, and says why.
+    const stderr = result.exitCode === null ? `git did not finish within ${String(this.#timeoutMs / 1000)} s (the pinned anchor repository did not answer)` : result.stderr.toString("utf8");
+    return { exitCode: result.exitCode, stdout: result.stdout.toString("utf8"), stderr };
   }
 
   async #in(repo: string, args: readonly string[]): Promise<string> {
@@ -258,7 +270,7 @@ export class GitAnchorSink implements AnchorSink {
     const fresh = `${this.#clone}.fetch-${randomBytes(8).toString("hex")}`;
     mkdirSync(fresh, { mode: 0o700 });
     try {
-      const init = await outbound(["init", "--quiet", fresh], this.#git, this.#env);
+      const init = await outbound(["init", "--quiet", fresh], this.#git, this.#env, this.#timeoutMs);
       if (init.exitCode !== 0) throw new AnchorSinkError(`git init failed: ${init.stderr.toString("utf8").trim()}`);
       // 1. What the pinned repository holds.
       const listed = await this.#try(fresh, ["ls-remote", "--", this.#pin.url, `refs/heads/${this.#pin.branch}`]);

@@ -33,6 +33,10 @@ export function sshInvocation(gitArgs: readonly string[], env: Readonly<Record<s
     args: [
       "-F", "/dev/null",
       "-o", "BatchMode=yes",
+      // A server that does not answer ends the session instead of holding the start (D-209).
+      "-o", "ConnectTimeout=30",
+      "-o", "ServerAliveInterval=15",
+      "-o", "ServerAliveCountMax=4",
       "-o", "StrictHostKeyChecking=yes",
       "-o", `UserKnownHostsFile=${knownHosts}`,
       "-o", "GlobalKnownHostsFile=/dev/null",
@@ -48,15 +52,26 @@ export function sshInvocation(gitArgs: readonly string[], env: Readonly<Record<s
   };
 }
 
-/** Runs ssh for git with the pinned options, on this process's own input and output. Answers ssh's exit code. */
-export function main(gitArgs: readonly string[], env: Readonly<Record<string, string | undefined>>, err: (text: string) => void): Promise<number> {
+/** The streams the wrapper carries between git and ssh: git's own, in real use. */
+export type SshStreams = { readonly stdin: NodeJS.ReadableStream; readonly stdout: NodeJS.WritableStream; readonly stderr: NodeJS.WritableStream };
+
+/** ssh's output is carried through as it comes; this bounds only what `execFile` also keeps of it (fail-closed past it). */
+const MAX_TRAFFIC_BYTES = 256 * 1024 * 1024;
+
+/**
+ * Runs ssh for git with the pinned options. git talks to the wrapper over its standard input and output, so those are
+ * carried to and from ssh unchanged (review round 6 on PR #51, finding D1: `execFile` gives the child pipes of its own
+ * and ignores a `stdio` option, so they must be joined here). Answers ssh's exit code; 255 when it cannot be run.
+ */
+export function main(gitArgs: readonly string[], env: Readonly<Record<string, string | undefined>>, err: (text: string) => void, streams: SshStreams = { stdin: process.stdin, stdout: process.stdout, stderr: process.stderr }): Promise<number> {
   const invocation = sshInvocation(gitArgs, env);
   if ("refusal" in invocation) {
     err(`${invocation.refusal}\n`);
     return Promise.resolve(255);
   }
   return new Promise((resolve) => {
-    const child = execFile(invocation.file, [...invocation.args], { shell: false, stdio: "inherit", maxBuffer: Infinity } as Parameters<typeof execFile>[2], (error) => {
+    const child = execFile(invocation.file, [...invocation.args], { shell: false, encoding: "buffer", maxBuffer: MAX_TRAFFIC_BYTES }, (error) => {
+      streams.stdin.unpipe(child.stdin ?? undefined);
       if (error === null) resolve(0);
       else if (typeof error.code === "number") resolve(error.code);
       else {
@@ -64,6 +79,11 @@ export function main(gitArgs: readonly string[], env: Readonly<Record<string, st
         resolve(255);
       }
     });
-    void child;
+    child.stdout?.pipe(streams.stdout, { end: false });
+    child.stderr?.pipe(streams.stderr, { end: false });
+    if (child.stdin !== null) {
+      child.stdin.on("error", () => undefined);
+      streams.stdin.pipe(child.stdin);
+    }
   });
 }

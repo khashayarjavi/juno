@@ -211,8 +211,13 @@ export function verifyAnchorPin(path: string, journal: string, workspaces: reado
       if (pathsOverlap(resolved(parsed.url, host), resolved(root, host)) || pathsOverlap(parsed.url, root)) refusals.push(`the pinned anchor repository ${parsed.url} overlaps the workspace ${root} (D-208)`);
     }
   }
+  // Review round 6 on PR #51, finding D3 (D-209): the journal's own record is named after the journal's path as the kernel
+  // resolves it, so a symbolic link anywhere above the journal (a folder moved aside and a link put in its place) would
+  // give it a new record and an empty history. The journal must be the path the pin names, exactly as written, and
+  // that path must resolve to itself: no symbolic link in it at all.
   const real = resolved(journal, host);
-  const entry = parsed.journals.find((candidate) => candidate.path === journal || resolved(candidate.path, host) === real);
+  if (real !== journal) refusals.push(`the journal ${journal} resolves to ${real}: a folder on its path is a symbolic link, so it is not the folder the anchor pin names; name the real path, with no symbolic link in it (D-206, D-209)`);
+  const entry = parsed.journals.find((candidate) => candidate.path === journal);
   if (entry === undefined) refusals.push(`the journal ${journal} is not a journal folder the anchor pin ${path} names; only the operator, as root, adds one there (D-206, D-208)`);
   if (refusals.length > 0 || entry === undefined) return { ok: false, refusals };
   return {

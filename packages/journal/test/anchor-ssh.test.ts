@@ -1,11 +1,12 @@
 import { generateKeyPairSync } from "node:crypto";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { knownHostsRefusals, parseAnchorPin, pinnedTransport, sshFingerprint } from "../../enforcement/src/anchor-pin.js";
 import { executeOutbound } from "../../registry/src/index.js";
-import { GitAnchorSink, SSH_ENVIRONMENT, sshInvocation } from "../src/index.js";
+import { GitAnchorSink, SSH_ENVIRONMENT, anchorOf, readAnchorDirectory, sshInvocation, taskDigest } from "../src/index.js";
 import { main } from "../src/anchor-ssh.js";
 
 /**
@@ -163,7 +164,118 @@ describe("D-206 item 2: the anchor pin file", () => {
   it("ships an example pin that needs only the operator's three values", () => {
     const example = readFileSync(new URL("../../../docs/examples/anchors.example.json", import.meta.url), "utf8");
     expect(() => parseAnchorPin(example)).toThrow();
-    const filled = example.replace("<you>", "operator").replace(/<the ED25519 fingerprint[^>]*>/, sshFingerprint(blob())).replace(/<the day you made[^>]*>/, "2026-11-13T00:00:00Z");
+    const filled = example.replace("<you>", "operator").replace(/<the ED25519 fingerprint[^>]*>/, sshFingerprint(blob())).replace(/<two days ago[^>]*>/, "2026-11-13T00:00:00Z");
     expect(parseAnchorPin(filled)).toMatchObject({ transport: "ssh", host: "github.com", known_hosts: "/etc/juno/anchors_known_hosts", push_key: "/home/juno-runner/.ssh/juno_anchors" });
   });
 });
+
+/**
+ * Review round 6 on PR #51, finding D1 (DECISIONS.md D-209): git speaks its protocol to `juno-anchor-ssh` over its
+ * standard input and output, so the wrapper must carry them to ssh and back. Here the whole chain runs for real: the
+ * real git, the real wrapper (its source run by this node), and a stand-in for ssh that checks it was given the pinned
+ * options and then carries the git protocol to a local bare repository, as an SSH session to GitHub would. No network.
+ */
+describe("D-206 item 2 (D-209): the anchors travel over the pinned SSH transport, end to end", () => {
+  let base: string;
+  let wrapper: string;
+  let remote: string;
+  const key = generateKeyPairSync("ed25519");
+
+  /** A stand-in ssh: refuses unless given the pinned options, then runs the remote git command on its own input and output. */
+  function standInSsh(name: string, behaviour: "carry" | "hang"): string {
+    const path = join(base, name);
+    const log = join(base, `${name}.log`);
+    writeFileSync(path, `#!${process.execPath}
+import { execFile } from "node:child_process";
+import { appendFileSync } from "node:fs";
+const argv = process.argv.slice(2);
+appendFileSync(${JSON.stringify(log)}, JSON.stringify(argv) + "\\n");
+const option = (name) => argv.some((value, index) => argv[index - 1] === "-o" && value.startsWith(name + "="));
+for (const needed of ["StrictHostKeyChecking=yes", "BatchMode=yes", "IdentitiesOnly=yes", "GlobalKnownHostsFile=/dev/null"]) if (!argv.includes(needed)) process.exit(250);
+if (argv[0] !== "-F" || argv[1] !== "/dev/null" || !option("UserKnownHostsFile") || !option("IdentityFile")) process.exit(251);
+// "hang": a server that never answers. Like ssh, it ends when its input closes (git has gone); otherwise never.
+if (${JSON.stringify(behaviour)} === "hang") { process.stdin.on("data", () => undefined); process.stdin.on("end", () => process.exit(255)); setInterval(() => undefined, 1000); }
+else {
+  const match = /^(git-upload-pack|git-receive-pack) '(.*)'$/.exec(argv.at(-1) ?? "");
+  if (match === null) process.exit(252);
+  const child = execFile("/usr/bin/git", [match[1].slice(4), ${JSON.stringify(base)} + "/" + match[2].replace(/^\\//, "")], { encoding: "buffer", maxBuffer: 1 << 28 }, (error) => process.exit(error === null ? 0 : typeof error.code === "number" ? error.code : 253));
+  child.stdout.pipe(process.stdout);
+  child.stderr.pipe(process.stderr);
+  process.stdin.pipe(child.stdin);
+}
+`);
+    chmodSync(path, 0o755);
+    return path;
+  }
+
+  beforeAll(async () => {
+    base = mkdtempSync(join(tmpdir(), "juno-anchor-ssh-e2e-"));
+    // The real wrapper, run from its source by this node (type stripping): what `juno-anchor-ssh.js` is once built.
+    wrapper = join(base, "juno-anchor-ssh");
+    writeFileSync(wrapper, `#!${process.execPath}\nconst { main } = await import(${JSON.stringify(fileURLToPath(new URL("../src/anchor-ssh.ts", import.meta.url)))});\nprocess.exit(await main(process.argv.slice(2), process.env, (text) => process.stderr.write(text)));\n`);
+    chmodSync(wrapper, 0o755);
+    remote = join(base, "operator", "juno-anchors.git");
+    mkdirSync(join(base, "operator"));
+    const git = (args: readonly string[]) => executeOutbound({ file: "/usr/bin/git", args: ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main", ...args] });
+    await git(["init", "--bare", "--quiet", remote]);
+    const seed = join(base, "seed");
+    await git(["clone", "--quiet", remote, seed]);
+    writeFileSync(join(seed, "README.md"), "anchors\n");
+    await git(["-C", seed, "add", "README.md"]);
+    await git(["-C", seed, "commit", "--quiet", "-m", "start"]);
+    expect((await git(["-C", seed, "push", "--quiet", "origin", "HEAD:main"])).exitCode).toBe(0);
+  });
+  afterAll(() => {
+    rmSync(base, { recursive: true, force: true });
+  });
+
+  const sshPin = { url: "git@anchors.test:operator/juno-anchors.git", branch: "main", transport: "ssh" as const, knownHosts: "/etc/juno/anchors_known_hosts", pushKey: "/home/juno-runner/.ssh/juno_anchors" };
+
+  // proves D-206 item 2 with §3.4.1: a service's start fetches, appends and lists through the pinned SSH transport
+  // and the real wrapper; what it pushed is in the repository
+  it("fetches, pushes and lists anchors through the real wrapper and an SSH transport", async () => {
+    const ssh = standInSsh("ssh-carry", "carry");
+    const started = Date.now();
+    const sink = new GitAnchorSink({ clone: join(base, "clone"), git: "/usr/bin/git", pin: sshPin, ssh: { wrapper, program: ssh }, timeoutMs: 60_000 });
+    expect(await sink.listMany([taskDigest("task-ssh")])).toEqual(new Map([[taskDigest("task-ssh"), []]]));
+    await sink.append(anchorOf("task-ssh", { seq: 0, hash: `sha256:${"1".repeat(64)}` }, new Date(), key.privateKey));
+    expect(((await new GitAnchorSink({ clone: join(base, "clone"), git: "/usr/bin/git", pin: sshPin, ssh: { wrapper, program: ssh } }).list(taskDigest("task-ssh"))) as { seq: number }[]).map((anchor) => anchor.seq)).toEqual([0]);
+    expect(Date.now() - started).toBeLessThan(30_000);
+    const reader = join(base, "reader");
+    await executeOutbound({ file: "/usr/bin/git", args: ["clone", "--quiet", remote, reader] });
+    expect((readAnchorDirectory(reader, taskDigest("task-ssh")) as { seq: number }[]).map((anchor) => anchor.seq)).toEqual([0]);
+    // Every connection went through ssh with the pinned options, to the pinned host.
+    const calls = readFileSync(join(base, "ssh-carry.log"), "utf8").trim().split("\n").map((line) => JSON.parse(line) as string[]);
+    expect(calls.length).toBeGreaterThan(2);
+    for (const call of calls) expect(call.at(-2)).toBe("git@anchors.test");
+  }, 60_000);
+
+  // proves D-209 (fail-closed): a server that never answers refuses the start within the time limit, and leaves
+  // nothing of its own behind; it does not hold the start for ever
+  it("refuses, within its time limit, a server that never answers", async () => {
+    const ssh = standInSsh("ssh-hang", "hang");
+    const started = Date.now();
+    const sink = new GitAnchorSink({ clone: join(base, "clone-hang"), git: "/usr/bin/git", pin: sshPin, ssh: { wrapper, program: ssh }, timeoutMs: 3_000 });
+    await expect(sink.listMany([])).rejects.toThrow(/did not finish within 3 s/);
+    expect(Date.now() - started).toBeLessThan(15_000);
+  }, 30_000);
+
+  // proves D-209: the wrapper itself carries what ssh writes back to git, and what git writes on to ssh
+  it("carries the program's output to its own output, and its own input to the program", async () => {
+    const { PassThrough } = await import("node:stream");
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    let out = "";
+    stdout.on("data", (chunk: Buffer) => (out += chunk.toString("utf8")));
+    // A program that ignores its arguments and copies its input to its output.
+    const echo = join(base, "echo-input");
+    writeFileSync(echo, `#!${process.execPath}\nprocess.stdin.pipe(process.stdout);\n`);
+    chmodSync(echo, 0o755);
+    const running = main([], { ...ENV, [SSH_ENVIRONMENT.program]: echo }, () => undefined, { stdin, stdout, stderr });
+    stdin.end("hello through the wrapper\n");
+    expect(await running).toBe(0);
+    expect(out).toContain("hello through the wrapper");
+  });
+});
+

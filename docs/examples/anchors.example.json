@@ -5,6 +5,6 @@
   "known_hosts": "/etc/juno/anchors_known_hosts",
   "push_key": "/home/juno-runner/.ssh/juno_anchors",
   "journals": [
-    { "path": "/var/lib/juno-runner/journal", "recovery_epoch": "<the day you made your signing key, as 2026-11-13T00:00:00Z>" }
+    { "path": "/var/lib/juno-runner/journal", "recovery_epoch": "<two days ago: the line Part D step 7 has you print>" }
   ]
 }

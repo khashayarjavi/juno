@@ -69,7 +69,7 @@ A grant is a signed permission: "this principal may use these capabilities, on t
    Copy-Item $env:USERPROFILE\juno\docs\examples\grant-claude-code.example.json $env:USERPROFILE\my-grant.json
    notepad $env:USERPROFILE\my-grant.json
    ```
-   It lets the session read, list, write and edit files under `/work/project` (that is `/srv/juno-work/project`) and run the read-only programs your session file names, at most 200 times. In Notepad change only two values: `issued_at`, to **yesterday's** date (keep the form `2026-11-08T00:00:00.000Z`; yesterday, because the time is UTC and a grant issued in the future is refused), and `expires_at`, to the last day it should be valid. Save with **Ctrl+S** and close Notepad.
+   It lets the session read, list, write and edit files under `/work/project` (that is `/srv/juno-work/project`) and run the read-only programs your session file names, at most 200 times. In Notepad change only two values: `issued_at`, to **yesterday's** date (keep the form `2026-11-08T00:00:00.000Z`; yesterday, because the time is UTC and a grant issued in the future is refused; after a manual recovery, use the time "When something goes wrong" gives instead), and `expires_at`, to the last day it should be valid. Save with **Ctrl+S** and close Notepad.
 2. Sign it. **PowerShell**, in `$env:USERPROFILE\juno`:
    ```
    cd $env:USERPROFILE\juno
@@ -270,7 +270,7 @@ JUNO copies a fingerprint of its journal to this repository at least once a minu
    In nano, change three things and nothing else:
    - in `url`, replace `<you>` with your GitHub user name;
    - replace the whole `<the ED25519 fingerprint ...>` text with the `SHA256:...` you copied;
-   - replace the whole `<the day you made your signing key ...>` text with the day you did Part B, written like `2026-11-13T00:00:00Z`. This is the journal's *recovery epoch*: JUNO refuses, on this journal, every grant signed before it. For your first journal it only has to be earlier than your first grant.
+   - replace the whole `<two days ago: ...>` text with the line this command prints (admin terminal): `date -u -d '2 days ago' +%Y-%m-%dT00:00:00Z`. This is the journal's *recovery epoch*: JUNO refuses, on this journal, every grant whose `issued_at` is earlier. Your first grant (Part C) is issued *yesterday*, so the epoch must be earlier still: two days ago is. Your signing key is new, so no older grant of yours exists.
    Save with **Ctrl+O**, Enter, and leave with **Ctrl+X**. Then:
    ```
    sudo chown root:root /etc/juno/anchors.json /etc/juno/anchors_known_hosts
@@ -416,7 +416,7 @@ Only if you want Claude Code to use an MCP server (a tool server such as a mail 
   1. Keep the old journal folder as evidence. Never move or rename it.
   2. Admin terminal: `date -u +%Y-%m-%dT%H:%M:%SZ` prints the time now; copy it. Then `sudo nano /etc/juno/anchors.json` and add a new line to the `journals` list (a comma after the line before it): `{ "path": "/var/lib/juno-runner/journal-2", "recovery_epoch": "<the time you copied>" }`. Save and leave. Only root can do this step; that is what makes the recovery your act.
   3. Runner terminal: in `~/.config/systemd/user/juno-hook.service` change `--journal /var/lib/juno-runner/journal` to `--journal /var/lib/juno-runner/journal-2`, then `systemctl --user daemon-reload` and `systemctl --user start juno-hook.service`.
-  4. **Every grant you signed before that time is now refused** on the new journal (`was issued before this journal's recovery epoch`). Sign new grants (Part C; the time you sign them is after the recovery) and copy them in (Part G step 1).
+  4. **Every grant issued before that time is now refused** on the new journal (`was issued before this journal's recovery epoch`). Make new grants as in Part C, with one change: set `issued_at` to **the time you copied in step 2** (not yesterday: yesterday is before the recovery, and would be refused). Sign them, check them (Part C steps 2 and 3), and copy them in (Part G step 1).
   5. Use new `session_id`s (Part G step 2). A session id that was used on the old journal cannot be used again: its fingerprints are already in `juno-anchors`, and JUNO never replaces one.
 
 ## What each part protects, and what it does not
