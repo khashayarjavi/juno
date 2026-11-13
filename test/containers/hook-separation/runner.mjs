@@ -25,7 +25,7 @@ const layer = await SessionLayer.open({
   anchor: null,
 }, {
   // §3.4.1 (D-198): every layer anchors; the driver's root-owned stand-in git pushes to a stand-in destination.
-  anchoring: (root, pin) => gitAnchoring({ journalKeyDir: `${state}/journal-key-probe`, anchorClone: `${state}/juno-anchors-probe`, intervalMs: 60_000, git: "/opt/fake-git/git", pin: "/etc/juno/anchors.json" }, root, pin),
+  anchoring: (root, pin) => gitAnchoring({ journalKeyDir: `${state}/journal-key-probe`, anchorClone: `${state}/juno-anchors-probe`, intervalMs: 60_000, pin: "/etc/juno/anchors.json" }, root, pin),
 });
 const grants = new GrantStore(createPublicKey(readFileSync("/etc/juno/operator.pub", "utf8")));
 const sessions = new MediatedSessions({

@@ -90,7 +90,7 @@ describe("D-206 item 2: SSH to the anchor repository uses the pinned host key on
     process.env["JUNO_TEST_LEAK"] = "must-not-reach-git";
     process.env["GIT_SSH_COMMAND"] = "/bin/false";
     try {
-      const sink = new GitAnchorSink({ clone: join(dir, "clone"), git: "/usr/bin/git", pin: { url: "git@anchors.invalid:me/juno-anchors.git", branch: "main", transport: "ssh", knownHosts: "/etc/juno/anchors_known_hosts", pushKey: "/home/juno-runner/.ssh/juno_anchors" }, ssh: { wrapper, program: "/usr/bin/ssh" } });
+      const sink = new GitAnchorSink({ clone: join(dir, "clone"), pin: { url: "git@anchors.invalid:me/juno-anchors.git", branch: "main", transport: "ssh", knownHosts: "/etc/juno/anchors_known_hosts", pushKey: "/home/juno-runner/.ssh/juno_anchors", git: "/usr/bin/git" }, ssh: { wrapper, program: "/usr/bin/ssh" } });
       await expect(sink.listMany([])).rejects.toThrow(/pinned anchor repository could not be reached/);
     } finally {
       delete process.env["JUNO_TEST_LEAK"];
@@ -148,7 +148,7 @@ describe("D-206 item 2: the anchor pin file", () => {
     expect(pinnedTransport("/srv/anchors.git")).toEqual({ transport: "local" });
     for (const url of ["https://github.com/me/juno-anchors.git", "git://github.com/me/x.git", "ext::sh -c x", "-oProxyCommand=x", "git@github.com:-x", "file:///srv/x", "relative/path"]) expect(pinnedTransport(url), url).toHaveProperty("refusal");
     const journals = [{ path: "/var/lib/juno-runner/journal", recovery_epoch: "2026-11-13T00:00:00Z" }];
-    const ssh = { url: "git@github.com:me/juno-anchors.git", branch: "main", host_key_fingerprint: sshFingerprint(blob()), known_hosts: "/etc/juno/anchors_known_hosts", push_key: "/home/juno-runner/.ssh/juno_anchors", journals };
+    const ssh = { url: "git@github.com:me/juno-anchors.git", branch: "main", host_key_fingerprint: sshFingerprint(blob()), known_hosts: "/etc/juno/anchors_known_hosts", push_key: "/home/juno-runner/.ssh/juno_anchors", git: "/usr/bin/git", journals };
     expect(parseAnchorPin(JSON.stringify(ssh))).toMatchObject({ transport: "ssh", host: "github.com" });
     expect(() => parseAnchorPin(JSON.stringify({ ...ssh, host_key_fingerprint: null }))).toThrow(/needs host_key_fingerprint/);
     expect(() => parseAnchorPin(JSON.stringify({ ...ssh, journals: [] }))).toThrow();
@@ -165,7 +165,7 @@ describe("D-206 item 2: the anchor pin file", () => {
     const example = readFileSync(new URL("../../../docs/examples/anchors.example.json", import.meta.url), "utf8");
     expect(() => parseAnchorPin(example)).toThrow();
     const filled = example.replace("<you>", "operator").replace(/<the ED25519 fingerprint[^>]*>/, sshFingerprint(blob())).replace(/<two days ago[^>]*>/, "2026-11-13T00:00:00Z");
-    expect(parseAnchorPin(filled)).toMatchObject({ transport: "ssh", host: "github.com", known_hosts: "/etc/juno/anchors_known_hosts", push_key: "/home/juno-runner/.ssh/juno_anchors" });
+    expect(parseAnchorPin(filled)).toMatchObject({ transport: "ssh", host: "github.com", known_hosts: "/etc/juno/anchors_known_hosts", push_key: "/home/juno-runner/.ssh/juno_anchors", git: "/usr/bin/git" });
   });
 });
 
@@ -229,17 +229,17 @@ else {
     rmSync(base, { recursive: true, force: true });
   });
 
-  const sshPin = { url: "git@anchors.test:operator/juno-anchors.git", branch: "main", transport: "ssh" as const, knownHosts: "/etc/juno/anchors_known_hosts", pushKey: "/home/juno-runner/.ssh/juno_anchors" };
+  const sshPin = { url: "git@anchors.test:operator/juno-anchors.git", branch: "main", transport: "ssh" as const, knownHosts: "/etc/juno/anchors_known_hosts", pushKey: "/home/juno-runner/.ssh/juno_anchors", git: "/usr/bin/git" };
 
   // proves D-206 item 2 with §3.4.1: a service's start fetches, appends and lists through the pinned SSH transport
   // and the real wrapper; what it pushed is in the repository
   it("fetches, pushes and lists anchors through the real wrapper and an SSH transport", async () => {
     const ssh = standInSsh("ssh-carry", "carry");
     const started = Date.now();
-    const sink = new GitAnchorSink({ clone: join(base, "clone"), git: "/usr/bin/git", pin: sshPin, ssh: { wrapper, program: ssh }, timeoutMs: 60_000 });
+    const sink = new GitAnchorSink({ clone: join(base, "clone"), pin: sshPin, ssh: { wrapper, program: ssh }, timeoutMs: 60_000 });
     expect(await sink.listMany([taskDigest("task-ssh")])).toEqual(new Map([[taskDigest("task-ssh"), []]]));
     await sink.append(anchorOf("task-ssh", { seq: 0, hash: `sha256:${"1".repeat(64)}` }, new Date(), key.privateKey));
-    expect(((await new GitAnchorSink({ clone: join(base, "clone"), git: "/usr/bin/git", pin: sshPin, ssh: { wrapper, program: ssh } }).list(taskDigest("task-ssh"))) as { seq: number }[]).map((anchor) => anchor.seq)).toEqual([0]);
+    expect(((await new GitAnchorSink({ clone: join(base, "clone"), pin: sshPin, ssh: { wrapper, program: ssh } }).list(taskDigest("task-ssh"))) as { seq: number }[]).map((anchor) => anchor.seq)).toEqual([0]);
     expect(Date.now() - started).toBeLessThan(30_000);
     const reader = join(base, "reader");
     await executeOutbound({ file: "/usr/bin/git", args: ["clone", "--quiet", remote, reader] });
@@ -255,7 +255,7 @@ else {
   it("refuses, within its time limit, a server that never answers", async () => {
     const ssh = standInSsh("ssh-hang", "hang");
     const started = Date.now();
-    const sink = new GitAnchorSink({ clone: join(base, "clone-hang"), git: "/usr/bin/git", pin: sshPin, ssh: { wrapper, program: ssh }, timeoutMs: 3_000 });
+    const sink = new GitAnchorSink({ clone: join(base, "clone-hang"), pin: sshPin, ssh: { wrapper, program: ssh }, timeoutMs: 3_000 });
     await expect(sink.listMany([])).rejects.toThrow(/did not finish within 3 s/);
     expect(Date.now() - started).toBeLessThan(15_000);
   }, 30_000);

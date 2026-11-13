@@ -54,7 +54,7 @@ const anchorFile = join(dir, "anchor", "operator.pub");
 function pinFor(journal: string): string {
   const path = join(dir, "root-owned", "anchors.json");
   mkdirSync(join(dir, "root-owned"), { recursive: true, mode: 0o755 });
-  writeFileSync(path, JSON.stringify({ url: join(dir, "pinned-juno-anchors.git"), branch: "main", host_key_fingerprint: null, known_hosts: null, push_key: null, journals: [{ path: journal, recovery_epoch: "2020-01-01T00:00:00Z" }] }), { mode: 0o644 });
+  writeFileSync(path, JSON.stringify({ url: join(dir, "pinned-juno-anchors.git"), branch: "main", host_key_fingerprint: null, known_hosts: null, push_key: null, git: "/usr/bin/git", journals: [{ path: journal, recovery_epoch: "2020-01-01T00:00:00Z" }] }), { mode: 0o644 });
   return path;
 }
 

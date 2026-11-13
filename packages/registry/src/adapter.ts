@@ -36,7 +36,7 @@ const MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
  * shell. A non-zero exit is a result, not an error. Failing to start the
  * program at all (for example, it does not exist) rejects.
  */
-export function executeOutbound(invocation: OutboundInvocation, options: { readonly env?: Readonly<Record<string, string>>; readonly timeoutMs?: number } = {}): Promise<InvocationResult> {
+export function executeOutbound(invocation: OutboundInvocation, options: { readonly env?: Readonly<Record<string, string>>; readonly timeoutMs?: number; readonly cwd?: string } = {}): Promise<InvocationResult> {
   return new Promise((resolve, reject) => {
     const child = execFile(
       invocation.file,
@@ -45,7 +45,9 @@ export function executeOutbound(invocation: OutboundInvocation, options: { reado
       // `timeoutMs`, when given, ends the program (SIGKILL) once it has run that long and answers at once, with no exit
       // code (so not a success), without waiting for programs it started (git's ssh, D-209) to let go of its output;
       // those see their input close when it ends.
-      { encoding: "buffer", maxBuffer: MAX_OUTPUT_BYTES, shell: false, ...(options.env === undefined ? {} : { env: { ...options.env } }) },
+      // `cwd`, when given, is the folder the program starts in (the anchor destination's read-back runs outside every
+      // repository, D-213).
+      { encoding: "buffer", maxBuffer: MAX_OUTPUT_BYTES, shell: false, ...(options.env === undefined ? {} : { env: { ...options.env } }), ...(options.cwd === undefined ? {} : { cwd: options.cwd }) },
       (error, stdout, stderr) => {
         if (timer !== null) clearTimeout(timer);
         if (error === null) {

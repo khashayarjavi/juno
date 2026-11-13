@@ -4,6 +4,7 @@
   "host_key_fingerprint": "<the ED25519 fingerprint from GitHub's page, starting SHA256:>",
   "known_hosts": "/etc/juno/anchors_known_hosts",
   "push_key": "/home/juno-runner/.ssh/juno_anchors",
+  "git": "/usr/bin/git",
   "journals": [
     { "path": "/var/lib/juno-runner/journal", "recovery_epoch": "<two days ago: the line Part D step 7 has you print>" }
   ]

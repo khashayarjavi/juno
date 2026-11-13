@@ -35,6 +35,10 @@ RUN ["chown", "node:node", "/var/lib/juno-runner"]
 # operator's own pin is written by the operator, as root (docs/operator-setup.md, Part D).
 RUN ["mkdir", "-m", "0755", "/etc/juno"]
 COPY --chmod=0644 containers/runner-test-anchors.json /etc/juno/anchors.json
+# The git program is named only in the pin and must be root's own (operator ruling D-211 item 1; D-213). The image has
+# no git (D-001), so the test pin names the test stack's stand-in, copied here as root's file.
+RUN ["mkdir", "-m", "0755", "/opt/juno-test"]
+COPY --chmod=0755 containers/runner-test-git.mjs /opt/juno-test/git
 
 USER node
 CMD ["node", "dist/runner/src/main.js"]

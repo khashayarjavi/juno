@@ -19,12 +19,11 @@ services:
       JUNO_JOURNAL_KEY_DIR: /var/lib/juno-runner/journal-key
       JUNO_ANCHOR_CLONE: /var/lib/juno-runner/juno-anchors
       # D-201: the runner reads its anchors before it starts. The image holds no git (D-001), so in this test stack a
-      # stand-in answers, as the `anchors` service stands in for the destination; it holds no anchor and protects nothing.
-      JUNO_GIT: /opt/juno-test/git
+      # stand-in answers (the image's own /opt/juno-test/git, which the image's root-owned test pin names: D-213), as the
+      # `anchors` service stands in for the destination; it holds no anchor and protects nothing.
     volumes:
       - journal-vol:/journal    # §3.4.1: only the runner mounts the journal
       - work-vol:/work
-      - ../test/containers/hook-separation/fake-git.mjs:/opt/juno-test/git:ro
 
   workload:
     build:

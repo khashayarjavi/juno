@@ -1,4 +1,4 @@
-import { type KeyObject, createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes } from "node:crypto";
+import { type KeyObject, createHash, createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes } from "node:crypto";
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,6 +30,15 @@ export interface AnchorSink {
 
 export class AnchorSinkError extends Error {
   override readonly name: string = "AnchorSinkError";
+}
+
+/**
+ * The pinned repository could not be shown to hold what was just written, or the destination's own files were changed
+ * under the running service (operator ruling D-211 item 1; D-213). Nothing this run anchors can then be taken as off
+ * the host, so the session layer stops every session, not only the one whose anchor failed.
+ */
+export class AnchorReadBackError extends AnchorSinkError {
+  override readonly name = "AnchorReadBackError";
 }
 
 /** The destination already holds an anchor at this task and seq; it is never replaced. */
@@ -124,9 +133,9 @@ export class ContainerAnchorSink implements AnchorSink {
   }
 }
 
-async function outbound(args: readonly string[], file = "docker", env?: Readonly<Record<string, string>>, timeoutMs?: number): Promise<{ exitCode: number | null; stdout: Buffer; stderr: Buffer }> {
+async function outbound(args: readonly string[], file = "docker", env?: Readonly<Record<string, string>>, timeoutMs?: number, cwd?: string): Promise<{ exitCode: number | null; stdout: Buffer; stderr: Buffer }> {
   try {
-    return await executeOutbound({ file, args }, { ...(env === undefined ? {} : { env }), ...(timeoutMs === undefined ? {} : { timeoutMs }) });
+    return await executeOutbound({ file, args }, { ...(env === undefined ? {} : { env }), ...(timeoutMs === undefined ? {} : { timeoutMs }), ...(cwd === undefined ? {} : { cwd }) });
   } catch (error: unknown) {
     throw new AnchorSinkError(`the anchor destination could not be reached: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -154,6 +163,8 @@ export type PinnedRepository = {
   readonly transport: "ssh" | "local";
   readonly knownHosts: string | null;
   readonly pushKey: string | null;
+  /** The git program, by its absolute path. The pin is the only place that names it (operator ruling D-211 item 1; D-213). */
+  readonly git: string;
 };
 
 const ANCHOR_FILE = /^[0-9a-f]{64}\/[0-9]{12}\.json$/;
@@ -170,15 +181,48 @@ export function defaultSshWrapper(): string {
 }
 
 /**
+ * A `GIT_DIR` that is no repository. A git command that needs none (`ls-remote`) then runs with no repository at
+ * all, wherever they are started: no repository's configuration is read, not even one in the folder they start in
+ * (shown with the real git in git-sink.test.ts; D-213).
+ */
+const NO_REPOSITORY = "/nonexistent/juno-no-repository";
+
+/** The only settings a repository JUNO has just made may hold: what `git init` itself writes, and nothing that names a place or a program. */
+const OWN_CONFIG_KEYS: ReadonlySet<string> = new Set(["repositoryformatversion", "filemode", "bare", "logallrefupdates", "ignorecase", "precomposeunicode", "symlinks"]);
+
+/** Why a repository's configuration is not one `git init` alone wrote (null: it is). */
+function foreignConfig(text: string): string | null {
+  let section: string | null = null;
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (line === "") continue;
+    if (line.startsWith("[")) {
+      if (line !== "[core]") return `it has a section ${line}`;
+      section = line;
+      continue;
+    }
+    const match = /^([A-Za-z]+) = (true|false|[0-9]+)$/.exec(line);
+    if (section === null || match === null || !OWN_CONFIG_KEYS.has((match[1] ?? "").toLowerCase())) return `it has the line ${JSON.stringify(line)}`;
+  }
+  return null;
+}
+
+/** The object id git gives a file's bytes, in the repository's hash (40 hex digits: SHA-1; 64: SHA-256). */
+function blobId(bytes: Buffer, length: number): string {
+  return createHash(length === 64 ? "sha256" : "sha1").update(`blob ${String(bytes.length)}\0`, "utf8").update(bytes).digest("hex");
+}
+
+/**
  * The real destination (§3.4.1 v0.6.1, D-094, D-098): the operator's public `juno-anchors` repository. Each anchor is
  * one new file, one commit, one push; the repository's protection refuses any push that rewrites or deletes history, so
  * nothing the host holds can replace an anchor already pushed. A file that already exists is refused here, before
  * anything is committed.
  *
- * Which repository that is, is not the host's to say (operator ruling D-206 item 2; D-208). Every command names the
- * pinned URL and branch itself, never a remote the local clone configures; git runs with an environment of its own, in
- * which no user or system git configuration is read, only the pinned transport is allowed, and SSH goes through
- * `juno-anchor-ssh` with the pinned host key and push key. The local clone is a cache and is never trusted:
+ * Which repository that is, and which git program reaches it, is not the host's to say (operator rulings D-206 item 2
+ * and D-211 item 1; D-208, D-213). The program is the one the root-owned pin names. Every command names the pinned URL
+ * and branch itself, never a remote the local clone configures; git runs with an environment of its own, in which no
+ * user or system git configuration is read, only the pinned transport is allowed, and SSH goes through `juno-anchor-ssh`
+ * with the pinned host key and push key. The local clone is a cache and is never trusted:
  *   1. at the first use in a process (a service's start), a new, empty repository is made beside the clone and the
  *      pinned branch is fetched into it from the pinned URL;
  *   2. the clone the host holds is compared with what was fetched. A clone that is behind, or equal, agrees. A clone
@@ -188,6 +232,16 @@ export function defaultSshWrapper(): string {
  *      is a clone that disagrees with the repository, and the start is refused;
  *   3. the new repository then replaces the clone, so everything read afterwards is what the pinned repository holds,
  *      and nothing of the old clone's configuration, hooks or files remains.
+ *
+ * The repository JUNO works in has no say either (round 7 finding F2; D-213):
+ *   4. its own configuration must stay exactly what JUNO's `git init` wrote (a `[core]` section of git's own
+ *      housekeeping values). It is compared before every command that runs in it; any other content, a `url.*.insteadOf`
+ *      or `core.sshCommand` for instance, ends the command with `AnchorReadBackError` before git reads it;
+ *   5. every anchor is read back from the pinned repository after it is pushed, and every listing is confirmed the same
+ *      way: `git ls-remote` for the pinned URL, run with no repository at all (so no repository's configuration can
+ *      redirect it), must name the very commit the clone is at. A commit id fixes every file in it, so the anchors then
+ *      read are the ones the pinned repository holds; each file read is also checked against that commit's own record of
+ *      it. If the pinned repository cannot be shown to hold the anchor, the append fails with `AnchorReadBackError`.
  */
 export class GitAnchorSink implements AnchorSink {
   readonly #clone: string;
@@ -200,14 +254,18 @@ export class GitAnchorSink implements AnchorSink {
   #born = false;
   /** How long one git command may run before it is ended and counted as a failure (review round 6, note 3). */
   readonly #timeoutMs: number;
+  /** Per repository JUNO made: the configuration its own `git init` wrote, which must not change (D-213). */
+  readonly #configs = new Map<string, string>();
 
-  constructor(options: { readonly clone: string; readonly git?: string; readonly pin: PinnedRepository; readonly ssh?: { readonly wrapper?: string; readonly program?: string }; readonly timeoutMs?: number }) {
+  constructor(options: { readonly clone: string; readonly pin: PinnedRepository; readonly ssh?: { readonly wrapper?: string; readonly program?: string }; readonly timeoutMs?: number }) {
     this.#clone = parseAtBoundary("anchor repository clone", AbsolutePath, options.clone);
     if (pathsOverlap(this.#clone, WORK_NAMESPACE)) throw new AnchorSinkError(`the anchor clone ${this.#clone} lies in the capability namespace ${WORK_NAMESPACE}`);
-    this.#git = options.git ?? "git";
     const pin = options.pin as PinnedRepository | undefined;
     if (pin === undefined || pin === null || typeof pin.url !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(pin.branch) || pin.url.startsWith("-")) throw new AnchorSinkError("the anchor destination needs the pinned repository address and branch (D-208)");
     if (pin.transport === "ssh" && (pin.knownHosts === null || pin.pushKey === null)) throw new AnchorSinkError("an SSH anchor repository needs the pinned host key file and push key (D-208)");
+    // D-211 item 1: the git program comes from the pin and from nowhere else; it is never looked up on PATH.
+    if (typeof pin.git !== "string" || !AbsolutePath.safeParse(pin.git).success) throw new AnchorSinkError("the anchor destination needs the git program the anchor pin names, as an absolute path (D-211, D-213)");
+    this.#git = pin.git;
     this.#pin = pin;
     this.#timeoutMs = options.timeoutMs ?? GIT_TIMEOUT_MS;
     if (!Number.isSafeInteger(this.#timeoutMs) || this.#timeoutMs < 1) throw new AnchorSinkError("the git time limit must be a positive whole number of milliseconds");
@@ -236,7 +294,24 @@ export class GitAnchorSink implements AnchorSink {
     return `HEAD:refs/heads/${this.#pin.branch}`;
   }
 
+  /**
+   * Before any command runs in a repository JUNO made: its configuration is still what JUNO's `git init` wrote (D-213).
+   * A repository this process did not make (the clone before the start replaced it) is never run in.
+   */
+  #unchanged(repo: string): void {
+    const expected = this.#configs.get(repo);
+    if (expected === undefined) throw new AnchorReadBackError(`no git command runs in ${repo}: it is not a repository this service made (D-213)`);
+    let now: string | null;
+    try {
+      now = readFileSync(join(repo, ".git", "config"), "utf8");
+    } catch {
+      now = null;
+    }
+    if (now !== expected) throw new AnchorReadBackError(`the git settings of the anchor clone ${repo} were changed while the service ran; anchoring reads no settings but its own, so nothing more is anchored through it (D-211, D-213)`);
+  }
+
   async #try(repo: string, args: readonly string[]): Promise<{ exitCode: number | null; stdout: string; stderr: string }> {
+    this.#unchanged(repo);
     const result = await outbound(["-C", repo, "-c", "user.name=juno-runner", "-c", "user.email=juno-runner@localhost", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", ...args], this.#git, this.#env, this.#timeoutMs);
     // A git command ended by the time limit has no exit code: it is a failure, and says why.
     const stderr = result.exitCode === null ? `git did not finish within ${String(this.#timeoutMs / 1000)} s (the pinned anchor repository did not answer)` : result.stderr.toString("utf8");
@@ -251,6 +326,41 @@ export class GitAnchorSink implements AnchorSink {
 
   #run(args: readonly string[]): Promise<string> {
     return this.#in(this.#clone, args);
+  }
+
+  /** A git command that needs no repository, run with none: no repository's configuration is read (D-213). */
+  #bare(args: readonly string[]): Promise<{ exitCode: number | null; stdout: Buffer; stderr: Buffer }> {
+    return outbound(args, this.#git, { ...this.#env, GIT_DIR: NO_REPOSITORY }, this.#timeoutMs, "/");
+  }
+
+  /**
+   * The commit the pinned repository's branch is at, asked of the pinned URL with no repository at all, so nothing the
+   * host's clone holds can answer in its place (D-211 item 1; D-213). Null when the branch does not exist yet.
+   */
+  async #pinnedHead(): Promise<string | null> {
+    const ref = `refs/heads/${this.#pin.branch}`;
+    const result = await this.#bare(["ls-remote", "--", this.#pin.url, ref]);
+    if (result.exitCode !== 0) {
+      const why = result.exitCode === null ? `git did not finish within ${String(this.#timeoutMs / 1000)} s` : result.stderr.toString("utf8").trim();
+      throw new AnchorSinkError(`the pinned anchor repository could not be reached: ${why}`);
+    }
+    const lines = result.stdout.toString("utf8").split("\n").filter((line) => line !== "");
+    if (lines.length === 0) return null;
+    const match = /^([0-9a-f]{40}|[0-9a-f]{64})\t(.+)$/.exec(lines[0] ?? "");
+    if (lines.length !== 1 || match === null || match[2] !== ref) throw new AnchorSinkError("the pinned anchor repository's answer was not one line naming the pinned branch");
+    return match[1] ?? null;
+  }
+
+  /** Makes a new, empty repository and keeps what its configuration is, which must be git's own housekeeping only. */
+  async #init(repo: string): Promise<void> {
+    // `git init <folder>` makes the repository in the new, empty folder it is given and reads no repository's
+    // configuration; it is started outside every folder (`/`). (`GIT_DIR` cannot be set here: init would make the repository there.)
+    const init = await outbound(["init", "--quiet", "--template=", repo], this.#git, this.#env, this.#timeoutMs, "/");
+    if (init.exitCode !== 0) throw new AnchorSinkError(`git init failed: ${init.stderr.toString("utf8").trim()}`);
+    const config = readFileSync(join(repo, ".git", "config"), "utf8");
+    const foreign = foreignConfig(config);
+    if (foreign !== null) throw new AnchorReadBackError(`the repository git just made at ${repo} does not hold git's own settings only: ${foreign} (D-213)`);
+    this.#configs.set(repo, config);
   }
 
   /** The start's fetch and comparison (see the class comment), once per process. */
@@ -270,15 +380,15 @@ export class GitAnchorSink implements AnchorSink {
     const fresh = `${this.#clone}.fetch-${randomBytes(8).toString("hex")}`;
     mkdirSync(fresh, { mode: 0o700 });
     try {
-      const init = await outbound(["init", "--quiet", fresh], this.#git, this.#env, this.#timeoutMs);
-      if (init.exitCode !== 0) throw new AnchorSinkError(`git init failed: ${init.stderr.toString("utf8").trim()}`);
-      // 1. What the pinned repository holds.
-      const listed = await this.#try(fresh, ["ls-remote", "--", this.#pin.url, `refs/heads/${this.#pin.branch}`]);
-      if (listed.exitCode !== 0) throw new AnchorSinkError(`the pinned anchor repository could not be reached: ${listed.stderr.trim()}`);
-      let remote: string | null = null;
-      if (listed.stdout.trim() !== "") {
+      await this.#init(fresh);
+      // 1. What the pinned repository holds, asked with no repository's configuration in play.
+      let remote = await this.#pinnedHead();
+      if (remote !== null) {
         await this.#in(fresh, ["fetch", "--quiet", "--no-tags", "--", this.#pin.url, `+refs/heads/${this.#pin.branch}:refs/juno/remote`]);
-        remote = (await this.#in(fresh, ["rev-parse", "--verify", "refs/juno/remote^{commit}"])).trim();
+        const fetched = (await this.#in(fresh, ["rev-parse", "--verify", "refs/juno/remote^{commit}"])).trim();
+        // The branch may have moved between the two (another service anchoring): then what was fetched is what counts,
+        // and it is confirmed against the pinned repository once more below.
+        remote = fetched;
         await this.#in(fresh, ["reset", "--hard", "--quiet", remote]);
       }
       // 2. The clone the host holds, compared with it.
@@ -291,18 +401,23 @@ export class GitAnchorSink implements AnchorSink {
       // 3. The fetched repository becomes the clone.
       rmSync(this.#clone, { recursive: true, force: true });
       renameSync(fresh, this.#clone);
+      this.#configs.set(this.#clone, this.#configs.get(fresh) ?? "");
+      this.#configs.delete(fresh);
       this.#born = remote !== null;
     } catch (error: unknown) {
+      this.#configs.delete(fresh);
       rmSync(fresh, { recursive: true, force: true });
       throw error;
     }
+    await this.#confirmed();
     await this.#appendOnly();
   }
 
   /**
    * Compares the clone the host holds with the repository as fetched into `fresh` (at `remote`, or null when the
    * pinned branch does not exist yet). Stages, in `fresh`, every anchor the clone holds in commits the repository
-   * lacks, and answers how many; throws when the clone disagrees with the repository.
+   * lacks, and answers how many; throws when the clone disagrees with the repository. The clone is only ever read as
+   * data, from inside `fresh`: no command runs in it, so its own configuration is never read.
    */
   async #compareCache(fresh: string, remote: string | null): Promise<number> {
     let entries: string[];
@@ -356,9 +471,7 @@ export class GitAnchorSink implements AnchorSink {
   /** Brings the clone up to the pinned repository's branch, replaying its own unpushed anchors on top. */
   async #sync(): Promise<void> {
     if (!this.#born) {
-      const listed = await this.#try(this.#clone, ["ls-remote", "--", this.#pin.url, `refs/heads/${this.#pin.branch}`]);
-      if (listed.exitCode !== 0) throw new AnchorSinkError(`the pinned anchor repository could not be reached: ${listed.stderr.trim()}`);
-      if (listed.stdout.trim() === "") return;
+      if ((await this.#pinnedHead()) === null) return;
       this.#born = true;
     }
     await this.#run(["pull", "--rebase", "--quiet", "--no-tags", "--", this.#pin.url, this.#pin.branch]);
@@ -369,9 +482,10 @@ export class GitAnchorSink implements AnchorSink {
     await this.#sync();
     const relative = anchorPath(anchor.task, anchor.seq);
     const path = join(this.#clone, relative);
+    const text = encodeAnchor(anchor);
     mkdirSync(join(this.#clone, anchor.task), { recursive: true });
     try {
-      writeExclusive(path, encodeAnchor(anchor), 0o644);
+      writeExclusive(path, text, 0o644);
     } catch (error: unknown) {
       if (error instanceof Error && "code" in error && error.code === "EEXIST") throw new AnchorExistsError("an anchor at this seq already exists; anchors are never replaced");
       throw error;
@@ -379,6 +493,17 @@ export class GitAnchorSink implements AnchorSink {
     await this.#run(["add", "--", relative]);
     await this.#run(["commit", "--quiet", "-m", `anchor ${relative}`, "--", relative]);
     await this.#push();
+    // D-211 item 1: the anchor is read back from the pinned repository; until it is, it is not off the host.
+    let head: string | null;
+    let held: string;
+    try {
+      head = await this.#confirmed();
+      held = head === null ? "" : await this.#in(this.#clone, ["cat-file", "blob", `${head}:${relative}`]);
+    } catch (error: unknown) {
+      if (error instanceof AnchorReadBackError) throw error;
+      throw new AnchorReadBackError(`the anchor ${relative} was pushed, but could not be read back from the pinned repository: ${error instanceof Error ? error.message : String(error)} (D-211, D-213)`);
+    }
+    if (held !== text) throw new AnchorReadBackError(`the anchor ${relative} was pushed, but the pinned repository does not hold it as written (D-211, D-213)`);
   }
 
   /**
@@ -397,32 +522,81 @@ export class GitAnchorSink implements AnchorSink {
         this.#born = true;
         return;
       } catch (error: unknown) {
-        if (attempt >= 3) throw error;
+        if (attempt >= 3 || error instanceof AnchorReadBackError) throw error;
         await this.#sync();
       }
     }
   }
 
-  /** What every listing does first: the start's comparison (once), then fetch, push what is pending, and read the history. */
-  async #current(): Promise<void> {
+  /**
+   * The read-back (operator ruling D-211 item 1; D-213). Answers the commit the clone is at once the pinned repository,
+   * asked with no repository's configuration in play (`#pinnedHead`), names that very commit for the pinned branch;
+   * null when neither holds anything yet. Another service of the same runner may have pushed in between, so the clone
+   * is brought up to the repository and asked again, up to three times. A clone that still is not where the pinned
+   * repository is has not been shown to be off the host: `AnchorReadBackError`.
+   */
+  async #confirmed(): Promise<string | null> {
+    for (let attempt = 1; ; attempt += 1) {
+      const pinned = await this.#pinnedHead();
+      const local = await this.#try(this.#clone, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]);
+      const here = local.exitCode === 0 ? local.stdout.trim() : null;
+      if (pinned === here) return here;
+      if (attempt >= 3) throw new AnchorReadBackError(`the pinned anchor repository's branch is at ${pinned ?? "nothing"}, and the local clone at ${here ?? "nothing"}, after pushing: what was pushed did not reach the pinned repository (D-211, D-213)`);
+      if (pinned !== null) this.#born = true;
+      await this.#sync();
+      await this.#push();
+    }
+  }
+
+  /** What every listing does first: the start's comparison (once), then fetch, push what is pending, read back, and read the history. */
+  async #current(): Promise<string | null> {
     const first = this.#started === null;
     await this.#start();
     // D-198: an anchor committed in the clone but never pushed is not off the host. Push first, so what is listed is
     // what the destination holds; a push that fails fails the listing.
     await this.#sync();
     await this.#push();
+    const head = await this.#confirmed();
     if (!first) await this.#appendOnly();
+    return head;
+  }
+
+  /**
+   * The anchors of `tasks` as the confirmed commit `head` records them. The commit's own list of files is read
+   * (`git ls-tree`), and each anchor file in the clone must be the very bytes that list names; a file changed, added or
+   * removed in the clone's folder is therefore never read as an anchor (D-213).
+   */
+  async #read(head: string | null, tasks: readonly string[]): Promise<Map<string, unknown[]>> {
+    const listed = new Map<string, unknown[]>(tasks.map((task) => [TaskDigest.parse(task), []]));
+    if (head === null) return listed;
+    const tree = await this.#in(this.#clone, ["ls-tree", "-r", "--full-tree", head]);
+    const files: { readonly task: string; readonly path: string; readonly id: string }[] = [];
+    for (const line of tree.split("\n")) {
+      const match = /^100644 blob ([0-9a-f]{40}|[0-9a-f]{64})\t([0-9a-f]{64})\/([0-9]{12}\.json)$/.exec(line);
+      if (match === null || !listed.has(match[2] ?? "")) continue;
+      files.push({ task: match[2] ?? "", path: `${match[2] ?? ""}/${match[3] ?? ""}`, id: match[1] ?? "" });
+    }
+    for (const file of files.sort((a, b) => (a.path < b.path ? -1 : 1))) {
+      let bytes: Buffer;
+      try {
+        bytes = readFileSync(join(this.#clone, file.path));
+      } catch {
+        throw new AnchorReadBackError(`the anchor ${file.path} is in the pinned repository but not in the local clone's folder: the clone was changed under the service (D-213)`);
+      }
+      if (blobId(bytes, file.id.length) !== file.id) throw new AnchorReadBackError(`the anchor ${file.path} in the local clone's folder is not the one the pinned repository holds: the clone was changed under the service (D-213)`);
+      listed.get(file.task)?.push(JSON.parse(bytes.toString("utf8")) as unknown);
+    }
+    return listed;
   }
 
   async list(task: string): Promise<unknown[]> {
-    await this.#current();
-    return readAnchorDirectory(this.#clone, task);
+    const digest = TaskDigest.parse(task);
+    return (await this.#read(await this.#current(), [digest])).get(digest) ?? [];
   }
 
-  /** One fetch and one push, then every task is read from the clone, which now holds what the destination holds. */
+  /** One fetch, one push and one read-back; then every task is read from the commit the pinned repository confirmed. */
   async listMany(tasks: readonly string[]): Promise<Map<string, unknown[]>> {
-    await this.#current();
-    return new Map(tasks.map((task) => [task, readAnchorDirectory(this.#clone, task)]));
+    return this.#read(await this.#current(), tasks);
   }
 
   /**

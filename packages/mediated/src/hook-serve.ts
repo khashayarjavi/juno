@@ -3,7 +3,6 @@ import {
   type Anchoring,
   type AnchoringConfig,
   DEFAULT_ANCHOR_PIN,
-  DEFAULT_GIT,
   CheckpointStore,
   type ContainerRuntime,
   GrantStore,
@@ -30,7 +29,7 @@ import { MediatedSessions, PathMap } from "./session.js";
  * `juno hook serve` and `juno hook admit` (build plan Increment 6; operator ruling D-180; DECISIONS.md D-196).
  *
  *   juno hook serve --socket <hook.sock> --control <admit.sock> --journal <dir> --anchor <operator.pub>
- *                   --journal-key <dir> --anchors <juno-anchors clone> [--anchor-pin <file>] [--anchor-interval <seconds>] [--git <program>]
+ *                   --journal-key <dir> --anchors <juno-anchors clone> [--anchor-pin <file>] [--anchor-interval <seconds>]
  *                   --workspace <dir> --checkpoints <dir> [--protect <path> ...] [--gateway <name>]
  *   juno hook admit --control <admit.sock> <session file>
  *
@@ -61,7 +60,7 @@ export type HookServeIo = {
   readonly err: (text: string) => void;
 };
 
-const SERVE_USAGE = "usage: juno hook serve --socket <hook.sock> --control <admit.sock> --journal <dir> --anchor <operator.pub> --journal-key <dir> --anchors <juno-anchors clone> [--anchor-pin <file>] [--anchor-interval <seconds>] [--git <program>] --workspace <dir> --checkpoints <dir> [--protect <path> ...] [--gateway <name>]\n";
+const SERVE_USAGE = "usage: juno hook serve --socket <hook.sock> --control <admit.sock> --journal <dir> --anchor <operator.pub> --journal-key <dir> --anchors <juno-anchors clone> [--anchor-pin <file>] [--anchor-interval <seconds>] --workspace <dir> --checkpoints <dir> [--protect <path> ...] [--gateway <name>]\n";
 const ADMIT_USAGE = "usage: juno hook admit --control <admit.sock> <session file>\n";
 
 /** What `juno hook serve` asks the shared start-up check to judge (D-194, D-196). */
@@ -88,7 +87,7 @@ function refused(io: { readonly err: (text: string) => void }, command: string, 
 
 /** `juno hook serve`: returns the exit code once stopped, or at once when refused. */
 export async function runHookServeCli(args: readonly string[], io: HookServeIo): Promise<number> {
-  const single = ["--socket", "--control", "--journal", "--anchor", "--workspace", "--checkpoints", "--journal-key", "--anchors", "--anchor-interval", "--git", "--gateway", "--anchor-pin"];
+  const single = ["--socket", "--control", "--journal", "--anchor", "--workspace", "--checkpoints", "--journal-key", "--anchors", "--anchor-interval", "--gateway", "--anchor-pin"];
   const options = new Map<string, string>();
   const protect: string[] = [];
   for (let index = 0; index < args.length; index += 2) {
@@ -107,7 +106,7 @@ export async function runHookServeCli(args: readonly string[], io: HookServeIo):
     io.err(SERVE_USAGE);
     return 2;
   }
-  const anchoring: AnchoringConfig = { journalKeyDir, anchorClone, intervalMs, git: options.get("--git") ?? DEFAULT_GIT, pin: options.get("--anchor-pin") ?? DEFAULT_ANCHOR_PIN };
+  const anchoring: AnchoringConfig = { journalKeyDir, anchorClone, intervalMs, pin: options.get("--anchor-pin") ?? DEFAULT_ANCHOR_PIN };
   // D-131 (plan Increment 6): a runtime that would ignore the workloads' limits stops the service from starting.
   try {
     const why = runtimeRefusal(await io.runtime());

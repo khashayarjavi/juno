@@ -97,7 +97,7 @@ async function startService(): Promise<void> {
   let ready: () => void = () => undefined;
   const listening = new Promise<void>((resolve) => (ready = resolve));
   const exit = runHookServeCli(
-    ["--socket", socketPath, "--control", controlPath, "--journal", journalRoot, "--anchor", anchorFile, "--workspace", workspace, "--checkpoints", join(state, "checkpoints"), "--journal-key", join(state, "journal-key"), "--anchors", join(state, "juno-anchors"), "--anchor-pin", pinFile, "--git", GIT, "--protect", home],
+    ["--socket", socketPath, "--control", controlPath, "--journal", journalRoot, "--anchor", anchorFile, "--workspace", workspace, "--checkpoints", join(state, "checkpoints"), "--journal-key", join(state, "journal-key"), "--anchors", join(state, "juno-anchors"), "--anchor-pin", pinFile, "--protect", home],
     {
       host: ordinaryHost(),
       filesystem: systemFilesystemIo(),
@@ -227,7 +227,7 @@ beforeAll(async () => {
   await git(["-C", join(state, "juno-anchors"), "branch", "--quiet", "--set-upstream-to=origin/main"]);
   // The anchor pin (D-208), root's own file as the operator writes it: the repository above, and this journal.
   mkdirSync(join(host, "root-owned"), { mode: 0o755 });
-  writeFileSync(pinFile, JSON.stringify({ url: remote, branch: "main", host_key_fingerprint: null, known_hosts: null, push_key: null, journals: [{ path: journalRoot, recovery_epoch: "2020-01-01T00:00:00Z" }] }), { mode: 0o644 });
+  writeFileSync(pinFile, JSON.stringify({ url: remote, branch: "main", host_key_fingerprint: null, known_hosts: null, push_key: null, git: GIT, journals: [{ path: journalRoot, recovery_epoch: "2020-01-01T00:00:00Z" }] }), { mode: 0o644 });
   await startService();
   const installed = await installHook(
     managedFile,

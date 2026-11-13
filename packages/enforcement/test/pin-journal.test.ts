@@ -42,10 +42,10 @@ describe("D-206 item 2 (D-209): a journal reached through a symbolic link is not
         mkdirSync(work);
         const state = join(dir, "state");
         const journal = join(state, sub, "journal");
-        const config = { journalKeyDir: join(state, sub, "journal-key"), anchorClone: join(state, sub, "juno-anchors"), intervalMs: 60_000, git: "/usr/bin/git", pin: join(dir, "root-owned", "anchors.json") };
+        const config = { journalKeyDir: join(state, sub, "journal-key"), anchorClone: join(state, sub, "juno-anchors"), intervalMs: 60_000, pin: join(dir, "root-owned", "anchors.json") };
         mkdirSync(join(state, sub), { recursive: true, mode: 0o700 });
         mkdirSync(join(dir, "root-owned"), { mode: 0o755 });
-        writeFileSync(config.pin, JSON.stringify({ url: remote, branch: "main", host_key_fingerprint: null, known_hosts: null, push_key: null, journals: [{ path: journal, recovery_epoch: "2020-01-01T00:00:00Z" }] }), { mode: 0o644 });
+        writeFileSync(config.pin, JSON.stringify({ url: remote, branch: "main", host_key_fingerprint: null, known_hosts: null, push_key: null, git: "/usr/bin/git", journals: [{ path: journal, recovery_epoch: "2020-01-01T00:00:00Z" }] }), { mode: 0o644 });
         chmodSync(config.pin, 0o644);
         const opened: string[][] = [];
         const stop = SessionLayer.observe((event) => opened.push([...event.refusals]));
@@ -85,7 +85,7 @@ describe("D-206 item 2 (D-209): a journal reached through a symbolic link is not
       mkdirSync(join(dir, "root-owned"), { mode: 0o755 });
       const pin = join(dir, "root-owned", "anchors.json");
       // The pin names the journal through the link, and the resolved path too: neither makes a linked path acceptable.
-      writeFileSync(pin, JSON.stringify({ url: join(dir, "pinned.git"), branch: "main", host_key_fingerprint: null, known_hosts: null, push_key: null, journals: [{ path: journal, recovery_epoch: "2020-01-01T00:00:00Z" }, { path: join(dir, "real", "a", "b", "journal"), recovery_epoch: "2020-01-01T00:00:00Z" }] }), { mode: 0o644 });
+      writeFileSync(pin, JSON.stringify({ url: join(dir, "pinned.git"), branch: "main", host_key_fingerprint: null, known_hosts: null, push_key: null, git: "/usr/bin/git", journals: [{ path: journal, recovery_epoch: "2020-01-01T00:00:00Z" }, { path: join(dir, "real", "a", "b", "journal"), recovery_epoch: "2020-01-01T00:00:00Z" }] }), { mode: 0o644 });
       const checked = startupCheck({ service: "hook", journal, workspaces: [join(dir, "work")], state: [{ what: "the anchor pin", path: pin, kind: "pin" }], anchor: null }, ordinaryHost());
       expect(checked.ok ? "" : checked.refusals.join("\n")).toMatch(/resolves to .*real\/a\/b\/journal: a folder on its path is a symbolic link/);
       // Positive control: the real path is accepted.

@@ -11,7 +11,6 @@ const RunnerEnv = z.object({
   JUNO_ANCHOR_CLONE: AbsolutePath,
   /** Seconds between anchors, 1 to 3600; one minute when absent (D-198). */
   /** The git program that pushes anchors (absolute; `/usr/bin/git` when absent). */
-  JUNO_GIT: AbsolutePath.optional(),
   /** The anchor pin (D-208): the root-owned file naming the anchor repository; `/etc/juno/anchors.json` when absent. */
   JUNO_ANCHOR_PIN: AbsolutePath.optional(),
   JUNO_ANCHOR_INTERVAL_SECONDS: z.string().regex(/^[1-9][0-9]{0,3}$/).refine((text) => Number(text) <= 3600, "at most 3600 seconds").optional(),
@@ -22,7 +21,7 @@ export type RunnerConfig = {
   readonly journalDir: AbsolutePath;
   readonly workDir: AbsolutePath;
   readonly trustAnchor: AbsolutePath | null;
-  readonly anchoring: { readonly journalKeyDir: AbsolutePath; readonly anchorClone: AbsolutePath; readonly intervalMs: number; readonly git: AbsolutePath; readonly pin: AbsolutePath };
+  readonly anchoring: { readonly journalKeyDir: AbsolutePath; readonly anchorClone: AbsolutePath; readonly intervalMs: number; readonly pin: AbsolutePath };
 };
 
 /** The process environment is a boundary: parse it before anything uses it. */
@@ -32,6 +31,6 @@ export function parseRunnerConfig(env: unknown): RunnerConfig {
     journalDir: parsed.JUNO_JOURNAL_DIR,
     workDir: parsed.JUNO_WORK_DIR,
     trustAnchor: parsed.JUNO_TRUST_ANCHOR ?? null,
-    anchoring: { journalKeyDir: parsed.JUNO_JOURNAL_KEY_DIR, anchorClone: parsed.JUNO_ANCHOR_CLONE, intervalMs: parsed.JUNO_ANCHOR_INTERVAL_SECONDS === undefined ? 60_000 : Number(parsed.JUNO_ANCHOR_INTERVAL_SECONDS) * 1000, git: parsed.JUNO_GIT ?? AbsolutePath.parse("/usr/bin/git"), pin: parsed.JUNO_ANCHOR_PIN ?? AbsolutePath.parse("/etc/juno/anchors.json") },
+    anchoring: { journalKeyDir: parsed.JUNO_JOURNAL_KEY_DIR, anchorClone: parsed.JUNO_ANCHOR_CLONE, intervalMs: parsed.JUNO_ANCHOR_INTERVAL_SECONDS === undefined ? 60_000 : Number(parsed.JUNO_ANCHOR_INTERVAL_SECONDS) * 1000, pin: parsed.JUNO_ANCHOR_PIN ?? AbsolutePath.parse("/etc/juno/anchors.json") },
   };
 }

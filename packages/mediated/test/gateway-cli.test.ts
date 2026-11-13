@@ -61,7 +61,7 @@ function io(overrides: Partial<GatewayCliIo> & { stop?: Promise<void> } = {}): G
 function writePin(dir: string, journal: string): string {
   const path = join(dir, "root-owned", "anchors.json");
   mkdirSync(join(dir, "root-owned"), { recursive: true, mode: 0o755 });
-  writeFileSync(path, JSON.stringify({ url: join(dir, "pinned-juno-anchors.git"), branch: "main", host_key_fingerprint: null, known_hosts: null, push_key: null, journals: [{ path: journal, recovery_epoch: "2020-01-01T00:00:00Z" }] }), { mode: 0o644 });
+  writeFileSync(path, JSON.stringify({ url: join(dir, "pinned-juno-anchors.git"), branch: "main", host_key_fingerprint: null, known_hosts: null, push_key: null, git: "/usr/bin/git", journals: [{ path: journal, recovery_epoch: "2020-01-01T00:00:00Z" }] }), { mode: 0o644 });
   return path;
 }
 
@@ -176,10 +176,12 @@ describe("juno gateway serve (D-191)", () => {
     expect(existsSync(join(work, "project", ".journal"))).toBe(false);
   });
 
-  // proves D-198: the anchoring options it advertises are accepted, `--git` and `--anchor-interval` included, and the
-  // anchoring options are required
-  it("accepts every anchoring option it advertises, and requires the journal key and the anchor clone", async () => {
-    expect(await runGatewayCli(args({ "--git": "/usr/bin/git", "--anchor-interval": "30" }), io())).toBe(0);
+  // proves D-198: the anchoring options it advertises are accepted, and the anchoring options are required.
+  // proves D-211 item 1 (D-213): `--git` is no longer an option of the service; the git program is named only in the
+  // root-owned pin, so a service given `--git` is refused as bad usage and starts nothing.
+  it("accepts every anchoring option it advertises, refuses --git, and requires the journal key and the anchor clone", async () => {
+    expect(await runGatewayCli(args({ "--anchor-interval": "30" }), io())).toBe(0);
+    expect(await runGatewayCli([...args(), "--git", "/usr/bin/git"], io())).toBe(2);
     for (const option of ["--journal-key", "--anchors"]) {
       const without = args().filter((_value, index, all) => all[index] !== option && all[index - 1] !== option);
       expect(await runGatewayCli(without, io()), option).toBe(2);

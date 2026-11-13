@@ -26,7 +26,9 @@ import { type TrustAnchor, trustAnchorFromPem } from "./signature.js";
  *      through its folder (D-116), writable by group or others, or not an Ed25519 public key (§3.2 C1);
  *   6. an anchor pin that is not verified (operator ruling D-206; D-208): the file that pins the anchor repository's
  *      address, its SSH host key and the journal folders that may anchor there. It and its folder must be owned by
- *      root and writable by no one else, its known-hosts file likewise and holding exactly the pinned key, and the journal this service was started on must be one it names.
+ *      root and writable by no one else, its known-hosts file likewise and holding exactly the pinned key, the git
+ *      program it names (and ssh, for an SSH address) root's own too (D-211, D-213), and the journal this service was
+ *      started on must be one it names.
  */
 
 /** Which service is starting. A new service adds its name here, and to the entry-point registry (D-194). */
@@ -203,14 +205,17 @@ export function verifyAnchorPin(path: string, journal: string, workspaces: reado
       }
     }
     refusals.push(...laterFileRefusals("the anchor push key", parsed.push_key, workspaces, host));
-    // The ssh program itself is state too: it must exist and be changeable by no one but root and this process.
-    refusals.push(...laterFileRefusals("the ssh program", PINNED_SSH, workspaces, host));
+    // The ssh program is run for every fetch and push: like git, it must be root's own (D-213).
+    refusals.push(...rootOwnedRefusals("the ssh program", PINNED_SSH, host));
   } else if (parsed.transport === "local") {
     // A local repository is JUNO's own test stand-in: it is state, and must not be reachable from a workspace.
     for (const root of workspaces) {
       if (pathsOverlap(resolved(parsed.url, host), resolved(root, host)) || pathsOverlap(parsed.url, root)) refusals.push(`the pinned anchor repository ${parsed.url} overlaps the workspace ${root} (D-208)`);
     }
   }
+  // Operator ruling D-211 item 1 (round 7 finding F1; D-213): the git program is named only here, and must be root's own,
+  // like the pin: a git program the runner's account could write or replace could answer for the pinned repository.
+  refusals.push(...rootOwnedRefusals("the git program the anchor pin names", parsed.git, host));
   // Review round 6 on PR #51, finding D3 (D-209): the journal's own record is named after the journal's path as the kernel
   // resolves it, so a symbolic link anywhere above the journal (a folder moved aside and a link put in its place) would
   // give it a new record and an empty history. The journal must be the path the pin names, exactly as written, and
@@ -222,7 +227,7 @@ export function verifyAnchorPin(path: string, journal: string, workspaces: reado
   if (refusals.length > 0 || entry === undefined) return { ok: false, refusals };
   return {
     ok: true,
-    pin: { path, url: parsed.url, branch: parsed.branch, transport: parsed.transport, host: parsed.host, fingerprint: parsed.host_key_fingerprint, knownHosts: parsed.known_hosts, pushKey: parsed.push_key, journals: parsed.journals, journal: entry },
+    pin: { path, url: parsed.url, branch: parsed.branch, transport: parsed.transport, host: parsed.host, fingerprint: parsed.host_key_fingerprint, knownHosts: parsed.known_hosts, pushKey: parsed.push_key, git: parsed.git, journals: parsed.journals, journal: entry },
   };
 }
 

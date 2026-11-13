@@ -4,6 +4,7 @@
   "host_key_fingerprint": null,
   "known_hosts": null,
   "push_key": null,
+  "git": "/opt/juno-test/git",
   "journals": [
     { "path": "/journal", "recovery_epoch": "2020-01-01T00:00:00Z" },
     { "path": "/var/lib/juno-runner/journal", "recovery_epoch": "2020-01-01T00:00:00Z" },

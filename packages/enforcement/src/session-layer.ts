@@ -3,6 +3,7 @@ import { realpathSync } from "node:fs";
 import { type Budget, type DataClass, type TrajectoryEntry, pathWithin } from "../../contracts/src/index.js";
 import {
   AnchorExistsError,
+  AnchorReadBackError,
   type AnchorSink,
   type ChainVerdict,
   type EntryDraft,
@@ -11,17 +12,24 @@ import {
   type JournalWriterOptions,
   type StoredRecord,
   anchorOf,
+  type JournalHandle,
+  type PendingRepair,
   canonicalJson,
   checkAnchors,
+  clearPendingRepairs,
   contentAddress,
   dropTornTail,
+  journalLayoutRefusals,
   listRecords,
+  openJournalFolder,
   readPayload,
+  readPendingRepairs,
   sameKey,
   taskDigest,
   type TornTail,
   tornTail,
   verifyTrajectory,
+  writePendingRepairs,
 } from "../../journal/src/index.js";
 import type { CapabilityRegistry } from "../../registry/src/index.js";
 import { EnforcementBoundary } from "./boundary.js";
@@ -58,6 +66,13 @@ import { type HostIo, type ServiceName, type StartupSpec, StartupRefused, laterF
  * open at the crash is exhausted for good. Every other failure still refuses the start. A journal also records its
  * recovery epoch, the time the operator registered its folder in the anchor pin (D-208); a grant issued before it is
  * refused, so a manual recovery to a new journal folder invalidates every grant issued before it.
+ *
+ * The repair is atomic (operator ruling D-211 item 1; D-213): what it will do and the grants it exhausts are made durable
+ * in the journal folder before the incomplete entry is removed, and that record is removed only when the journal's own
+ * notes are durable. A power loss at any step of the repair leaves the grants exhausted, and the next start finishes it.
+ *
+ * The journal folder is opened once, from a directory handle, with no symbolic link followed in any component of its
+ * path (D-211 item 1; D-213); every read and write of this layer goes through that handle.
  */
 
 /** The task states after which a session is no longer open (§6). */
@@ -69,11 +84,13 @@ const OWN_RECORD_PREFIX = "juno.";
 /**
  * The id of a journal's own record (D-202): one note per record the journal ever held, written before that record's
  * first entry, chained and anchored like every record. It is named after the journal's folder, so two journals that
- * anchor to one repository never share it. At start, a record the journal holds that it does not name was not written
+ * anchor to one repository never share it. The name is the folder's path exactly as the service was given it, which is
+ * exactly what the anchor pin names; the path is never looked up a second time to name the record (review round 7
+ * finding F3; D-213), and the journal itself is opened once, from a directory handle (`openJournalFolder`). At start, a record the journal holds that it does not name was not written
  * by JUNO, and anchors of a record it names that the journal no longer holds show a deleted record.
  */
 export function journalRecordId(journalRoot: string): string {
-  return `${OWN_RECORD_PREFIX}journal.${createHash("sha256").update(realOrGiven(journalRoot), "utf8").digest("hex").slice(0, 32)}`;
+  return `${OWN_RECORD_PREFIX}journal.${createHash("sha256").update(journalRoot, "utf8").digest("hex").slice(0, 32)}`;
 }
 
 /** One journal entry with its payload as the journal stores it (parsed JSON), or `undefined` when it cannot be read. */
@@ -215,6 +232,8 @@ export class SessionLayer {
   readonly #exhausted = new Set<string>();
   /** What this start recovered, if anything (D-207). */
   #recovery: RecoveredTruncation | null = null;
+  /** The journal folder as it was opened, once, from a directory handle (D-213). */
+  readonly #handle: JournalHandle;
 
   private constructor(token: symbol, spec: StartupSpec, anchor: TrustAnchor | null, pin: VerifiedPin | null, host: HostIo, clock: () => Date, journal: JournalWriterOptions, anchoring: Anchoring) {
     // Only `open` holds the token, so no code can make a layer without the start-up check (D-194).
@@ -226,8 +245,12 @@ export class SessionLayer {
     this.#clock = clock;
     this.#workspaces = spec.workspaces.map((path) => ({ path, real: realOrGiven(path) }));
     this.#anchoring = anchoring;
-    this.#journal = JournalWriter.open(spec.journal, journal);
-    this.#indexId = journalRecordId(this.#journal.root);
+    // D-211 item 1, D-213: the journal's path is looked up once, here, component by component from a directory handle,
+    // following no symbolic link; everything after uses the folder that was opened, and the journal's own record is
+    // named after the path as given (the one the pin names), not after a second look-up of it.
+    this.#handle = openJournalFolder(spec.journal, host.uid);
+    this.#journal = JournalWriter.open(this.#handle.via, journal);
+    this.#indexId = journalRecordId(this.#handle.path);
   }
 
   /**
@@ -259,11 +282,17 @@ export class SessionLayer {
       refusals.push("the journal key is the operator's grant-signing key; the runner must hold its own (§3.4.1 V6-4)");
     }
     if (refusals.length > 0 || anchoring === undefined || !checked.ok) return refuse(refusals);
-    const layer = new SessionLayer(OPENED_BY_CHECK, Object.freeze({ ...spec, workspaces: [...spec.workspaces], state: spec.state.map((item) => ({ ...item })) }), checked.anchor, checked.pin, host, options.clock ?? (() => new Date()), options.journal ?? {}, anchoring);
+    let layer: SessionLayer;
+    try {
+      layer = new SessionLayer(OPENED_BY_CHECK, Object.freeze({ ...spec, workspaces: [...spec.workspaces], state: spec.state.map((item) => ({ ...item })) }), checked.anchor, checked.pin, host, options.clock ?? (() => new Date()), options.journal ?? {}, anchoring);
+    } catch (error: unknown) {
+      return refuse([`the journal ${spec.journal} could not be opened: ${error instanceof Error ? error.message : String(error)} (§3.4.1, D-213)`]);
+    }
     // D-201: the journal and its anchors are verified before anything is rebuilt, admitted or served.
     let unverified: string[];
     try {
-      unverified = await layer.#recover();
+      unverified = journalLayoutRefusals(layer.#handle.via);
+      if (unverified.length === 0) unverified = await layer.#recover();
     } catch (error: unknown) {
       unverified = [`the journal could not be verified: ${error instanceof Error ? error.message : String(error)} (§3.4.1, D-201)`];
     }
@@ -289,6 +318,14 @@ export class SessionLayer {
     // D-206 item 1: one record may end in a torn final write. It is judged, with everything else, as it stands without
     // its incomplete last entry; nothing on disk is changed until every check below has passed.
     let torn: TornTail | null = null;
+    // D-211 item 1 (D-213): a repair an earlier start began and did not finish recording. Its grants are exhausted
+    // whatever else this start finds; it is finished below, once the journal has verified.
+    let pending: PendingRepair[];
+    try {
+      pending = readPendingRepairs(this.#journal.root);
+    } catch (error: unknown) {
+      return [`the journal's record of an unfinished repair cannot be read: ${error instanceof Error ? error.message : String(error)}; nothing was changed (D-207, D-213)`];
+    }
     for (const record of listRecords(this.#journal.root)) {
       if (record.verdict.ok) {
         if (record.taskId !== null) stored.set(record.taskId, record);
@@ -368,6 +405,21 @@ export class SessionLayer {
     }
     if (refusals.length > 0) return refusals;
     // Verified. Only now is anything changed or rebuilt (D-201).
+    // D-206 item 1, D-211 item 1 (D-207, D-213): the repair, in an order that a power loss at any step leaves safe.
+    //   1. What the repair will do, and the grants it exhausts, is made durable (`recovery-pending.json`).
+    //   2. The incomplete entry is cut off.
+    //   3. The journal's own notes of the repair are written.
+    //   4. Only then is the record of step 1 removed.
+    const repairs = [...pending];
+    if (torn !== null) {
+      const cut = torn;
+      // The same incomplete entry an earlier start already recorded and did not get to cut: it is not recorded twice.
+      if (!repairs.some((repair) => repair.record_digest === cut.digest && repair.kept_bytes === cut.keptBytes && repair.dropped_sha256 === cut.droppedSha256)) {
+        repairs.push(this.#planRepair(cut, ids, stored));
+        writePendingRepairs(this.#journal.root, repairs);
+      }
+      dropTornTail(this.#journal.root, cut);
+    }
     // D-207: a journal opened for the first time under a pin records its recovery epoch as its own record's first entry.
     if (fresh && pinnedEpoch !== null) {
       this.#write(this.#indexId, "note", INDEX_CLASS, { type: "recovery_epoch", epoch: pinnedEpoch }, { actor: LAYER_ACTOR });
@@ -375,10 +427,13 @@ export class SessionLayer {
     }
     this.#recoveryEpoch = journalEpoch === null ? null : Date.parse(journalEpoch);
     if (this.#pin !== null && this.#recoveryEpoch !== recoveryEpochOf(this.#pin)) return ["the journal's recovery epoch could not be set from the anchor pin (D-207)"];
-    if (torn !== null) this.#recoverTornWrite(torn, ids, stored);
+    if (repairs.length > 0) {
+      this.#recordRepairs(repairs);
+      clearPendingRepairs(this.#journal.root);
+    }
     for (const id of ids) {
       // A record this start wrote to (the recovery's own notes) is read again from the journal.
-      const verdict = torn !== null || (fresh && id === this.#indexId) ? verifyTrajectory(this.#journal.root, id) : stored.get(id)?.verdict;
+      const verdict = repairs.length > 0 || (fresh && id === this.#indexId) ? verifyTrajectory(this.#journal.root, id) : stored.get(id)?.verdict;
       if (id !== this.#indexId) this.#known.add(id);
       if (verdict === undefined || !verdict.ok) continue;
       const entries = this.#read(id, verdict);
@@ -400,17 +455,13 @@ export class SessionLayer {
   }
 
   /**
-   * Repairs a torn final write (operator ruling D-206 item 1; D-207). Called only when every entry before the
-   * incomplete one has verified (§3.4.2), agrees with every anchor held off the host (§3.4.1) and has its payload.
-   *   1. The incomplete entry is cut off, durably.
-   *   2. Every session open at the crash is found: one the journal admitted whose record shows no closing state. Every
-   *      grant such a session holds (its admission's list) or used (any call it made under one) is exhausted.
-   *   3. A `recovered_truncation` note in the journal's own record says which record, how many entries were kept, the
-   *      size and digest of what was dropped, the open sessions and the exhausted grants. The record that lost the
-   *      entry gets a note of its own, so whoever reads that record alone sees it (§3.4.5).
-   * The exhausted grants are read back from that note at every later start: the journal is the only memory of it.
+   * What the repair of a torn final write will record (operator ruling D-206 item 1; D-207). Called only when every
+   * entry before the incomplete one has verified (§3.4.2), agrees with every anchor held off the host (§3.4.1) and has
+   * its payload. Changes nothing.
+   *   - Every session open at the crash is found: one the journal admitted whose record shows no closing state.
+   *   - Every grant such a session holds (its admission's list) or used (any call it made under one) is exhausted.
    */
-  #recoverTornWrite(torn: TornTail, ids: readonly string[], stored: ReadonlyMap<string, StoredRecord>): void {
+  #planRepair(torn: TornTail, ids: readonly string[], stored: ReadonlyMap<string, StoredRecord>): PendingRepair {
     const open: string[] = [];
     const grants = new Set<string>();
     for (const id of ids) {
@@ -429,15 +480,37 @@ export class SessionLayer {
         if (item.entry.kind === "capability_call" && typeof grant === "string") grants.add(grant);
       }
     }
-    dropTornTail(this.#journal.root, torn);
-    const what = { how: torn.how, kept_entries: torn.kept.entries.length, dropped_bytes: torn.droppedBytes, dropped_sha256: torn.droppedSha256 };
-    const exhausted = [...grants].sort();
-    this.#write(this.#indexId, "note", INDEX_CLASS, { type: "recovered_truncation", record: torn.taskId, record_digest: torn.digest, ...what, open_sessions: open.sort(), exhausted_grants: exhausted }, { actor: LAYER_ACTOR });
-    const last = torn.kept.entries.at(-1);
-    if (torn.taskId !== null && torn.taskId !== this.#indexId && last !== undefined) {
-      this.#journal.append(torn.taskId, { kind: "note", actor: LAYER_ACTOR, provider: null, data_class: last.data_class, cost: NO_COST }, encoder.encode(canonicalJson({ type: "recovered_truncation", ...what })));
+    return { record: torn.taskId, record_digest: torn.digest, how: torn.how, kept_entries: torn.kept.entries.length, kept_bytes: torn.keptBytes, dropped_bytes: torn.droppedBytes, dropped_sha256: torn.droppedSha256, open_sessions: open.sort(), exhausted_grants: [...grants].sort() };
+  }
+
+  /**
+   * Writes the journal's notes of each repair, unless the journal already holds them (a start that lost its power after
+   * writing a note and before the next step; D-213). Called after the incomplete entry is gone.
+   *   - A `recovered_truncation` note in the journal's own record says which record, how many entries were kept, the
+   *     size and digest of what was dropped, the open sessions and the exhausted grants. The exhausted grants are read
+   *     back from that note at every later start.
+   *   - The record that lost the entry gets a note of its own, so whoever reads that record alone sees it (§3.4.5).
+   * A note is the same repair's when it names the same record, the same number of kept entries and the same dropped
+   * bytes; a record cannot lose the same bytes at the same place twice, because the note itself then follows them.
+   */
+  #recordRepairs(repairs: readonly PendingRepair[]): void {
+    for (const repair of repairs) {
+      const what = { how: repair.how, kept_entries: repair.kept_entries, dropped_bytes: repair.dropped_bytes, dropped_sha256: repair.dropped_sha256 };
+      const same = (payload: unknown): boolean => field(payload, "type") === "recovered_truncation" && field(payload, "kept_entries") === repair.kept_entries && field(payload, "dropped_sha256") === repair.dropped_sha256 && field(payload, "dropped_bytes") === repair.dropped_bytes;
+      const index = this.#read(this.#indexId, verifyTrajectory(this.#journal.root, this.#indexId));
+      if (!index.some((item) => item.entry.actor === LAYER_ACTOR && same(item.payload) && field(item.payload, "record_digest") === repair.record_digest)) {
+        this.#write(this.#indexId, "note", INDEX_CLASS, { type: "recovered_truncation", record: repair.record, record_digest: repair.record_digest, ...what, open_sessions: repair.open_sessions, exhausted_grants: repair.exhausted_grants }, { actor: LAYER_ACTOR });
+      }
+      if (repair.record === null || repair.record === this.#indexId || repair.kept_entries === 0) continue;
+      const record = this.#read(repair.record, verifyTrajectory(this.#journal.root, repair.record));
+      const last = record[repair.kept_entries - 1];
+      if (last === undefined || record.some((item) => item.entry.kind === "note" && item.entry.actor === LAYER_ACTOR && same(item.payload))) continue;
+      this.#journal.append(repair.record, { kind: "note", actor: LAYER_ACTOR, provider: null, data_class: last.entry.data_class, cost: NO_COST }, encoder.encode(canonicalJson({ type: "recovered_truncation", ...what })));
     }
-    this.#recovery = { record: torn.taskId, how: torn.how, kept_entries: torn.kept.entries.length, open_sessions: open, exhausted_grants: exhausted };
+    const first = repairs[0];
+    if (first !== undefined) {
+      this.#recovery = { record: first.record, how: first.how, kept_entries: first.kept_entries, open_sessions: [...new Set(repairs.flatMap((repair) => repair.open_sessions))].sort(), exhausted_grants: [...new Set(repairs.flatMap((repair) => repair.exhausted_grants))].sort() };
+    }
   }
 
   /** What this start recovered from a torn final write, or null (D-207). A service says it on its output. */
@@ -548,9 +621,17 @@ export class SessionLayer {
     return MODE_OF_SERVICE[this.#spec.service];
   }
 
-  /** The journal's root, for readers. */
+  /**
+   * The journal's root, for readers in this process: the folder as it was opened, held by its handle (D-213), so a
+   * reader reads the very folder this layer writes whatever is done to the path meanwhile.
+   */
   get root(): string {
     return this.#journal.root;
+  }
+
+  /** The journal's path as the service was given it and the anchor pin names it: for messages and for other programs. */
+  get path(): string {
+    return this.#handle.path;
   }
 
   /** The anchor the start-up check verified, or null when none was configured. */
@@ -686,6 +767,10 @@ export class SessionLayer {
       const recordClass = dataClass ?? this.#written.get(recordId) ?? { sensitivity: "internal" as const, integrity: "derived" as const };
       // The journal's own record is a record like any other here (D-203): its failed anchor is journalled in it.
       this.#write(recordId, "note", recordClass, { type: "anchor_failed", seq: head.seq, head: head.hash, reason: error instanceof Error ? error.message : String(error) }, { actor: ANCHOR_ACTOR });
+      // Operator ruling D-211 item 1 (D-213): an anchor that could not be read back from the pinned repository, or a
+      // destination changed under the service, says nothing this run anchors is known to be off the host. Every
+      // session stops, not only this record's; each stop is journalled (D-203).
+      if (error instanceof AnchorReadBackError) for (const session of this.#sessions.values()) session.stop("anchor_unavailable");
       return false;
     }
     this.#anchored.set(recordId, { seq: head.seq, at: now.getTime() });

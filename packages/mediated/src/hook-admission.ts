@@ -89,7 +89,7 @@ export class HookAdmissionService {
     const at = (what: string): string | undefined => this.#layer.spec.state.find((item) => item.what === what)?.path;
     const keys = at("the journal key folder");
     const anchors = at("the anchor repository clone");
-    return keys === undefined || anchors === undefined ? admitted : { ...admitted, check: { journal: this.#layer.root, anchors, key: `${keys}/journal-key.pub.pem` } };
+    return keys === undefined || anchors === undefined ? admitted : { ...admitted, check: { journal: this.#layer.path, anchors, key: `${keys}/journal-key.pub.pem` } };
   }
 
   #serve(socket: Socket): void {

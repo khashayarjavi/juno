@@ -20,7 +20,7 @@ export type RunnerMainIo = {
 
 /** What the runner asks the shared start-up check to judge (D-194). */
 export function runnerStartupSpec(config: RunnerConfig): StartupSpec {
-  return { service: "runner", journal: config.journalDir, workspaces: [config.workDir], state: anchoringState(config.anchoring, { pushes: false }), anchor: config.trustAnchor };
+  return { service: "runner", journal: config.journalDir, workspaces: [config.workDir], state: anchoringState(config.anchoring), anchor: config.trustAnchor };
 }
 
 /** Returns the exit code: 0 ready, 1 refused. */
@@ -40,6 +40,6 @@ export async function runRunnerMain(env: unknown, io: RunnerMainIo): Promise<num
     return 1;
   }
   const trust = layer.anchor === null ? "trust anchor: none, so no grant can be honoured" : `trust anchor: ${String(config.trustAnchor)}`;
-  io.out(`juno-runner: ready (journal=${layer.root}, work=${config.workDir}, ${trust})\n`);
+  io.out(`juno-runner: ready (journal=${layer.path}, work=${config.workDir}, ${trust})\n`);
   return 0;
 }

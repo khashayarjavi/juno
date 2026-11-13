@@ -4,7 +4,6 @@ import {
   type Anchoring,
   type AnchoringConfig,
   DEFAULT_ANCHOR_PIN,
-  DEFAULT_GIT,
   GrantStore,
   type HostIo,
   HostPathResolver,
@@ -30,7 +29,7 @@ import { StdioUpstream } from "./gateway-stdio.js";
  * any MCP client) reaches it only through the stdio shim `juno-mcp.js` (D-188).
  *
  *   juno gateway serve --session <file> --socket <path> --journal <dir> --anchor <operator.pub> --workspace <dir>
- *                      --journal-key <dir> --anchors <juno-anchors clone> [--anchor-pin <file>] [--anchor-interval <seconds>] [--git <program>]
+ *                      --journal-key <dir> --anchors <juno-anchors clone> [--anchor-pin <file>] [--anchor-interval <seconds>]
  *                      --grant <signed grant file> [--grant <file> ...]
  *
  * Before it opens anything it runs THE shared start-up check (D-193, D-194) through `SessionLayer.open`: never root;
@@ -64,7 +63,7 @@ export type GatewayCliIo = {
   readonly err: (text: string) => void;
 };
 
-const USAGE = "usage: juno gateway serve --session <file> --socket <path> --journal <dir> --anchor <operator.pub> --workspace <dir> --journal-key <dir> --anchors <juno-anchors clone> [--anchor-pin <file>] [--anchor-interval <seconds>] [--git <program>] --grant <file> [--grant <file> ...]\n";
+const USAGE = "usage: juno gateway serve --session <file> --socket <path> --journal <dir> --anchor <operator.pub> --workspace <dir> --journal-key <dir> --anchors <juno-anchors clone> [--anchor-pin <file>] [--anchor-interval <seconds>] --grant <file> [--grant <file> ...]\n";
 
 /** What `juno gateway serve` asks the shared start-up check to judge (D-194). */
 export function gatewayStartupSpec(options: { readonly session: string; readonly socket: string; readonly journal: string; readonly anchor: string; readonly workspace: string; readonly grants: readonly string[]; readonly anchoring: AnchoringConfig }): StartupSpec {
@@ -90,7 +89,7 @@ function refused(io: GatewayCliIo, refusals: readonly string[]): number {
 /** Admits the session and serves it; returns the exit code once stopped (or at once, when refused). */
 export async function runGatewayCli(args: readonly string[], io: GatewayCliIo): Promise<number> {
   const [command, ...rest] = args;
-  const single = ["--session", "--socket", "--journal", "--anchor", "--workspace", "--journal-key", "--anchors", "--anchor-interval", "--git", "--anchor-pin"];
+  const single = ["--session", "--socket", "--journal", "--anchor", "--workspace", "--journal-key", "--anchors", "--anchor-interval", "--anchor-pin"];
   const options = new Map<string, string>();
   const grantFiles: string[] = [];
   for (let index = 0; index < rest.length; index += 2) {
@@ -109,7 +108,7 @@ export async function runGatewayCli(args: readonly string[], io: GatewayCliIo): 
     io.err(USAGE);
     return 2;
   }
-  const anchoring: AnchoringConfig = { journalKeyDir, anchorClone, intervalMs, git: options.get("--git") ?? DEFAULT_GIT, pin: options.get("--anchor-pin") ?? DEFAULT_ANCHOR_PIN };
+  const anchoring: AnchoringConfig = { journalKeyDir, anchorClone, intervalMs, pin: options.get("--anchor-pin") ?? DEFAULT_ANCHOR_PIN };
   // THE shared start-up check, before anything is opened (D-193, D-194).
   let layer: SessionLayer;
   try {

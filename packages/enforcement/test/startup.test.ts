@@ -51,7 +51,7 @@ describe("D-206 item 2 (D-208): the anchor pin, as the operator writes it, in th
     writeFileSync(knownHosts, overrides.knownHosts ?? `github.com ssh-ed25519 ${KEY}\n`, { mode: 0o644 });
     writeFileSync(pushKey, "key\n", { mode: 0o600 });
     const pin = join(etc, "anchors.json");
-    writeFileSync(pin, JSON.stringify({ url: "git@github.com:operator/juno-anchors.git", branch: "main", host_key_fingerprint: sshFingerprint(KEY), known_hosts: knownHosts, push_key: pushKey, journals: [{ path: join(dir, "journal"), recovery_epoch: "2026-11-13T00:00:00Z" }], ...overrides.pin }), { mode: 0o644 });
+    writeFileSync(pin, JSON.stringify({ url: "git@github.com:operator/juno-anchors.git", branch: "main", host_key_fingerprint: sshFingerprint(KEY), known_hosts: knownHosts, push_key: pushKey, git: "/usr/bin/git", journals: [{ path: join(dir, "journal"), recovery_epoch: "2026-11-13T00:00:00Z" }], ...overrides.pin }), { mode: 0o644 });
     return { pin, knownHosts, pushKey };
   }
   const check = (pin: string, journal = join(dir, "journal")) => startupCheck({ ...spec(journal), state: [{ what: "the anchor pin", path: pin, kind: "pin" }] }, ordinaryHost());

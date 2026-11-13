@@ -35,6 +35,7 @@ const PINNED = {
   host_key_fingerprint: sshFingerprint(HOST_KEY),
   known_hosts: KNOWN_HOSTS,
   push_key: "/var/lib/juno-runner/.ssh/juno_anchors",
+  git: "/usr/bin/git",
   journals: [{ path: "/var/lib/juno-runner/journal", recovery_epoch: "2026-11-13T00:00:00Z" }],
 };
 
@@ -72,6 +73,11 @@ function good(): Layout {
     [KNOWN_HOSTS, { ...file(0, 0o644), text: `github.com ssh-ed25519 ${HOST_KEY}\n` }],
     ["/var/lib/juno-runner/.ssh", dir(RUNNER, 0o700)],
     ["/var/lib/juno-runner/.ssh/juno_anchors", file(RUNNER, 0o600)],
+    // D-211 item 1 (D-213): the git program the pin names, and ssh, are root's own.
+    ["/usr", dir(0, 0o755)],
+    ["/usr/bin", dir(0, 0o755)],
+    ["/usr/bin/git", file(0, 0o755)],
+    ["/usr/bin/ssh", file(0, 0o755)],
     ["/var/lib/juno-hook", dir(RUNNER, 0o2750, HOOK_GROUP)],
     [SOCKET, { uid: RUNNER, gid: HOOK_GROUP, mode: 0o660, kind: "socket" }],
   ]);

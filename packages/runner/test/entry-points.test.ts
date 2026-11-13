@@ -223,7 +223,7 @@ type Fixture = {
 function writePin(journals: readonly { readonly path: string; readonly recovery_epoch: string }[], options: { readonly path?: string; readonly url?: string } = {}): void {
   const path = options.path ?? fx.pin;
   mkdirSync(join(path, ".."), { recursive: true, mode: 0o755 });
-  writeFileSync(path, JSON.stringify({ url: options.url ?? fx.remote, branch: "main", host_key_fingerprint: null, known_hosts: null, push_key: null, journals }), { mode: 0o644 });
+  writeFileSync(path, JSON.stringify({ url: options.url ?? fx.remote, branch: "main", host_key_fingerprint: null, known_hosts: null, push_key: null, git: "/usr/bin/git", journals }), { mode: 0o644 });
   chmodSync(path, 0o644);
 }
 /** Long before any grant these tests sign. */
@@ -1154,7 +1154,7 @@ describe("D-206 G: recovery, and the pinned anchor repository, through every reg
     if (probe === undefined || record === undefined) throw new Error(`no probe for ${entry.id}`);
     const at = { ...fx, ...paths };
     if (entry.id === "runner.process") {
-      const config = { journalKeyDir: at.keys, anchorClone: at.clone, intervalMs: 60_000, git: "/usr/bin/git", pin: at.pin };
+      const config = { journalKeyDir: at.keys, anchorClone: at.clone, intervalMs: 60_000, pin: at.pin };
       const layer = await SessionLayer.open({ service: "runner", journal: at.journal, workspaces: [fx.work], state: anchoringState(config), anchor: fx.anchor }, { host: ordinaryHost(), anchoring: (root, pin) => gitAnchoring(config, root, pin) });
       const h = await harness();
       try {

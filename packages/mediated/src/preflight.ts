@@ -1,6 +1,6 @@
 import { type Stats, lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { knownHostsRefusals, parseAnchorPin } from "../../enforcement/src/anchor-pin.js";
+import { PINNED_SSH, knownHostsRefusals, parseAnchorPin } from "../../enforcement/src/anchor-pin.js";
 import { type FilesystemIo, caseFoldingRefusals, systemFilesystemIo } from "./filesystem.js";
 import { type GatewayInstall, MANAGED_MCP_NAME, MANAGED_SETTINGS, gatewayInputRefusals, gatewaySettingsRefusals, hookRefusals, managedMcpRefusals } from "./install.js";
 
@@ -243,7 +243,7 @@ export function hookPreflight(input: PreflightInput, io: PreflightIo): string[] 
  * known-hosts file, and every folder above them, must be owned by root and writable by no one else, so neither the
  * runner nor the Claude Code user can change where the journal is anchored or which server is believed. The pin must
  * name an SSH address (a local path is for JUNO's own tests), the known-hosts file must hold exactly the key with the
- * pinned fingerprint, the push key must be the runner's own private file, and each journal folder must be state this
+ * pinned fingerprint, the git program it names (D-211, D-213) and ssh must be root's own like the pin, the push key must be the runner's own private file, and each journal folder must be state this
  * check was given, so that everything above has judged it.
  */
 export function anchorPinRefusals(pin: string, state: readonly string[], agent: Account, runner: Account, io: PreflightIo): string[] {
@@ -263,6 +263,9 @@ export function anchorPinRefusals(pin: string, state: readonly string[], agent: 
   const known = io.readFile(parsed.known_hosts);
   if (known === null) refusals.push(`the pinned known-hosts file ${parsed.known_hosts} cannot be read`);
   else refusals.push(...knownHostsRefusals(known, parsed.host, parsed.host_key_fingerprint).map((line) => `${line} (${parsed.known_hosts ?? ""}, D-208)`));
+  // Operator ruling D-211 item 1 (D-213): the git program is named only in the pin, and it and ssh are root's own all the way up.
+  refusals.push(...rootOnly("the git program the anchor pin names", parsed.git, io));
+  refusals.push(...rootOnly("the ssh program", PINNED_SSH, io));
   const key = io.lstat(parsed.push_key);
   if (key === null) refusals.push(`the anchor push key ${parsed.push_key} does not exist`);
   else {

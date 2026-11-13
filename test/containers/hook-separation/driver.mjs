@@ -6,7 +6,7 @@
 // Every program is started with execFile and an argument array; there is no shell.
 import { execFile } from "node:child_process";
 import { createHash, generateKeyPairSync } from "node:crypto";
-import { appendFileSync, chmodSync, chownSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, chownSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { Buffer } from "node:buffer";
 import process from "node:process";
 import { TextDecoder } from "node:util";
@@ -40,11 +40,12 @@ const groupFile = readFileSync("/etc/group", "utf8");
 mkdirSync("/opt/fake-claude", { mode: 0o755 });
 writeFileSync("/opt/fake-claude/claude", "#!/usr/local/bin/node\nprocess.stdout.write(\"2.1.319 (Claude Code)\\n\");\n", { mode: 0o755 });
 
-// §3.4.1 (D-198): the service anchors its journal. This image has no git, so a root-owned stand-in (fake-git.mjs) pushes
-// to a stand-in destination beside the clone; the start-up check judges it like the real /usr/bin/git.
-mkdirSync("/opt/fake-git", { mode: 0o755 });
-writeFileSync("/opt/fake-git/git", readFileSync("/t/fake-git.mjs", "utf8"), { mode: 0o755 });
-chmodSync("/opt/fake-git/git", 0o755);
+// §3.4.1 (D-198): the service anchors its journal. This image has no git, so the image's own root-owned stand-in
+// (/opt/juno-test/git, containers/runner-test-git.mjs) pushes to a stand-in destination beside the clone. The image's
+// root-owned pin names it; no setting of the service can (operator ruling D-211 item 1; D-213).
+// `juno hook check` also judges the ssh program an SSH pin uses; the image has none, so a root-owned stand-in file is
+// put where the pin's rule looks. Nothing runs it.
+if (!existsSync("/usr/bin/ssh")) writeFileSync("/usr/bin/ssh", "#!/usr/local/bin/node\nprocess.exit(1);\n", { mode: 0o755 });
 
 // The trust anchor: public, root's.
 mkdirSync("/etc/juno", { recursive: true, mode: 0o755 });
@@ -67,9 +68,9 @@ writeFileSync("/etc/juno/operator.pub", operator.publicKey.export({ type: "spki"
   chownSync("/var/lib/juno-anchor-key", RUNNER, RUNNER);
   // The same pin in a file of the runner's own: the check must refuse it.
   mkdirSync("/var/lib/juno-runner-pin", { mode: 0o755 });
-  writeFileSync("/var/lib/juno-runner-pin/anchors.json", JSON.stringify({ url: "git@github.com:operator/juno-anchors.git", branch: "main", host_key_fingerprint: fingerprint, known_hosts: "/etc/juno/anchors_known_hosts", push_key: "/var/lib/juno-anchor-key/juno_anchors", journals: [{ path: "/var/lib/juno-runner/journal", recovery_epoch: "2026-01-01T00:00:00Z" }] }), { mode: 0o644 });
+  writeFileSync("/var/lib/juno-runner-pin/anchors.json", JSON.stringify({ url: "git@github.com:operator/juno-anchors.git", branch: "main", host_key_fingerprint: fingerprint, known_hosts: "/etc/juno/anchors_known_hosts", push_key: "/var/lib/juno-anchor-key/juno_anchors", git: "/opt/juno-test/git", journals: [{ path: "/var/lib/juno-runner/journal", recovery_epoch: "2026-01-01T00:00:00Z" }] }), { mode: 0o644 });
   chownSync("/var/lib/juno-runner-pin/anchors.json", RUNNER, RUNNER);
-  writeFileSync("/etc/juno/anchors-check.json", JSON.stringify({ url: "git@github.com:operator/juno-anchors.git", branch: "main", host_key_fingerprint: fingerprint, known_hosts: "/etc/juno/anchors_known_hosts", push_key: "/var/lib/juno-anchor-key/juno_anchors", journals: [{ path: "/var/lib/juno-runner/journal", recovery_epoch: "2026-01-01T00:00:00Z" }] }), { mode: 0o644 });
+  writeFileSync("/etc/juno/anchors-check.json", JSON.stringify({ url: "git@github.com:operator/juno-anchors.git", branch: "main", host_key_fingerprint: fingerprint, known_hosts: "/etc/juno/anchors_known_hosts", push_key: "/var/lib/juno-anchor-key/juno_anchors", git: "/opt/juno-test/git", journals: [{ path: "/var/lib/juno-runner/journal", recovery_epoch: "2026-01-01T00:00:00Z" }] }), { mode: 0o644 });
 }
 
 // The runner's state folder and the socket folder (Part E: `install -d -o juno-runner -m 0700` and `-g juno-hook -m 2750`).
@@ -169,7 +170,7 @@ await asRunnerFile("/var/lib/juno-runner/session.json", JSON.stringify({ session
 
 const ANCHOR_CLONE = "/var/lib/juno-runner/juno-anchors";
 const JOURNAL_KEY = "/var/lib/juno-runner/journal-key";
-const serveArgs = (workspace, journal) => [JUNO, "hook", "serve", "--socket", SERVE_SOCKET, "--control", CONTROL, "--journal", journal, "--anchor", "/etc/juno/operator.pub", "--journal-key", JOURNAL_KEY, "--anchors", ANCHOR_CLONE, "--git", "/opt/fake-git/git", "--workspace", workspace, "--checkpoints", "/var/lib/juno-runner/serve-checkpoints", "--protect", "/etc/claude-code"];
+const serveArgs = (workspace, journal) => [JUNO, "hook", "serve", "--socket", SERVE_SOCKET, "--control", CONTROL, "--journal", journal, "--anchor", "/etc/juno/operator.pub", "--journal-key", JOURNAL_KEY, "--anchors", ANCHOR_CLONE, "--workspace", workspace, "--checkpoints", "/var/lib/juno-runner/serve-checkpoints", "--protect", "/etc/claude-code"];
 /** Runs `node <args>` as uid:gid with groups, feeding `input` on stdin; resolves with its exit. */
 const asUser = (uid, groups, args, input = "", env = process.env) => new Promise((resolve) => {
   const child = execFile(NODE, ["/t/as-user.mjs", String(uid), String(uid), groups, ...args], { timeout: 60_000, env }, (error, stdout, stderr) => resolve({ code: error === null ? 0 : typeof error.code === "number" ? error.code : -1, stdout, stderr }));

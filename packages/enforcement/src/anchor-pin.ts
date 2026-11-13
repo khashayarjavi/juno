@@ -12,6 +12,9 @@ import { AbsolutePath, Timestamp, instant } from "../../contracts/src/index.js";
  *   - `host_key_fingerprint` and `known_hosts`: the SSH host key that repository's server must present (GitHub's), as
  *     the fingerprint the operator compared with GitHub's published one, and the root-owned file holding the key itself;
  *   - `push_key`: the runner's own deploy key file that ssh uses, so nothing in the runner's ssh settings is read;
+ *   - `git`: the git program that reaches the repository, by its absolute path. It is named here and nowhere else
+ *     (operator ruling D-211 item 1; D-213): no service setting can name it, and it must be root's own file, so a git
+ *     program of the runner's own can never answer for the pinned repository;
  *   - `journals`: every journal folder that may anchor there, each with its recovery epoch (D-207): the time the
  *     operator registered that folder. A journal folder the pin does not name is refused, so giving a service a new,
  *     empty journal is the operator's act as root, never the runner's.
@@ -30,6 +33,7 @@ export const AnchorPinFile = z.strictObject({
   host_key_fingerprint: Fingerprint.nullable(),
   known_hosts: AbsolutePath.nullable(),
   push_key: AbsolutePath.nullable(),
+  git: AbsolutePath,
   journals: z
     .array(z.strictObject({ path: AbsolutePath, recovery_epoch: Timestamp }))
     .min(1)
@@ -50,6 +54,8 @@ export type VerifiedPin = {
   readonly fingerprint: string | null;
   readonly knownHosts: string | null;
   readonly pushKey: string | null;
+  /** The git program, as the pin names it; root's own (D-211, D-213). */
+  readonly git: string;
   readonly journals: readonly { readonly path: string; readonly recovery_epoch: string }[];
   /** The entry for the journal this service was started on. */
   readonly journal: { readonly path: string; readonly recovery_epoch: string };

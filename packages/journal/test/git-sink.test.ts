@@ -21,7 +21,7 @@ const key = generateKeyPairSync("ed25519");
 const head = (n: number): { seq: number; hash: string } => ({ seq: n, hash: `sha256:${String(n).repeat(64).slice(0, 64)}` });
 
 /** The anchor pin's view of a local bare repository standing for `juno-anchors` (D-208). */
-const pinOf = (url: string): PinnedRepository => ({ url, branch: "main", transport: "local", knownHosts: null, pushKey: null });
+const pinOf = (url: string): PinnedRepository => ({ url, branch: "main", transport: "local", knownHosts: null, pushKey: null, git: "/usr/bin/git" });
 
 async function git(args: readonly string[]): Promise<{ exitCode: number | null; stderr: string; stdout: string }> {
   const result = await executeOutbound({ file: "git", args: ["-c", "user.name=test", "-c", "user.email=test@localhost", "-c", "init.defaultBranch=main", ...args] });

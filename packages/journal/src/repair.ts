@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
-import { closeSync, fsyncSync, ftruncateSync, openSync, readdirSync, rmSync } from "node:fs";
+import { closeSync, constants, fsyncSync, ftruncateSync, openSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { z } from "zod";
 import { TrajectoryEntry } from "../../contracts/src/index.js";
 import { canonicalJson } from "./canonical.js";
 import { type ChainVerdict, verifyChain } from "./chain.js";
-import { readOptional } from "./files.js";
+import { readOptional, removeDurably, replaceDurably } from "./files.js";
 import { journalRoot, tasksDir } from "./layout.js";
 
 /**
@@ -104,7 +105,7 @@ export function tornTail(root: unknown, digest: string): TornTail | null {
 export function dropTornTail(root: unknown, torn: TornTail): void {
   const dir = join(tasksDir(journalRoot(root)), torn.digest);
   const path = join(dir, "entries.jsonl");
-  const fd = openSync(path, "r+");
+  const fd = openSync(path, constants.O_RDWR | constants.O_NOFOLLOW);
   try {
     const again = tornTail(root, torn.digest);
     if (again === null || again.keptBytes !== torn.keptBytes || again.droppedSha256 !== torn.droppedSha256) throw new Error("the record changed since it was read; nothing was dropped");
@@ -120,4 +121,61 @@ export function dropTornTail(root: unknown, torn: TornTail): void {
   } finally {
     closeSync(dirFd);
   }
+}
+
+/**
+ * The repair's own record (operator ruling D-211 item 1; review round 7 finding F4; DECISIONS.md D-213).
+ *
+ * A repair is several file operations, and the power can be lost between any two of them. So before the incomplete
+ * entry is removed, what the repair is about to do and every grant it exhausts is written to one file in the journal's
+ * folder, `recovery-pending.json`, in one durable step (a temporary file, flushed, renamed over the name, the folder
+ * flushed). Only then is the entry cut off; then the journal's `recovered_truncation` notes are written; and only when
+ * those are durable is the file removed. Whenever the power is lost, the next start finds either the file or the notes
+ * (or both), so the grants stay exhausted, and it finishes whatever of the repair is missing.
+ */
+const Sha256Hex = z.string().regex(/^[0-9a-f]{64}$/);
+
+export const PendingRepair = z.strictObject({
+  /** The record that lost its incomplete entry, or null when nothing complete was ever written in it. */
+  record: z.string().min(1).nullable(),
+  record_digest: Sha256Hex,
+  how: z.enum(["partial_line", "unheaded_entry"]),
+  kept_entries: z.number().int().min(0),
+  kept_bytes: z.number().int().min(0),
+  dropped_bytes: z.number().int().min(1),
+  dropped_sha256: Sha256Hex,
+  open_sessions: z.array(z.string().min(1)),
+  exhausted_grants: z.array(z.string().min(1)),
+});
+export type PendingRepair = z.infer<typeof PendingRepair>;
+
+const PendingFile = z.strictObject({ type: z.literal("recovery_pending"), repairs: z.array(PendingRepair).min(1) });
+
+const PENDING_FILE = "recovery-pending.json";
+
+/** The repairs a start began and has not finished recording; empty when there is no such file. Throws when the file is not one JUNO wrote. */
+export function readPendingRepairs(root: unknown): PendingRepair[] {
+  const bytes = readOptional(join(journalRoot(root), PENDING_FILE));
+  if (bytes === null) return [];
+  let raw: unknown;
+  try {
+    raw = JSON.parse(bytes.toString("utf8"));
+  } catch {
+    throw new Error(`${PENDING_FILE} in the journal folder is not JSON`);
+  }
+  const parsed = PendingFile.safeParse(raw);
+  if (!parsed.success) throw new Error(`${PENDING_FILE} in the journal folder is not a record of a repair JUNO writes`);
+  return parsed.data.repairs;
+}
+
+/** Writes the repairs, durably, in one step: after it returns they survive a power loss; before, the old file (or none) does. */
+export function writePendingRepairs(root: unknown, repairs: readonly PendingRepair[]): void {
+  replaceDurably(join(journalRoot(root), PENDING_FILE), canonicalJson(PendingFile.parse({ type: "recovery_pending", repairs })));
+}
+
+/** Removes the file, durably, once every repair it names is recorded in the journal itself. */
+export function clearPendingRepairs(root: unknown): void {
+  const dir = journalRoot(root);
+  for (const name of readdirSync(dir)) if (name.startsWith(`${PENDING_FILE}.`) && name.endsWith(".tmp")) rmSync(join(dir, name), { force: true });
+  removeDurably(join(dir, PENDING_FILE));
 }

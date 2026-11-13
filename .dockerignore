@@ -6,3 +6,5 @@
 !containers/anchor-store.mjs
 # The test stack's anchor pin for the runner image, root's own there (D-208).
 !containers/runner-test-anchors.json
+# The test stack's stand-in for git, root's own in the runner image, where the test pin names it (D-213).
+!containers/runner-test-git.mjs
