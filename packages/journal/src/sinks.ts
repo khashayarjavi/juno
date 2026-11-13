@@ -233,10 +233,15 @@ function blobId(bytes: Buffer, length: number): string {
  *   3. the new repository then replaces the clone, so everything read afterwards is what the pinned repository holds,
  *      and nothing of the old clone's configuration, hooks or files remains.
  *
- * The repository JUNO works in has no say either (round 7 finding F2; D-213):
+ * The repository JUNO works in has no say either (round 7 finding F2; D-213). Its settings are not relied on; that is
+ * not the same as never read (review round 8; operator ruling D-214 item 5; D-216):
  *   4. its own configuration must stay exactly what JUNO's `git init` wrote (a `[core]` section of git's own
  *      housekeeping values). It is compared before every command that runs in it; any other content, a `url.*.insteadOf`
- *      or `core.sshCommand` for instance, ends the command with `AnchorReadBackError` before git reads it;
+ *      or `core.sshCommand` for instance, ends the command with `AnchorReadBackError` before git runs. The comparison
+ *      does not stop every way git can be made to read other settings: a `.git/commondir` file naming another
+ *      repository's settings passes it (round 8, R1), and at a start git reads the old clone's own settings when the
+ *      clone is read (round 8, R2, in `#compareCache`). Both need control of the runner account (D-211 item 2), and
+ *      neither is relied on: whatever such settings make git do, point 5 accepts only what the pinned repository holds;
  *   5. every anchor is read back from the pinned repository after it is pushed, and every listing is confirmed the same
  *      way: `git ls-remote` for the pinned URL, run with no repository at all (so no repository's configuration can
  *      redirect it), must name the very commit the clone is at. A commit id fixes every file in it, so the anchors then
@@ -417,7 +422,9 @@ export class GitAnchorSink implements AnchorSink {
    * Compares the clone the host holds with the repository as fetched into `fresh` (at `remote`, or null when the
    * pinned branch does not exist yet). Stages, in `fresh`, every anchor the clone holds in commits the repository
    * lacks, and answers how many; throws when the clone disagrees with the repository. The clone is only ever read as
-   * data, from inside `fresh`: no command runs in it, so its own configuration is never read.
+   * data, from inside `fresh`: no command runs in it. Reading it does let git read the clone's own settings (review
+   * round 8, R2; D-216); they are not relied on, because whatever the clone offers must agree with what was fetched from
+   * the pinned repository, or the start is refused.
    */
   async #compareCache(fresh: string, remote: string | null): Promise<number> {
     let entries: string[];

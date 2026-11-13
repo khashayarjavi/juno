@@ -37,6 +37,14 @@ export const FILE_IO: CliIo = {
 
 const USAGE = "usage: juno grant sign --ssh-key <key.pub> <grant.json> [--out <file>] | juno grant sign --key <private-key.pem> <grant.json> [--out <file>] | juno grant verify --anchor <public key> <grant.json>\n";
 
+/**
+ * What a failed `--ssh-key` signing tells the operator (operator ruling D-214 item 4; D-216). `ssh-keygen -Y sign` with
+ * the key held by the agent needs OpenSSH 8.2 or later (8.1 added agent signing but refuses the `-O hashalg=` option
+ * this command passes), and the key loaded from the backup (docs/operator-setup.md, Part B step 6).
+ */
+export const SSH_SIGN_HELP =
+  "juno grant: signing needs OpenSSH 8.2 or later and your key loaded in the agent from its backup (`ssh-add -l` lists it; docs/operator-setup.md, Part B step 6). Remove the key now with `ssh-add -D`, then send the agent the line above and the line `ssh -V` prints (D-216).\n";
+
 /** JSON text, a leading byte-order mark allowed (Windows editors write one). */
 function parseJson(text: string): unknown {
   return JSON.parse(text.startsWith("\uFEFF") ? text.slice(1) : text);
@@ -89,6 +97,7 @@ export async function runGrantCli(args: readonly string[], io: CliIo = FILE_IO, 
     }
   } catch (error: unknown) {
     io.err(`juno grant: ${error instanceof Error ? error.message : String(error)}\n`);
+    if (command === "sign" && flag === "--ssh-key") io.err(SSH_SIGN_HELP);
     return 1;
   }
   io.err(USAGE);

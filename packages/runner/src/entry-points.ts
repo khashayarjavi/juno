@@ -71,7 +71,7 @@ async function runtimeCheck(args: readonly string[]): Promise<number> {
 export const ENTRY_POINTS: readonly EntryPoint[] = [
   // `juno` commands.
   { id: "grant", kind: "command", module: "packages/runner/src/grant-cli.ts", name: ["grant"], service: null, admits: false, why: "signs or verifies a grant file; opens no journal, serves nothing, admits no session", implementation: runGrantCli, run: (args) => runGrantCli(args) },
-  { id: "journal", kind: "command", module: "packages/runner/src/journal-cli.ts", name: ["journal"], service: null, admits: false, why: "reads and verifies a journal; writes nothing", implementation: runJournalCli, run: (args) => Promise.resolve(runJournalCli(args)) },
+  { id: "journal", kind: "command", module: "packages/runner/src/journal-cli.ts", name: ["journal"], service: null, admits: false, why: "reads and verifies a journal; writes nothing", implementation: runJournalCli, run: (args) => runJournalCli(args) },
   {
     id: "checkpoint",
     kind: "command",

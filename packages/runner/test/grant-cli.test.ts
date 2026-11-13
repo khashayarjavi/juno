@@ -98,6 +98,28 @@ describe("juno grant sign and verify (§3.2 C1, D-117)", () => {
     expect(await runGrantCli(["sign", "--ssh-key", "juno_grant.pub", "grant.json", "--out"], io(files), signer)).toBe(2);
   });
 
+  // proves D-214 item 4 (D-216): a failed signing through the agent tells the operator to remove the key and to send
+  // the failure with the line `ssh -V` prints, and names the minimum OpenSSH version; nothing is written
+  it("tells the operator what to send when signing through the agent fails", async () => {
+    const files: Record<string, string> = { "juno_grant.pub": "unused", "grant.json": JSON.stringify(GRANT) };
+    const written: Record<string, string> = {};
+    const failing = { ...io(files), writeFile: (path: string, text: string): void => {
+      written[path] = text;
+    } };
+    const refusing = (): Promise<string> => Promise.reject(new Error('ssh-keygen -Y sign failed: Unsupported certificate option "hashalg=sha512"'));
+    expect(await runGrantCli(["sign", "--ssh-key", "juno_grant.pub", "grant.json", "--out", "signed.json"], failing, refusing)).toBe(1);
+    const said = failing.errors.join("");
+    expect(said).toContain("ssh-keygen -Y sign failed: Unsupported certificate option");
+    expect(said).toContain("OpenSSH 8.2 or later");
+    expect(said).toContain("`ssh-add -D`");
+    expect(said).toContain("`ssh -V`");
+    expect(written).toEqual({});
+    // A failure of the PEM form is not about OpenSSH and says nothing of it.
+    const pemFailure = io({ "key.pem": "not a key", "grant.json": JSON.stringify(GRANT) });
+    expect(await runGrantCli(["sign", "--key", "key.pem", "grant.json"], pemFailure)).toBe(1);
+    expect(pemFailure.errors.join("")).not.toContain("ssh -V");
+  });
+
   // proves the operator's steps (STATE.md, D-124): the example grant they sign is a valid Grant
   it("parses the example grant the operator signs", async () => {
     const example = readFileSync(fileURLToPath(new URL("../../../docs/examples/grant.example.json", import.meta.url)), "utf8");

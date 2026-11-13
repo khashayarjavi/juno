@@ -101,7 +101,8 @@ describe("D-206 item 2 (D-209): a journal reached through a symbolic link is not
  * honours. Part C issues the first grant yesterday (UTC midnight); Part D step 7 sets the first journal's recovery epoch
  * to a fixed early date, so the first grant is honoured however many days pass between Part C and Part D (review round
  * 7, D-210, D-213); after a manual recovery the epoch is the time `date -u` printed, and new grants are issued at that
- * time. After a torn write, the new grants are issued yesterday as in Part C, after the first journal's epoch.
+ * time. After a torn write, the new grants are issued at the time `date -u` prints then (D-214 item 5;
+ * test/evidence/operator-setup.test.ts).
  */
 describe("D-206 item 1 (D-209): the operator guide's dates give grants JUNO honours", () => {
   const guide = readFileSync(new URL("../../../docs/operator-setup.md", import.meta.url), "utf8");

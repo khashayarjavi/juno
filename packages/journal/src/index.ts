@@ -47,3 +47,4 @@ export {
   sameKey,
 } from "./sinks.js";
 export { SSH_ENVIRONMENT, sshInvocation } from "./anchor-ssh.js";
+export { HISTORY_GIT, type HistoryVerdict, anchorHistoryVerdict } from "./history.js";

@@ -217,10 +217,14 @@ if (results.serve.started.ok) {
   results.serve.controlMode = (statSync(CONTROL).mode & 0o777).toString(8);
   // §3.4.1 (D-198): the runner stops its service; the service anchors what is pending as it stops. Then the operator's
   // check (`juno journal check`, run as the runner) reads the chain back against the anchors at the destination.
+  // The destination here is the image's stand-in folder, not a git repository (no git in images, D-001), so it is
+  // checked with --no-history and says so; the history check is proven with the real git in the unit tests (D-217).
   await asUser(RUNNER, "", ["/t/signal.mjs", String(served.pid)]);
   results.serve.stopped = await servedExit;
   results.serve.stoppedText = servedOut;
-  results.serve.journalCheck = await asUser(RUNNER, "", [JUNO, "journal", "check", "--journal", SERVE_JOURNAL, "--anchors", `${ANCHOR_CLONE}.remote`, "--key", `${JOURNAL_KEY}/journal-key.pub.pem`, `session-${SESSION}`]);
+  results.serve.journalCheck = await asUser(RUNNER, "", [JUNO, "journal", "check", "--journal", SERVE_JOURNAL, "--anchors", `${ANCHOR_CLONE}.remote`, "--key", `${JOURNAL_KEY}/journal-key.pub.pem`, "--no-history", `session-${SESSION}`]);
+  // Without --no-history the same folder is refused: it is no clone whose history can be read (D-217).
+  results.serve.journalCheckWithHistory = await asUser(RUNNER, "", [JUNO, "journal", "check", "--journal", SERVE_JOURNAL, "--anchors", `${ANCHOR_CLONE}.remote`, "--key", `${JOURNAL_KEY}/journal-key.pub.pem`, `session-${SESSION}`]);
   results.serve.anchoringNote = results.serve.journal.some((entry) => entry.type === "anchoring");
 }
 // The service runs until the container stops; this driver is the container's first process, so leaving ends it.

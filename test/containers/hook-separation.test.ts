@@ -42,6 +42,7 @@ type Results = {
     stopped?: Exit;
     stoppedText?: string;
     journalCheck?: Exit;
+    journalCheckWithHistory?: Exit;
     anchoringNote?: boolean;
   };
 };
@@ -181,6 +182,9 @@ describe("plan Increment 6 (D-180, D-196): the real juno hook serve and juno hoo
     expect(results.serve.stopped, results.serve.stopped?.stderr).toMatchObject({ code: 0 });
     expect(results.serve.stoppedText).toContain("juno hook: stopped.");
     expect(results.serve.journalCheck, results.serve.journalCheck?.stderr).toMatchObject({ code: 0 });
-    expect(JSON.parse(results.serve.journalCheck?.stdout ?? "{}")).toMatchObject({ ok: true, unanchored: 0 });
+    expect(JSON.parse(results.serve.journalCheck?.stdout ?? "{}")).toMatchObject({ ok: true, unanchored: 0, history: "not_checked" });
+    // D-217: a folder that is no git clone is refused unless the check is told it has no history to read.
+    expect(results.serve.journalCheckWithHistory).toMatchObject({ code: 1 });
+    expect(JSON.parse(results.serve.journalCheckWithHistory?.stdout ?? "{}")).toMatchObject({ ok: false, history: "refused", failure: { code: "anchor_history" } });
   });
 });

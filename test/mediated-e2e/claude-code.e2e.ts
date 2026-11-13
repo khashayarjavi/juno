@@ -366,9 +366,9 @@ describe(`§4.3 acceptance in mode C, real Claude Code (no paid model)`, () => {
     expect(sessionIds.length).toBeGreaterThanOrEqual(8);
     for (const id of sessionIds) {
       const said: string[] = [];
-      const code = runJournalCli(["check", "--journal", journalRoot, "--anchors", fresh, "--key", join(state, "journal-key", "journal-key.pub.pem"), id], { ...FILE_IO, out: (text) => said.push(text), err: (text) => said.push(text) });
+      const code = await runJournalCli(["check", "--journal", journalRoot, "--anchors", fresh, "--key", join(state, "journal-key", "journal-key.pub.pem"), id], { ...FILE_IO, out: (text) => said.push(text), err: (text) => said.push(text) });
       expect(code, `${id}: ${said.join("")}`).toBe(0);
-      expect(JSON.parse(said.join("")), id).toMatchObject({ ok: true, unanchored: 0 });
+      expect(JSON.parse(said.join("")), id).toMatchObject({ ok: true, unanchored: 0, history: "checked" });
     }
   }, 240_000);
 });

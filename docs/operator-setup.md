@@ -4,10 +4,24 @@ This is the one document for setting JUNO up on your own machine. It collects ev
 
 **You never paste a secret anywhere.** Every step that creates a credential is marked **Creates a credential**. A password, passphrase or sign-in code is only ever typed or pasted into the program on your own machine that asked for it. Only *public* keys are ever copied: into GitHub, or into a message to the agent. If any step seems to ask you to paste a private key, a passphrase or a token into a website, a chat or a file, stop: that step is wrong.
 
+> **Rules for your Windows account** (D-214). Read these before you start.
+>
+> Anything that runs as you on Windows can undo everything JUNO does. That means any program, and also any AI agent or coding tool you run on Windows itself (Claude Code, an editor's assistant, a script it writes). Such a program can:
+> - ask Windows' key agent to **sign a grant** for itself, whenever your signing key is loaded in that agent; and
+> - **start WSL as root** (`wsl -u root`), and from there change JUNO, its journal, its settings and its keys.
+>
+> JUNO cannot stop either. What you do narrows the window:
+> 1. **Your signing key is loaded only to sign.** You load it from your backup just before you sign and remove it straight after (Part B step 6). At every other time, `ssh-add -l` in PowerShell prints `The agent has no identities.`
+> 2. **No AI agent or coding tool runs on Windows while your key is loaded.** Better still, run none on Windows at all: run Claude Code only in the governed terminal (Part E), where JUNO governs it.
+> 3. **Your key's backup stays off this computer**, and is plugged in only while you sign.
+> 4. **Install on Windows only programs you would trust with your signing key.** While the key is loaded, and at any time for WSL's root, a program running as you is trusted like you.
+>
+> These rules narrow the risk; they do not remove it (`docs/evidence/slice-1.5.md`, items 1 and 3).
+
 What the setup gives you, in plain words:
-- A **grant-signing key** that Windows keeps (Part B). JUNO honours only grants signed with it.
+- A **grant-signing key** kept off this computer and loaded into Windows' key agent only while you sign (Part B). JUNO honours only grants signed with it.
 - A WSL2 Ubuntu with three Linux users (Part E): your **admin** user; **`juno-runner`**, which runs JUNO and owns its journal; and **`juno-agent`**, the only user Claude Code runs as.
-- A public GitHub repository, **`juno-anchors`**, that receives a fingerprint of JUNO's journal at least once a minute, so a rewrite of history on your machine contradicts a copy that machine cannot take back (Part D). The check that counts is the one you run against a fresh copy from GitHub (Part G step 7).
+- A public GitHub repository, **`juno-anchors`**, that receives a fingerprint of JUNO's journal at least once a minute, so a rewrite of history on your machine contradicts a copy that machine cannot take back (Part D). The check that counts is the one you run from your **admin** account against a fresh copy from GitHub (Part G step 7).
 - JUNO's **hook service**, which judges every tool call of a Claude Code session you admitted (Part G).
 
 Time: about three hours in total, most of it waiting for installs. You can stop between parts.
@@ -22,23 +36,37 @@ Boxes of commands: paste each box whole into the window named above it and press
 
 ---
 
-## Part A — Windows prerequisites (once, about 15 minutes)
+## Part A — Windows prerequisites (once, about 20 minutes)
 
 1. Check that the OpenSSH client is present. **PowerShell:** type `Get-Command ssh-keygen` and press Enter. If you see a path ending in `ssh-keygen.exe`, continue. If you see an error: open **Settings → System → Optional features → View features** (Windows 10: **Settings → Apps → Optional features → Add a feature**), search for **OpenSSH Client**, tick it, and click **Install**.
-2. Check that Git and Node.js 22 are installed. **PowerShell:** `git --version` and `node --version` should each print a version, and node's should start with `v22`. If not, install Git for Windows from https://git-scm.com/download/win and Node.js 22 LTS from https://nodejs.org, accepting the defaults, then close and reopen PowerShell.
-3. Get JUNO's command on Windows (it is used only to sign grants). **PowerShell:**
+2. **Check OpenSSH's version.** **PowerShell:**
+   ```
+   ssh -V
+   ```
+   It prints one line, for example starting `OpenSSH_for_Windows_` and then a version number such as `9.5p1`. **The version must be 8.2 or later** (D-216): JUNO signs with `ssh-keygen -Y sign` and a key held by the agent, which OpenSSH added in 8.1, and 8.1 refuses one option JUNO's signing passes. If the number is older than 8.2: run Windows Update (**Settings → Windows Update → Check for updates**), restart, and run `ssh -V` again. If it is still older than 8.2, **stop**: do not go on to Part B, and send the agent the line `ssh -V` printed.
+3. Check that Git and Node.js 22 are installed. **PowerShell:** `git --version` and `node --version` should each print a version, and node's should start with `v22`. If not, install Git for Windows from https://git-scm.com/download/win and Node.js 22 LTS from https://nodejs.org, accepting the defaults, then close and reopen PowerShell.
+4. **Get JUNO, at the exact version the agent gave you.** The agent gives you a **commit hash**: 40 characters of `0-9` and `a-f`. Every copy of JUNO you install is that commit, and every step that installs one prints the hash for you to compare. The `juno` repository is private: the first command opens a browser window where you sign in to GitHub (Git for Windows does this; nothing is pasted anywhere). **PowerShell**, with `<commit>` replaced by the hash the agent gave you:
    ```
    git clone https://github.com/khashayarjavi/juno.git $env:USERPROFILE\juno
    cd $env:USERPROFILE\juno
+   git checkout --detach <commit>
+   git rev-parse HEAD
+   ```
+   `git checkout` prints a note about a "detached HEAD": that is expected (you are on that one commit, not on a branch).
+   **Check:** the last line is exactly the hash the agent gave you, all 40 characters. If it differs, stop and tell the agent.
+5. **Build JUNO's command on Windows** (it is used only to sign grants), and **pack that exact commit into one file** for WSL (Part E steps 11 and 12 install from it, so WSL never needs your GitHub sign-in). **PowerShell**, still in `$env:USERPROFILE\juno`:
+   ```
    npm ci
    npx tsc -p tsconfig.build.json
+   git bundle create $env:USERPROFILE\juno.bundle HEAD
    ```
+   The last command makes `C:\Users\<you>\juno.bundle`. It holds only JUNO's code, nothing secret.
 
-**Check:** `node $env:USERPROFILE\juno\dist\runner\src\juno.js` prints a line starting `usage: juno grant sign|verify`.
+**Check:** `node $env:USERPROFILE\juno\dist\runner\src\juno.js` prints a line starting `usage: juno grant sign|verify`, and `git -C $env:USERPROFILE\juno rev-parse HEAD` still prints the hash the agent gave you. Write that hash down: Part E compares with it twice.
 
-## Part B — your grant-signing key, kept by Windows (once, about 10 minutes)
+## Part B — your grant-signing key, kept off this computer (once, about 15 minutes)
 
-**Creates a credential:** your grant-signing key. Its private half never leaves Windows' key agent after step 4.
+**Creates a credential:** your grant-signing key. Its private half is kept on a backup off this computer. It is loaded into Windows' key agent only while you sign, and removed straight after (see "Rules for your Windows account" at the top).
 
 1. *As administrator*, turn on the key agent (it is off by default). **PowerShell (as administrator):**
    ```
@@ -47,18 +75,36 @@ Boxes of commands: paste each box whole into the window named above it and press
    Get-Service ssh-agent
    ```
    The last line must say **Running**. Close the administrator window.
-2. In a normal PowerShell window, create the key:
+2. In a normal PowerShell window, check that the agent holds no key:
+   ```
+   ssh-add -l
+   ```
+   It must print `The agent has no identities.` If it lists any key, run `ssh-add -D` (it removes every key the agent holds) and run `ssh-add -l` again.
+3. Create the key:
    ```
    ssh-keygen -t ed25519 -C "juno-grant-signing" -f $env:USERPROFILE\.ssh\juno_grant
    ```
    When it asks for a passphrase, type a strong one twice. It does not show what you type. Do not write it anywhere on this computer.
-3. Hand the key to the agent: `ssh-add $env:USERPROFILE\.ssh\juno_grant`, then type the passphrase when asked.
-4. Back up the private key file `C:\Users\<you>\.ssh\juno_grant` (the one **without** `.pub`) to somewhere off this computer that you control, for example a USB stick you keep safe, or your password manager's file attachment. Then delete it from the computer: `Remove-Item $env:USERPROFILE\.ssh\juno_grant`.
+   Do **not** hand it to the agent now.
+4. **Move the private key off this computer.** Plug in a USB stick (or another removable drive) that you keep safe. Copy the private key file `C:\Users\<you>\.ssh\juno_grant` (the one **without** `.pub`) onto it; in this guide its place there is called `<backup path>`, for example `E:\juno_grant` if the stick is drive `E:`. **PowerShell** (with your drive letter):
+   ```
+   Copy-Item $env:USERPROFILE\.ssh\juno_grant E:\juno_grant
+   Remove-Item $env:USERPROFILE\.ssh\juno_grant
+   ```
+   A second copy somewhere else off this computer (for example your password manager's file attachment) is wise; signing uses the USB stick.
 5. **Keep** `juno_grant.pub`. It is your public key: the trust anchor JUNO checks every grant against. It is not secret.
+6. **How you sign, every time** (Part C and "When something goes wrong" use exactly this):
+   1. Plug in the USB stick. **PowerShell:** `ssh-add <backup path>` (for example `ssh-add E:\juno_grant`), and type the passphrase when asked.
+   2. Run the `grant sign` command of the step you are in.
+   3. Straight after, whether signing worked or not: `ssh-add -D`, then `ssh-add -l`. The last must print `The agent has no identities.` Unplug the USB stick.
+   If `ssh-add` refuses the file (for example saying its permissions are too open), stop and send the agent that line; do not change the file's permissions.
+7. **Practise the routine once now**, without signing: step 6.1; then `ssh-add -l` lists one line ending in `juno-grant-signing (ED25519)`; then step 6.3.
 
-**Check:** `ssh-add -l` lists one line ending in `juno-grant-signing (ED25519)`, and `Test-Path $env:USERPROFILE\.ssh\juno_grant` prints `False`.
+**Check:** after step 7, `ssh-add -l` prints `The agent has no identities.`, and `Test-Path $env:USERPROFILE\.ssh\juno_grant` prints `False`.
 
-What this protects, and what it does not: Windows' agent never hands out the key, but any program running as your Windows user can ask it to sign (D-093).
+What this protects, and what it does not (D-093, D-214):
+- Windows' agent never hands the key out, but **while it holds the key, any program running as you can ask it to sign**. Loading the key only to sign keeps that window to the minutes you sign in.
+- **Windows' agent does not keep a key only in memory.** Microsoft's OpenSSH maintainers state that it stores every key added with `ssh-add` in your Windows user's registry, encrypted, and keeps it across restarts until it is removed. So deleting the key file does **not** remove the key from this computer while the agent holds it; `ssh-add -D` removes it from the agent. Whether Windows leaves traces of the encrypted copy on the disk afterwards is not something JUNO or this guide can check.
 
 ## Part C — sign your first grant, and check it (about 5 minutes)
 
@@ -70,19 +116,22 @@ A grant is a signed permission: "this principal may use these capabilities, on t
    notepad $env:USERPROFILE\my-grant.json
    ```
    It lets the session read, list, write and edit files under `/work/project` (that is `/srv/juno-work/project`) and run the read-only programs your session file names, at most 200 times. In Notepad change only two values: `issued_at`, to **yesterday's** date (keep the form `2026-11-08T00:00:00.000Z`; yesterday, because the time is UTC and a grant issued in the future is refused; after a manual recovery, use the time "When something goes wrong" gives instead), and `expires_at`, to the last day it should be valid. Save with **Ctrl+S** and close Notepad.
-2. Sign it. **PowerShell**, in `$env:USERPROFILE\juno`:
+2. Sign it, with Part B step 6's routine. Plug in the USB stick. **PowerShell** (replace `<backup path>` as in Part B):
    ```
+   ssh-add <backup path>
    cd $env:USERPROFILE\juno
    node dist\runner\src\juno.js grant sign --ssh-key $env:USERPROFILE\.ssh\juno_grant.pub $env:USERPROFILE\my-grant.json --out $env:USERPROFILE\signed-grant.json
+   ssh-add -D
+   ssh-add -l
    ```
-   It prints `signed grant written to ...`. If it fails with "agent", repeat Part B step 3.
+   The `grant sign` line prints `signed grant written to ...`, and the last line prints `The agent has no identities.` Unplug the USB stick. If signing fails, send the agent the failure line and the line `ssh -V` prints.
 3. Verify it:
    ```
    node dist\runner\src\juno.js grant verify --anchor $env:USERPROFILE\.ssh\juno_grant.pub $env:USERPROFILE\signed-grant.json
    ```
 4. Optional, to see forgery fail: copy `signed-grant.json` to `forged.json`, open the copy in Notepad, change `"max_invocations": 200` to `201`, save, and run step 3 on `forged.json`. It must print `invalid`. Then delete `forged.json`.
 
-**Check:** step 3 prints `valid`.
+**Check:** step 3 prints `valid`, and `ssh-add -l` prints `The agent has no identities.`
 
 ## Part E — WSL2 for the runner and for governed Claude Code work (about an hour)
 
@@ -183,17 +232,35 @@ Part E comes before Part D because Part D's push key is made inside WSL.
     ```
     Then in **PowerShell**: `wsl --shutdown`, wait 10 seconds, and check `wsl --list --running` says there are no running distributions. Open the **governed terminal** (Start menu → **Ubuntu 24.04**).
     **Check**, in the governed terminal: `whoami` prints `juno-agent`; `ls /mnt/c` prints `No such file or directory`; `echo "[$WSL_INTEROP]"` prints `[]`; `sudo -n true` fails; `echo x >> /etc/wsl.conf` prints `Permission denied`. And in **PowerShell**: `wsl.exe -d Ubuntu-24.04 --user juno-runner --exec /usr/bin/id` prints a line with `(juno-runner)`.
-11. **Run JUNO's rootless checks on your machine.** Runner terminal:
+11. **Bring JUNO into WSL from the file Part A step 5 made, and run JUNO's rootless checks on your machine.** First copy the file byte for byte into a folder of root's, readable by everyone and changeable only by root (the same copy form as step 13). **PowerShell** (normal):
     ```
-    git clone https://github.com/khashayarjavi/juno.git ~/juno
+    wsl -d Ubuntu-24.04 -u root --exec /usr/bin/install -d -m 0755 /opt/juno-setup
+    cmd /c "wsl -d Ubuntu-24.04 -u root --exec /usr/bin/dd of=/opt/juno-setup/juno.bundle status=none < %USERPROFILE%\juno.bundle"
+    wsl -d Ubuntu-24.04 -u root --exec /usr/bin/chmod 0444 /opt/juno-setup/juno.bundle
+    wsl -d Ubuntu-24.04 -u root --exec /usr/bin/ls -l /opt/juno-setup/juno.bundle
+    ```
+    **Check:** the last line starts `-r--r--r--` and names `root root`.
+    Then, runner terminal:
+    ```
+    git clone --quiet /opt/juno-setup/juno.bundle ~/juno
+    git -C ~/juno rev-parse HEAD
+    ```
+    The clone prints a note about a "detached HEAD": that is expected.
+    **Check:** the second line is exactly the commit hash from Part A step 4, all 40 characters. If it differs, stop and tell the agent. Then:
+    ```
     cd ~/juno
     npm ci
     make verify-rootless
     ```
     **Check:** after 10 to 20 minutes the last line is `make verify-rootless: GREEN`. Send the agent the summary lines, or the last 15 lines if it is not green.
-12. **A root-owned copy of JUNO, its folders, and the governed workspace.** Admin terminal:
+12. **A root-owned copy of JUNO, its folders, and the governed workspace.** Admin terminal, first the copy of JUNO, from the same file:
     ```
-    sudo git clone https://github.com/khashayarjavi/juno.git /opt/juno
+    sudo git clone --quiet /opt/juno-setup/juno.bundle /opt/juno
+    sudo git -C /opt/juno rev-parse HEAD
+    ```
+    The clone prints a note about a "detached HEAD": that is expected. The second line needs `sudo` because the copy is root's: git refuses to read a repository another user owns.
+    **Check:** the second line is exactly the commit hash from Part A step 4. If it differs, stop and tell the agent. Then, admin terminal:
+    ```
     cd /opt/juno
     sudo env PATH=/opt/node22/bin:$PATH npm ci --ignore-scripts
     sudo env PATH=/opt/node22/bin:$PATH make build
@@ -224,7 +291,7 @@ Part E comes before Part D because Part D's push key is made inside WSL.
     ```
     **Check:** the install prints `JUNO's hook is installed in /etc/claude-code/managed-settings.json`, then a list of what it cannot control; the `ls` line starts `-rw-r--r--` and names `root root`. (The full separation check comes in Part G, once the hook service runs.)
 
-**Check for Part E as a whole:** steps 10, 11, 12 and 15 each showed what they say: the governed terminal opens as `juno-agent` with no Windows drives, `make verify-rootless` is GREEN on your machine, the folders have the owners and modes listed, and the hook is installed in root's managed settings.
+**Check for Part E as a whole:** steps 10, 11, 12 and 15 each showed what they say: the governed terminal opens as `juno-agent` with no Windows drives, both copies of JUNO in WSL (`~/juno` and `/opt/juno`) are the commit the agent gave you, `make verify-rootless` is GREEN on your machine, the folders have the owners and modes listed, and the hook is installed in root's managed settings.
 
 ## Part D — the public anchor repository `juno-anchors` (about 20 minutes)
 
@@ -346,14 +413,27 @@ A `sources` list with folders and the web looks like this:
    ```
    then run the `claude --session-id ...` line from step 5. Ask Claude to write a file outside your grant (for example `/srv/juno-work/outside.txt` if your grant covers only `/work/project`).
    **Check:** Claude reports that JUNO blocked the call (`scope_violation`), and the file does not exist (`ls /srv/juno-work/outside.txt` says `No such file or directory`).
-7. **Check the journal against what GitHub holds.** The check that counts is against a fresh copy of `juno-anchors` taken from GitHub, not the runner's own clone, because the runner's clone is on the same machine as the journal. After you finish the session, in the runner terminal (replace `<you>` with your GitHub user name):
+7. **Check the journal against what GitHub holds, from your admin account (D-214).** This is the check that counts. It runs as your **admin** user, not as `juno-runner` (whose account is inside what is being checked: it owns its settings, its environment and its own copy of `juno-anchors`) and not as root. It uses a fresh copy of `juno-anchors` taken from GitHub by you, a copy of the journal made by root, a clean environment, and only `/opt/node22` and `/opt/juno`, which are root's.
+   After you finish the session, first in the **runner terminal** (stopping the service anchors what is pending):
    ```
    systemctl --user stop juno-hook.service
-   rm -rf ~/anchors-check
-   git clone --quiet https://github.com/<you>/juno-anchors.git ~/anchors-check
    ```
-   Stopping the service anchors what is pending. Then run the `Check its journal with:` line from step 5, but with `--anchors ~/anchors-check` in place of `--anchors /var/lib/juno-runner/juno-anchors`. (That folder is only JUNO's own copy of the repository; JUNO rebuilds it from GitHub at every start and never trusts it.)
-   **Check:** it prints JSON with `"ok": true` and `"unanchored": 0`. Then start the service again: `systemctl --user start juno-hook.service`.
+   Then in the **admin terminal** (replace `<you>` with your GitHub user name):
+   ```
+   install -d -m 0700 ~/juno-check
+   rm -rf ~/juno-check/anchors ~/juno-check/journal ~/juno-check/journal-key.pub.pem
+   git clone --quiet https://github.com/<you>/juno-anchors.git ~/juno-check/anchors
+   sudo cp -RP /var/lib/juno-runner/journal ~/juno-check/journal
+   sudo cp -P /var/lib/juno-runner/journal-key/journal-key.pub.pem ~/juno-check/journal-key.pub.pem
+   sudo chown -hR "$(id -un):$(id -gn)" ~/juno-check/journal ~/juno-check/journal-key.pub.pem
+   ```
+   Then, still in the admin terminal, with `<task id>` replaced by the last word of step 5's `Check its journal with:` line (it starts `session-`):
+   ```
+   env -i /opt/node22/bin/node /opt/juno/dist/runner/src/juno.js journal check --journal ~/juno-check/journal --anchors ~/juno-check/anchors --key ~/juno-check/journal-key.pub.pem <task id>
+   ```
+   **Check:** it prints JSON with `"ok": true`, `"unanchored": 0` and `"history": "checked"`. Then start the service again, in the runner terminal: `systemctl --user start juno-hook.service`.
+   The check also reads the history of your fresh copy of `juno-anchors`: if any commit ever removed, changed or renamed an anchor file, it refuses with `"anchor_history"` (D-217). That is what an attacker holding the push key would have to do to make a forged journal agree. **Do not delete anything**; send the agent the lines it printed. Do not clone with `--depth`: a shallow copy is refused, because its history is not all there.
+   (`/var/lib/juno-runner/juno-anchors` is only JUNO's own copy of the repository; JUNO rebuilds it from GitHub at every start and never trusts it, and this check never reads it. A check run as `juno-runner` does not count.)
 
 A session JUNO did not admit is denied every call. Each new Claude Code session needs its own `session_id` (step 2) and `juno hook admit` (step 5).
 
@@ -370,9 +450,9 @@ If the journal was changed, cut or deleted, if an anchor disagrees with it, or i
 - an empty or different journal where GitHub holds anchors of the journal that was there refuses the start.
 So replacing the journal, the copy and the service's settings together does not make the service start as new.
 
-**Who JUNO trusts on this machine (D-211).** The `juno-runner` account is part of JUNO itself: the service runs as it and holds its journal. Someone who takes over that account can disturb JUNO on this machine. They still cannot sign a grant (your signing key is in Windows, Part B), and they cannot erase what is already in `juno-anchors` (GitHub refuses that). Your check against a fresh copy from GitHub (Part G step 7) is what shows it. So never log in as `juno-runner` for anything but the steps in this guide, and never give anyone its password.
+**Who JUNO trusts on this machine (D-211, D-214).** The `juno-runner` account is part of JUNO itself: the service runs as it and holds its journal. Someone who takes over that account can disturb JUNO on this machine. They still cannot sign a grant (your signing key is off this computer except while you sign, Part B), and they cannot erase what is already in `juno-anchors` without trace (GitHub keeps every commit, and both the service and your check refuse a history that ever removed or changed an anchor file, D-204, D-217). Your check from the admin account against a fresh copy from GitHub (Part G step 7) is what shows it. So never log in as `juno-runner` for anything but the steps in this guide, and never give anyone its password.
 
-**One failure is repaired for you: a power loss in the middle of a write (D-206).** If the machine lost power, or the service was killed, while it was writing the last line of the journal, the next start finds that last line incomplete. If everything before it verifies and agrees with GitHub, the service drops the incomplete line, records that it did (`recovered_truncation`), and starts. It then prints a line beginning `the journal's last entry was left incomplete`, and **every grant used by a session that was open at that moment is exhausted for good**: its calls are refused until you sign a new grant (Part C, with a new `id`) and admit a new session under it. This is deliberate: JUNO cannot know whether the lost line was a use of one of those grants.
+**One failure is repaired for you: a power loss in the middle of a write (D-206).** If the machine lost power, or the service was killed, while it was writing the last line of the journal, the next start finds that last line incomplete. If everything before it verifies and agrees with GitHub, the service drops the incomplete line, records that it did (`recovered_truncation`), and starts. It then prints a line beginning `the journal's last entry was left incomplete` (where to find it, and what to do: "When something goes wrong"), and **every grant used by a session that was open at that moment is exhausted for good**: its calls are refused until you sign a new grant (Part C, with a new `id`) and admit a new session under it. This is deliberate: JUNO cannot know whether the lost line was a use of one of those grants.
 
 ## Part H — optional: govern an MCP server through JUNO's gateway (mode B)
 
@@ -411,27 +491,42 @@ Only if you want Claude Code to use an MCP server (a tool server such as a mail 
 - The hook service will not start: `journalctl --user -u juno-hook.service --no-pager | tail -20` (runner terminal) lists every refusal.
 - Claude Code says JUNO blocked every call: the service is not running (`systemctl --user status juno-hook.service`), or the session was not admitted (Part G step 5). JUNO fails closed: when in doubt, it blocks.
 - The anchor repository cannot be reached (no internet, or the push key removed): sessions stop, and the journal records `anchor_failed`. A stopped session stays stopped. Fix the connection, restart the service (it starts again on the same journal once the repository can be reached), and admit a new session with a new `session_id`. While the repository cannot be reached the service does not start at all.
-- The service prints `the journal's last entry was left incomplete`: a power loss or a crash interrupted one write. The service has repaired it and is running. The grants it lists after `exhausted` are refused from now on. To go on working (example for the first grant; for another, use its name in place of `grant-operator-first`):
-  1. **PowerShell:** make a copy of your grant under a new name and open it:
+- **A power loss or a crash interrupted one journal write** (D-206, D-214). The hook service or the gateway repairs it, records it and keeps running. **Where you see it:**
+  - **Hook service:** runner terminal, `systemctl --user status juno-hook.service --no-pager` shows it among its last lines, and `journalctl --user -u juno-hook.service --no-pager | tail -20` shows it in full. The line starts `juno hook: the journal's last entry was left incomplete`.
+  - **Gateway (Part H):** in the terminal where you started `juno gateway serve`, a line starting `juno gateway: the journal's last entry was left incomplete`.
+
+  The grants named at the end of that line, after `exhausted`, are refused from now on. To go on working, sign a new grant for each of them (example for the first grant; for another, use its name in place of `grant-operator-first`, and for the gateway, the grant file the agent wrote for it in place of `my-grant.json`):
+  1. **The date for the new grant.** The rule: a grant's `issued_at` must be **at or after the recovery epoch** of the journal it is used on (the `recovery_epoch` on that journal's line in `/etc/juno/anchors.json`) **and in the past**. Admin terminal:
+     ```
+     date -u +%Y-%m-%dT%H:%M:%S.000Z
+     ```
+     It prints the time now, in the form a grant uses. That is a safe value: every recovery epoch you set was a time printed earlier, so it is not before any of them, and by the time you sign it is in the past. Copy it. (Not "yesterday": after a manual recovery, yesterday can be before the journal's recovery epoch, and is refused.)
+  2. **PowerShell:** make a copy of your grant under a new name and open it:
      ```
      Copy-Item $env:USERPROFILE\my-grant.json $env:USERPROFILE\my-grant-2.json
      notepad $env:USERPROFILE\my-grant-2.json
      ```
-     Change three values: `id`, from `grant-operator-first` to `grant-operator-2` (each later time, the next number: `-3`, `-4`); `issued_at`, to **yesterday's** date as in Part C; and `expires_at` if you want. Save with **Ctrl+S** and close Notepad.
-  2. **PowerShell**, in `$env:USERPROFILE\juno`: sign and check it as in Part C steps 2 and 3, with the new names:
+     Change three values: `id`, from `grant-operator-first` to `grant-operator-2` (each later time, the next number: `-3`, `-4`); `issued_at`, to the time you copied in step 1; and `expires_at` if you want. Save with **Ctrl+S** and close Notepad.
+  3. **PowerShell**, in `$env:USERPROFILE\juno`: sign it with Part B step 6's routine and check it, as in Part C steps 2 and 3, with the new names. Plug in the USB stick, then:
      ```
+     ssh-add <backup path>
      node dist\runner\src\juno.js grant sign --ssh-key $env:USERPROFILE\.ssh\juno_grant.pub $env:USERPROFILE\my-grant-2.json --out $env:USERPROFILE\signed-grant-2.json
+     ssh-add -D
+     ssh-add -l
      node dist\runner\src\juno.js grant verify --anchor $env:USERPROFILE\.ssh\juno_grant.pub $env:USERPROFILE\signed-grant-2.json
      ```
-     **Check:** the second line prints `valid`.
-  3. **PowerShell** (normal): copy it in, as in Part G step 1, under its new name:
+     **Check:** `ssh-add -l` prints `The agent has no identities.`, and the last line prints `valid`. Unplug the USB stick.
+  4. **PowerShell** (normal): copy it in, as in Part G step 1, under its new name:
      ```
      cmd /c "wsl -d Ubuntu-24.04 -u juno-runner --exec /usr/bin/dd of=/var/lib/juno-runner/grants/grant-operator-2.json status=none < %USERPROFILE%\signed-grant-2.json"
      wsl -d Ubuntu-24.04 -u juno-runner --exec /usr/bin/chmod 0600 /var/lib/juno-runner/grants/grant-operator-2.json
      ```
-  4. Runner terminal: `cat /proc/sys/kernel/random/uuid` and copy what it prints, then `nano /var/lib/juno-runner/session.json`. Change three things: `session_id` to the UUID you copied; in `"grants": ["grant-operator-first"]`, the name to `grant-operator-2`; and at the bottom, `/var/lib/juno-runner/grants/grant-operator-first.json` to `/var/lib/juno-runner/grants/grant-operator-2.json`. Save with **Ctrl+O**, Enter, and leave with **Ctrl+X**.
-  5. Admit it and work as in Part G steps 5 and 6.
-  **Check:** step 5's `hook admit` prints `admitted`. If it says the grant `is exhausted`, step 1's `id` was not changed.
+  5. Runner terminal: `cat /proc/sys/kernel/random/uuid` and copy what it prints. Then the session file:
+     - **Hook service:** `nano /var/lib/juno-runner/session.json`. Change three things: `session_id` to the UUID you copied; in `"grants": ["grant-operator-first"]`, the name to `grant-operator-2`; and at the bottom, `/var/lib/juno-runner/grants/grant-operator-first.json` to `/var/lib/juno-runner/grants/grant-operator-2.json`. Save with **Ctrl+O**, Enter, and leave with **Ctrl+X**.
+     - **Gateway:** `nano /var/lib/juno-runner/gateway-session.json`. Change two things: `session_id` to the UUID you copied, and in `"grants": [...]` the old grant's name to `grant-operator-2`. Save and leave as above.
+  6. **Hook service:** admit it and work as in Part G steps 5 and 6. **Gateway:** stop it with **Ctrl+C** if it is still running, and start it again with Part H step 4's command, with `--grant /var/lib/juno-runner/grants/grant-operator-2.json` in place of the old `--grant` file.
+
+  **Check:** for the hook, step 6's `hook admit` prints `admitted`; for the gateway, it prints `juno gateway: session gateway-<the new UUID> admitted`. Then a call inside the new grant is allowed. If admission says the grant `was issued before this journal's recovery epoch`, redo steps 1 to 4. If JUNO blocks calls naming `exhausted`, step 2's `id` was not changed; naming `not_yet_issued`, the time from step 1 is still ahead of the service's clock: wait a minute and try again.
 - The service refuses to start saying `the anchor repository's history removes or changes` an anchor file: someone with the push key committed a deletion or a change to `juno-anchors`. GitHub keeps that commit for good, so JUNO will not trust that repository again. **Do not delete anything.** Send the agent the refusal lines; the way on is a new anchor repository (Part D again, under a new name, with a new `/etc/juno/anchors.json`) and a manual recovery (below), with the old ones kept as evidence.
 - The service refuses to start saying `the local anchor clone ... disagrees with the pinned repository`: the folder `/var/lib/juno-runner/juno-anchors` is not a copy of your `juno-anchors`. **Do not delete it.** Send the agent the refusal lines. JUNO did not write that; something else on the machine did.
 - The service refuses to start saying `is not a journal folder the anchor pin ... names`, or a line about `the anchor pin`: the service's settings name a journal folder, or a pin file, that you did not set up as root. If you did not change `~/.config/systemd/user/juno-hook.service` yourself, send the agent the refusal lines before changing anything.
