@@ -37,7 +37,15 @@ const sessionFile = (overrides: Record<string, unknown> = {}, grants: readonly s
   grants,
 });
 
-const args = (): string[] => ["--socket", join(sockets, "hook.sock"), "--control", join(sockets, "admit.sock"), "--journal", join(dir, "state", "journal"), "--anchor", join(dir, "anchor", "operator.pub"), "--workspace", work, "--checkpoints", join(dir, "state", "checkpoints"), "--journal-key", join(dir, "state", "journal-key"), "--anchors", join(dir, "state", "juno-anchors"), "--protect", join(dir, "claude-home")];
+/** The anchor pin, as the operator writes it as root (D-208): under a folder the test host reports as root's own. */
+function writePin(dir: string, journal: string): string {
+  const path = join(dir, "root-owned", "anchors.json");
+  mkdirSync(join(dir, "root-owned"), { recursive: true, mode: 0o755 });
+  writeFileSync(path, JSON.stringify({ url: join(dir, "pinned-juno-anchors.git"), branch: "main", host_key_fingerprint: null, known_hosts: null, push_key: null, git: "/usr/bin/git", journals: [{ path: journal, recovery_epoch: "2020-01-01T00:00:00Z" }] }), { mode: 0o644 });
+  return path;
+}
+
+const args = (): string[] => ["--socket", join(sockets, "hook.sock"), "--control", join(sockets, "admit.sock"), "--journal", join(dir, "state", "journal"), "--anchor", join(dir, "anchor", "operator.pub"), "--workspace", work, "--checkpoints", join(dir, "state", "checkpoints"), "--journal-key", join(dir, "state", "journal-key"), "--anchors", join(dir, "state", "juno-anchors"), "--anchor-pin", writePin(dir, join(dir, "state", "journal")), "--protect", join(dir, "claude-home")];
 
 const quiet = { out: (text: string) => said.push(text), err: (text: string) => said.push(text) };
 
@@ -195,6 +203,8 @@ describe("juno hook serve and juno hook admit (plan Increment 6, D-180, D-196)",
   // proves D-180: without every required option it is bad usage, and an unreachable service is a refusal
   it("is bad usage without its options, and refuses when the service is not running", async () => {
     expect(await runHookServeCli(["--socket", join(sockets, "hook.sock")], { ...quiet, host: ordinaryHost(), filesystem: systemFilesystemIo(), runtime: () => Promise.reject(new Error("unused")), stopped: () => Promise.resolve() })).toBe(2);
+    // proves D-211 item 1 (D-213): the git program is named only in the root-owned pin; `--git` is not an option any more
+    expect(await runHookServeCli([...args(), "--git", "/usr/bin/git"], { ...quiet, host: ordinaryHost(), filesystem: systemFilesystemIo(), runtime: () => Promise.reject(new Error("unused")), stopped: () => Promise.resolve() })).toBe(2);
     expect(await runHookAdmitCli(["--control", join(sockets, "missing.sock"), join(dir, "state", "session.json")], quiet)).toBe(1);
     expect(said.join("")).toMatch(/not reachable/);
   });
@@ -204,4 +214,32 @@ describe("juno hook serve and juno hook admit (plan Increment 6, D-180, D-196)",
     const example = JSON.parse(readFileSync(fileURLToPath(new URL("../../../docs/examples/session.example.json", import.meta.url)), "utf8")) as unknown;
     expect(HookSessionFile.safeParse(example).success).toBe(true);
   });
+
+  // proves docs/operator-setup.md Parts C and G (D-199): the example grant the operator signs, with the example session
+  // file, admits a Claude Code session that JUNO then governs: an in-grant read and a Bash `cat` proceed (with the
+  // example's name map), and a write outside the grant is denied with scope_violation. Only the dates and the session's
+  // id and grant file path are the test's; everything else is the shipped examples'.
+  it("governs a session from the shipped example grant and example session file", async () => {
+    const read = (name: string): Record<string, unknown> => JSON.parse(readFileSync(fileURLToPath(new URL(`../../../docs/examples/${name}`, import.meta.url)), "utf8")) as Record<string, unknown>;
+    const example = read("grant-claude-code.example.json");
+    const signedExample = signed({ ...example, issued_at: new Date(Date.now() - 60_000).toISOString(), expires_at: new Date(Date.now() + 86_400_000).toISOString() });
+    writeFileSync(join(dir, "state", "grant-example.json"), JSON.stringify(signedExample), { mode: 0o600 });
+    const session = read("session.example.json") as { session: Record<string, unknown>; grants: string[] };
+    expect(session.session["grants"]).toEqual([example["id"]]);
+    expect(session.session["principal"]).toBe(example["principal"]);
+    writeFileSync(join(dir, "state", "session-example.json"), JSON.stringify({ ...session, session: { ...session.session, session_id: SESSION }, grants: [join(dir, "state", "grant-example.json")] }), { mode: 0o600 });
+    const hookSocket = join(sockets, "hook.sock");
+    const code = await serving(async () => {
+      expect(await runHookAdmitCli(["--control", join(sockets, "admit.sock"), join(dir, "state", "session-example.json")], quiet)).toBe(0);
+      expect(await runHookClient(pre("Read", { file_path: join(work, "project", "notes.txt") }), hookSocket)).toMatchObject({ exitCode: 0, stdout: "" });
+      const asked = JSON.parse(pre("Read", { file_path: join(work, "project", "notes.txt") })) as Record<string, unknown>;
+      await runHookClient(JSON.stringify({ ...asked, tool_use_id: `toolu_${String(toolUses - 1)}`, hook_event_name: "PostToolUse", tool_response: { content: "notes" } }), hookSocket);
+      const bash = await runHookClient(pre("Bash", { command: "cat notes.txt" }), hookSocket);
+      expect(JSON.parse(bash.stdout)).toMatchObject({ hookSpecificOutput: { permissionDecision: "allow" } });
+      await runHookClient(JSON.stringify({ ...(JSON.parse(pre("Bash", { command: "cat notes.txt" })) as Record<string, unknown>), tool_use_id: `toolu_${String(toolUses - 1)}`, hook_event_name: "PostToolUse", tool_response: { stdout: "notes" } }), hookSocket);
+      const write = await runHookClient(pre("Write", { file_path: join(work, "outside.txt"), content: "x" }), hookSocket);
+      expect(JSON.parse(write.stdout)).toMatchObject({ hookSpecificOutput: { permissionDecision: "deny", permissionDecisionReason: expect.stringContaining("scope_violation") } });
+    });
+    expect(code).toBe(0);
+  }, 60_000);
 });

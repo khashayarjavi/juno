@@ -57,7 +57,7 @@ beforeAll(async () => {
   ].join(" ");
   await docker([...compose, "run", "--rm", "--no-deps", "-T", "workload", "-e", setup]);
 
-  const layer = openTestLayer("runner", { journal: journalRoot, workspaces: [] });
+  const layer = await openTestLayer("runner", { journal: journalRoot, workspaces: [] });
   let runner: Runner;
   const registry = new CapabilityRegistry();
   const registered = registry.register(JSON.parse(readFileSync(definitionFile, "utf8")), [new WorkloadExecFileAdapter({ composeFile, project, service: "workload" })]);

@@ -1,6 +1,7 @@
 import { type Stats, accessSync, constants, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
 import { WORK_NAMESPACE, pathsOverlap } from "../../contracts/src/index.js";
+import { PINNED_SSH, type VerifiedPin, knownHostsRefusals, parseAnchorPin } from "./anchor-pin.js";
 import { type TrustAnchor, trustAnchorFromPem } from "./signature.js";
 
 /**
@@ -22,7 +23,12 @@ import { type TrustAnchor, trustAnchorFromPem } from "./signature.js";
  *      group or others without the sticky bit (they could replace the entry); for a socket, a folder writable by group
  *      or others at all (D-173, D-191);
  *   5. a trust anchor that is not verified: missing, a symbolic link, not a file, writable by this process or replaceable
- *      through its folder (D-116), writable by group or others, or not an Ed25519 public key (§3.2 C1).
+ *      through its folder (D-116), writable by group or others, or not an Ed25519 public key (§3.2 C1);
+ *   6. an anchor pin that is not verified (operator ruling D-206; D-208): the file that pins the anchor repository's
+ *      address, its SSH host key and the journal folders that may anchor there. It and its folder must be owned by
+ *      root and writable by no one else, its known-hosts file likewise and holding exactly the pinned key, the git
+ *      program it names (and ssh, for an SSH address) root's own too (D-211, D-213), and the journal this service was
+ *      started on must be one it names.
  */
 
 /** Which service is starting. A new service adds its name here, and to the entry-point registry (D-194). */
@@ -37,9 +43,9 @@ export type StateItem = {
   /**
    * `file`: must exist (a file JUNO reads); `dir`: a folder JUNO owns (may not exist yet); `socket`: the Unix socket JUNO
    * will listen on (its folder must exist); `path`: something JUNO protects but does not own or open (only the overlap
-   * rule applies, e.g. Claude Code's root-owned settings files).
+   * rule applies, e.g. Claude Code's root-owned settings files); `pin`: the anchor pin file (rule 6 above; at most one).
    */
-  readonly kind: "file" | "dir" | "socket" | "path";
+  readonly kind: "file" | "dir" | "socket" | "path" | "pin";
 };
 
 export type StartupSpec = {
@@ -90,7 +96,7 @@ export function systemHostIo(): HostIo {
   };
 }
 
-export type StartupResult = { readonly ok: true; readonly anchor: TrustAnchor | null } | { readonly ok: false; readonly refusals: readonly string[] };
+export type StartupResult = { readonly ok: true; readonly anchor: TrustAnchor | null; readonly pin: VerifiedPin | null } | { readonly ok: false; readonly refusals: readonly string[] };
 
 /** The shared start-up check: every refusal, or the verified anchor. Opens and changes nothing. */
 export function startupCheck(spec: StartupSpec, host: HostIo): StartupResult {
@@ -124,7 +130,7 @@ export function startupCheck(spec: StartupSpec, host: HostIo): StartupResult {
   }
   // 4. Nothing someone else could change.
   for (const item of owned) {
-    if (item.kind === "path" || item.kind === "anchor") continue;
+    if (item.kind === "path" || item.kind === "anchor" || item.kind === "pin") continue;
     refusals.push(...changeableRefusals(item.what, item.path, item.kind, host));
   }
   // 5. A verified anchor.
@@ -134,7 +140,95 @@ export function startupCheck(spec: StartupSpec, host: HostIo): StartupResult {
     if (verified.ok) anchor = verified.anchor;
     else refusals.push(...verified.refusals);
   }
-  return refusals.length > 0 ? { ok: false, refusals } : { ok: true, anchor };
+  // 6. A verified anchor pin, naming this journal (D-206, D-208).
+  let pin: VerifiedPin | null = null;
+  const pins = spec.state.filter((item) => item.kind === "pin");
+  if (pins.length > 1) refusals.push("more than one anchor pin was named; a service has one (D-208)");
+  const named = pins[0];
+  if (named !== undefined && pins.length === 1) {
+    const verified = verifyAnchorPin(named.path, spec.journal, spec.workspaces, host);
+    if (verified.ok) pin = verified.pin;
+    else refusals.push(...verified.refusals);
+  }
+  return refusals.length > 0 ? { ok: false, refusals } : { ok: true, anchor, pin };
+}
+
+/**
+ * Why a file is not root's own (operator ruling D-206 item 2; D-208): it and the folder holding it must be owned by
+ * root (uid 0), and neither may be writable by group, others or this process. Unlike the trust anchor's rule (D-116), a
+ * file this process owns is refused even when it is read-only: its owner could make it writable again, and the anchor
+ * pin exists to be outside the runner's reach.
+ */
+export function rootOwnedRefusals(what: string, path: string, host: HostIo): string[] {
+  if (!path.startsWith("/")) return [`${what} ${path} is not an absolute path`];
+  if (pathsOverlap(path, WORK_NAMESPACE)) return [`${what} ${path} lies in the capability namespace ${WORK_NAMESPACE}, which grants can name (§3.2)`];
+  const facts = host.lstat(path);
+  if (facts === null) return [`${what} ${path} does not exist`];
+  if (facts.isSymbolicLink()) return [`${what} ${path} is a symbolic link; name the file itself (D-208)`];
+  if (!facts.isFile()) return [`${what} ${path} is not a file`];
+  const refusals: string[] = [];
+  const folder = dirname(path);
+  const holder = host.lstat(folder);
+  for (const [name, at, stats] of [[what, path, facts], [`the folder of ${what}`, folder, holder]] as const) {
+    if (stats === null) refusals.push(`${name} ${at} does not exist`);
+    else if (stats.uid !== 0) refusals.push(`${name} ${at} is owned by uid ${String(stats.uid)}, not root; it must be outside the runner's reach (D-206, D-208)`);
+    else if ((stats.mode & 0o022) !== 0) refusals.push(`${name} ${at} is writable by group or others (mode ${(stats.mode & 0o7777).toString(8)}) (D-208)`);
+    if (host.writable(at)) refusals.push(`${what} ${path} is not protected: this process can write ${at} (D-206, D-208)`);
+  }
+  return refusals;
+}
+
+/**
+ * The anchor pin rule (operator ruling D-206 item 2; D-208), the one implementation the start-up check and
+ * `juno hook check` use. The pin file, and the known-hosts file it names, must be root's own
+ * (`rootOwnedRefusals`: the file and its folder owned by root, writable by no one else, not a symbolic link). The known-hosts file must hold exactly the pinned host key for the pinned host. The push
+ * key is the runner's own file and is judged like any of JUNO's state. `journal` must be one of the journal folders
+ * the pin names, as the kernel resolves both.
+ */
+export function verifyAnchorPin(path: string, journal: string, workspaces: readonly string[], host: HostIo): { readonly ok: true; readonly pin: VerifiedPin } | { readonly ok: false; readonly refusals: readonly string[] } {
+  const refusals = rootOwnedRefusals("the anchor pin", path, host);
+  if (refusals.length > 0) return { ok: false, refusals };
+  let parsed: ReturnType<typeof parseAnchorPin>;
+  try {
+    parsed = parseAnchorPin(host.readFile(path));
+  } catch (error: unknown) {
+    return { ok: false, refusals: [`the anchor pin ${path} cannot be used: ${error instanceof Error ? error.message : String(error)} (D-208)`] };
+  }
+  if (parsed.transport === "ssh" && parsed.known_hosts !== null && parsed.push_key !== null && parsed.host_key_fingerprint !== null && parsed.host !== null) {
+    const known = rootOwnedRefusals("the pinned known-hosts file", parsed.known_hosts, host);
+    refusals.push(...known);
+    if (known.length === 0) {
+      try {
+        refusals.push(...knownHostsRefusals(host.readFile(parsed.known_hosts), parsed.host, parsed.host_key_fingerprint).map((line) => `${line} (${parsed.known_hosts ?? ""}, D-208)`));
+      } catch (error: unknown) {
+        refusals.push(`the pinned known-hosts file ${parsed.known_hosts} cannot be read: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    refusals.push(...laterFileRefusals("the anchor push key", parsed.push_key, workspaces, host));
+    // The ssh program is run for every fetch and push: like git, it must be root's own (D-213).
+    refusals.push(...rootOwnedRefusals("the ssh program", PINNED_SSH, host));
+  } else if (parsed.transport === "local") {
+    // A local repository is JUNO's own test stand-in: it is state, and must not be reachable from a workspace.
+    for (const root of workspaces) {
+      if (pathsOverlap(resolved(parsed.url, host), resolved(root, host)) || pathsOverlap(parsed.url, root)) refusals.push(`the pinned anchor repository ${parsed.url} overlaps the workspace ${root} (D-208)`);
+    }
+  }
+  // Operator ruling D-211 item 1 (round 7 finding F1; D-213): the git program is named only here, and must be root's own,
+  // like the pin: a git program the runner's account could write or replace could answer for the pinned repository.
+  refusals.push(...rootOwnedRefusals("the git program the anchor pin names", parsed.git, host));
+  // Review round 6 on PR #51, finding D3 (D-209): the journal's own record is named after the journal's path as the kernel
+  // resolves it, so a symbolic link anywhere above the journal (a folder moved aside and a link put in its place) would
+  // give it a new record and an empty history. The journal must be the path the pin names, exactly as written, and
+  // that path must resolve to itself: no symbolic link in it at all.
+  const real = resolved(journal, host);
+  if (real !== journal) refusals.push(`the journal ${journal} resolves to ${real}: a folder on its path is a symbolic link, so it is not the folder the anchor pin names; name the real path, with no symbolic link in it (D-206, D-209)`);
+  const entry = parsed.journals.find((candidate) => candidate.path === journal);
+  if (entry === undefined) refusals.push(`the journal ${journal} is not a journal folder the anchor pin ${path} names; only the operator, as root, adds one there (D-206, D-208)`);
+  if (refusals.length > 0 || entry === undefined) return { ok: false, refusals };
+  return {
+    ok: true,
+    pin: { path, url: parsed.url, branch: parsed.branch, transport: parsed.transport, host: parsed.host, fingerprint: parsed.host_key_fingerprint, knownHosts: parsed.known_hosts, pushKey: parsed.push_key, git: parsed.git, journals: parsed.journals, journal: entry },
+  };
 }
 
 /**

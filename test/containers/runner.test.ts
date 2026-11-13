@@ -132,7 +132,7 @@ beforeAll(async () => {
 
   const config = parseRunnerConfig({ JUNO_JOURNAL_DIR: journalRoot, JUNO_WORK_DIR: "/work", JUNO_JOURNAL_KEY_DIR: "/var/lib/juno-runner/journal-key", JUNO_ANCHOR_CLONE: "/var/lib/juno-runner/juno-anchors" });
   // The real append-only stand-in destination (§3.4.1, D-122), in its own container; the layer anchors (D-198).
-  const layer = openTestLayer("runner", { journal: config.journalDir, workspaces: [], anchoring: { sink: anchorSink, journalKey, intervalMs: 3_600_000 } });
+  const layer = await openTestLayer("runner", { journal: config.journalDir, workspaces: [], anchoring: { sink: anchorSink, journalKey, intervalMs: 3_600_000 } });
   const registry = new CapabilityRegistry();
   const registered = registry.register(JSON.parse(readFileSync(definitionFile, "utf8")), [new WorkloadExecFileAdapter({ composeFile, project, service: "workload" })]);
   if (!registered.registered) throw new Error(`shell.run did not register: ${JSON.stringify(registered.refusals)}`);

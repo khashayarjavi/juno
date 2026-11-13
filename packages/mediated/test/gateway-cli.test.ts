@@ -57,8 +57,16 @@ function io(overrides: Partial<GatewayCliIo> & { stop?: Promise<void> } = {}): G
   };
 }
 
+/** The anchor pin, as the operator writes it as root (D-208): under a folder the test host reports as root's own. */
+function writePin(dir: string, journal: string): string {
+  const path = join(dir, "root-owned", "anchors.json");
+  mkdirSync(join(dir, "root-owned"), { recursive: true, mode: 0o755 });
+  writeFileSync(path, JSON.stringify({ url: join(dir, "pinned-juno-anchors.git"), branch: "main", host_key_fingerprint: null, known_hosts: null, push_key: null, git: "/usr/bin/git", journals: [{ path: journal, recovery_epoch: "2020-01-01T00:00:00Z" }] }), { mode: 0o644 });
+  return path;
+}
+
 function args(extra: Record<string, string> = {}): string[] {
-  const options: Record<string, string> = { "--session": join(dir, "session.json"), "--socket": join(dir, "sock", "gateway.sock"), "--journal": join(dir, "journal"), "--anchor": join(dir, "anchor", "operator.pub"), "--workspace": work, "--journal-key": join(dir, "journal-key"), "--anchors": join(dir, "juno-anchors"), "--grant": join(dir, "grant.json"), ...extra };
+  const options: Record<string, string> = { "--session": join(dir, "session.json"), "--socket": join(dir, "sock", "gateway.sock"), "--journal": join(dir, "journal"), "--anchor": join(dir, "anchor", "operator.pub"), "--workspace": work, "--journal-key": join(dir, "journal-key"), "--anchors": join(dir, "juno-anchors"), "--anchor-pin": writePin(dir, extra["--journal"] ?? join(dir, "journal")), "--grant": join(dir, "grant.json"), ...extra };
   return ["serve", ...Object.entries(options).flat()];
 }
 
@@ -166,6 +174,19 @@ describe("juno gateway serve (D-191)", () => {
     expect(await runGatewayCli(args({ [option]: path() }), target)).toBe(1);
     expect(target.said.join("")).toContain("D-148");
     expect(existsSync(join(work, "project", ".journal"))).toBe(false);
+  });
+
+  // proves D-198: the anchoring options it advertises are accepted, and the anchoring options are required.
+  // proves D-211 item 1 (D-213): `--git` is no longer an option of the service; the git program is named only in the
+  // root-owned pin, so a service given `--git` is refused as bad usage and starts nothing.
+  it("accepts every anchoring option it advertises, refuses --git, and requires the journal key and the anchor clone", async () => {
+    expect(await runGatewayCli(args({ "--anchor-interval": "30" }), io())).toBe(0);
+    expect(await runGatewayCli([...args(), "--git", "/usr/bin/git"], io())).toBe(2);
+    for (const option of ["--journal-key", "--anchors"]) {
+      const without = args().filter((_value, index, all) => all[index] !== option && all[index - 1] !== option);
+      expect(await runGatewayCli(without, io()), option).toBe(2);
+    }
+    expect(await runGatewayCli(args({ "--anchor-interval": "0" }), io())).toBe(2);
   });
 
   // proves D-191: without a grant, a socket or the serve verb it is bad usage

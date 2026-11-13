@@ -18,8 +18,8 @@ import { type Harness, harness, request, shellRun, turn } from "./helpers.js";
  */
 
 let h: Harness;
-beforeEach(() => {
-  h = harness();
+beforeEach(async () => {
+  h = await harness();
 });
 afterEach(() => {
   h.cleanup();
@@ -51,7 +51,7 @@ describe("§3.4.1 C1: the runner anchors journal heads", () => {
   // proves §3.4.1: while a task runs, an anchor is taken whenever the recorded interval has passed
   it("anchors at each interval while the task runs", async () => {
     h.cleanup();
-    h = harness(undefined, { anchoring: { intervalMs: 1_000 } });
+    h = await harness(undefined, { anchoring: { intervalMs: 1_000 } });
     const step = (calls: Parameters<typeof turn>[0]): (() => ReturnType<typeof turn>) => () => {
       h.now.value = new Date(h.now.value.getTime() + 1_500);
       return turn(calls);
@@ -76,7 +76,7 @@ describe("§3.4.1 C1: the runner anchors journal heads", () => {
   // proves §3.4.1: a running task stops when an interval's anchor cannot be taken
   it("fails a running task when an interval's anchor cannot be taken", async () => {
     h.cleanup();
-    h = harness(undefined, { anchoring: { intervalMs: 1_000 } });
+    h = await harness(undefined, { anchoring: { intervalMs: 1_000 } });
     const { runner } = h.runner([
       () => {
         h.now.value = new Date(h.now.value.getTime() + 1_500);
@@ -92,9 +92,9 @@ describe("§3.4.1 C1: the runner anchors journal heads", () => {
 
   // proves §3.4.1 V6-4: the operator's key never serves as the journal key; the runner refuses to start with it (its
   // grant store's key), and the shared layer refuses to open with it (the verified trust anchor; D-198)
-  it("refuses a journal key that is the operator's grant-signing key", () => {
+  it("refuses a journal key that is the operator's grant-signing key", async () => {
     h.cleanup();
-    h = harness(undefined, { anchoring: { journalKey: { privateKey: TEST_OPERATOR_KEY, publicKey: TEST_ANCHOR } } });
+    h = await harness(undefined, { anchoring: { journalKey: { privateKey: TEST_OPERATOR_KEY, publicKey: TEST_ANCHOR } } });
     expect(() => h.runner([])).toThrow(/operator's grant-signing key/);
   });
 
@@ -127,14 +127,14 @@ describe("§3.4.1 C1: the runner anchors journal heads", () => {
       return sink;
     };
     h.cleanup();
-    h = harness(undefined, { anchoring: { sink: preStored(false) } });
+    h = await harness(undefined, { anchoring: { sink: preStored(false) } });
     const { runner } = h.runner([turn([])]);
     admitted(runner);
     expect((await runner.run("task-1")).state).toBe("complete_unverified");
     expect(notes("anchor_failed")).toEqual([]);
 
     h.cleanup();
-    h = harness(undefined, { anchoring: { sink: preStored(true) } });
+    h = await harness(undefined, { anchoring: { sink: preStored(true) } });
     const second = h.runner([turn([])]);
     admitted(second.runner);
     expect(await second.runner.run("task-1")).toEqual({ task_id: "task-1", state: "failed", reason: "anchor_unavailable" });
@@ -144,7 +144,7 @@ describe("§3.4.1 C1: the runner anchors journal heads", () => {
 
 describe("the journal key (§3.4.1 V6-4, D-122)", () => {
   let dir: string;
-  beforeEach(() => {
+  beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), "juno-journal-key-"));
   });
   afterEach(() => {

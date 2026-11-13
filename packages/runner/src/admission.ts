@@ -384,7 +384,7 @@ export function admit(input: unknown, env: AdmissionEnvironment): AdmissionResul
     const grant = env.grants.signed(id);
     if (grant === undefined) {
       // §3.2 C1: a grant whose signature is missing or invalid does not exist (D-125).
-      fail("3.2", env.grants.get(id) === undefined ? `grant ${id} is not stored` : `grant ${id} has no valid operator signature, so it does not exist (§3.2)`);
+      fail("3.2", env.grants.get(id) === undefined ? `grant ${id} is not stored` : env.grants.issuedBeforeRecovery(id) ? `grant ${id} was issued before this journal's recovery epoch, so it is refused; sign a new grant (D-206)` : `grant ${id} has no valid operator signature, so it does not exist (§3.2)`);
       continue;
     }
     for (const capability of grant.capability_selector.capabilities) scope.add(capability);

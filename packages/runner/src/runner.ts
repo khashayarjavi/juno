@@ -493,7 +493,11 @@ export class Runner {
     );
     // §3.4.1 (D-122): the interval is recorded in the journal, and a task whose head cannot be anchored does not start.
     // The shared session layer journals the `anchoring` note and anchors the head, as in every mode (D-198).
-    if (!(await run.session.anchor(this.#runnerClass(run), { force: true })) || !(await this.#layer.anchorHead(RUNNER_RECORD, { sensitivity: "internal", integrity: "derived" }))) return this.#fail(run, "anchor_unavailable");
+    if (!(await run.session.anchor(this.#runnerClass(run), { force: true })) || !(await this.#layer.anchorHead(RUNNER_RECORD, { sensitivity: "internal", integrity: "derived" }))) {
+      // The task never ran; the runner is free for the next one, as it is after a restart (D-203).
+      this.#active = null;
+      return this.#fail(run, "anchor_unavailable");
+    }
     return this.#continue(run);
   }
 
@@ -542,7 +546,7 @@ export class Runner {
         const grant = this.#grants.signed(grantId);
         if (grant === undefined) {
           // §3.2 C1: an unsigned or forged grant does not exist (D-125).
-          const message = this.#grants.get(grantId) === undefined ? `grant ${grantId} is not stored` : `grant ${grantId} has no valid operator signature, so it does not exist (§3.2)`;
+          const message = this.#grants.get(grantId) === undefined ? `grant ${grantId} is not stored` : this.#grants.issuedBeforeRecovery(grantId) ? `grant ${grantId} was issued before this journal's recovery epoch, so it is refused; sign a new grant (D-206)` : `grant ${grantId} has no valid operator signature, so it does not exist (§3.2)`;
           return [{ check: "3.2", message }];
         }
         return grantChecks(grant, run.task.principal, env, run.admission.sources);
@@ -1384,19 +1388,17 @@ export class Runner {
   }
 
   /**
-   * Grant charges and failed tasks survive a restart (D-066). The store must
-   * hold no charges yet: the runner's record is the only count.
+   * Failed tasks survive a restart (D-066). Grant charges do too, through the
+   * shared session layer (D-201).
    */
   #rebuildRunnerRecord(): void {
-    for (const id of this.#grants.ids()) {
-      if (this.#grants.invocations(id) > 0) throw new RunnerError(`grant ${id} already has charges; the runner rebuilds every count from its record at start`);
-    }
     for (const entry of readTrajectory(this.#layer.root, RUNNER_RECORD)) {
       const record = RunnerRecordEntry.safeParse(this.#payloadOf(entry.payload_ref));
       if (!record.success) throw new RunnerError(`the runner record at ${RUNNER_RECORD} entry ${String(entry.seq)} is not readable`);
-      if (record.data.type === "grant_charge") {
-        if (this.#grants.get(record.data.grant) !== undefined) this.#grants.charge(record.data.grant);
-      } else if (record.data.type === "task_failed") this.#unverifiable.set(record.data.task, record.data.reason);
+      // D-201: every grant's use count is rebuilt by the shared session layer, for every mode, from the calls the journal
+      // shows each grant authorized (`requireGrants`, in the constructor). The `grant_charge` notes stay as the runner's
+      // record that a charge was durable before its effect (D-066); they are no longer a second count.
+      if (record.data.type === "task_failed") this.#unverifiable.set(record.data.task, record.data.reason);
     }
   }
 
@@ -1580,5 +1582,3 @@ function sourceSeqOf(entry: Contextual): number {
   }
   return entry.seq;
 }
-
-/** The journal key's public half, as a SHA-256 of its SPKI encoding: recorded so a reader knows which key to check with. */

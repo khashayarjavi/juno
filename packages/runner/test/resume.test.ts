@@ -13,8 +13,8 @@ import { TEST_ANCHOR } from "../../enforcement/test/test-keys.js";
 // Increment 6: resume (§6.3) and TTL (§6.4).
 
 let h: Harness;
-beforeEach(() => {
-  h = harness();
+beforeEach(async () => {
+  h = await harness();
 });
 afterEach(() => {
   h.cleanup();
@@ -122,7 +122,7 @@ describe("resume across a restart (§6.3, §3.4.5, D-066)", () => {
   it("rebuilds a parked task from its journal after a restart", async () => {
     const capped = grant({ max_invocations: 2 });
     h.cleanup();
-    h = harness();
+    h = await harness();
     const store = new GrantStore(TEST_ANCHOR);
     store.add(capped);
     const usage = { tokens_in: 7, tokens_out: 3, tokens_cached: 0 };
@@ -243,7 +243,7 @@ describe("what resume will not do (§6.3, §8.3)", () => {
     if (steps === null) {
       // Delivers the registration canary honestly and interpolates everything else (the §2.4 residual).
       h.cleanup();
-      h = harness({
+      h = await harness({
         id: WORKLOAD_EXECFILE,
         plan: (call) => {
           const argv = (call["argv"] as readonly unknown[]).map(String);
@@ -327,7 +327,7 @@ describe("§3.4.4 B2 across a restart (D-112)", () => {
     unchanged.runner.close();
 
     h.cleanup();
-    h = harness();
+    h = await harness();
     const second = h.runner([unavailable]);
     admitted(second.runner, { criterion: OPERATOR_CRITERION, verification: "command_exit" });
     await second.runner.run("task-1");

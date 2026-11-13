@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { sshFingerprint } from "../../enforcement/src/anchor-pin.js";
 import { HOOK_EVENTS, MANAGED_SETTINGS, hookEntry } from "../src/install.js";
 import type { FilesystemIo } from "../src/filesystem.js";
 import { type FileFacts, type PreflightInput, type PreflightIo, account, holds, hookPreflight, runHookCheckCli } from "../src/preflight.js";
@@ -23,6 +24,20 @@ const SETTINGS = JSON.stringify({
   env: { CLAUDE_CODE_DISABLE_FILE_MENTIONS: "1" },
   allowManagedHooksOnly: true,
 });
+
+const PIN = "/etc/juno/anchors.json";
+const KNOWN_HOSTS = "/etc/juno/anchors_known_hosts";
+/** A host key blob (any bytes do for the fingerprint rule; the real ssh-keygen comparison is in anchor-ssh.test.ts). */
+const HOST_KEY = Buffer.from("a pinned host key, for the test").toString("base64");
+const PINNED = {
+  url: "git@github.com:operator/juno-anchors.git",
+  branch: "main",
+  host_key_fingerprint: sshFingerprint(HOST_KEY),
+  known_hosts: KNOWN_HOSTS,
+  push_key: "/var/lib/juno-runner/.ssh/juno_anchors",
+  git: "/usr/bin/git",
+  journals: [{ path: "/var/lib/juno-runner/journal", recovery_epoch: "2026-11-13T00:00:00Z" }],
+};
 
 type Layout = Map<string, FileFacts & { readonly text?: string }>;
 
@@ -53,6 +68,16 @@ function good(): Layout {
     ["/var/lib/juno-runner/checkpoints", dir(RUNNER, 0o700)],
     ["/etc/juno", dir(0, 0o755)],
     ["/etc/juno/operator.pub", file(0, 0o444)],
+    // D-208: the anchor pin, the pinned host key, and the runner's push key.
+    [PIN, { ...file(0, 0o644), text: JSON.stringify(PINNED) }],
+    [KNOWN_HOSTS, { ...file(0, 0o644), text: `github.com ssh-ed25519 ${HOST_KEY}\n` }],
+    ["/var/lib/juno-runner/.ssh", dir(RUNNER, 0o700)],
+    ["/var/lib/juno-runner/.ssh/juno_anchors", file(RUNNER, 0o600)],
+    // D-211 item 1 (D-213): the git program the pin names, and ssh, are root's own.
+    ["/usr", dir(0, 0o755)],
+    ["/usr/bin", dir(0, 0o755)],
+    ["/usr/bin/git", file(0, 0o755)],
+    ["/usr/bin/ssh", file(0, 0o755)],
     ["/var/lib/juno-hook", dir(RUNNER, 0o2750, HOOK_GROUP)],
     [SOCKET, { uid: RUNNER, gid: HOOK_GROUP, mode: 0o660, kind: "socket" }],
   ]);
@@ -78,6 +103,7 @@ const INPUT: PreflightInput = {
   node: NODE,
   state: ["/var/lib/juno-runner", "/var/lib/juno-runner/journal", "/var/lib/juno-runner/grants", "/var/lib/juno-runner/checkpoints"],
   anchor: "/etc/juno/operator.pub",
+  anchorPin: PIN,
 };
 
 const changed = (path: string, facts: Partial<FileFacts>): Layout => {
@@ -162,6 +188,25 @@ describe("juno hook check (D-173): the Claude Code user is separated from the ru
     expect(holds(agent, file(0, 0o604, HOOK_GROUP), 4)).toBe(false);
     expect(holds(agent, file(0, 0o004), 4)).toBe(true);
     expect(holds({ name: "root", uid: 0, gids: [0] }, file(5, 0o000), 2)).toBe(true);
+  });
+
+  // proves D-206 item 2 (D-208): the anchor pin and its known-hosts file are root's own; the pin names an SSH address,
+  // exactly the pinned host key, the runner's own push key, and journal folders this check judged
+  it("refuses an anchor pin that is not root's own, or that pins less than the operator's set-up requires (D-208)", () => {
+    const withPin = (pin: Record<string, unknown>): Layout => { const layout = good(); layout.set(PIN, { ...file(0, 0o644), text: JSON.stringify(pin) }); return layout; };
+    expect(hookPreflight(INPUT, io(changed(PIN, { uid: RUNNER }))).join("\n")).toMatch(/the anchor pin: \/etc\/juno\/anchors\.json must be owned by root/);
+    expect(hookPreflight(INPUT, io(changed(PIN, { mode: 0o666 }))).join("\n")).toMatch(/the anchor pin: .* must be owned by root and writable by no one else/);
+    expect(hookPreflight(INPUT, io(changed("/etc/juno", { uid: RUNNER }))).join("\n")).toMatch(/the anchor pin: \/etc\/juno must be owned by root/);
+    expect(hookPreflight(INPUT, io(changed(KNOWN_HOSTS, { uid: RUNNER }))).join("\n")).toMatch(/the pinned known-hosts file: .* must be owned by root/);
+    const missing = good();
+    missing.delete(PIN);
+    expect(hookPreflight(INPUT, io(missing)).join("\n")).toMatch(/the anchor pin \/etc\/juno\/anchors\.json does not exist/);
+    expect(hookPreflight(INPUT, io(withPin({ ...PINNED, url: "/srv/anchors.git", host_key_fingerprint: null, known_hosts: null, push_key: null }))).join("\n")).toMatch(/names a local path .* the operator's pin names the anchor repository's SSH address/);
+    expect(hookPreflight(INPUT, io(withPin({ ...PINNED, url: "https://github.com/operator/juno-anchors.git" }))).join("\n")).toMatch(/cannot be used: the pinned url is neither an SSH address/);
+    expect(hookPreflight(INPUT, io(withPin({ ...PINNED, host_key_fingerprint: sshFingerprint(Buffer.from("another key").toString("base64")) }))).join("\n")).toMatch(/holds a ssh-ed25519 key with fingerprint .* not the pinned/);
+    expect(hookPreflight(INPUT, io(changed("/var/lib/juno-runner/.ssh/juno_anchors", { mode: 0o644 }))).join("\n")).toMatch(/the anchor push key .* must be the runner's own file, readable by no one else/);
+    expect(hookPreflight(INPUT, io(changed("/var/lib/juno-runner/.ssh/juno_anchors", { uid: 0 }))).join("\n")).toMatch(/the anchor push key .* must be the runner's own file/);
+    expect(hookPreflight(INPUT, io(withPin({ ...PINNED, journals: [{ path: "/tmp/journal", recovery_epoch: "2026-11-13T00:00:00Z" }] }))).join("\n")).toMatch(/names the journal folder \/tmp\/journal, which is not under any --state path/);
   });
 
   // proves D-178: `juno hook check` judges the workspace and every source it is given, requires a workspace, and

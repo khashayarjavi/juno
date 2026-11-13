@@ -16,15 +16,16 @@ mkdirSync(`${state}/grants`, { mode: 0o700 });
 mkdirSync(`${state}/checkpoints`, { mode: 0o700 });
 writeFileSync(`${state}/grants/grant-cc.json`, "{\"id\":\"grant-cc\"}\n", { mode: 0o600 });
 // The shared start-up check, on the real host as the runner (uid 1000), then the shared session layer (D-194).
-const layer = SessionLayer.open({
+const layer = await SessionLayer.open({
   service: "hook",
   journal: `${state}/journal`,
   workspaces: ["/srv/work"],
-  state: [{ what: "JUNO's state", path: state, kind: "path" }, { what: "the hook socket", path: "/var/lib/juno-hook/hook.sock", kind: "socket" }, { what: "Claude Code's managed settings", path: "/etc/claude-code", kind: "path" }],
+  // D-208: the anchor pin, root's own file in the image, like the operator's /etc/juno/anchors.json.
+  state: [{ what: "JUNO's state", path: state, kind: "path" }, { what: "the hook socket", path: "/var/lib/juno-hook/hook.sock", kind: "socket" }, { what: "Claude Code's managed settings", path: "/etc/claude-code", kind: "path" }, { what: "the anchor pin", path: "/etc/juno/anchors.json", kind: "pin" }],
   anchor: null,
 }, {
   // §3.4.1 (D-198): every layer anchors; the driver's root-owned stand-in git pushes to a stand-in destination.
-  anchoring: (root) => gitAnchoring({ journalKeyDir: `${state}/journal-key-probe`, anchorClone: `${state}/juno-anchors-probe`, intervalMs: 60_000, git: "/opt/fake-git/git" }, root),
+  anchoring: (root, pin) => gitAnchoring({ journalKeyDir: `${state}/journal-key-probe`, anchorClone: `${state}/juno-anchors-probe`, intervalMs: 60_000, pin: "/etc/juno/anchors.json" }, root, pin),
 });
 const grants = new GrantStore(createPublicKey(readFileSync("/etc/juno/operator.pub", "utf8")));
 const sessions = new MediatedSessions({

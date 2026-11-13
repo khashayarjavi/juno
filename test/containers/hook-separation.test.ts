@@ -129,6 +129,10 @@ describe("D-173: the Claude Code user cannot modify the hook settings or reach t
   // file system that is not a native case-sensitive Linux one, with a plain reason
   it("refuses a workspace that is not on a case-sensitive Linux file system (D-178)", () => {
     expect(results.check.stdout).toContain("case-sensitive Linux file system");
+    // proves D-206 item 2 (D-208), on the real kernel's ownership: the check refuses a pin that names no SSH address,
+    // and a pin that is the runner's own file instead of root's
+    expect(results.negative["pinIsLocal"]).toMatchObject({ code: 1, stderr: expect.stringContaining("names a local path") });
+    expect(results.negative["pinIsRunners"]).toMatchObject({ code: 1, stderr: expect.stringContaining("the anchor pin: /var/lib/juno-runner-pin/anchors.json must be owned by root") });
     expect(results.negative["workspaceOnOverlay"]?.code).toBe(1);
     const lines = (results.negative["workspaceOnOverlay"]?.stderr ?? "").split("\n").filter((line) => line.startsWith("  - "));
     expect(lines).toEqual([expect.stringContaining("/srv/overlay-work is on a file system of type overlay")]);

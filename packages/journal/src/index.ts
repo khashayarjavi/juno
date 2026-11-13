@@ -12,8 +12,10 @@ export {
 } from "./chain.js";
 export { type BlobRead } from "./blobs.js";
 export { JournalLocationError, journalRoot } from "./layout.js";
+export { type JournalHandle, JournalHandleError, journalLayoutRefusals, openJournalFolder } from "./handle.js";
 export { type EntryDraft, JournalIntegrityError, JournalWriter, type JournalWriterOptions } from "./writer.js";
-export { readPayload, readTrajectory, verifyTrajectory } from "./read.js";
+export { PendingRepair, type TornTail, clearPendingRepairs, dropTornTail, readPendingRepairs, tornTail, writePendingRepairs } from "./repair.js";
+export { type StoredRecord, listRecords, readPayload, readTrajectory, verifyTrajectory } from "./read.js";
 export {
   Anchor,
   type AnchorCheck,
@@ -31,13 +33,17 @@ export {
 } from "./anchor.js";
 export {
   AnchorExistsError,
+  AnchorReadBackError,
   type AnchorSink,
   AnchorSinkError,
   ContainerAnchorSink,
   GitAnchorSink,
   type JournalKey,
   JournalKeyError,
+  type PinnedRepository,
+  defaultSshWrapper,
   loadOrCreateJournalKey,
   readAnchorDirectory,
   sameKey,
 } from "./sinks.js";
+export { SSH_ENVIRONMENT, sshInvocation } from "./anchor-ssh.js";

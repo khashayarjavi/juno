@@ -4,11 +4,13 @@ import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { GrantStore, type HostIo, HostPathResolver, type LayerOpened, SERVICES, type ServiceName, SessionLayer, StartupRefused, Workspace, execFileScript } from "../../enforcement/src/index.js";
-import { MemoryAnchorSink, testAnchoring } from "../../enforcement/test/anchoring.js";
+import { GrantStore, type HostIo, HostPathResolver, type LayerOpened, SERVICES, type ServiceName, SessionLayer, StartupRefused, Workspace, anchoringState, execFileScript, gitAnchoring } from "../../enforcement/src/index.js";
+import { executeOutbound } from "../../registry/src/index.js";
+import { MemoryAnchorSink, testAnchoring, testJournalKey } from "../../enforcement/test/anchoring.js";
 import { ordinaryHost, openTestLayer } from "../../enforcement/test/layer.js";
 import { TEST_ANCHOR, signed } from "../../enforcement/test/test-keys.js";
-import { checkAnchors, readPayload, readTrajectory, taskDigest, verifyTrajectory } from "../../journal/src/index.js";
+import { type JournalKey, JournalWriter, anchorOf, anchorPath, checkAnchors, listRecords, readPayload, readTrajectory, taskDigest, verifyTrajectory } from "../../journal/src/index.js";
+import { blobFile, entriesFile, taskDir } from "../../journal/src/layout.js";
 import { systemFilesystemIo } from "../../mediated/src/filesystem.js";
 import { MCP_REVISION, McpGateway, type Upstream } from "../../mediated/src/gateway.js";
 import { type GatewayCliIo, runGatewayCli } from "../../mediated/src/gateway-cli.js";
@@ -35,6 +37,10 @@ import { harness, request as runnerRequest, turn } from "./helpers.js";
  *      workspace;
  *   D. drives every registered mode that admits sessions (own loop, hook, gateway) and requires the shared layer to hold
  *      the session, count its rejections to the limit and park it there, and count its calls to the budget.
+ *   E. requires every mode's journal to be anchored through the shared layer (D-198);
+ *   F. restarts every registered service on its own journal (operator ruling D-201): it starts again and forgets
+ *      nothing, and it refuses to start, opening no layer, when the journal was changed, cut, replaced or deleted, when
+ *      an anchor disagrees, when a record was planted, or when the anchors cannot be read.
  * Every entry the registry says starts a service or admits a session must have a probe here, or the test fails.
  */
 
@@ -201,11 +207,33 @@ describe("D-194 A: the registry accounts for every entry point, service, session
 // The fixture every probe starts from: a workspace, JUNO's state beside it, a protected anchor, a socket folder.
 // ------------------------------------------------------------------------------------------------------------------
 
-type Fixture = { dir: string; work: string; journal: string; anchor: string; session: string; grant: string; sockets: string; socket: string; keys: string; clone: string };
+type Fixture = {
+  dir: string; work: string; journal: string; anchor: string; session: string; grant: string; sockets: string; socket: string; keys: string; clone: string;
+  /** The anchor pin (D-208): under a folder the test host reports as root's own. */
+  pin: string;
+  /** A local bare repository standing for the pinned `juno-anchors`, for the tests that anchor with the real git. */
+  remote: string;
+  /** When true, the entry anchors with the real git to `remote`, through the pin, as the operator's service does. */
+  real?: boolean;
+  /** The session file the hook probe admits, in place of its default. */
+  hookSession?: Record<string, unknown>;
+};
+
+/** Writes the anchor pin as the operator would, as root: the repository, and the journal folders that may anchor there (D-208). */
+function writePin(journals: readonly { readonly path: string; readonly recovery_epoch: string }[], options: { readonly path?: string; readonly url?: string } = {}): void {
+  const path = options.path ?? fx.pin;
+  mkdirSync(join(path, ".."), { recursive: true, mode: 0o755 });
+  writeFileSync(path, JSON.stringify({ url: options.url ?? fx.remote, branch: "main", host_key_fingerprint: null, known_hosts: null, push_key: null, git: "/usr/bin/git", journals }), { mode: 0o644 });
+  chmodSync(path, 0o644);
+}
+/** Long before any grant these tests sign. */
+const FIRST_EPOCH = "2020-01-01T00:00:00Z";
 
 let fx: Fixture;
 /** The anchor destination every probe's layer uses (D-198); a fresh one per test. */
 let sink: MemoryAnchorSink;
+/** The journal key every probe's service uses; one per test, kept across a service's restarts (D-201). */
+let journalKey: JournalKey;
 let events: LayerOpened[];
 let stopObserving: () => void;
 
@@ -221,10 +249,12 @@ function gatewaySession(overrides: Record<string, unknown> = {}): Record<string,
   return { session_id: "probe", principal: PRINCIPAL, attendance: "autonomous", ttl: 3_600_000, grants: ["g"], budget: { tool_calls: 4, wall_clock_ms: 3_600_000 }, unmetered_accepted: true, provider_clearance: "internal", sources: [SOURCE], tools: [{ tool: "message.send", entry: SEND }], rejection_limit: 2, ...overrides };
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   const dir = mkdtempSync(join(tmpdir(), "juno-entry-"));
-  fx = { dir, work: join(dir, "work"), journal: join(dir, "journal"), anchor: join(dir, "anchor", "operator.pub"), session: join(dir, "session.json"), grant: join(dir, "grant.json"), sockets: join(dir, "sock"), socket: join(dir, "sock", "service.sock"), keys: join(dir, "journal-key"), clone: join(dir, "juno-anchors") };
+  fx = { dir, work: join(dir, "work"), journal: join(dir, "journal"), anchor: join(dir, "anchor", "operator.pub"), session: join(dir, "session.json"), grant: join(dir, "grant.json"), sockets: join(dir, "sock"), socket: join(dir, "sock", "service.sock"), keys: join(dir, "journal-key"), clone: join(dir, "juno-anchors"), pin: join(dir, "root-owned", "anchors.json"), remote: join(dir, "pinned-juno-anchors.git") };
+  writePin([{ path: fx.journal, recovery_epoch: FIRST_EPOCH }]);
   sink = new MemoryAnchorSink();
+  journalKey = testJournalKey();
   mkdirSync(join(fx.work, "project"), { recursive: true });
   writeFileSync(join(fx.work, "project", "notes.txt"), "notes\n");
   mkdirSync(fx.sockets, { mode: 0o700 });
@@ -264,8 +294,8 @@ const COMMAND_PROBES: Readonly<Record<string, CommandProbe>> = {
     run: async (implementation, host, paths) => {
       const at = { ...fx, ...paths };
       const said: string[] = [];
-      const io: GatewayCliIo = { host, readFile: (path) => readFileSync(path, "utf8"), filesystem: systemFilesystemIo(), anchoring: testAnchoring({ sink }), stopped: () => Promise.resolve(), out: (text) => said.push(text), err: (text) => said.push(text) };
-      const code = await (implementation as typeof runGatewayCli)(["serve", "--session", at.session, "--socket", at.socket, "--journal", at.journal, "--anchor", at.anchor, "--workspace", at.work, "--journal-key", at.keys, "--anchors", at.clone, "--grant", at.grant], io);
+      const io: GatewayCliIo = { host, readFile: (path) => readFileSync(path, "utf8"), filesystem: systemFilesystemIo(), ...(at.real === true ? {} : { anchoring: testAnchoring({ sink, journalKey }) }), stopped: () => Promise.resolve(), out: (text) => said.push(text), err: (text) => said.push(text) };
+      const code = await (implementation as typeof runGatewayCli)(["serve", "--session", at.session, "--socket", at.socket, "--journal", at.journal, "--anchor", at.anchor, "--workspace", at.work, "--journal-key", at.keys, "--anchors", at.clone, "--anchor-pin", at.pin, "--grant", at.grant], io);
       return { code, said: said.join("") };
     },
     loosenState: () => chmodSync(fx.session, 0o666),
@@ -278,13 +308,13 @@ const COMMAND_PROBES: Readonly<Record<string, CommandProbe>> = {
       const said: string[] = [];
       const control = join(at.sockets, "admit.sock");
       const sessionFile = join(fx.dir, "hook-session.json");
-      writeFileSync(sessionFile, JSON.stringify({ session: hookRequest("probe"), grants: [] }), { mode: 0o644 });
+      writeFileSync(sessionFile, JSON.stringify(at.hookSession ?? { session: hookRequest("probe"), grants: [] }), { mode: 0o644 });
       let admitting: Promise<number> | null = null;
       const io: HookServeIo = {
         host,
         filesystem: systemFilesystemIo(),
         runtime: () => Promise.resolve({ cgroupDriver: "systemd", cgroupVersion: "2", rootless: true }),
-        anchoring: testAnchoring({ sink }),
+        ...(at.real === true ? {} : { anchoring: testAnchoring({ sink, journalKey }) }),
         // Once it serves, the operator admits a session through the admission socket, then it stops.
         ready: () => {
           admitting = runHookAdmitCli(["--control", control, sessionFile], { out: (text) => said.push(text), err: (text) => said.push(text) });
@@ -295,7 +325,7 @@ const COMMAND_PROBES: Readonly<Record<string, CommandProbe>> = {
         out: (text) => said.push(text),
         err: (text) => said.push(text),
       };
-      const code = await (implementation as typeof runHookServeCli)(["--socket", at.socket, "--control", control, "--journal", at.journal, "--anchor", at.anchor, "--workspace", at.work, "--checkpoints", join(fx.dir, "checkpoints"), "--journal-key", at.keys, "--anchors", at.clone], io);
+      const code = await (implementation as typeof runHookServeCli)(["--socket", at.socket, "--control", control, "--journal", at.journal, "--anchor", at.anchor, "--workspace", at.work, "--checkpoints", join(fx.dir, "checkpoints"), "--journal-key", at.keys, "--anchors", at.clone, "--anchor-pin", at.pin], io);
       return { code, said: said.join("") };
     },
     loosenState: () => {
@@ -306,11 +336,11 @@ const COMMAND_PROBES: Readonly<Record<string, CommandProbe>> = {
     admitted: (layer) => expect(layer.sessions().map((session) => [session.id, session.mode])).toEqual([["session-probe", "hook"]]),
   },
   "runner.process": {
-    run: (implementation, host, paths) => {
+    run: async (implementation, host, paths) => {
       const at = { ...fx, ...paths };
       const said: string[] = [];
-      const code = (implementation as typeof runRunnerMain)({ JUNO_JOURNAL_DIR: at.journal, JUNO_WORK_DIR: at.work, JUNO_TRUST_ANCHOR: at.anchor, JUNO_JOURNAL_KEY_DIR: at.keys, JUNO_ANCHOR_CLONE: at.clone }, { host, anchoring: testAnchoring({ sink }), out: (text) => said.push(text), err: (text) => said.push(text) });
-      return Promise.resolve({ code, said: said.join("") });
+      const code = await (implementation as typeof runRunnerMain)({ JUNO_JOURNAL_DIR: at.journal, JUNO_WORK_DIR: at.work, JUNO_TRUST_ANCHOR: at.anchor, JUNO_JOURNAL_KEY_DIR: at.keys, JUNO_ANCHOR_CLONE: at.clone, JUNO_ANCHOR_PIN: at.pin }, { host, ...(at.real === true ? {} : { anchoring: testAnchoring({ sink, journalKey }) }), out: (text) => said.push(text), err: (text) => said.push(text) });
+      return { code, said: said.join("") };
     },
     loosenState: () => {
       mkdirSync(fx.journal, { mode: 0o777 });
@@ -330,6 +360,13 @@ const REFUSALS: readonly Refusal[] = [
   { name: "the trust anchor is not verified", arrange: () => { chmodSync(join(fx.dir, "anchor"), 0o755); chmodSync(fx.anchor, 0o666); chmodSync(join(fx.dir, "anchor"), 0o555); return {}; }, text: /trust anchor .*(not protected|writable by group or others)/ },
   { name: "the journal key lies in the workspace (D-198)", arrange: () => ({ paths: { keys: join(fx.work, "project", ".journal-key") } }), text: /journal key folder .*overlaps the workspace/ },
   { name: "the anchor clone lies in the workspace (D-198)", arrange: () => ({ paths: { clone: join(fx.work, "project", "juno-anchors") } }), text: /anchor repository clone .*overlaps the workspace/ },
+  // D-206 item 2 (D-208): the anchor pin is root's own file, and it names the journal.
+  { name: "there is no anchor pin (D-208)", arrange: () => { rmSync(fx.pin); return {}; }, text: /the anchor pin .* does not exist/ },
+  { name: "the anchor pin is the runner's own file, not root's (D-208)", arrange: () => { const pin = join(fx.dir, "runner-owned", "anchors.json"); writePin([{ path: fx.journal, recovery_epoch: FIRST_EPOCH }], { path: pin }); return { paths: { pin } }; }, text: /the anchor pin .* is owned by uid [0-9]+, not root/ },
+  { name: "the anchor pin could be changed by others (D-208)", arrange: () => { chmodSync(fx.pin, 0o666); return {}; }, text: /the anchor pin .* is writable by group or others/ },
+  { name: "the anchor pin's folder could be changed by others (D-208)", arrange: () => { chmodSync(join(fx.dir, "root-owned"), 0o777); return {}; }, text: /the folder of the anchor pin .* is writable by group or others/ },
+  { name: "the anchor pin cannot be read as a pin (D-208)", arrange: () => { writeFileSync(fx.pin, "{}"); return {}; }, text: /the anchor pin .* cannot be used/ },
+  { name: "the anchor pin does not name the journal (D-208)", arrange: () => { writePin([{ path: join(fx.dir, "another-journal"), recovery_epoch: FIRST_EPOCH }]); return {}; }, text: /is not a journal folder the anchor pin .* names/ },
   { name: "its socket folder could be changed by others", arrange: (probe) => { if (!probe.socket) return null; chmodSync(fx.sockets, 0o777); return {}; }, text: /writable by group or others/ },
 ];
 
@@ -425,8 +462,8 @@ function sessionsOn(layer: unknown, work = fx.work): MediatedSessions {
 function gatewayOn(layer: unknown, work = fx.work): McpGateway {
   return new McpGateway({ layer: layer as SessionLayer, grants: grantsOf(gatewayGrant()), resolver: new HostPathResolver(work), view: view(work), filesystem: systemFilesystemIo(), upstream });
 }
-function runnerOn(layer: unknown, work = fx.work): Runner {
-  const h = harness();
+async function runnerOn(layer: unknown, work = fx.work): Promise<Runner> {
+  const h = await harness();
   try {
     return new Runner({ layer: layer as SessionLayer, registry: h.registry, grants: h.grants, providers: [], sources: [], resolver: new HostPathResolver(work) });
   } finally {
@@ -435,7 +472,7 @@ function runnerOn(layer: unknown, work = fx.work): Runner {
 }
 
 const CLASS_PROBES: Readonly<Record<string, ClassProbe>> = {
-  "class.Runner": { build: async (layer) => Promise.resolve(runnerOn(layer)), state: [] },
+  "class.Runner": { build: async (layer) => runnerOn(layer), state: [] },
   "class.MediatedSessions": { build: async (layer) => Promise.resolve(sessionsOn(layer)), state: [] },
   "class.McpGateway": { build: async (layer) => Promise.resolve(gatewayOn(layer)), state: [] },
   "class.HookAdmissionService": {
@@ -490,7 +527,7 @@ describe("D-194 C: every registered class runs only on a layer the shared check 
     const service = entry.service;
     // proves D-194 (positive control): on a layer the check opened for its service and workspace, it starts
     it(`${entry.id}: starts on a layer opened for the ${service} service`, async () => {
-      const layer = openTestLayer(service, { journal: fx.journal, workspaces: [fx.work], state: stateOf(probe) });
+      const layer = await openTestLayer(service, { journal: fx.journal, workspaces: [fx.work], state: stateOf(probe) });
       await expect(probe.build(layer)).resolves.toBeDefined();
     });
 
@@ -502,14 +539,14 @@ describe("D-194 C: every registered class runs only on a layer the shared check 
 
     // proves D-193: a layer opened for another service is refused
     it(`${entry.id}: refuses a layer opened for another service`, async () => {
-      const other = openTestLayer(OTHER[service], { journal: fx.journal, workspaces: [fx.work], state: stateOf(probe) });
+      const other = await openTestLayer(OTHER[service], { journal: fx.journal, workspaces: [fx.work], state: stateOf(probe) });
       await expect(probe.build(other)).rejects.toThrow(/was opened for the .* service, not the/);
     });
 
     // proves D-148 / D-194: a layer whose check did not judge the workspace (or socket) this class uses is refused
     it(`${entry.id}: refuses a workspace or socket the shared check did not judge`, async () => {
       const elsewhere = join(fx.dir, "elsewhere");
-      const layer = openTestLayer(service, { journal: fx.journal, workspaces: [elsewhere] });
+      const layer = await openTestLayer(service, { journal: fx.journal, workspaces: [elsewhere] });
       await expect(probe.build(layer)).rejects.toThrow(/not a workspace the start-up check judged|not one the start-up check judged/);
     });
   }
@@ -556,7 +593,7 @@ const unknownCall = (n: number): unknown => ({ id: `bad-${String(n)}`, capabilit
 const MODE_DRIVERS: Readonly<Record<ServiceName, ModeDriver>> = {
   runner: {
     rejections: async (afterFirst) => {
-      const h = harness();
+      const h = await harness();
       const { runner } = h.runner([turn([unknownCall(1)]), turn([unknownCall(2)])]);
       expect(runner.admit(runnerRequest({ rejection_limit: 2 }))).toMatchObject({ admitted: true });
       await runner.run("task-1");
@@ -564,7 +601,7 @@ const MODE_DRIVERS: Readonly<Record<ServiceName, ModeDriver>> = {
       return { layer: h.layer, id: "task-1", parks: parksIn(h.journal.root, "task-1") };
     },
     budget: async (calls) => {
-      const h = harness();
+      const h = await harness();
       const { runner } = h.runner(Array.from({ length: calls + 1 }, (_, index) => turn([unknownCall(100 + index)])));
       expect(runner.admit(runnerRequest({ rejection_limit: 10, budget: { tokens: 1_000_000, currency: 100, wall_clock_ms: 3_600_000, turns: calls } }))).toMatchObject({ admitted: true });
       await runner.run("task-1");
@@ -573,7 +610,7 @@ const MODE_DRIVERS: Readonly<Record<ServiceName, ModeDriver>> = {
   },
   hook: {
     rejections: async (afterFirst) => {
-      const layer = openTestLayer("hook", { journal: fx.journal, workspaces: [fx.work] });
+      const layer = await openTestLayer("hook", { journal: fx.journal, workspaces: [fx.work] });
       const sessions = sessionsOn(layer);
       expect(await sessions.admit(hookRequest("probe"))).toMatchObject({ admitted: true });
       await sessions.preToolUse(hookCall("probe", "Frobnicate"));
@@ -582,7 +619,7 @@ const MODE_DRIVERS: Readonly<Record<ServiceName, ModeDriver>> = {
       return { layer, id: "session-probe", parks: parksIn(layer.root, "session-probe") };
     },
     budget: async (calls) => {
-      const layer = openTestLayer("hook", { journal: fx.journal, workspaces: [fx.work] });
+      const layer = await openTestLayer("hook", { journal: fx.journal, workspaces: [fx.work] });
       const sessions = sessionsOn(layer);
       expect(await sessions.admit(hookRequest("budget", { rejection_limit: 10, budget: { tool_calls: calls, wall_clock_ms: 3_600_000 } }))).toMatchObject({ admitted: true });
       for (let index = 0; index <= calls; index += 1) await sessions.preToolUse(hookCall("budget", "Frobnicate"));
@@ -591,7 +628,7 @@ const MODE_DRIVERS: Readonly<Record<ServiceName, ModeDriver>> = {
   },
   gateway: {
     rejections: async (afterFirst) => {
-      const layer = openTestLayer("gateway", { journal: fx.journal, workspaces: [fx.work] });
+      const layer = await openTestLayer("gateway", { journal: fx.journal, workspaces: [fx.work] });
       const gateway = await openedGateway(layer);
       await gatewayCall(gateway, "admin.wipe", 2);
       afterFirst(layer, "gateway-probe");
@@ -599,7 +636,7 @@ const MODE_DRIVERS: Readonly<Record<ServiceName, ModeDriver>> = {
       return { layer, id: "gateway-probe", parks: parksIn(layer.root, "gateway-probe") };
     },
     budget: async (calls) => {
-      const layer = openTestLayer("gateway", { journal: fx.journal, workspaces: [fx.work] });
+      const layer = await openTestLayer("gateway", { journal: fx.journal, workspaces: [fx.work] });
       const gateway = await openedGateway(layer, { session_id: "budget", rejection_limit: 10, budget: { tool_calls: calls, wall_clock_ms: 3_600_000 } });
       for (let index = 0; index <= calls; index += 1) await gatewayCall(gateway, "admin.wipe", 10 + index);
       return { layer, id: "gateway-budget", parks: parksIn(layer.root, "gateway-budget") };
@@ -671,14 +708,14 @@ const proceededAfterStop = (stops: readonly boolean[]): number => {
 const ANCHOR_DRIVERS: Readonly<Record<ServiceName, AnchorDriver>> = {
   runner: {
     drive: async (anchors, intervalMs) => {
-      const h = harness(undefined, { anchoring: { sink: anchors, intervalMs } });
+      const h = await harness(undefined, { anchoring: { sink: anchors, intervalMs } });
       const { runner } = h.runner([turn([unknownCall(1)]), turn([])]);
       expect(runner.admit(runnerRequest())).toMatchObject({ admitted: true });
       await runner.run("task-1");
       return { layer: h.layer, id: "task-1" };
     },
     cutOff: async (anchors) => {
-      const h = harness(undefined, { anchoring: { sink: anchors, intervalMs: 1 } });
+      const h = await harness(undefined, { anchoring: { sink: anchors, intervalMs: 1 } });
       const { runner, provider } = h.runner([
         () => {
           anchors.unreachable = "the destination is gone";
@@ -696,14 +733,14 @@ const ANCHOR_DRIVERS: Readonly<Record<ServiceName, AnchorDriver>> = {
   },
   hook: {
     drive: async (anchors, intervalMs) => {
-      const layer = openTestLayer("hook", { journal: fx.journal, workspaces: [fx.work], anchoring: testAnchoring({ sink: anchors, intervalMs }) });
+      const layer = await openTestLayer("hook", { journal: fx.journal, workspaces: [fx.work], anchoring: testAnchoring({ sink: anchors, intervalMs }) });
       const sessions = sessionsOn(layer);
       expect(await sessions.admit(hookRequest("anchored"))).toMatchObject({ admitted: true });
       await sessions.preToolUse(hookCall("anchored", "Frobnicate"));
       return { layer, id: "session-anchored" };
     },
     cutOff: async (anchors) => {
-      const layer = openTestLayer("hook", { journal: fx.journal, workspaces: [fx.work], anchoring: testAnchoring({ sink: anchors, intervalMs: 1 }) });
+      const layer = await openTestLayer("hook", { journal: fx.journal, workspaces: [fx.work], anchoring: testAnchoring({ sink: anchors, intervalMs: 1 }) });
       const sessions = sessionsOn(layer);
       const admitted = (await sessions.admit(hookRequest("cut"))).admitted;
       anchors.unreachable = "the destination is gone";
@@ -721,13 +758,13 @@ const ANCHOR_DRIVERS: Readonly<Record<ServiceName, AnchorDriver>> = {
   },
   gateway: {
     drive: async (anchors, intervalMs) => {
-      const layer = openTestLayer("gateway", { journal: fx.journal, workspaces: [fx.work], anchoring: testAnchoring({ sink: anchors, intervalMs }) });
+      const layer = await openTestLayer("gateway", { journal: fx.journal, workspaces: [fx.work], anchoring: testAnchoring({ sink: anchors, intervalMs }) });
       const gateway = await openedGateway(layer);
       await gatewayCall(gateway, "admin.wipe", 2);
       return { layer, id: "gateway-probe" };
     },
     cutOff: async (anchors) => {
-      const layer = openTestLayer("gateway", { journal: fx.journal, workspaces: [fx.work], anchoring: testAnchoring({ sink: anchors, intervalMs: 1 }) });
+      const layer = await openTestLayer("gateway", { journal: fx.journal, workspaces: [fx.work], anchoring: testAnchoring({ sink: anchors, intervalMs: 1 }) });
       const gateway = await openedGateway(layer);
       anchors.unreachable = "the destination is gone";
       await new Promise((resolve) => setTimeout(resolve, 5));
@@ -753,10 +790,10 @@ describe("D-198 E: every mode's journal is anchored through the shared session l
   // proves §3.4.1 (D-198): no service gets a layer, and so a journal, without an anchor destination and a journal key;
   // the refusal is the shared check's own and nothing is opened
   for (const service of SERVICES) {
-    it(`${service}: the shared layer will not open without anchoring`, () => {
+    it(`${service}: the shared layer will not open without anchoring`, async () => {
       const spec = { service, journal: fx.journal, workspaces: [fx.work], state: [], anchor: null };
-      expect(() => SessionLayer.open(spec, { host: ordinaryHost() } as unknown as Parameters<typeof SessionLayer.open>[1])).toThrow(StartupRefused);
-      expect(() => SessionLayer.open(spec, { host: ordinaryHost(), anchoring: { ...testAnchoring(), intervalMs: 0 } })).toThrow(/interval/);
+      await expect(SessionLayer.open(spec, { host: ordinaryHost() } as unknown as Parameters<typeof SessionLayer.open>[1])).rejects.toThrow(StartupRefused);
+      await expect(SessionLayer.open(spec, { host: ordinaryHost(), anchoring: { ...testAnchoring(), intervalMs: 0 } })).rejects.toThrow(/interval/);
       expect(events.map((event) => event.layer)).toEqual([null, null]);
       expect(existsSync(fx.journal)).toBe(false);
     });
@@ -767,7 +804,7 @@ describe("D-198 E: every mode's journal is anchored through the shared session l
     it(`${service}: the shared layer refuses the operator's key as the journal key`, async () => {
       const { TEST_OPERATOR_KEY } = await import("../../enforcement/test/test-keys.js");
       const spec = { service, journal: fx.journal, workspaces: [fx.work], state: [], anchor: fx.anchor };
-      expect(() => SessionLayer.open(spec, { host: ordinaryHost(), anchoring: testAnchoring({ journalKey: { privateKey: TEST_OPERATOR_KEY, publicKey: TEST_ANCHOR } }) })).toThrow(/operator's grant-signing key/);
+      await expect(SessionLayer.open(spec, { host: ordinaryHost(), anchoring: testAnchoring({ journalKey: { privateKey: TEST_OPERATOR_KEY, publicKey: TEST_ANCHOR } }) })).rejects.toThrow(/operator's grant-signing key/);
     });
   }
 
@@ -798,12 +835,34 @@ describe("D-198 E: every mode's journal is anchored through the shared session l
       expect(layer.session(id)?.stopped ?? "anchor_unavailable").toBe("anchor_unavailable");
     });
 
+    // proves §3.4.1 (D-198, D-203): when the interval's background anchoring finds the destination gone, the failure is
+    // journalled in every record it could not copy, the journal's own record included, nothing is thrown, and every
+    // session stops for good, with the stop in its journal (so a restart finds it)
+    it(`${entry.id}: a failed background anchor is journalled, the journal's own record included, and stops every session in the journal`, async () => {
+      const anchors = new MemoryAnchorSink();
+      const { layer, id } = await driver.drive(anchors, 3_600_000);
+      anchors.unreachable = "the destination is gone";
+      const failed = await layer.anchorPending();
+      expect(failed).toContain(layer.journalRecord);
+      expect(noteTypes(layer.root, layer.journalRecord)).toContain("anchor_failed");
+      expect(layer.sessions().map((session) => session.stopped)).toEqual(layer.sessions().map(() => "anchor_unavailable"));
+      expect(layer.sessions().length).toBeGreaterThan(0);
+      expect(noteTypes(layer.root, id)).toContain("stopped");
+      // A service's last act anchors what is pending: it answers what it could not copy, and does not throw either.
+      expect(await layer.close()).toContain(layer.journalRecord);
+    });
+
     // proves §3.4.1 (D-198): a session whose head cannot be anchored at admission is never run
     it(`${entry.id}: a session that cannot be anchored when it starts never runs a call`, async () => {
       const anchors = new MemoryAnchorSink();
-      anchors.unreachable = "no destination";
+      // D-201: a service whose anchor destination cannot be read does not start at all (part F). So the destination is
+      // lost after the service started and before the session does.
+      const lost = (): void => {
+        anchors.unreachable = "no destination";
+      };
       if (service === "runner") {
-        const h = harness(undefined, { anchoring: { sink: anchors } });
+        const h = await harness(undefined, { anchoring: { sink: anchors } });
+        lost();
         const { runner, provider } = h.runner([turn([unknownCall(1)])]);
         expect(runner.admit(runnerRequest())).toMatchObject({ admitted: true });
         expect(await runner.run("task-1")).toMatchObject({ state: "failed", reason: "anchor_unavailable" });
@@ -811,17 +870,512 @@ describe("D-198 E: every mode's journal is anchored through the shared session l
         return;
       }
       if (service === "hook") {
-        const layer = openTestLayer("hook", { journal: fx.journal, workspaces: [fx.work], anchoring: testAnchoring({ sink: anchors }) });
+        const layer = await openTestLayer("hook", { journal: fx.journal, workspaces: [fx.work], anchoring: testAnchoring({ sink: anchors }) });
+        lost();
         const sessions = sessionsOn(layer);
         expect(await sessions.admit(hookRequest("never"))).toMatchObject({ admitted: false });
         expect(await sessions.preToolUse(hookCall("never", "Read"))).toMatchObject({ decision: "deny" });
         expect(noteTypes(layer.root, "session-never")).toContain("anchor_failed");
         return;
       }
-      const layer = openTestLayer("gateway", { journal: fx.journal, workspaces: [fx.work], anchoring: testAnchoring({ sink: anchors }) });
+      const layer = await openTestLayer("gateway", { journal: fx.journal, workspaces: [fx.work], anchoring: testAnchoring({ sink: anchors }) });
+      lost();
       const gateway = gatewayOn(layer);
       expect(await gateway.admit(gatewaySession())).toMatchObject({ admitted: false });
       expect(noteTypes(layer.root, "gateway-probe")).toContain("anchor_failed");
     });
   }
 });
+
+// ------------------------------------------------------------------------------------------------------------------
+// F. Operator ruling D-201: at start, after the start-up check, every service verifies the journal chain and its off-host
+//    anchors, and refuses to start if either fails; only then is anything rebuilt.
+// ------------------------------------------------------------------------------------------------------------------
+
+/** The record each service's first run leaves in its journal, beside the journal's own record. */
+const RECORD_OF: Readonly<Record<string, string>> = { "gateway.serve": "gateway-probe", "hook.serve": "session-probe", "runner.process": "task-1" };
+
+/** One way the journal or its anchors can be wrong when a service starts again. */
+type Tamper = { readonly name: string; readonly arrange: (record: string) => void; readonly text: RegExp };
+
+const journalAbs = (): string => fx.journal;
+const forgedEntry = { kind: "note" as const, actor: "someone", provider: null, data_class: { sensitivity: "internal" as const, integrity: "derived" as const }, cost: { tokens_in: 0, tokens_out: 0, tokens_cached: 0, currency: 0, duration_ms: 0 } };
+
+const TAMPERS: readonly Tamper[] = [
+  {
+    // One character of one stored entry is changed: the chain no longer verifies (§3.4.2).
+    name: "an entry of the journal was changed",
+    arrange: (record) => {
+      const file = entriesFile(journalAbs() as never, record);
+      const text = readFileSync(file, "utf8");
+      writeFileSync(file, text.replace(/"actor":"[^"]+"/, '"actor":"someone-else"'));
+    },
+    text: /does not verify/,
+  },
+  {
+    // The record is replaced by a different one whose chain verifies on its own: only the anchors show it (§3.4.1).
+    name: "a record was rewritten wholesale, with every hash recomputed",
+    arrange: (record) => {
+      const length = readTrajectory(journalAbs(), record).length;
+      rmSync(taskDir(journalAbs() as never, record), { recursive: true });
+      const writer = JournalWriter.open(journalAbs());
+      for (let seq = 0; seq < length; seq += 1) writer.append(record, forgedEntry, new TextEncoder().encode(JSON.stringify({ type: "admission", outcome: "rejected", forged: seq })));
+    },
+    text: /disagrees with its off-host anchors: .*rewritten/,
+  },
+  {
+    // The record's folder is deleted: the journal's own record names it and its anchors are off the host.
+    name: "a record was deleted",
+    arrange: (record) => rmSync(taskDir(journalAbs() as never, record), { recursive: true }),
+    text: /disagrees with its off-host anchors: .*entries were removed/,
+  },
+  {
+    // The whole journal is deleted, as if the service had never run: the anchors of its own record remain.
+    name: "the whole journal was deleted",
+    arrange: () => rmSync(journalAbs(), { recursive: true }),
+    text: /disagrees with its off-host anchors: .*entries were removed/,
+  },
+  {
+    // The destination holds an anchor, signed with the journal key, that names another head at an anchored entry.
+    name: "an anchor disagrees with the journal",
+    arrange: (record) => {
+      const verdict = verifyTrajectory(journalAbs(), record);
+      if (!verdict.ok) throw new Error("the record does not verify before the test changes anything");
+      const path = [...sink.stored.keys()].find((key) => key.startsWith(`${taskDigest(record)}/`));
+      const stored = path === undefined ? undefined : sink.stored.get(path);
+      if (path === undefined || stored === undefined) throw new Error("the record has no anchor");
+      sink.stored.set(path, anchorOf(record, { seq: stored.seq, hash: `sha256:${"0".repeat(64)}` }, new Date(stored.at), journalKey.privateKey));
+      expect(anchorPath(stored.task, stored.seq)).toBe(path);
+    },
+    text: /disagrees with its off-host anchors: .*rewritten/,
+  },
+  {
+    // An anchor of the record was not signed with this journal's key.
+    name: "an anchor does not carry the journal key's signature",
+    arrange: (record) => {
+      const path = [...sink.stored.keys()].find((key) => key.startsWith(`${taskDigest(record)}/`));
+      const stored = path === undefined ? undefined : sink.stored.get(path);
+      if (path === undefined || stored === undefined) throw new Error("the record has no anchor");
+      sink.stored.set(path, anchorOf(record, { seq: stored.seq, hash: stored.head }, new Date(stored.at), testJournalKey().privateKey));
+    },
+    text: /disagrees with its off-host anchors: .*signature/,
+  },
+  {
+    // A record JUNO did not write is planted in the journal: an admission nobody made.
+    name: "a record was planted in the journal",
+    arrange: () => {
+      JournalWriter.open(journalAbs()).append("session-planted", forgedEntry, new TextEncoder().encode(JSON.stringify({ type: "admission", outcome: "admitted" })));
+    },
+    text: /not named by the journal's own record/,
+  },
+  {
+    // The payload one entry names is removed from the blob store: the chain and the anchors still agree, but what the
+    // entry records can no longer be rebuilt (D-204).
+    name: "a stored payload was removed",
+    arrange: (record) => {
+      const entry = readTrajectory(journalAbs(), record).at(-1);
+      if (entry === undefined) throw new Error("the record has no entry");
+      rmSync(blobFile(journalAbs() as never, entry.payload_ref));
+    },
+    text: /has no readable payload/,
+  },
+  {
+    // The anchors cannot be read, so nothing can be verified.
+    name: "the anchor destination cannot be read",
+    arrange: () => {
+      sink.unreachable = "the destination is down";
+    },
+    text: /anchor destination could not be read/,
+  },
+];
+
+/** The service's first run: it starts, admits what its probe admits, and stops, leaving a journal and its anchors. */
+async function firstRun(entry: (typeof ENTRY_POINTS)[number]): Promise<string> {
+  const probe = COMMAND_PROBES[entry.id];
+  const record = RECORD_OF[entry.id];
+  if (probe === undefined || record === undefined) throw new Error(`no restart probe for ${entry.id}`);
+  if (entry.id === "runner.process") {
+    // The runner process admits nothing itself; the Runner class writes its journal, through a layer on the same
+    // journal, anchors and journal key.
+    // The runner's journal is started under the anchor pin, like every service's (D-208).
+    const layer = await SessionLayer.open({ service: "runner", journal: fx.journal, workspaces: [fx.work], state: [{ what: "the anchor pin", path: fx.pin, kind: "pin" }], anchor: fx.anchor }, { host: ordinaryHost(), anchoring: testAnchoring({ sink, journalKey }) });
+    const h = await harness();
+    try {
+      const runner = new Runner({ layer, registry: h.registry, grants: h.grants, providers: [], sources: [], resolver: new HostPathResolver(fx.work) });
+      // A refused admission is a record too: journalled under the task's id and anchored.
+      expect(runner.admit(runnerRequest())).toMatchObject({ admitted: false });
+      runner.close();
+    } finally {
+      h.cleanup();
+    }
+    expect(await layer.close()).toEqual([]);
+  } else {
+    const run = await probe.run(entry.implementation, ordinaryHost(), {});
+    expect(run, run.said).toMatchObject({ code: 0 });
+  }
+  expect(listRecords(fx.journal).map((item) => item.taskId)).toContain(record);
+  expect((await sink.list(taskDigest(record))).length).toBeGreaterThan(0);
+  events.length = 0;
+  return record;
+}
+
+
+describe("D-201 F: every service verifies its journal and its anchors before it starts, and forgets nothing", () => {
+  const starting = serviceEntries.filter((entry) => entry.kind !== "class");
+
+  // proves D-203 with D-201 (D-205): an outage of the anchor destination while a new record waits for its first anchor
+  // leaves an `anchor_failed` note in the journal's own record. That note is JUNO's own: once the destination is back,
+  // the service starts again on the same journal, and what was admitted is still admitted.
+  for (const service of SERVICES) {
+    it(`${service}: starts again after an outage that reached the journal's own record`, async () => {
+      const spec = { service, journal: fx.journal, workspaces: [fx.work], state: [], anchor: fx.anchor };
+      const open = (): Promise<SessionLayer> => SessionLayer.open(spec, { host: ordinaryHost(), anchoring: testAnchoring({ sink, journalKey }) });
+      const layer = await open();
+      const limits = { rejection_limit: 2, ttl: 3_600_000, budget: { tokens: 0, currency: 0, wall_clock_ms: 3_600_000, turns: 5 }, metered: ["turns", "wall_clock_ms"] as const, clock: "from_admission" as const };
+      layer.admit("session-kept", limits, { dataClass: { sensitivity: "internal", integrity: "operator" }, payload: { admitted_at: new Date().toISOString() }, actor: "test" });
+      sink.unreachable = "the destination is down";
+      expect(await layer.close()).toContain(layer.journalRecord);
+      expect(noteTypes(fx.journal, layer.journalRecord)).toContain("anchor_failed");
+      // While the destination is down, nothing starts.
+      await expect(open()).rejects.toThrow(/anchor destination could not be read/);
+      sink.unreachable = null;
+      const again = await open();
+      expect(again.admitted("session-kept")).toBe(true);
+      expect(() => again.admit("session-kept", limits, { dataClass: { sensitivity: "internal", integrity: "operator" }, payload: {}, actor: "test" })).toThrow(/admitted once/);
+      // And a second restart is as good as the first.
+      expect(await again.close()).toEqual([]);
+      expect((await open()).admitted("session-kept")).toBe(true);
+    });
+  }
+
+  // proves D-193's rule for this part: every registered service that starts has a restart probe
+  it("has a restart probe for every registered command or program that starts a service", () => {
+    expect(starting.map((entry) => entry.id).filter((id) => RECORD_OF[id] === undefined || COMMAND_PROBES[id] === undefined)).toEqual([]);
+  });
+
+  for (const entry of starting) {
+    const probe = COMMAND_PROBES[entry.id];
+    if (probe === undefined) continue;
+
+    // proves D-201 (positive control): on an untouched journal the service starts again; the session it admitted is
+    // still open and is not admitted a second time (§5: an id is admitted once)
+    it(`${entry.id}: starts again on its own journal, and admits nothing twice`, async () => {
+      const record = await firstRun(entry);
+      const before = readTrajectory(fx.journal, record).length;
+      const run = await probe.run(entry.implementation, ordinaryHost(), {});
+      expect(run, run.said).toMatchObject({ code: 0 });
+      const opened = events.filter((event) => event.spec.service === entry.service);
+      expect(opened.map((event) => event.refusals)).toEqual([[]]);
+      // No second admission was journalled under the id.
+      const admissions = readTrajectory(fx.journal, record).filter((item) => {
+        const blob = readPayload(fx.journal, item.payload_ref);
+        const payload = blob.status === "present" ? (JSON.parse(new TextDecoder().decode(blob.bytes)) as Record<string, unknown>) : {};
+        return payload["type"] === "admission";
+      });
+      expect(admissions).toHaveLength(1);
+      expect(readTrajectory(fx.journal, record).length).toBe(before);
+      if (entry.id === "hook.serve") expect(run.said).toMatch(/1 session\(s\) admitted before this start go on from the journal[^]*session probe is already admitted/);
+      if (entry.id === "gateway.serve") expect(run.said).toMatch(/goes on from its journal/);
+      if (entry.admits) expect(opened[0]?.layer?.sessions().map((session) => session.id)).toEqual([record]);
+    }, 30_000);
+
+    for (const tamper of TAMPERS) {
+      // proves D-201: the service refuses to start (fail-closed); the refusal is the shared layer's own, no layer is
+      // handed out, and so nothing is rebuilt, admitted or served
+      it(`${entry.id}: refuses to start when ${tamper.name}`, async () => {
+        const record = await firstRun(entry);
+        tamper.arrange(record);
+        const run = await probe.run(entry.implementation, ordinaryHost(), {});
+        expect(run.code, run.said).toBe(1);
+        expect(run.said).toMatch(tamper.text);
+        const opened = events.filter((event) => event.spec.service === entry.service);
+        expect(opened).toHaveLength(1);
+        expect(opened[0]?.layer).toBeNull();
+        expect(opened[0]?.refusals.join("\n")).toMatch(tamper.text);
+        expect(run.said).not.toMatch(/serving|ready/);
+      }, 30_000);
+    }
+  }
+});
+
+// ------------------------------------------------------------------------------------------------------------------
+// G. Recovery, and the pinned anchor repository (operator ruling D-206; DECISIONS.md D-207, D-208).
+// ------------------------------------------------------------------------------------------------------------------
+
+async function realGit(args: readonly string[]): Promise<void> {
+  const result = await executeOutbound({ file: "/usr/bin/git", args: ["-c", "user.name=test", "-c", "user.email=test@localhost", "-c", "init.defaultBranch=main", ...args] });
+  if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr.toString("utf8")}`);
+}
+
+/** The pinned `juno-anchors`, as the operator made it: a protected repository with a first commit. */
+async function pinnedRepository(path = fx.remote): Promise<void> {
+  await realGit(["init", "--bare", "--quiet", path]);
+  await realGit(["-C", path, "config", "receive.denyNonFastForwards", "true"]);
+  await realGit(["-C", path, "config", "receive.denyDeletes", "true"]);
+  const seed = `${path}.seed`;
+  await realGit(["clone", "--quiet", path, seed]);
+  // Its first commit names the repository, so two repositories made in the same second never share a commit.
+  writeFileSync(join(seed, "README.md"), `JUNO journal anchors (${path})\n`);
+  await realGit(["-C", seed, "add", "README.md"]);
+  await realGit(["-C", seed, "commit", "--quiet", "-m", "start"]);
+  await realGit(["-C", seed, "push", "--quiet", "origin", "HEAD:main"]);
+}
+
+const pinState = (path = fx.pin) => [{ what: "the anchor pin", path, kind: "pin" as const }];
+const notesOf = (root: string, id: string): Record<string, unknown>[] =>
+  readTrajectory(root, id).map((entry) => {
+    const blob = readPayload(root, entry.payload_ref);
+    return blob.status === "present" ? (JSON.parse(new TextDecoder().decode(blob.bytes)) as Record<string, unknown>) : {};
+  });
+const ownRecordOf = (root: string): string => listRecords(root).map((item) => item.taskId ?? "").find((id) => id.startsWith("juno.journal.")) ?? "";
+
+describe("D-206 G: recovery, and the pinned anchor repository, through every registered service", () => {
+  const starting = serviceEntries.filter((entry) => entry.kind !== "class");
+
+  // proves D-193's rule for this part: every registered service that starts is covered below
+  it("covers every registered command or program that starts a service", () => {
+    expect(starting.map((entry) => entry.id).filter((id) => RECORD_OF[id] === undefined || COMMAND_PROBES[id] === undefined)).toEqual([]);
+  });
+
+  /**
+   * The ids a service uses after a manual recovery. An id anchored once in the pinned repository is never anchored
+   * again from another journal (its anchor is already there and is never replaced, §3.4.1), so a recovered journal
+   * needs new session and task ids; `recoveredPaths` gives the probes theirs.
+   */
+  const RECOVERED_RECORD: Readonly<Record<string, string>> = { "gateway.serve": "gateway-probe-r", "hook.serve": "session-probe-r", "runner.process": "task-r" };
+  function recoveredPaths(journal: string): Partial<Fixture> {
+    writeFileSync(fx.session, JSON.stringify({ ...(JSON.parse(readFileSync(fx.session, "utf8")) as Record<string, unknown>), session: gatewaySession({ session_id: "probe-r" }) }), { mode: 0o644 });
+    return { journal, real: true, hookSession: { session: hookRequest("probe-r"), grants: [] } };
+  }
+
+  /** The service's first run with the real git, through the pin, as the operator's service runs. */
+  async function realFirstRun(entry: (typeof starting)[number], paths: Partial<Fixture> = {}, record = RECORD_OF[entry.id]): Promise<string> {
+    const probe = COMMAND_PROBES[entry.id];
+    if (probe === undefined || record === undefined) throw new Error(`no probe for ${entry.id}`);
+    const at = { ...fx, ...paths };
+    if (entry.id === "runner.process") {
+      const config = { journalKeyDir: at.keys, anchorClone: at.clone, intervalMs: 60_000, pin: at.pin };
+      const layer = await SessionLayer.open({ service: "runner", journal: at.journal, workspaces: [fx.work], state: anchoringState(config), anchor: fx.anchor }, { host: ordinaryHost(), anchoring: (root, pin) => gitAnchoring(config, root, pin) });
+      const h = await harness();
+      try {
+        const runner = new Runner({ layer, registry: h.registry, grants: h.grants, providers: [], sources: [], resolver: new HostPathResolver(fx.work) });
+        expect(runner.admit(runnerRequest({ id: record }))).toMatchObject({ admitted: false });
+        runner.close();
+      } finally {
+        h.cleanup();
+      }
+      expect(await layer.close()).toEqual([]);
+    } else {
+      const run = await probe.run(entry.implementation, ordinaryHost(), { ...paths, real: true });
+      expect(run, run.said).toMatchObject({ code: 0 });
+    }
+    expect(listRecords(at.journal).map((item) => item.taskId)).toContain(record);
+    events.length = 0;
+    return record;
+  }
+
+  /** The run must have been refused by the shared layer, with nothing opened, served or written at `journal`. */
+  function expectRefused(entry: (typeof starting)[number], run: Run, text: RegExp): void {
+    expect(run.code, run.said).toBe(1);
+    expect(run.said).toMatch(text);
+    const opened = events.filter((event) => event.spec.service === entry.service);
+    expect(opened).toHaveLength(1);
+    expect(opened[0]?.layer).toBeNull();
+    expect(run.said).not.toMatch(/serving|ready/);
+  }
+
+  for (const entry of starting) {
+    const probe = COMMAND_PROBES[entry.id];
+    if (probe === undefined) continue;
+
+    // proves D-206 item 1 with §3.4.1, §3.4.2: after a power loss that left the last entry incomplete, the service
+    // starts; the incomplete entry is gone, a `recovered_truncation` entry records it in the journal's own record and
+    // in the record that lost it, the journal verifies against its anchors again, and every grant the open session
+    // holds is exhausted in the grant store of the mode that starts on it
+    it(`${entry.id}: recovers a torn final write, records it, and exhausts the open session's grants`, async () => {
+      const record = await firstRun(entry);
+      const file = entriesFile(fx.journal as never, record);
+      const before = readFileSync(file, "utf8");
+      writeFileSync(file, `${before}{"actor":"juno.session","cost":{"curr`);
+      const run = await probe.run(entry.implementation, ordinaryHost(), {});
+      expect(run, run.said).toMatchObject({ code: 0 });
+      const layer = events.find((event) => event.spec.service === entry.service)?.layer;
+      const recovery = layer?.recovery;
+      expect(recovery).toMatchObject({ record, how: "partial_line" });
+      expect(readFileSync(file, "utf8").startsWith(before)).toBe(true);
+      expect(notesOf(fx.journal, ownRecordOf(fx.journal)).filter((note) => note["type"] === "recovered_truncation")).toMatchObject([{ record, how: "partial_line", exhausted_grants: recovery?.exhausted_grants }]);
+      expect(notesOf(fx.journal, record).some((note) => note["type"] === "recovered_truncation")).toBe(true);
+      expect(checkAnchors(record, verifyTrajectory(fx.journal, record), await sink.list(taskDigest(record)), journalKey.publicKey)).toMatchObject({ ok: true, unanchored: 0 });
+      if (entry.id === "gateway.serve") {
+        // The gateway's session was open and holds grant `g`: it is exhausted, here and after another restart.
+        expect(recovery?.open_sessions).toEqual(["gateway-probe"]);
+        expect(recovery?.exhausted_grants).toEqual(["g"]);
+        expect(run.said).toMatch(/left incomplete[^]*exhausted and needs a new, newly signed grant: g/);
+        const again = await SessionLayer.open({ service: "gateway", journal: fx.journal, workspaces: [fx.work], state: pinState(), anchor: fx.anchor }, { host: ordinaryHost(), anchoring: testAnchoring({ sink, journalKey }) });
+        expect(again.recovery).toBeNull();
+        const store = grantsOf(gatewayGrant());
+        again.requireGrants(store);
+        expect(store.coverage({ principal: PRINCIPAL, grants: ["g"] }, "mcp.message.send", new Date()).refused).toEqual([{ grant: "g", reason: "exhausted" }]);
+      }
+    }, 30_000);
+
+    // proves D-206 item 2: the positive control for the three tests below. With the real git and the pin, the service
+    // starts a second time on its own journal, clone and settings
+    it(`${entry.id}: starts again through the pinned repository when nothing was replaced`, async () => {
+      await pinnedRepository();
+      await realFirstRun(entry);
+      const run = await probe.run(entry.implementation, ordinaryHost(), { real: true });
+      expect(run, run.said).toMatchObject({ code: 0 });
+    }, 60_000);
+
+    // proves D-206 item 2 (evidence items 22 and 24, closed): whoever has the runner's account replaces the journal,
+    // the journal key and the clone together, keeping the service's paths. The pinned repository still holds the
+    // anchors of the journal that was there, so the service does not start as new
+    it(`${entry.id}: does not start as new when the journal, the journal key and the clone are replaced together`, async () => {
+      await pinnedRepository();
+      await realFirstRun(entry);
+      rmSync(fx.journal, { recursive: true });
+      rmSync(fx.keys, { recursive: true });
+      rmSync(fx.clone, { recursive: true });
+      // In the clone's place: a clone of a repository of the attacker's own.
+      const theirs = join(fx.dir, "theirs.git");
+      await pinnedRepository(theirs);
+      await realGit(["clone", "--quiet", theirs, fx.clone]);
+      expectRefused(entry, await probe.run(entry.implementation, ordinaryHost(), { real: true }), /disagrees with the pinned repository: it shares no history/);
+      // With the clone simply deleted instead: the cache is rebuilt from the pinned repository, which holds the anchors
+      // of the journal that was replaced.
+      events.length = 0;
+      rmSync(fx.clone, { recursive: true });
+      rmSync(fx.journal, { recursive: true, force: true });
+      expectRefused(entry, await probe.run(entry.implementation, ordinaryHost(), { real: true }), /disagrees with its off-host anchors/);
+      expect(existsSync(join(fx.journal, "tasks", taskDigest(RECORD_OF[entry.id] ?? "")))).toBe(false);
+    }, 60_000);
+
+    // proves D-206 item 2: the service's settings are replaced too: a new journal folder, a new journal key folder and
+    // a new clone, so that nothing on the host says a journal ever existed. The pin does not name the new journal
+    // folder, and only root can add one
+    it(`${entry.id}: does not start as new when its settings name a new journal, key and clone`, async () => {
+      await pinnedRepository();
+      await realFirstRun(entry);
+      const replaced = { journal: join(fx.dir, "journal-new"), keys: join(fx.dir, "journal-key-new"), clone: join(fx.dir, "juno-anchors-new"), real: true };
+      expectRefused(entry, await probe.run(entry.implementation, ordinaryHost(), replaced), /journal-new is not a journal folder the anchor pin .* names; only the operator, as root, adds one there/);
+      expect(existsSync(replaced.journal)).toBe(false);
+      expect(existsSync(replaced.keys)).toBe(false);
+      expect(existsSync(replaced.clone)).toBe(false);
+    }, 60_000);
+
+    // proves D-206 item 2: and the pin setting itself is replaced: a pin of the runner's own making, naming the new
+    // journal and a repository of the attacker's. A pin that is not root's is refused
+    it(`${entry.id}: does not start as new when its settings name a pin of the runner's own`, async () => {
+      await pinnedRepository();
+      await realFirstRun(entry);
+      const theirs = join(fx.dir, "theirs.git");
+      await pinnedRepository(theirs);
+      const replaced = { journal: join(fx.dir, "journal-new"), keys: join(fx.dir, "journal-key-new"), clone: join(fx.dir, "juno-anchors-new"), pin: join(fx.dir, "runner-owned", "anchors.json"), real: true };
+      writePin([{ path: replaced.journal, recovery_epoch: FIRST_EPOCH }], { path: replaced.pin, url: theirs });
+      expectRefused(entry, await probe.run(entry.implementation, ordinaryHost(), replaced), /the anchor pin .* is owned by uid [0-9]+, not root/);
+      expect(existsSync(replaced.journal)).toBe(false);
+    }, 60_000);
+
+    // proves D-206 item 1 (manual recovery): a journal that no longer verifies refuses the start. The operator, as root,
+    // adds a new journal folder to the pin with the time of the recovery. The service starts on it, and the new
+    // journal's first entry records that recovery epoch
+    it(`${entry.id}: after a manual recovery the new journal records the recovery epoch`, async () => {
+      await pinnedRepository();
+      const record = await realFirstRun(entry);
+      const file = entriesFile(fx.journal as never, record);
+      writeFileSync(file, readFileSync(file, "utf8").replace(/"actor":"[^"]+"/, '"actor":"someone-else"'));
+      expectRefused(entry, await probe.run(entry.implementation, ordinaryHost(), { real: true }), /does not verify/);
+      events.length = 0;
+      // The operator's manual recovery. The epoch is in the past of every grant these probes sign, so the probe's own
+      // grants stay usable here; the next test is about grants issued before it.
+      const journal2 = join(fx.dir, "journal-2");
+      const recovered = recoveredPaths(journal2);
+      const epoch = "2026-01-01T00:00:00Z";
+      writePin([{ path: fx.journal, recovery_epoch: FIRST_EPOCH }, { path: journal2, recovery_epoch: epoch }]);
+      if (entry.id === "runner.process") await realFirstRun(entry, recovered, RECOVERED_RECORD[entry.id]);
+      const run = await probe.run(entry.implementation, ordinaryHost(), recovered);
+      expect(run, run.said).toMatchObject({ code: 0 });
+      expect(listRecords(journal2).map((item) => item.taskId)).toContain(RECOVERED_RECORD[entry.id]);
+      expect(notesOf(journal2, ownRecordOf(journal2))[0]).toEqual({ type: "recovery_epoch", epoch });
+      // The epoch a journal records cannot be moved afterwards: a pin that says otherwise is a setting that disagrees.
+      writePin([{ path: fx.journal, recovery_epoch: FIRST_EPOCH }, { path: journal2, recovery_epoch: "2025-01-01T00:00:00Z" }]);
+      events.length = 0;
+      expectRefused(entry, await probe.run(entry.implementation, ordinaryHost(), recovered), /journal records the recovery epoch .* but the anchor pin says/);
+    }, 90_000);
+  }
+
+  // proves D-206 item 1 (manual recovery) for every mode's grant store: on a journal with a recovery epoch, a grant
+  // the operator signed before it is refused wherever a grant is looked up, and one signed after it is honoured
+  for (const service of SERVICES) {
+    it(`${service}: a grant issued before the recovery epoch is refused, and one issued after it is honoured`, async () => {
+      const epoch = new Date(Date.now() - 30_000).toISOString();
+      writePin([{ path: fx.journal, recovery_epoch: epoch }]);
+      const layer = await SessionLayer.open({ service, journal: fx.journal, workspaces: [fx.work], state: pinState(), anchor: fx.anchor }, { host: ordinaryHost(), anchoring: testAnchoring({ sink, journalKey }) });
+      expect(layer.recoveryEpoch).toBe(Date.parse(epoch));
+      const old = gatewayGrant();
+      const fresh = signed({ ...old, signature: undefined, id: "g-after", issued_at: new Date(Date.now() - 5_000).toISOString() });
+      const store = grantsOf(old, fresh);
+      layer.requireGrants(store);
+      expect(store.signed("g")).toBeUndefined();
+      expect(store.signed("g-after")?.id).toBe("g-after");
+      const coverage = store.coverage({ principal: PRINCIPAL, grants: ["g", "g-after"] }, "mcp.message.send", new Date());
+      expect(coverage.refused).toEqual([{ grant: "g", reason: "issued_before_recovery" }]);
+      expect(coverage.covering.map((grant) => grant.id)).toEqual(["g-after"]);
+      // A restart reads the same epoch back from the journal.
+      expect(await layer.close()).toEqual([]);
+      const again = await SessionLayer.open({ service, journal: fx.journal, workspaces: [fx.work], state: pinState(), anchor: fx.anchor }, { host: ordinaryHost(), anchoring: testAnchoring({ sink, journalKey }) });
+      expect(again.recoveryEpoch).toBe(Date.parse(epoch));
+    });
+  }
+
+  // proves D-206 item 1 (manual recovery), through the real commands: on the recovered journal the gateway refuses to
+  // admit its session under the grant signed before the recovery, and admits it under a newly signed one
+  it("gateway.serve: an old grant is refused after a manual recovery, and a newly signed one is accepted", async () => {
+    const entry = starting.find((candidate) => candidate.id === "gateway.serve");
+    const probe = COMMAND_PROBES["gateway.serve"];
+    if (entry === undefined || probe === undefined) throw new Error("no gateway probe");
+    await pinnedRepository();
+    await realFirstRun(entry);
+    const journal2 = join(fx.dir, "journal-2");
+    const recovered = recoveredPaths(journal2);
+    // The operator recovers now; the grant in the runner's folder was signed a minute ago.
+    writePin([{ path: fx.journal, recovery_epoch: FIRST_EPOCH }, { path: journal2, recovery_epoch: new Date(Date.now() - 30_000).toISOString() }]);
+    const refused = await probe.run(entry.implementation, ordinaryHost(), recovered);
+    expect(refused.code, refused.said).toBe(1);
+    expect(refused.said).toMatch(/grant g was issued before this journal's recovery epoch, so it is refused; sign a new grant \(D-206\)/);
+    // The refused admission is in the new journal, and no session runs.
+    expect(listRecords(journal2).map((item) => item.taskId)).toContain("gateway-probe-r");
+    expect(notesOf(journal2, "gateway-probe-r").filter((note) => note["type"] === "admission").map((note) => note["outcome"])).toEqual(["rejected"]);
+    // The operator signs a new grant; a new session id is admitted under it.
+    writeFileSync(fx.grant, JSON.stringify(signed({ ...gatewayGrant(), signature: undefined, id: "g2", issued_at: new Date(Date.now() - 5_000).toISOString() })), { mode: 0o644 });
+    writeFileSync(fx.session, JSON.stringify({ ...(JSON.parse(readFileSync(fx.session, "utf8")) as Record<string, unknown>), session: gatewaySession({ session_id: "probe-2", grants: ["g2"] }) }), { mode: 0o644 });
+    const admitted = await probe.run(entry.implementation, ordinaryHost(), recovered);
+    expect(admitted, admitted.said).toMatchObject({ code: 0 });
+    expect(notesOf(journal2, "gateway-probe-2").filter((note) => note["type"] === "admission").map((note) => note["outcome"])).toEqual(["admitted"]);
+  }, 90_000);
+
+  // proves D-206 item 1 (manual recovery), through the real commands: the hook service on the recovered journal refuses
+  // to admit a session under a grant file signed before the recovery, and admits one under a newly signed grant
+  it("hook.serve: an old grant is refused after a manual recovery, and a newly signed one is accepted", async () => {
+    const entry = starting.find((candidate) => candidate.id === "hook.serve");
+    const probe = COMMAND_PROBES["hook.serve"];
+    if (entry === undefined || probe === undefined) throw new Error("no hook probe");
+    await pinnedRepository();
+    await realFirstRun(entry);
+    const journal2 = join(fx.dir, "journal-2");
+    const recovered = { journal: journal2, real: true };
+    writePin([{ path: fx.journal, recovery_epoch: FIRST_EPOCH }, { path: journal2, recovery_epoch: new Date(Date.now() - 30_000).toISOString() }]);
+    const hookGrant = (id: string, issuedAgoMs: number): Record<string, unknown> => signed({ ...gatewayGrant(), signature: undefined, id, capability_selector: { capabilities: ["fs.read"] }, issued_at: new Date(Date.now() - issuedAgoMs).toISOString() });
+    const oldFile = join(fx.dir, "hook-grant-old.json");
+    const newFile = join(fx.dir, "hook-grant-new.json");
+    writeFileSync(oldFile, JSON.stringify(hookGrant("g-old", 60_000)), { mode: 0o644 });
+    writeFileSync(newFile, JSON.stringify(hookGrant("g-new", 5_000)), { mode: 0o644 });
+    const refused = await probe.run(entry.implementation, ordinaryHost(), { ...recovered, hookSession: { session: hookRequest("after-recovery", { grants: ["g-old"] }), grants: [oldFile] } });
+    expect(refused.said).toMatch(/grant g-old was issued before this journal's recovery epoch, so it is refused; sign a new grant \(D-206\)/);
+    expect(refused.said).not.toMatch(/admitted session-after-recovery/);
+    const admitted = await probe.run(entry.implementation, ordinaryHost(), { ...recovered, hookSession: { session: hookRequest("after-recovery-2", { grants: ["g-new"] }), grants: [newFile] } });
+    expect(admitted.said, admitted.said).toMatch(/admitted session-after-recovery-2/);
+  }, 90_000);
+});
+

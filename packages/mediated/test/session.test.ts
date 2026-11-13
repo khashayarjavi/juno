@@ -91,7 +91,7 @@ beforeEach(async () => {
   writeFileSync(join(work, "project", "notes.txt"), "notes\n");
   writeFileSync(join(work, "project", "secrets", "key.txt"), "secret\n");
   now = T0;
-  layer = openTestLayer("hook", { journal: join(dir, "journal"), workspaces: [work], state: [{ what: "the checkpoint store", path: join(dir, "checkpoints"), kind: "dir" }], clock: () => now });
+  layer = await openTestLayer("hook", { journal: join(dir, "journal"), workspaces: [work], state: [{ what: "the checkpoint store", path: join(dir, "checkpoints"), kind: "dir" }], clock: () => now });
   journal = { root: layer.root };
   grants = new GrantStore(TEST_ANCHOR);
   grants.add(grant("grant-cc", ["cc.read", "cc.glob", "cc.write", "cc.edit", "cc.bash.read", "cc.bash.write", "cc.webfetch"]));
@@ -418,9 +418,9 @@ describe("plan item 10 (D-148): JUNO's own state is outside every scope", () => 
   // proves plan item 10: sessions refuse to start when a workspace root would cover the journal or another protected path
   // (D-194: the refusal now comes from the shared start-up check, which every service runs, and the sessions refuse a
   // workspace root that check did not judge.)
-  it("refuses a workspace root that covers the journal or a protected path", () => {
-    expect(() => openTestLayer("hook", { journal: join(dir, "journal"), workspaces: [dir] })).toThrow(/JUNO's own state/);
-    expect(() => openTestLayer("hook", { journal: join(dir, "journal"), workspaces: [work], state: [{ what: "Claude Code's settings", path: join(work, "project", ".claude", "settings.json"), kind: "path" }] })).toThrow(/JUNO's own state/);
+  it("refuses a workspace root that covers the journal or a protected path", async () => {
+    await expect(openTestLayer("hook", { journal: join(dir, "journal"), workspaces: [dir] })).rejects.toThrow(/JUNO's own state/);
+    await expect(openTestLayer("hook", { journal: join(dir, "journal"), workspaces: [work], state: [{ what: "Claude Code's settings", path: join(work, "project", ".claude", "settings.json"), kind: "path" }] })).rejects.toThrow(/JUNO's own state/);
     expect(() => new MediatedSessions({ layer, grants, paths: new PathMap([dir]), resolver: new HostPathResolver(dir), view: new Workspace(execFileScript(process.execPath, []), "/work", dir), filesystem: systemFilesystemIo() })).toThrow(/not a workspace the start-up check judged/);
   });
 

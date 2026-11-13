@@ -11,8 +11,8 @@ import { type Harness, grant, harness, request, shellRun, turn } from "./helpers
  */
 
 let h: Harness;
-beforeEach(() => {
-  h = harness();
+beforeEach(async () => {
+  h = await harness();
 });
 afterEach(() => {
   h.cleanup();

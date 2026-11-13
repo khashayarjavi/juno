@@ -1,7 +1,7 @@
 {
   "comments": [
     "JUNO hook session file (plan Increment 6, D-196). Copy to /var/lib/juno-runner/session.json, readable by juno-runner only.",
-    "Change only: session_id (a new UUID for each Claude Code session: run uuidgen), sources (what Claude may read, and its class),",
+    "Change only: session_id (a new UUID for each Claude Code session: run cat /proc/sys/kernel/random/uuid), sources (what Claude may read, and its class),",
     "grants (the ids of your signed grants) and the grant file paths below, and provider_clearance (the highest class Claude may read).",
     "Keep this file and the grant files under /var/lib/juno-runner, never under /srv/juno-work."
   ],

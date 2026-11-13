@@ -19,11 +19,13 @@ import {
   type CheckpointStore,
   type EnforcementBoundary,
   type GovernedSession,
+  type RecoveredRecord,
   REFUSED_ADMISSION_CLASS,
   SessionLayer,
+  type SessionLimits,
   type Workspace,
   checkpointId,
-  type GrantStore,
+  GrantStore,
   type PathResolver,
   type TaskContext,
   type Verdict,
@@ -302,6 +304,10 @@ export class MediatedSessions {
   readonly #registries = new Map<string, { registry: CapabilityRegistry; boundary: EnforcementBoundary }>();
   /** Sessions whose admission was refused and journalled: task id → the refused request's name map (D-152). */
   readonly #refused = new Map<string, ReadonlyMap<string, string>>();
+  /** Sessions the journal admitted that could not be rebuilt at start, and why: they stay closed, and are never admitted again (D-201). */
+  readonly #unrestored = new Map<string, string>();
+  /** Grant files a rebuilt session's admission named that could not be read again at start; those grants are absent. */
+  readonly #grantWarnings: string[] = [];
 
   constructor(options: MediatedOptions) {
     if (options.gateway !== undefined && !GATEWAY_NAME.test(options.gateway.server)) throw new MediatedError(`the gateway's server name ${JSON.stringify(options.gateway.server)} must be letters, digits and hyphens only (D-190)`);
@@ -322,6 +328,98 @@ export class MediatedSessions {
     this.#checkpoints = options.checkpoints;
     this.#view = options.view;
     this.#filesystem = options.filesystem;
+    // D-201: every session the journal admitted is reopened exactly as its journal leaves it, before any call is judged.
+    for (const record of this.#layer.recovered()) {
+      if (!record.id.startsWith("session-")) continue;
+      if (record.admission === null) this.#restoreRefused(record);
+      else if (record.admission["mode"] === "hook") {
+        try {
+          this.#restore(record);
+        } catch (error: unknown) {
+          this.#unrestored.set(record.id, error instanceof Error ? error.message : String(error));
+        }
+      }
+    }
+  }
+
+  /** The sessions rebuilt from the journal when this service started, and the ones that could not be (D-201). */
+  get rebuilt(): { readonly sessions: readonly string[]; readonly failed: ReadonlyMap<string, string>; readonly grants: readonly string[] } {
+    return { sessions: [...this.#sessions.keys()], failed: this.#unrestored, grants: [...this.#grantWarnings] };
+  }
+
+  /**
+   * Reads one signed grant file into the service's store (D-196): the file must pass the start-up check's own rules, and
+   * the grant enters the store only once its operator signature is verified, on a store of its own first, so a forged
+   * grant can never take the place of the real one under its id. Answers the grant's id, or every reason why not.
+   */
+  loadGrant(grantFile: string): { readonly ok: true; readonly id: string } | { readonly ok: false; readonly failures: readonly string[] } {
+    const refusals = this.#layer.fileRefusals("the grant file", grantFile);
+    if (refusals.length > 0) return { ok: false, failures: refusals };
+    try {
+      const grant: unknown = JSON.parse(this.#layer.readFile(grantFile));
+      const trial = new GrantStore(this.#grants.trustAnchor);
+      const id = trial.add(grant).id;
+      if (trial.signed(id) === undefined) return { ok: false, failures: [`the grant file ${grantFile} holds grant ${id} without a valid operator signature (§3.2)`] };
+      // A grant already held (verified by an earlier admission) is not added twice. One held and refused for the
+      // journal's recovery epoch (D-207) stays held and refused; the admission below says why.
+      if (this.#grants.signed(id) === undefined && !this.#grants.issuedBeforeRecovery(id)) this.#grants.add(grant);
+      return { ok: true, id };
+    } catch (error: unknown) {
+      return { ok: false, failures: [`the grant file ${grantFile} holds no valid grant: ${error instanceof Error ? error.message : String(error)}`] };
+    }
+  }
+
+  /** A refused admission found in the journal at start: its name map judges an injected command from it, as before the restart (D-152, D-201). */
+  #restoreRefused(record: RecoveredRecord): void {
+    for (const { payload } of record.entries) {
+      const note = z.object({ type: z.literal("admission"), outcome: z.literal("rejected"), mode: z.literal("hook"), name_map: z.array(NameMapEntry) }).safeParse(payload);
+      if (note.success) this.#refused.set(record.id, new Map(note.data.name_map.map((entry) => [entry.name, entry.program])));
+    }
+  }
+
+  /**
+   * Reopens one admitted session from its journal (operator ruling D-201). The shared layer rebuilds its limits, its
+   * spend, its consecutive rejections and a stop; here, what only this mode knows: the session's grants (read again
+   * from the grant files its admission names, under the same rules; one that is gone or no longer verifies is absent,
+   * so its calls park `awaiting_grant`), its tool registry (with every adapter quarantine the journal records), its
+   * state, its floor (the class of every result it received), and the calls authorized whose result has not arrived.
+   */
+  #restore(record: RecoveredRecord): void {
+    const admitted = z.object({ task: Task, request: SessionRequest, grant_files: z.array(z.string()).default([]) }).parse(record.admission);
+    const request = admitted.request;
+    for (const file of admitted.grant_files) {
+      const loaded = this.loadGrant(file);
+      if (!loaded.ok) this.#grantWarnings.push(...loaded.failures.map((why) => `${record.id}: ${why}`));
+    }
+    const built = this.#registryFor(request);
+    let task = admitted.task;
+    let floor: Sensitivity = "public";
+    const pending: Session["pending"] = new Map();
+    const Pending = z.object({ call_seq: z.int().nullable().default(null), tool_use_id: z.string().nullable().default(null), reads: SensitivitySchema });
+    if (request.reversible_workspaces.length > 0 && this.#checkpoints === undefined) throw new MediatedError("the session has reversible workspaces and this service has no checkpoint store (D-136)");
+    for (const { entry, payload } of record.entries) {
+      // The floor comes from the chained entry itself, never from its payload (D-204).
+      if (entry.kind === "capability_result") floor = maxSensitivity(floor, entry.data_class.sensitivity);
+      const body = z.record(z.string(), z.unknown()).safeParse(payload);
+      if (!body.success) throw new MediatedError(`entry ${String(entry.seq)} has no readable payload`);
+      const type = body.data["type"];
+      if (entry.kind === "capability_call") {
+        const verdict = z.object({ capability: z.string(), verdict: z.object({ reason: z.literal("adapter_quarantined"), adapter: z.string(), observation: z.unknown() }) }).safeParse(payload);
+        // A quarantine is permanent (§2.4, D-064): the ones this session's journal records are applied again.
+        if (verdict.success) built.registry.quarantine({ capability: verdict.data.capability, adapter: verdict.data.verdict.adapter, observation: verdict.data.verdict.observation as never });
+      } else if (entry.kind === "capability_result") {
+        pending.delete(typeof body.data["tool_use_id"] === "string" ? body.data["tool_use_id"] : "");
+      } else if (entry.kind === "note" && (type === "updated_input" || type === "authorized" || type === "gateway_call")) {
+        const call = Pending.parse(payload);
+        const fallback = type === "gateway_call" ? `gateway-${String(entry.seq)}` : `call-${String(call.call_seq)}`;
+        pending.set(call.tool_use_id ?? fallback, type === "gateway_call" ? { call_seq: null, reads: call.reads, gateway: true } : { call_seq: call.call_seq, reads: call.reads });
+      } else if (entry.kind === "note" && type === "result_missing") pending.clear();
+      else if (entry.kind === "note" && type === "state" && body.data["to"] === "failed") task = Task.parse({ ...task, state: "failed", runtime_substate: null });
+    }
+    const resumed = this.#layer.resume(record.id, hookLimits(request, task.budget), { now: () => this.#clock().getTime() });
+    if (resumed === null) throw new MediatedError(`the journal holds no admission of ${record.id}`);
+    this.#registries.set(record.id, built);
+    this.#sessions.set(record.id, { task, request, governed: resumed.session, floor, pending, reversible: [...request.reversible_workspaces] });
   }
 
   /**
@@ -333,23 +431,26 @@ export class MediatedSessions {
     const parsed = SessionRequest.safeParse(input);
     if (!parsed.success) return;
     const id = `session-${parsed.data.session_id}`;
-    if (this.#sessions.has(id)) return;
-    this.#layer.refuse(id, { mode: "hook", failures }, SESSION_ACTOR);
+    if (this.#layer.admitted(id)) return;
+    this.#layer.refuse(id, { mode: "hook", failures, name_map: parsed.data.name_map }, SESSION_ACTOR);
     this.#refused.set(id, new Map(parsed.data.name_map.map((entry) => [entry.name, entry.program])));
     await this.#layer.anchorHead(id, REFUSED_ADMISSION_CLASS);
   }
 
   /** Admits a session as a Task (§4.3 V6-6), or says why not. */
-  async admit(input: unknown): Promise<{ readonly admitted: true; readonly task_id: string } | { readonly admitted: false; readonly failures: readonly string[] }> {
+  async admit(input: unknown, origin: { readonly grantFiles?: readonly string[] } = {}): Promise<{ readonly admitted: true; readonly task_id: string } | { readonly admitted: false; readonly failures: readonly string[] }> {
     const parsed = SessionRequest.safeParse(input);
     if (!parsed.success) return { admitted: false, failures: [parsed.error.message] };
     const request = parsed.data;
     const failures: string[] = [];
     const id = `session-${request.session_id}`;
+    // D-201: an id is admitted once, and the journal remembers it across restarts. A session admitted before a restart is
+    // still open (rebuilt from its journal); it is never admitted again with a fresh budget and time limit.
     if (this.#sessions.has(id)) failures.push(`session ${request.session_id} is already admitted`);
+    else if (this.#layer.admitted(id)) failures.push(`session ${request.session_id} is already admitted: the journal holds its admission, and an id is admitted once. A new session needs a new session_id (D-201)`);
     for (const grantId of request.grants) {
       const grant = this.#grants.signed(grantId);
-      if (grant === undefined) failures.push(`grant ${grantId} does not exist or has no valid operator signature (§3.2)`);
+      if (grant === undefined) failures.push(this.#grants.issuedBeforeRecovery(grantId) ? `grant ${grantId} was issued before this journal's recovery epoch, so it is refused; sign a new grant (D-206)` : `grant ${grantId} does not exist or has no valid operator signature (§3.2)`);
       else {
         if (grant.principal !== request.principal) failures.push(`grant ${grantId} belongs to another principal`);
         for (const selector of grant.resource_scope) {
@@ -404,8 +505,8 @@ export class MediatedSessions {
     }
     if (failures.length > 0 || built === null) {
       // Never admitted, never referenced: recorded at the most restrictive class, as mode A records a refused admission.
-      if (!this.#sessions.has(id)) {
-        this.#layer.refuse(id, { mode: "hook", failures }, SESSION_ACTOR);
+      if (!this.#layer.admitted(id)) {
+        this.#layer.refuse(id, { mode: "hook", failures, name_map: request.name_map }, SESSION_ACTOR);
         this.#refused.set(id, new Map(request.name_map.map((entry) => [entry.name, entry.program])));
         // §3.4.1 (D-198): a refused admission is anchored too; a failure is journalled by the layer.
         await this.#layer.anchorHead(id, REFUSED_ADMISSION_CLASS);
@@ -449,14 +550,7 @@ export class MediatedSessions {
     this.#refused.delete(id);
     // §2.7.1 A4, §4.3, §6.4: the shared layer owns the session's rejection limit, budget (every tool call, and wall clock
     // from admission), TTL, parks and journal (D-194).
-    const governed = this.#layer.admit(id, {
-      rejection_limit: request.rejection_limit,
-      ttl: request.ttl,
-      budget: task.budget,
-      metered: ["turns", "wall_clock_ms"],
-      clock: "from_admission",
-      park_fields: { mode: "hook", answer: "deny" },
-    }, {
+    const governed = this.#layer.admit(id, hookLimits(request, task.budget), {
       dataClass: { sensitivity: "internal", integrity: "operator" },
       now: () => this.#clock().getTime(), actor: SESSION_ACTOR,
       payload: {
@@ -466,6 +560,8 @@ export class MediatedSessions {
         request,
         // §4.3: tokens and currency are not measured by JUNO; the operator accepted the harness's limits.
         unmetered: ["tokens", "currency"],
+        // D-201: the signed grant files this admission read; a restarted service reads them again, under the same rules.
+        ...(origin.grantFiles === undefined ? {} : { grant_files: [...origin.grantFiles] }),
       },
     });
     const session: Session = { task, request, governed, floor: "public", pending: new Map(), reversible };
@@ -509,7 +605,10 @@ export class MediatedSessions {
     const id = `session-${input.session_id}`;
     const session = this.#sessions.get(id);
     const built = this.#registries.get(id);
-    if (session === undefined || built === undefined) return deny("this Claude Code session is not admitted to JUNO, so no call is allowed (§4.3)");
+    if (session === undefined || built === undefined) {
+      const why = this.#unrestored.get(id);
+      return deny(why === undefined ? "this Claude Code session is not admitted to JUNO, so no call is allowed (§4.3)" : `JUNO could not rebuild this session from its journal after a restart, so no call is allowed: ${why} (§4.3 fail-closed, D-201)`);
+    }
     if (session.task.state !== "running") return deny(`this session is ${session.task.state}; no call is allowed`);
     if (session.governed.expired()) {
       session.task = Task.parse({ ...session.task, state: "failed", runtime_substate: null });
@@ -553,10 +652,15 @@ export class MediatedSessions {
     if (verdict.outcome === "proceed") {
       session.governed.clearRejections();
       session.pending.set(input.tool_use_id ?? `call-${String(verdict.call_seq)}`, { call_seq: verdict.call_seq, reads });
-      if (mapped.bash === undefined) return { decision: "none" };
+      // D-201: the call now waits for its result. What a restarted service needs to match that result to this call (its
+      // id and the class of what it reads) is journalled with the decision, before the decision is handed out.
+      if (mapped.bash === undefined) {
+        this.#append(id, "note", this.#class(session), SESSION_ACTOR, { type: "authorized", call_seq: verdict.call_seq, tool_use_id: input.tool_use_id ?? null, reads });
+        return { decision: "none" };
+      }
       // D-152: what runs is what was judged. The command Claude Code runs is the one rebuilt from the judged program and
       // argv, recorded against the call before it is handed out.
-      this.#append(id, "note", this.#class(session), SESSION_ACTOR, { type: "updated_input", call_seq: verdict.call_seq, tool_use_id: input.tool_use_id ?? null, command: mapped.bash.command });
+      this.#append(id, "note", this.#class(session), SESSION_ACTOR, { type: "updated_input", call_seq: verdict.call_seq, tool_use_id: input.tool_use_id ?? null, command: mapped.bash.command, reads });
       return { decision: "allow", updatedInput: mapped.bash };
     }
     if (verdict.outcome === "reject") return this.#reject(session, verdict.detail.reason, input.tool_name, verdict.call_seq);
@@ -775,8 +879,8 @@ export class MediatedSessions {
     // Restrictive (D-192): the hook does not know whether the gateway will reject this call, so passing it on does not
     // clear the session's count of consecutive rejections (§2.7.1 A4); the gateway keeps its own count.
     const reads = await this.#classify(session, [{ kind: "tool_result", tool: input.tool_name }]);
-    session.pending.set(input.tool_use_id ?? `gateway-${String(session.governed.spent().turns)}`, { call_seq: null, reads, gateway: true });
-    this.#append(session.task.id, "note", this.#class(session), SESSION_ACTOR, { type: "gateway_call", tool: input.tool_name, tool_use_id: input.tool_use_id ?? null, mcp_server: server, judged_by: "gateway" });
+    const seq = this.#append(session.task.id, "note", this.#class(session), SESSION_ACTOR, { type: "gateway_call", tool: input.tool_name, tool_use_id: input.tool_use_id ?? null, mcp_server: server, judged_by: "gateway", reads });
+    session.pending.set(input.tool_use_id ?? `gateway-${String(seq)}`, { call_seq: null, reads, gateway: true });
     return { decision: "none" };
   }
 
@@ -832,6 +936,11 @@ type Mapped =
     }
   | { readonly kind: "reject"; readonly reason: string }
   | { readonly kind: "park"; readonly reason: string; readonly detail: Record<string, unknown>; readonly overridable: boolean };
+
+/** §2.7.1 A4, §4.3, §6.4: a hook session's limits, the same at admission and when it is rebuilt from its journal (D-201). */
+function hookLimits(request: z.output<typeof SessionRequest>, budget: z.infer<typeof Task>["budget"]): SessionLimits {
+  return { rejection_limit: request.rejection_limit, ttl: request.ttl, budget, metered: ["turns", "wall_clock_ms"], clock: "from_admission", park_fields: { mode: "hook", answer: "deny" } };
+}
 
 function parkText(reason: string, why: string, overridable: boolean): string {
   return `JUNO parked this call: ${reason}.${why} ${overridable ? "The operator may remedy it, and the call can then be retried." : "This cannot be overridden (§8.3)."}`;

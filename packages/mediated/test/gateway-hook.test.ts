@@ -267,12 +267,12 @@ const notes = (): Record<string, unknown>[] =>
     return { kind: entry.kind, ...(blob.status === "present" ? (JSON.parse(new TextDecoder().decode(blob.bytes)) as Record<string, unknown>) : {}) };
   });
 
-beforeEach(() => {
+beforeEach(async () => {
   tmp = mkdtempSync(join(tmpdir(), "juno-gateway-hook-"));
   work = join(tmp, "work");
   mkdirSync(join(work, "project"), { recursive: true });
   writeFileSync(join(work, "project", "notes.txt"), "notes\n");
-  layer = openTestLayer("hook", { journal: join(tmp, "journal"), workspaces: [work] });
+  layer = await openTestLayer("hook", { journal: join(tmp, "journal"), workspaces: [work] });
   journal = { root: layer.root };
   grants = new GrantStore(TEST_ANCHOR);
   grants.add(signed({

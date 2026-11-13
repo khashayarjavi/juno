@@ -126,7 +126,7 @@ beforeAll(async () => {
   await inWorkload(
     'const fs = require("node:fs"); fs.mkdirSync("/work/scope/sub", { recursive: true }); fs.mkdirSync("/work/outside"); fs.writeFileSync("/work/scope/notes.txt", "the original notes\\n"); fs.writeFileSync("/work/outside/keep.txt", "outside\\n");',
   );
-  layer = openTestLayer("runner", { journal: join(hostDir, "journal"), workspaces: [], state: [{ what: "the checkpoint store", path: join(hostDir, "checkpoints"), kind: "dir" }] });
+  layer = await openTestLayer("runner", { journal: join(hostDir, "journal"), workspaces: [], state: [{ what: "the checkpoint store", path: join(hostDir, "checkpoints"), kind: "dir" }] });
   journal = { root: layer.root };
   registry = new CapabilityRegistry();
   const shell = registry.register(loadRegistryEntry(fileURLToPath(new URL("../../packages/registry/definitions/shell.run.json", import.meta.url))), [new WorkloadExecFileAdapter(target)]);

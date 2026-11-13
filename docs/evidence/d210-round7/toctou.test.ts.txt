@@ -1,0 +1,71 @@
+import { chmodSync, mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
+import { executeOutbound } from "/home/user/juno/packages/registry/src/index.js";
+import { SessionLayer, type SessionLimits, anchoringState, gitAnchoring } from "/home/user/juno/packages/enforcement/src/index.js";
+import { ordinaryHost } from "/home/user/juno/packages/enforcement/test/layer.js";
+
+const LIMITS: SessionLimits = { rejection_limit: 3, ttl: 3_600_000, budget: { tokens: 1, currency: 1, wall_clock_ms: 3_600_000, turns: 10 }, metered: ["turns", "wall_clock_ms"], clock: "from_admission" };
+const CLASS = { sensitivity: "internal" as const, integrity: "operator" as const };
+async function git(args: readonly string[]): Promise<void> {
+  const r = await executeOutbound({ file: "/usr/bin/git", args: ["-c", "user.name=o", "-c", "user.email=o@o", "-c", "init.defaultBranch=main", ...args] });
+  if (r.exitCode !== 0) throw new Error(r.stderr.toString("utf8"));
+}
+
+describe("review 7: symlink swap between the start-up check and the record id", () => {
+  it("swap lands after startupCheck, before journalRecordId", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "r7-toctou-"));
+    try {
+      const remote = join(dir, "pinned.git");
+      await git(["init", "--bare", "--quiet", remote]);
+      const seed = join(dir, "seed");
+      await git(["clone", "--quiet", remote, seed]);
+      writeFileSync(join(seed, "README.md"), "x\n");
+      await git(["-C", seed, "add", "README.md"]);
+      await git(["-C", seed, "commit", "--quiet", "-m", "s"]);
+      await git(["-C", seed, "push", "--quiet", "origin", "HEAD:main"]);
+      const work = join(dir, "work"); mkdirSync(work);
+      const state = join(dir, "state");
+      const journal = join(state, "svc", "journal");
+      // journal key and clone outside the swapped folder, as in the guide's layout
+      const config = { journalKeyDir: join(dir, "keys", "journal-key"), anchorClone: join(dir, "keys", "juno-anchors"), intervalMs: 60_000, git: "/usr/bin/git", pin: join(dir, "root-owned", "anchors.json") };
+      mkdirSync(join(state, "svc"), { recursive: true, mode: 0o700 });
+      mkdirSync(join(dir, "keys"), { mode: 0o700 });
+      mkdirSync(join(dir, "root-owned"), { mode: 0o755 });
+      writeFileSync(config.pin, JSON.stringify({ url: remote, branch: "main", host_key_fingerprint: null, known_hosts: null, push_key: null, journals: [{ path: journal, recovery_epoch: "2020-01-01T00:00:00Z" }] }), { mode: 0o644 });
+      chmodSync(config.pin, 0o644);
+      let swapNow = false;
+      const swap = () => {
+        renameSync(state, join(dir, "state-kept-aside"));
+        mkdirSync(join(dir, "state2", "svc"), { recursive: true, mode: 0o700 });
+        symlinkSync(join(dir, "state2"), state);
+      };
+      const open = (): Promise<SessionLayer> => SessionLayer.open({ service: "gateway", journal, workspaces: [work], state: anchoringState(config), anchor: null }, {
+        host: ordinaryHost(),
+        // The factory runs after startupCheck and before the constructor: the attacker's swap lands here.
+        anchoring: (root, pin) => { if (swapNow) { swap(); swapNow = false; } return gitAnchoring(config, root, pin); },
+      });
+      const first = await open();
+      first.admit("session-1", LIMITS, { dataClass: CLASS, actor: "probe", payload: { admitted_at: new Date().toISOString(), task: { grants: ["g"] } } });
+      expect(await first.close()).toEqual([]);
+      const second = await open();
+      expect(second.admitted("session-1")).toBe(true);
+      expect(await second.close()).toEqual([]);
+      swapNow = true;
+      let third: SessionLayer | null = null;
+      let refused: unknown = null;
+      try { third = await open(); } catch (e) { refused = e; }
+      console.log("third start:", third === null ? `REFUSED ${String(refused)}` : `STARTED; admitted(session-1)=${String(third.admitted("session-1"))}; record=${third.journalRecord}`);
+      if (third !== null) {
+        // the same session id is admitted afresh, with a fresh budget
+        third.admit("session-1", LIMITS, { dataClass: CLASS, actor: "probe", payload: { admitted_at: new Date().toISOString(), task: { grants: ["g"] } } });
+        console.log("re-admitted session-1 on the swapped journal");
+        await third.close();
+      }
+      expect(third).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+});

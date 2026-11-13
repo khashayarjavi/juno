@@ -22,7 +22,14 @@ export class MemoryAnchorSink implements AnchorSink {
   }
 
   list(task: string): Promise<unknown[]> {
+    if (this.unreachable !== null) return Promise.reject(new Error(this.unreachable));
     return Promise.resolve([...this.stored.entries()].filter(([path]) => path.startsWith(`${task}/`)).sort(([a], [b]) => (a < b ? -1 : 1)).map(([, anchor]) => ({ ...anchor })));
+  }
+
+  async listMany(tasks: readonly string[]): Promise<Map<string, unknown[]>> {
+    const listed = new Map<string, unknown[]>();
+    for (const task of tasks) listed.set(task, await this.list(task));
+    return listed;
   }
 }
 

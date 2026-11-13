@@ -10,6 +10,8 @@ A governance layer for AI agents. JUNO checks every action an agent takes agains
 | `STATE.md` | Where the build is right now |
 | `DECISIONS.md` | Decisions made during the build |
 | `spec/` | The specification and the build plan (read-only) |
+| `docs/operator-setup.md` | Setting JUNO up on your Windows machine, part by part (Slice 1.5) |
+| `docs/evidence/slice-1.5.md` | What Slice 1.5 proves, and what it does not protect |
 | `docs/operator-runbook.md` | What the operator does |
 | `docs/session-prompts.md` | Prompts to paste into Claude Code |
 

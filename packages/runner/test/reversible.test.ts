@@ -37,8 +37,8 @@ const notes = (): string => readFileSync(join(work, "project", "notes.txt"), "ut
 const notesOf = (type: string, taskId = "task-1"): Record<string, unknown>[] =>
   h.entries(taskId).filter((entry) => entry.kind === "note").map(h.payload).filter((payload) => payload["type"] === type);
 
-beforeEach(() => {
-  h = harness();
+beforeEach(async () => {
+  h = await harness();
   work = join(h.dir, "work");
   expect(h.registry.register(loadRegistryEntry(FS_WRITE_FILE), [hostWriter()])).toEqual({ registered: true, id: "fs.file.write" });
   h.grants.add(grant({ id: "grant-write", capability_selector: { capabilities: ["fs.file.write"] }, max_invocations: 10 }));

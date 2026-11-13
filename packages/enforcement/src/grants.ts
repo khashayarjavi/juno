@@ -25,6 +25,8 @@ export const GRANT_REFUSALS = [
   "not_yet_issued",
   "expired",
   "exhausted",
+  /** Issued before the journal's recovery epoch (operator ruling D-206; D-207): refused on this journal for good. */
+  "issued_before_recovery",
 ] as const;
 export type GrantRefusalReason = (typeof GRANT_REFUSALS)[number];
 
@@ -45,6 +47,10 @@ export class GrantStore {
   readonly #grants = new Map<string, Grant>();
   readonly #used = new Map<string, number>();
   readonly #anchor: TrustAnchor;
+  /** Grants a recovered torn write exhausted (D-206, D-207): never usable again on this journal, whatever their cap. */
+  readonly #exhausted = new Set<string>();
+  /** The journal's recovery epoch, in milliseconds (D-206, D-207): a grant issued before it is refused. */
+  #recoveryEpoch: number | null = null;
 
   /** `anchor` is the operator's public key; every grant is checked against it at lookup (§3.2, v0.6 C1). */
   constructor(anchor: TrustAnchor) {
@@ -74,7 +80,37 @@ export class GrantStore {
    */
   signed(id: string): Grant | undefined {
     const grant = this.#grants.get(id);
+    // D-206: a grant issued before the journal's recovery epoch is refused wherever a signed grant is asked for.
+    if (grant !== undefined && this.#recoveryEpoch !== null && instant(grant.issued_at) < this.#recoveryEpoch) return undefined;
     return grant !== undefined && grantSignatureValid(grant, this.#anchor) ? grant : undefined;
+  }
+
+  /**
+   * What the journal's recovery records decide for grants (operator ruling D-206; D-207), set by the shared session
+   * layer from the journal when a service starts, with the use counts:
+   *   - `exhausted`: every grant used by a session open when a torn write was recovered. It is treated as used up,
+   *     whatever its cap, until the operator signs a new grant (a new id);
+   *   - `recoveryEpoch`: the time the operator registered this journal. A grant issued before it is refused.
+   * Both only ever tighten: an id once exhausted stays so, and the epoch can be set once.
+   */
+  restoreRecovery(recovery: { readonly exhausted: Iterable<string>; readonly recoveryEpoch: number | null }): void {
+    for (const id of recovery.exhausted) this.#exhausted.add(id);
+    if (recovery.recoveryEpoch !== null) {
+      if (!Number.isFinite(recovery.recoveryEpoch)) throw new GrantStoreError("the recovery epoch is not a time");
+      if (this.#recoveryEpoch !== null && this.#recoveryEpoch !== recovery.recoveryEpoch) throw new GrantStoreError("the grant store already has another recovery epoch");
+      this.#recoveryEpoch = recovery.recoveryEpoch;
+    }
+  }
+
+  /** Whether a recovered torn write exhausted this grant (D-206). */
+  exhaustedByRecovery(id: string): boolean {
+    return this.#exhausted.has(id);
+  }
+
+  /** Whether the grant is stored and was issued before the journal's recovery epoch (D-206). */
+  issuedBeforeRecovery(id: string): boolean {
+    const grant = this.#grants.get(id);
+    return grant !== undefined && this.#recoveryEpoch !== null && instant(grant.issued_at) < this.#recoveryEpoch;
   }
 
   /** Revokes a grant from `at` on. Revoking twice keeps the first revocation. */
@@ -90,6 +126,25 @@ export class GrantStore {
   /** How many calls this grant has authorized. */
   invocations(id: string): number {
     return this.#used.get(id) ?? 0;
+  }
+
+  /**
+   * Sets every grant's use count from the journal (D-202): the shared session layer calls it once, when a service
+   * starts, with the calls the journal shows each grant authorized. A count is kept by grant id, whether or not the
+   * grant is stored yet, so a grant added later starts from what it already used. The store must hold no charge yet:
+   * the journal is the only count.
+   */
+  restoreUse(counts: ReadonlyMap<string, number>): void {
+    if (this.#used.size > 0) throw new GrantStoreError("the grant store already has charges; every count is rebuilt from the journal when a service starts (D-202)");
+    for (const [id, count] of counts) {
+      if (!Number.isSafeInteger(count) || count < 0) throw new GrantStoreError(`grant ${id} has no usable count in the journal`);
+      if (count > 0) this.#used.set(id, count);
+    }
+  }
+
+  /** Every grant's use count, by grant id. */
+  use(): ReadonlyMap<string, number> {
+    return new Map(this.#used);
   }
 
   /** Charges one authorized call to a grant. */
@@ -141,6 +196,8 @@ export class GrantStore {
     if (!grant.capability_selector.capabilities.includes(capability)) return "capability_not_selected";
     if (at < instant(grant.issued_at)) return "not_yet_issued";
     if (at >= instant(grant.expires_at)) return "expired";
+    if (this.#recoveryEpoch !== null && instant(grant.issued_at) < this.#recoveryEpoch) return "issued_before_recovery";
+    if (this.#exhausted.has(grant.id)) return "exhausted";
     if (grant.max_invocations !== null && this.invocations(grant.id) >= grant.max_invocations) return "exhausted";
     return null;
   }

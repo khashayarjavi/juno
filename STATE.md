@@ -1,28 +1,97 @@
 # STATE
 
 ## Current increment
-**Slice 1.5 — Increment 6: §4.3's Slice 1.5 acceptance, end to end** (`docs/plans/slice-1.5-build-plan.md`, Increment 6; §4.3 "Acceptance for Slice 1.5", §18 tests 1–5 as regression, §3.4.5, §3.4.1; D-180). Branch `claude/practical-volta-hjzfmz` (this session's only pushable branch); it carries PR #47's commits from `claude/blissful-gates-7hljw0` unchanged, and its PR supersedes PR #47. Spec v0.6.1. No objection open.
+**Slice 1.5 — finishing: your rulings of 2026-11-13 (D-206) on recovery and on the pinned anchor repository, then review rounds 6 and 7** (D-199, D-201 to D-206). Increment 6, the last increment of the plan, is merged (PR #48). Branch `claude/busy-bell-icjgn3` (this session's only pushable branch); it carries PR #50's commits from `claude/gracious-euler-mt05yr` unchanged, and its PR supersedes PR #50. Spec v0.6.1. No objection open.
 
-Status (2026-11-09, this session): **items 1 to 6 built (D-195 to D-198); review and the merge gate are next.** `make verify: GREEN` locally (1,297 unit, 118 container); `make mediated-e2e` 13/13 with the real Claude Code 2.1.321.
-- **D-198, every mode's journal is anchored (item 5).** §3.4.1 anchors "the journal"; until now only JUNO's own loop did.
-  - The anchoring moved from the runner into the shared session layer, so every mode gets it the same way. No service can open its journal without an anchor destination and a journal key of its own; the operator's signing key is refused as the journal key.
-  - Every session records the interval and the journal key, and is anchored when it starts. A hook or gateway session that cannot be anchored is not admitted. Before each call it is anchored again once the interval (default one minute) has passed; **a session whose fingerprint cannot be copied off the host stops for good**, and every later call is denied.
-  - Refusals and calls from sessions never admitted are anchored too. A running service anchors everything pending once a minute and once more when it stops.
-  - `juno hook serve` and `juno gateway serve` take `--journal-key`, `--anchors` (the clone of `juno-anchors`), `--anchor-interval` and `--git` (default `/usr/bin/git`). The start-up check judges all of them like the rest of JUNO's state.
-  - Found and fixed on the way: the git destination could count an anchor that was committed but never pushed (it now pushes before it lists); a session refused for a forged grant file left no journal record (it is now journalled like every refused admission); the example systemd unit named the wrong node and could not reach rootless Docker.
-  - The entry-point test checks, for every registered mode, that its journal is anchored, that it stops when it cannot be, and that no service starts without anchoring.
-- **The acceptance run (item 5).** `test/acceptance/slice-1.5.test.ts` runs §4.3 tests 1–4 in the same `make verify` as §18 tests 1–5 (`test/acceptance/acceptance.test.ts`). Each runs through the commands you will run, reads the journal back and explains it from the journal alone (§3.4.5), and checks the chain against the anchors held by the stand-in anchor container (§3.4.1):
-  1. mode C, through `juno hook serve`, `juno hook admit` and the real hook client: a write outside the grant is denied (`scope_violation`), journalled, and not written;
-  2. mode C: after a planted file is read, `cat notes.txt; sh -c '…'` parks `integrity_floor` (not overridable) and nothing runs; mode A is §18 test 2 in the same run;
-  3. mode B, through `juno gateway serve` and the real shim: an unenumerated recipient parks `integrity_floor` and the test server never receives it; the enumerated one is delivered;
-  4. modes A and C: a tampered grant, one signed by another key, and an unsigned one are each refused at admission and journalled; nothing runs.
-  - **The real-binary parts** (`make mediated-e2e`, this cloud session): the real Claude Code 2.1.321 runs against the service `juno hook serve` started, each session admitted with `juno hook admit` from a session file and signed grant files. It covers tests 1, 2 and 4 in mode C and test 3 in mode B. The service anchors with the real git into a local repository standing in for `juno-anchors`, and the last test runs your `juno journal check` for every session against a fresh clone of it: all agree, nothing unanchored. No paid model is called: the model's turns are scripted (D-002, D-145).
-  - The sealed container test also runs the real `juno hook serve` and stops it; your journal check then passes (hook-separation 41/41).
-- **Operator steps (item 6).** They are below under "Operator steps for Increment 6", and they will move, with Parts A–F, into one document, `docs/operator-setup.md`, in the follow-up PR that finishes Slice 1.5.
+Status (2026-11-13, latest session): **D-211's fixes are built as D-213, with tests. `make verify: GREEN` on dac663f (1,441 unit, 118 container); `make mediated-e2e` 15/15 with the real Claude Code. Draft PR [khashayarjavi/juno#52](https://github.com/khashayarjavi/juno/pull/52) supersedes #51. Review round 8 is next.** Nothing merged. Branch `claude/trusting-gauss-xqjm3m` (this session's only pushable branch, D-212); it carries PR #51's commits unchanged and its PR will supersede PR #51.
 
-**Left in this increment, in order:**
-1. Open the PR (superseding #47), CI green on its head, review rounds (CLAUDE.md §7 step 5), the merge gate (step 6).
-2. Then, to finish Slice 1.5 (operator instruction of 2026-11-09): `docs/operator-setup.md` (every operator step, Parts A–F and the new ones, click by click) and `docs/evidence/slice-1.5.md` (what Slice 1.5 proves, what each mode does not protect, every residual), through the same gate; then STOP and report.
+### What D-213 changes, in plain words
+1. **Git is named only in root's own pin file** (`"git": "/usr/bin/git"` in `/etc/juno/anchors.json`), and must be root's file. The services no longer accept `--git`. (Round 7 F1.)
+2. **Anchoring reads no git settings at all.** JUNO only runs git in repositories it has just made itself, and checks their settings have not changed before every command. It asks GitHub where the branch is with no repository in play, and reads every anchor back from what GitHub holds after pushing. If that fails, every session stops. (F2.)
+3. **The journal is opened once, from a folder handle, following no symbolic link.** A running service keeps writing to the folder it opened, whatever is done to the path afterwards. (F3, which repeated round 6's mechanism.)
+4. **The power-loss repair is atomic.** What it will do, and the grants it exhausts, are saved before the incomplete entry is removed. Tested by cutting the power at every step of the repair, and again and again. (F4.)
+5. **The guide:** the first journal's epoch is now a fixed early date, so Part D can be done any day after Part C. The steps after a torn write are written out click by click. **The evidence document** now states the trust boundary (item 25) and says exactly what holds.
+
+Tests: round 7's four reproductions pass as regression tests (`packages/enforcement/test/round7.test.ts`, the real git), and three new power-loss tests pass. Unit: 1,438 before the last 3 git tests were added.
+
+### Your rulings of 2026-11-13 on D-210 (D-211)
+1. Build D-210's fixes (git path only in the root-owned pin; anchoring reads no git configuration, pushes to the pinned URL and reads every anchor back from it; the journal opened from a directory handle with no symbolic link followed; the power-loss repair atomic and tested at every step; the guide and evidence document).
+2. **Trust boundary.** The runner account is part of JUNO's enforcement boundary. An attack that needs control of the runner account is a recorded residual on the same machine. It cannot forge grants (your key is out of its reach) or erase anchored history (append-only, pinned remote), and your own check against a fresh copy from GitHub (guide Part G step 7) detects it. A review finding that needs control of the runner account is recorded as a residual, not a STOP.
+3. Review rounds 8 to 10 are authorised. On MERGE: the merge gate, then Slice 1.5 is complete.
+
+**Left, in order:** review rounds 8 to 10 on PR #52; the merge gate; then STOP: Slice 1.5 complete.
+
+### STOP after review round 7 on PR #51 (2026-11-13) — your decision needed (D-210)
+- **Why this is a STOP.** Round 7 was the last round your ruling D-206 authorised, and it ended DO NOT MERGE. One of its findings (F3) also brings back round 6's mechanism, which CLAUDE.md §7 makes a STOP on its own.
+- **Round 7** (fresh reviewer; head a47eab4, `make verify` GREEN, real-binary suite 15/15): four problems, each shown with a test that fails on this head (kept in `docs/evidence/d210-round7/`). In plain words:
+  1. **F1.** The service's settings (which the runner account can edit) name the git program. A fake git program of the runner's own makes JUNO start as new.
+  2. **F2.** While the service runs, the runner account can edit the local copy's own git settings so that every fingerprint of that run goes to another repository, silently. It can then roll the whole run back before a restart.
+  3. **F3.** The symbolic-link trick from round 6 still works if it is timed exactly between JUNO's check and JUNO's opening of the journal. (This is the repeat.)
+  4. **F4.** If the power is lost a second time, during the repair of a torn write, the repair's record is lost, and the grants it should have exhausted work again.
+  - The documents: the guide's "two days ago" date fails if you do Part D two or more days after Part C; the steps after a torn write are not click by click; the evidence document claims more than holds.
+- **Nothing was fixed this time.** The authorised rounds are used up, and a fix nobody reviews cannot pass the merge gate. D-210 lists the fix for each, most restrictive first.
+- **Your decision:** authorise building D-210's fixes and further review rounds on PR #51 (how many), or direct otherwise.
+
+### Earlier this session (2026-11-13)
+- Your rulings of 2026-11-13 (D-206) were built as D-207 and D-208; round 6 found three problems, fixed as D-209 (the SSH helper, the guide's dates, a symbolic link above the journal).
+- Draft PR [khashayarjavi/juno#51](https://github.com/khashayarjavi/juno/pull/51) supersedes #50. CI run 43379238330 green on 80a2925 (round 6's head).
+
+## Earlier status (2026-11-12, before your rulings)
+### STOP after review round 5 on PR #50 (2026-11-12) — your decision needed (D-205)
+- **Why this is a STOP.** CLAUDE.md §7 stops the loop when five review rounds still end DO NOT MERGE, and when a round finds a mechanism already fixed in an earlier round. Round 5 did both.
+- **Round 5** (fresh reviewer, same prompt; head 74b08c6, CI run 43250936745 green): **DO NOT MERGE.** Checks 1 to 4 and 6 PASS; 5, 7 and 8 FAIL, for two findings:
+  1. **A repeat of round 4's finding.** Round 4 found that someone holding the anchor push key could delete anchor files from `juno-anchors` and then delete the journal. My fix read the repository's history for deletions, but missed a file that is **renamed** instead of deleted. So the same trick still worked with a rename.
+  2. **New.** After an outage of `juno-anchors` at the wrong moment (a session admitted, then the service stopped while GitHub was unreachable), JUNO refused to start on that journal ever again. Fail-closed, but the only way on was a new journal folder, where every grant count starts again.
+- **What I did anyway, so a further round can start at once (as in D-192). Not reviewed.**
+  - Renames are now caught: a renamed anchor file or folder is read as the deletion it is. Proven with the real git.
+  - After such an outage the service starts again on the same journal once the repository is reachable. New test for every service.
+- **Your decision:** authorise a further review round on PR #50 (the limit of 5 is used up), or tell me otherwise.
+- **Two more things for you to confirm, unchanged by this STOP:**
+  - A journal that no longer verifies stops the service from starting, and recovery is by hand: a new, empty journal folder (D-202 ruling 4).
+  - **A limit that Slice 1.5 does not close (evidence items 22 and 24):** the runner's clone of `juno-anchors` and the service's settings are on the same machine as the journal. Whoever takes over the runner account could replace the journal together with them, and the service would start as new. Only your own check against a fresh copy from GitHub (guide, Part G step 7) shows that. Closing it needs the anchor repository pinned somewhere the runner cannot change.
+- **Review rounds on this work so far:** round 3 (two findings, D-203), round 4 (two findings, D-204), round 5 (two findings, D-205). Each round's findings were reproduced by the reviewer and fixed with tests. Rounds 4 and 5 were each cut off by a usage limit and run again from the start.
+
+- **Your ruling, recorded as D-201:** fix the class "enforcement state forgotten across a restart" in the shared session layer; verify the journal and its anchors at start and refuse to start if either fails; a restart property test for all three modes, shown failing on the old head; a tamper test; then round 3.
+- **What D-202 changes, in plain words.**
+  - **Every service checks its whole journal before it starts.** After the start-up check, it verifies every record's chain and compares each record with the anchors held in `juno-anchors`. It refuses to start when an entry was changed, a record was rewritten, cut, deleted or planted, an anchor disagrees or carries another key's signature, or the anchors cannot be read.
+  - **Only then is everything rebuilt from the journal, in one place for every mode:** each grant's use count, every admitted session id, and each session's calls used, time limit, rejection count and stop.
+  - **A restart no longer resets anything.** A Claude Code session admitted before a restart is still admitted, with what it had used; admitting it again is refused. A restarted gateway continues its session; it does not admit it again. A new piece of work needs a new session id.
+  - **The journal now keeps a record of its own records,** so a deleted record and a planted one are both found at start.
+- **The property test you asked for** (`packages/runner/test/restart.property.test.ts`): for the own loop, the hook and the gateway, 40 generated sequences each, with restarts at generated points. The decisions and the whole journal must equal those of the same sequence with no restart. The limits are small, so the sequences reach a used-up grant, a spent budget, the rejection limit and a second admission.
+  - **Shown failing on the old head (2bbf936):** hook and gateway fail on the first case (the same session is admitted twice). The own loop passes there; it already rebuilt its state. Output: `docs/evidence/d201-restart/`.
+- **The tamper tests** (`entry-points.test.ts`, part F): every registered service, eight ways the journal or its anchors can be wrong; each refuses to start and opens nothing.
+- **Autopilot rulings (D-202), one for you to confirm:**
+  - A journal that no longer verifies stops the service from starting at all, a torn write after a power loss included. Recovery is by hand: a new, empty journal folder (the guide says how). Your Increment 6 ruling (a task with a broken journal is failed and recorded) still holds for a journal that breaks while the service runs.
+  - Entries newer than the last anchor are not a failure (§3.4.1's interval); they are anchored at start, before anything is served.
+  - A hook session's grants are read again from your grant files after a restart; they are not copied into the journal.
+- **The guide** (`docs/operator-setup.md`) now says what a restart does (Part G, Part H) and what to do when the service refuses to start. **The evidence document** lists two new proven properties (14, 15) and ten new residuals (15 to 24).
+
+- **Review round 3 (PR #50, head 9eca196; CI run 42790024827): DO NOT MERGE.** Checks 1 to 4 and 6 PASS; 5, 7 and 8 FAIL, for two findings, both new and both fixed (D-203):
+  - A session that the once-a-minute background anchoring had stopped for good was stopped only in memory, so a restart let it run again. The stop is now written to the journal the moment it happens.
+  - When the journal's own record could not be anchored, JUNO threw an error instead of recording the failure and stopping sessions. It now records it, and every session stops.
+  - The restart property now also loses the anchor repository mid-run, in every mode. That found one more: after a task that could not start for lack of an anchor, the runner refused every later task until restarted. Fixed.
+  - Not a STOP: neither mechanism was fixed in an earlier round (CLAUDE.md §7 step 5).
+
+- **Review round 4 (PR #50, head 3e31d71; CI run 42794173859 green): DO NOT MERGE.** Checks 1 to 4 and 6 PASS; 5, 7 and 8 FAIL, for two findings, both new and both fixed (D-204):
+  - A restarted hook service forgot how sensitive a session's reading had become when one stored result was missing from the journal's storage. A service now refuses to start if any stored record content is missing, and the hook takes that level from the chained entry itself.
+  - Someone holding the anchor push key could delete anchor files from `juno-anchors` with an ordinary commit, then delete the journal, and the service started as new. JUNO now reads the repository's whole history at every start and refuses a repository where an anchor was ever removed or changed. Proven with the real git.
+  - **Two limits you should know (evidence items 22 and 23):** the runner's own clone of `juno-anchors` is on the same machine, so whoever takes over the runner account could point it at another repository; only your own check against a fresh copy from GitHub (Part G step 7) shows that. Closing it needs the repository pinned where the runner cannot change it, which is not in Slice 1.5.
+  - Round 4 was cut off by a usage limit twice before it produced a verdict (2026-11-10); it was run again on 2026-11-12.
+
+### Review history of PR #49 (superseded by this branch's PR)
+- Round 1 (head f1b780d): DO NOT MERGE; fixed (D-199 item 8).
+- Round 2 (head c0d4be6, CI run 42696079505 green): DO NOT MERGE, for one finding: a restarted hook or gateway service forgot grant use and admitted sessions. STOP (D-200). You ruled (D-201); built as D-202.
+
+### Merges this session (2026-11-09, this session)
+- **PR #48 (Slice 1.5 Increment 6, supersedes #47): merged** as f323720, pinned to head 085158f.
+  - Reviewer round 1 (fresh subagent, P2 verbatim): **MERGE**. All six checks PASS. Non-blocking notes: the journal-check line names the runner's own clone (the setup document now uses a fresh clone); the real-binary test covered one forgery of three (now three); two cosmetic leftovers (removed).
+  - CI on 085158f: run 42690687897, `verify` and `verify-rootless` green.
+  - CI on main for f323720: run 42692280432, `verify` and `verify-rootless` **green**.
+  - Locally: `make verify` GREEN (1,297 unit, 118 container); `make mediated-e2e` 13/13 with the real Claude Code 2.1.321 (15/15 after the follow-up added the two other forgeries; `make verify` 1,300 unit, 118 container on the round-1 fixes).
+  - PR #47 is left open and untouched; #48 carried its commits unchanged.
+
+## Previous increment (Slice 1.5 Increment 6, merged as PR #48)
+**Slice 1.5 — Increment 6: §4.3's Slice 1.5 acceptance, end to end.** What it proves is in PR #48 and `docs/evidence/slice-1.5.md`. D-195 to D-198.
 
 ### Operator steps for Increment 6 (after Part E; superseded by `docs/operator-setup.md` once merged)
 These assume Parts A–E are done. They need the anchor repository of Part D, now with a **deploy key** made by `juno-runner` instead of a token (the docs PR records why).
@@ -477,6 +546,8 @@ Status: **D-129's STOP is lifted by your ruling (e) (D-130). The WSL2 plan secti
     - diagnostics are printed on failure.
 
 ### Operator steps (Windows) — the first point that needs your hands
+> **Superseded by `docs/operator-setup.md`** (D-199). Use that document, not the steps below, which are kept as the history of Increment 2. In particular, Part D's token below is replaced by a deploy key that you never paste anywhere, and Part E step 12 must use `make build`.
+
 Nothing in the increment's code or tests waits for these: CI and the cloud sessions use throwaway keys and the stand-in anchor container. These steps set up real use. Do them in order. Each part ends with a check that tells you it worked. Commands go in **PowerShell**: press the Windows key, type `PowerShell`, and press Enter. When a step says *as administrator*, right-click "Windows PowerShell" and choose **Run as administrator** instead.
 
 **Part A — prerequisites (once).**
@@ -708,7 +779,7 @@ Nothing in the increment's code or tests waits for these: CI and the cloud sessi
     - the `ls` line starts `-rw-r--r--` and names `root root`;
     - **today** the check prints `refused:` with **exactly one** line, saying `/var/lib/juno-hook/hook.sock is not a listening socket`. The command that starts JUNO's hook service on your machine is not built yet (see "Gap to know about" above). Any other line is a real problem: stop and send the agent the output. Once the service exists, the same check must print `separated from the runner`.
 
-**Part D's token, once Part E is done:** it goes in a file only `juno-runner` can read (mode 0600), outside every grant scope (§3.2). Increment 4 says exactly where, when the runner first runs on your machine.
+**Part D's token:** superseded. The push key is a deploy key made by `juno-runner` (`docs/operator-setup.md` Part D, D-199); do not create a token.
 
 **Part F — governed work, and what Claude Code may read (Increment 4, D-162, D-164, D-173, D-174).** Do this when you admit your first Claude Code session to JUNO. It takes about 10 minutes.
 
@@ -917,6 +988,10 @@ Status: **Slice 1.2 complete. Part 1 (PR #19), the interface fix (PR #20), Part 
 **Slice 1.1 — real-model evidence (complete).** Parts 1 to 4 merged (PR #12, #13, #16, #17; STATE record PR #18). Report: `docs/evidence/slice-1.1.md`.
 
 ## Merges recorded (CLAUDE.md §7 step 6)
+- **Slice 1.5 Increment 6 (D-195 to D-198), PR #48** (https://github.com/khashayarjavi/juno/pull/48; supersedes #47):
+  - Head 085158fbcc15a347a0d912a8e9cd21907d2858f6. PR CI run 42690687897 succeeded on that head: `verify` (job 129409304434) and `verify-rootless` (job 129409304938).
+  - Merged as merge commit f323720f8aaa606e72b812b7eba5e8386ff8a76a, pinned to the head SHA. CI on `main` for the merge commit: run 42692280432 (event `push`), `verify` and `verify-rootless` both success.
+  - Reviewer verdict: round 1 MERGE on 085158f; all six checks PASS.
 - **Slice 1.5 Increment 3 (D-132 to D-138), PR #36** (https://github.com/khashayarjavi/juno/pull/36):
   - Head dd485b4ae81d2427149a6e34c31603b5d0630648. PR CI run 41970251969 succeeded on that head: `verify` (job 127056565401) and `verify-rootless` (job 127056565115).
   - Merged as merge commit 5951e574fb8b96f4294dcf222a04ea36356c4472, pinned to the head SHA. CI on `main` for the merge commit: run 41970658311 (event `push`), `verify` and `verify-rootless` both success.
@@ -1022,7 +1097,7 @@ Local, 2026-11-04 on this branch (PR #35): **GREEN** (829 unit, 69 container), a
 Earlier: local, 2026-11-03 on this branch (documents only since `main`): **RED on this host only for Docker Hub** (`429 Too Many Requests` pulling `node:22-bookworm-slim` for the container images) after typecheck, lint and 697 of 697 unit tests passed. CI `verify` on the PR head decides. Earlier: local GREEN on 5ee1594 (697 unit, 51 container); GREEN on 83c7e2e and 73100df (D-085, D-086).
 
 ## For the operator
-- **Now:** the Windows steps under "Current increment" (signing key in the Windows agent, one signed grant, and the public `juno-anchors` with its protection and push token). You may close PR #29 (superseded by PR #30) and PR #32 (superseded by this session's PR).
+- **Now:** follow `docs/operator-setup.md` from the top, part by part; it is the one document for setting JUNO up (D-199). Older step lists in this file are history. You may close PR #29 (superseded by PR #30) and PR #32 (superseded by this session's PR).
 - **Known limit (D-124):** the runner's "cannot write the trust anchor" check does not work on Windows, where it would refuse to start (fail-closed). The runner runs on Linux in Slice 1.5.
 - **Carried note:** CLAUDE.md §1 and §7 step 1 still name `spec/slice-1-build-plan.md`, not `docs/plans/slice-1.5-build-plan.md` (reviewer notes on PR #28 and PR #30). Left as is: CLAUDE.md is yours to change.
 

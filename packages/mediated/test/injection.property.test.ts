@@ -55,13 +55,13 @@ function grant(id: string, capabilities: readonly string[], overrides: Record<st
   });
 }
 
-beforeAll(() => {
+beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), "juno-injection-property-"));
   work = join(dir, "work");
   mkdirSync(join(work, "project", "secrets"), { recursive: true });
   writeFileSync(join(work, "project", "notes.txt"), "notes\n");
   writeFileSync(join(work, "project", "secrets", "key.txt"), "secret\n");
-  layer = openTestLayer("hook", { journal: join(dir, "journal"), workspaces: [work], state: [{ what: "the checkpoint store", path: join(dir, "checkpoints"), kind: "dir" }] });
+  layer = await openTestLayer("hook", { journal: join(dir, "journal"), workspaces: [work], state: [{ what: "the checkpoint store", path: join(dir, "checkpoints"), kind: "dir" }] });
   journal = { root: layer.root };
   grants = new GrantStore(TEST_ANCHOR);
   grants.add(grant("grant-all", ALL_CC));

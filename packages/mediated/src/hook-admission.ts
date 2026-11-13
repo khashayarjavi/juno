@@ -19,7 +19,6 @@ const MAX_REQUEST_BYTES = 64 * 1024;
  */
 export class HookAdmissionService {
   readonly #sessions: MediatedSessions;
-  readonly #grants: GrantStore;
   readonly #layer: SessionLayer;
   readonly #server: Server;
   #queue: Promise<void> = Promise.resolve();
@@ -29,7 +28,6 @@ export class HookAdmissionService {
     this.#layer = SessionLayer.require(sessions.layer, "hook");
     this.#layer.requireGrants(grants);
     this.#sessions = sessions;
-    this.#grants = grants;
     this.#server = createServer((socket) => {
       this.#serve(socket);
     });
@@ -76,39 +74,22 @@ export class HookAdmissionService {
     }
     const failures: string[] = [];
     for (const grantFile of file.grants) {
-      const grantRefusals = this.#layer.fileRefusals("the grant file", grantFile);
-      if (grantRefusals.length > 0) {
-        failures.push(...grantRefusals);
-        continue;
-      }
-      try {
-        const grant: unknown = JSON.parse(this.#layer.readFile(grantFile));
-        // Restrictive (D-196): a grant enters the service's store only once its operator signature is verified, on a
-        // store of its own first, so a forged grant can never take the place of the real one under its id.
-        const trial = new GrantStore(this.#grants.trustAnchor);
-        const id = trial.add(grant).id;
-        if (trial.signed(id) === undefined) {
-          failures.push(`the grant file ${grantFile} holds grant ${id} without a valid operator signature (§3.2)`);
-          continue;
-        }
-        // A grant already held (verified by an earlier admission) is not added twice.
-        if (this.#grants.signed(id) === undefined) this.#grants.add(grant);
-      } catch (error: unknown) {
-        failures.push(`the grant file ${grantFile} holds no valid grant: ${error instanceof Error ? error.message : String(error)}`);
-      }
+      // D-196: read under the start-up check's rules, and stored only once its operator signature is verified.
+      const loaded = this.#sessions.loadGrant(grantFile);
+      if (!loaded.ok) failures.push(...loaded.failures);
     }
     if (failures.length > 0) {
       // D-198 (autopilot ruling): a refusal for its grant files is journalled under the session, like any refused admission.
       await this.#sessions.refuse(file.session, failures);
       return { admitted: false, failures };
     }
-    const admitted = await this.#sessions.admit(file.session);
+    const admitted = await this.#sessions.admit(file.session, { grantFiles: file.grants });
     if (!admitted.admitted) return admitted;
     // The operator's check of this session's journal against the anchors (§3.4.1, D-198): the paths this service uses.
     const at = (what: string): string | undefined => this.#layer.spec.state.find((item) => item.what === what)?.path;
     const keys = at("the journal key folder");
     const anchors = at("the anchor repository clone");
-    return keys === undefined || anchors === undefined ? admitted : { ...admitted, check: { journal: this.#layer.root, anchors, key: `${keys}/journal-key.pub.pem` } };
+    return keys === undefined || anchors === undefined ? admitted : { ...admitted, check: { journal: this.#layer.path, anchors, key: `${keys}/journal-key.pub.pem` } };
   }
 
   #serve(socket: Socket): void {
