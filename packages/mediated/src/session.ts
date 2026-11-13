@@ -449,7 +449,7 @@ export class MediatedSessions {
     else if (this.#layer.admitted(id)) failures.push(`session ${request.session_id} is already admitted: the journal holds its admission, and an id is admitted once. A new session needs a new session_id (D-201)`);
     for (const grantId of request.grants) {
       const grant = this.#grants.signed(grantId);
-      if (grant === undefined) failures.push(`grant ${grantId} does not exist or has no valid operator signature (§3.2)`);
+      if (grant === undefined) failures.push(this.#grants.issuedBeforeRecovery(grantId) ? `grant ${grantId} was issued before this journal's recovery epoch, so it is refused; sign a new grant (D-206)` : `grant ${grantId} does not exist or has no valid operator signature (§3.2)`);
       else {
         if (grant.principal !== request.principal) failures.push(`grant ${grantId} belongs to another principal`);
         for (const selector of grant.resource_scope) {

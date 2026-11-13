@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   type Anchoring,
   type AnchoringConfig,
+  DEFAULT_ANCHOR_PIN,
   DEFAULT_GIT,
   GrantStore,
   type HostIo,
@@ -29,7 +30,7 @@ import { StdioUpstream } from "./gateway-stdio.js";
  * any MCP client) reaches it only through the stdio shim `juno-mcp.js` (D-188).
  *
  *   juno gateway serve --session <file> --socket <path> --journal <dir> --anchor <operator.pub> --workspace <dir>
- *                      --journal-key <dir> --anchors <juno-anchors clone> [--anchor-interval <seconds>] [--git <program>]
+ *                      --journal-key <dir> --anchors <juno-anchors clone> [--anchor-pin <file>] [--anchor-interval <seconds>] [--git <program>]
  *                      --grant <signed grant file> [--grant <file> ...]
  *
  * Before it opens anything it runs THE shared start-up check (D-193, D-194) through `SessionLayer.open`: never root;
@@ -63,7 +64,7 @@ export type GatewayCliIo = {
   readonly err: (text: string) => void;
 };
 
-const USAGE = "usage: juno gateway serve --session <file> --socket <path> --journal <dir> --anchor <operator.pub> --workspace <dir> --journal-key <dir> --anchors <juno-anchors clone> [--anchor-interval <seconds>] [--git <program>] --grant <file> [--grant <file> ...]\n";
+const USAGE = "usage: juno gateway serve --session <file> --socket <path> --journal <dir> --anchor <operator.pub> --workspace <dir> --journal-key <dir> --anchors <juno-anchors clone> [--anchor-pin <file>] [--anchor-interval <seconds>] [--git <program>] --grant <file> [--grant <file> ...]\n";
 
 /** What `juno gateway serve` asks the shared start-up check to judge (D-194). */
 export function gatewayStartupSpec(options: { readonly session: string; readonly socket: string; readonly journal: string; readonly anchor: string; readonly workspace: string; readonly grants: readonly string[]; readonly anchoring: AnchoringConfig }): StartupSpec {
@@ -89,7 +90,7 @@ function refused(io: GatewayCliIo, refusals: readonly string[]): number {
 /** Admits the session and serves it; returns the exit code once stopped (or at once, when refused). */
 export async function runGatewayCli(args: readonly string[], io: GatewayCliIo): Promise<number> {
   const [command, ...rest] = args;
-  const single = ["--session", "--socket", "--journal", "--anchor", "--workspace", "--journal-key", "--anchors", "--anchor-interval", "--git"];
+  const single = ["--session", "--socket", "--journal", "--anchor", "--workspace", "--journal-key", "--anchors", "--anchor-interval", "--git", "--anchor-pin"];
   const options = new Map<string, string>();
   const grantFiles: string[] = [];
   for (let index = 0; index < rest.length; index += 2) {
@@ -108,11 +109,11 @@ export async function runGatewayCli(args: readonly string[], io: GatewayCliIo): 
     io.err(USAGE);
     return 2;
   }
-  const anchoring: AnchoringConfig = { journalKeyDir, anchorClone, intervalMs, git: options.get("--git") ?? DEFAULT_GIT };
+  const anchoring: AnchoringConfig = { journalKeyDir, anchorClone, intervalMs, git: options.get("--git") ?? DEFAULT_GIT, pin: options.get("--anchor-pin") ?? DEFAULT_ANCHOR_PIN };
   // THE shared start-up check, before anything is opened (D-193, D-194).
   let layer: SessionLayer;
   try {
-    layer = await SessionLayer.open(gatewayStartupSpec({ session, socket, journal: journalDir, anchor, workspace, grants: grantFiles, anchoring }), { host: io.host, anchoring: io.anchoring ?? ((root) => gitAnchoring(anchoring, root)) });
+    layer = await SessionLayer.open(gatewayStartupSpec({ session, socket, journal: journalDir, anchor, workspace, grants: grantFiles, anchoring }), { host: io.host, anchoring: io.anchoring ?? ((root, pin) => gitAnchoring(anchoring, root, pin)) });
   } catch (error: unknown) {
     if (error instanceof StartupRefused) return refused(io, error.refusals);
     return refused(io, [error instanceof Error ? error.message : String(error)]);
@@ -171,6 +172,9 @@ export async function runGatewayCli(args: readonly string[], io: GatewayCliIo): 
   }
   // §3.4.1 (D-198): every record is anchored at most one interval after it is written, and once more when the gateway stops.
   layer.startAnchoring();
+  // D-206 item 1 (D-207): a torn final write was repaired at this start; say what it cost.
+  const recovery = layer.recovery;
+  if (recovery !== null) io.err(`juno gateway: the journal's last entry was left incomplete (a power loss or a crash in the middle of a write). It was dropped and recorded (recovered_truncation). Every grant used by a session open at that moment is now exhausted and needs a new, newly signed grant: ${recovery.exhausted_grants.length === 0 ? "(none)" : recovery.exhausted_grants.join(", ")} (D-206).\n`);
   io.out(admitted.resumed === true
     ? `juno gateway: session ${admitted.task_id} was admitted before this start; it goes on from its journal, with the budget and limits it had (D-201); serving ${socket}. Stop with Ctrl+C.\n`
     : `juno gateway: session ${admitted.task_id} admitted; serving ${socket}. Stop with Ctrl+C.\n`);

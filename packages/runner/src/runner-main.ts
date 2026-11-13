@@ -34,7 +34,7 @@ export async function runRunnerMain(env: unknown, io: RunnerMainIo): Promise<num
   }
   let layer: SessionLayer;
   try {
-    layer = await SessionLayer.open(runnerStartupSpec(config), { host: io.host, anchoring: io.anchoring ?? ((root) => gitAnchoring(config.anchoring, root)) });
+    layer = await SessionLayer.open(runnerStartupSpec(config), { host: io.host, anchoring: io.anchoring ?? ((root, pin) => gitAnchoring(config.anchoring, root, pin)) });
   } catch (error: unknown) {
     io.err(`juno-runner: ${error instanceof StartupRefused ? error.message : error instanceof Error ? error.message : String(error)}\n`);
     return 1;

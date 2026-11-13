@@ -161,7 +161,7 @@ export class McpGateway {
     if (this.#task !== null) failures.push("this gateway already holds a session");
     for (const grantId of request.grants) {
       const grant = this.#options.grants.signed(grantId);
-      if (grant === undefined) failures.push(`grant ${grantId} does not exist or has no valid operator signature (§3.2)`);
+      if (grant === undefined) failures.push(this.#options.grants.issuedBeforeRecovery(grantId) ? `grant ${grantId} was issued before this journal's recovery epoch, so it is refused; sign a new grant (D-206)` : `grant ${grantId} does not exist or has no valid operator signature (§3.2)`);
       else {
         if (grant.principal !== request.principal) failures.push(`grant ${grantId} belongs to another principal`);
         for (const selector of grant.resource_scope) {

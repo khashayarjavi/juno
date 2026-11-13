@@ -38,7 +38,10 @@ export {
   GitAnchorSink,
   type JournalKey,
   JournalKeyError,
+  type PinnedRepository,
+  defaultSshWrapper,
   loadOrCreateJournalKey,
   readAnchorDirectory,
   sameKey,
 } from "./sinks.js";
+export { SSH_ENVIRONMENT, sshInvocation } from "./anchor-ssh.js";

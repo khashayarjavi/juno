@@ -36,12 +36,13 @@ const MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
  * shell. A non-zero exit is a result, not an error. Failing to start the
  * program at all (for example, it does not exist) rejects.
  */
-export function executeOutbound(invocation: OutboundInvocation): Promise<InvocationResult> {
+export function executeOutbound(invocation: OutboundInvocation, options: { readonly env?: Readonly<Record<string, string>> } = {}): Promise<InvocationResult> {
   return new Promise((resolve, reject) => {
     const child = execFile(
       invocation.file,
       [...invocation.args],
-      { encoding: "buffer", maxBuffer: MAX_OUTPUT_BYTES, shell: false },
+      // `env`, when given, is the program's whole environment: nothing of this process's own is passed on (D-208).
+      { encoding: "buffer", maxBuffer: MAX_OUTPUT_BYTES, shell: false, ...(options.env === undefined ? {} : { env: { ...options.env } }) },
       (error, stdout, stderr) => {
         if (error === null) {
           resolve({ exitCode: 0, signal: null, stdout, stderr });

@@ -1,4 +1,5 @@
 import { GitAnchorSink, loadOrCreateJournalKey } from "../../journal/src/index.js";
+import type { VerifiedPin } from "./anchor-pin.js";
 import type { Anchoring } from "./session-layer.js";
 import type { StateItem } from "./startup.js";
 
@@ -17,7 +18,17 @@ export type AnchoringConfig = {
   readonly intervalMs: number;
   /** The git program that pushes anchors: an absolute path, judged by the start-up check like any of JUNO's state. */
   readonly git: string;
+  /**
+   * The anchor pin (operator ruling D-206 item 2; D-208): the file the runner cannot change that names the anchor
+   * repository, its SSH host key, and the journal folders that may anchor there.
+   */
+  readonly pin: string;
 };
+
+/** D-208: the anchor pin's place unless the operator names another; root's folder, beside the trust anchor. */
+export const DEFAULT_ANCHOR_PIN = "/etc/juno/anchors.json";
+/** D-208: ssh is named by an absolute path, never looked up on PATH. */
+export const DEFAULT_SSH = "/usr/bin/ssh";
 
 /** D-198: git is named by an absolute path, never looked up on PATH; Ubuntu's own unless the operator names another. */
 export const DEFAULT_GIT = "/usr/bin/git";
@@ -35,6 +46,7 @@ export function anchoringState(config: AnchoringConfig, options: { readonly push
     { what: "the journal key folder", path: config.journalKeyDir, kind: "dir" },
     { what: "the anchor repository clone", path: config.anchorClone, kind: "dir" },
     { what: "the git program that pushes anchors", path: config.git, kind: options.pushes ? "file" : "path" },
+    { what: "the anchor pin", path: config.pin, kind: "pin" },
   ];
 }
 
@@ -47,6 +59,9 @@ export function parseAnchorInterval(text: string | undefined): number | null {
 }
 
 /** Opens anchoring for a layer, after its start-up check passed (passed to `SessionLayer.open` as a factory). */
-export function gitAnchoring(config: AnchoringConfig, journalRoot: string): Anchoring {
-  return { sink: new GitAnchorSink({ clone: config.anchorClone, git: config.git }), journalKey: loadOrCreateJournalKey(config.journalKeyDir, { journalRoot }), intervalMs: config.intervalMs };
+export function gitAnchoring(config: AnchoringConfig, journalRoot: string, pin: VerifiedPin | null): Anchoring {
+  // D-208: no pin, no destination. The start-up check verified the pin this service named; a service that named none
+  // has nowhere it may anchor, and does not start.
+  if (pin === null) throw new Error("no anchor pin was verified, so there is no anchor repository this service may use (D-206, D-208)");
+  return { sink: new GitAnchorSink({ clone: config.anchorClone, git: config.git, pin, ssh: { program: DEFAULT_SSH } }), journalKey: loadOrCreateJournalKey(config.journalKeyDir, { journalRoot }), intervalMs: config.intervalMs };
 }

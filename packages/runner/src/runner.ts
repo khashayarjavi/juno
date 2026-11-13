@@ -546,7 +546,7 @@ export class Runner {
         const grant = this.#grants.signed(grantId);
         if (grant === undefined) {
           // §3.2 C1: an unsigned or forged grant does not exist (D-125).
-          const message = this.#grants.get(grantId) === undefined ? `grant ${grantId} is not stored` : `grant ${grantId} has no valid operator signature, so it does not exist (§3.2)`;
+          const message = this.#grants.get(grantId) === undefined ? `grant ${grantId} is not stored` : this.#grants.issuedBeforeRecovery(grantId) ? `grant ${grantId} was issued before this journal's recovery epoch, so it is refused; sign a new grant (D-206)` : `grant ${grantId} has no valid operator signature, so it does not exist (§3.2)`;
           return [{ check: "3.2", message }];
         }
         return grantChecks(grant, run.task.principal, env, run.admission.sources);

@@ -25,9 +25,8 @@ import { type TrustAnchor, trustAnchorFromPem } from "./signature.js";
  *   5. a trust anchor that is not verified: missing, a symbolic link, not a file, writable by this process or replaceable
  *      through its folder (D-116), writable by group or others, or not an Ed25519 public key (§3.2 C1);
  *   6. an anchor pin that is not verified (operator ruling D-206; D-208): the file that pins the anchor repository's
- *      address, its SSH host key and the journal folders that may anchor there. It is protected like the trust anchor
- *      (the runner can change neither it nor its folder), its known-hosts file likewise and holding exactly the pinned
- *      key, and the journal this service was started on must be one it names.
+ *      address, its SSH host key and the journal folders that may anchor there. It and its folder must be owned by
+ *      root and writable by no one else, its known-hosts file likewise and holding exactly the pinned key, and the journal this service was started on must be one it names.
  */
 
 /** Which service is starting. A new service adds its name here, and to the entry-point registry (D-194). */
@@ -152,28 +151,40 @@ export function startupCheck(spec: StartupSpec, host: HostIo): StartupResult {
   return refusals.length > 0 ? { ok: false, refusals } : { ok: true, anchor, pin };
 }
 
-/** Why this process, or anyone but root and the file's owner, could change a file the runner must only read (D-116, D-208). */
-function protectedFileRefusals(what: string, path: string, host: HostIo): string[] {
+/**
+ * Why a file is not root's own (operator ruling D-206 item 2; D-208): it and the folder holding it must be owned by
+ * root (uid 0), and neither may be writable by group, others or this process. Unlike the trust anchor's rule (D-116), a
+ * file this process owns is refused even when it is read-only: its owner could make it writable again, and the anchor
+ * pin exists to be outside the runner's reach.
+ */
+export function rootOwnedRefusals(what: string, path: string, host: HostIo): string[] {
   if (!path.startsWith("/")) return [`${what} ${path} is not an absolute path`];
   if (pathsOverlap(path, WORK_NAMESPACE)) return [`${what} ${path} lies in the capability namespace ${WORK_NAMESPACE}, which grants can name (§3.2)`];
+  const facts = host.lstat(path);
+  if (facts === null) return [`${what} ${path} does not exist`];
+  if (facts.isSymbolicLink()) return [`${what} ${path} is a symbolic link; name the file itself (D-208)`];
+  if (!facts.isFile()) return [`${what} ${path} is not a file`];
   const refusals: string[] = [];
-  for (const target of [path, dirname(path)]) {
-    if (host.writable(target)) refusals.push(`${what} ${path} is not protected: this process can write ${target}; it must be read-only to the runner (D-116, D-208)`);
+  const folder = dirname(path);
+  const holder = host.lstat(folder);
+  for (const [name, at, stats] of [[what, path, facts], [`the folder of ${what}`, folder, holder]] as const) {
+    if (stats === null) refusals.push(`${name} ${at} does not exist`);
+    else if (stats.uid !== 0) refusals.push(`${name} ${at} is owned by uid ${String(stats.uid)}, not root; it must be outside the runner's reach (D-206, D-208)`);
+    else if ((stats.mode & 0o022) !== 0) refusals.push(`${name} ${at} is writable by group or others (mode ${(stats.mode & 0o7777).toString(8)}) (D-208)`);
+    if (host.writable(at)) refusals.push(`${what} ${path} is not protected: this process can write ${at} (D-206, D-208)`);
   }
-  refusals.push(...changeableRefusals(what, path, "anchor", host));
   return refusals;
 }
 
 /**
  * The anchor pin rule (operator ruling D-206 item 2; D-208), the one implementation the start-up check and
- * `juno hook check` use. The pin file, and the known-hosts file it names, must be files the runner cannot change
- * (neither the file nor its folder writable by this process; owned by root or this process; writable by no group or
- * other; not a symbolic link). The known-hosts file must hold exactly the pinned host key for the pinned host. The push
+ * `juno hook check` use. The pin file, and the known-hosts file it names, must be root's own
+ * (`rootOwnedRefusals`: the file and its folder owned by root, writable by no one else, not a symbolic link). The known-hosts file must hold exactly the pinned host key for the pinned host. The push
  * key is the runner's own file and is judged like any of JUNO's state. `journal` must be one of the journal folders
  * the pin names, as the kernel resolves both.
  */
 export function verifyAnchorPin(path: string, journal: string, workspaces: readonly string[], host: HostIo): { readonly ok: true; readonly pin: VerifiedPin } | { readonly ok: false; readonly refusals: readonly string[] } {
-  const refusals = protectedFileRefusals("the anchor pin", path, host);
+  const refusals = rootOwnedRefusals("the anchor pin", path, host);
   if (refusals.length > 0) return { ok: false, refusals };
   let parsed: ReturnType<typeof parseAnchorPin>;
   try {
@@ -182,7 +193,7 @@ export function verifyAnchorPin(path: string, journal: string, workspaces: reado
     return { ok: false, refusals: [`the anchor pin ${path} cannot be used: ${error instanceof Error ? error.message : String(error)} (D-208)`] };
   }
   if (parsed.transport === "ssh" && parsed.known_hosts !== null && parsed.push_key !== null && parsed.host_key_fingerprint !== null && parsed.host !== null) {
-    const known = protectedFileRefusals("the pinned known-hosts file", parsed.known_hosts, host);
+    const known = rootOwnedRefusals("the pinned known-hosts file", parsed.known_hosts, host);
     refusals.push(...known);
     if (known.length === 0) {
       try {
