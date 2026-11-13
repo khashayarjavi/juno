@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -337,10 +337,19 @@ describe("D-211 item 1: a second power loss at any step of the repair leaves the
           fault.armed = false;
         }
         if (!fault.fired) break;
-        reached.add(existsSync(join(journal, "recovery-pending.json")) ? "record of the repair on disk" : "no record of the repair on disk");
+        const pendingOnDisk = existsSync(join(journal, "recovery-pending.json"));
+        reached.add(pendingOnDisk ? "record of the repair on disk" : "no record of the repair on disk");
+        // What the second power loss left: a record whose tail is torn (the first cut not yet removed, or a note of the
+        // repair's own cut short), as the library itself recognises one.
+        const tasks = join(journal, "tasks");
+        const tornOnDisk = existsSync(tasks) && readdirSync(tasks).some((digest) => tornTail(journal, digest) !== null);
         // The power stays on now.
         const third = await open();
-        expect(third.recovery === null ? "nothing repaired by this start" : "repaired", `operation ${String(at)}`).toBeDefined();
+        // Round 8 note 3 (D-214 item 5): this start repairs exactly when there is something left to repair. It finishes
+        // the repair its record names, or repairs a torn tail; with neither on disk, the earlier start finished, and this
+        // one reports nothing. (A start that reported a repair with nothing to repair, or none with one left, fails.)
+        expect(third.recovery !== null, `operation ${String(at)}: record ${String(pendingOnDisk)}, torn ${String(tornOnDisk)}`).toBe(pendingOnDisk || tornOnDisk);
+        reached.add(third.recovery === null ? "nothing left to repair" : "repair finished by the next start");
         expect(refusedGrants(storeOn(third)), `operation ${String(at)}`).toMatchObject({ "g-open": "exhausted" });
         expect(refusedGrants(storeOn(third))["g-closed"], `operation ${String(at)}`).toBeUndefined();
         expectRepairRecorded(third, `operation ${String(at)}`);
@@ -356,9 +365,10 @@ describe("D-211 item 1: a second power loss at any step of the repair leaves the
         expect(refusedGrants(storeOn(fourth))).toMatchObject({ "g-open": "exhausted" });
         await fourth.close();
       }
-      // Every operation of the repairing start was tried, and the run reached both sides of the record's writing.
+      // Every operation of the repairing start was tried, and the run reached both sides of the record's writing, and
+      // both outcomes of the next start: a repair left to finish, and none.
       expect(at).toBeGreaterThan(10);
-      expect([...reached].sort()).toEqual(["no record of the repair on disk", "record of the repair on disk"]);
+      expect([...reached].sort()).toEqual(["no record of the repair on disk", "nothing left to repair", "record of the repair on disk", "repair finished by the next start"]);
     }, 600_000);
   }
 

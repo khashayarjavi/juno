@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { TEST_ANCHOR, TEST_OPERATOR_KEY } from "../../enforcement/test/test-keys.js";
 import { AnchorExistsError, JournalKeyError, anchorPath, checkAnchors, loadOrCreateJournalKey, taskDigest, verifyTrajectory } from "../../journal/src/index.js";
 import type { CliIo } from "../src/grant-cli.js";
+import { executeOutbound } from "../../registry/src/index.js";
 import { runJournalCli } from "../src/journal-cli.js";
 import { RUNNER_RECORD, type Runner } from "../src/runner.js";
 import { MemoryAnchorSink } from "./anchor-sink.js";
@@ -214,6 +215,76 @@ describe("juno journal check (§3.4.1, D-122)", () => {
     const bad = io({ "/keys/journal.pub.pem": pem });
     expect(runJournalCli(args, bad)).toBe(1);
     expect(JSON.parse(bad.output.join(""))).toMatchObject({ ok: false, failure: { code: "rewritten" } });
+  });
+
+  // proves §3.4.1 with operator ruling D-214 item 2: the check the operator runs from the admin account, on a copy of
+  // the journal root made with `cp -RP` (guide, Part G step 7), gives exactly the answer it gives on the original, for an
+  // anchored chain and for a rewritten one alike; the copy can neither pass what the original fails nor the reverse
+  it("gives the same result on a copied journal as on the original, passing and failing alike", async () => {
+    const { runner } = h.runner([turn([shellRun(["notes.txt"])]), turn([])]);
+    admitted(runner);
+    await runner.run("task-1");
+    const anchorsDir = join(h.dir, "anchors-clone");
+    for (const anchor of (await anchorsOf("task-1")) as { task: string; seq: number }[]) {
+      mkdirSync(join(anchorsDir, anchor.task), { recursive: true });
+      writeFileSync(join(anchorsDir, anchorPath(anchor.task, anchor.seq)), JSON.stringify(anchor));
+    }
+    const keyFile = join(h.dir, "journal-key.pub.pem");
+    writeFileSync(keyFile, h.anchoring.journalKey.publicKey.export({ type: "spki", format: "pem" }).toString());
+    const realIo = (): CliIo & { output: string[]; errors: string[] } => {
+      const output: string[] = [];
+      const errors: string[] = [];
+      return { readFile: (path) => readFileSync(path, "utf8"), out: (text) => output.push(text), err: (text) => errors.push(text), output, errors };
+    };
+    const copyCount = { value: 0 };
+    // The guide's copy, by the real cp: `cp -RP <journal> <admin folder>/journal` (no link followed, every file copied).
+    const copyOf = async (): Promise<string> => {
+      copyCount.value += 1;
+      const target = join(h.dir, `admin-copy-${String(copyCount.value)}`);
+      mkdirSync(target, { mode: 0o700 });
+      // The journal folder by its path, as the operator names it (the harness's `root` is this process's own handle).
+      const copied = await executeOutbound({ file: "/bin/cp", args: ["-RP", join(h.dir, "journal"), join(target, "journal")] });
+      expect(copied.exitCode, copied.stderr.toString("utf8")).toBe(0);
+      return join(target, "journal");
+    };
+    const both = async (): Promise<{ readonly original: { code: number; output: string }; readonly copy: { code: number; output: string } }> => {
+      const copy = await copyOf();
+      const run = (journal: string): { code: number; output: string } => {
+        const io = realIo();
+        const code = runJournalCli(["check", "--journal", journal, "--anchors", anchorsDir, "--key", keyFile, "task-1"], io);
+        return { code, output: io.output.join("") + io.errors.join("") };
+      };
+      return { original: run(join(h.dir, "journal")), copy: run(copy) };
+    };
+    const honest = await both();
+    expect(honest.original.code).toBe(0);
+    expect(JSON.parse(honest.original.output)).toMatchObject({ ok: true, unanchored: 0 });
+    expect(honest.copy).toEqual(honest.original);
+
+    // A rewritten chain fails on the original and, identically, on its copy.
+    const entriesPath = join(h.journal.root, "tasks", taskDigest("task-1"), "entries.jsonl");
+    const lines = readFileSync(entriesPath, "utf8").trimEnd().split("\n");
+    const journalModule = await import("../../journal/src/index.js");
+    const forgedRoot = join(h.dir, "forged");
+    const writer = journalModule.JournalWriter.open(forgedRoot);
+    for (const [index, line] of lines.entries()) {
+      const entry = JSON.parse(line) as Record<string, unknown>;
+      const { seq: _seq, task_id: _task, payload_ref: _ref, hash_prev: _prev, timestamp: _time, ...draft } = entry;
+      void [_seq, _task, _ref, _prev, _time];
+      writer.append("task-1", draft as never, new TextEncoder().encode(index === 2 ? "forged" : `entry ${String(index)}`));
+    }
+    for (const file of ["entries.jsonl", "head.json"]) writeFileSync(join(h.journal.root, "tasks", taskDigest("task-1"), file), readFileSync(join(forgedRoot, "tasks", taskDigest("task-1"), file)));
+    const rewritten = await both();
+    expect(rewritten.original.code).toBe(1);
+    expect(JSON.parse(rewritten.original.output)).toMatchObject({ ok: false, failure: { code: "rewritten" } });
+    expect(rewritten.copy).toEqual(rewritten.original);
+
+    // A cut chain (its last entry removed) fails on both, identically.
+    const cut = readFileSync(entriesPath, "utf8").trimEnd().split("\n");
+    writeFileSync(entriesPath, `${cut.slice(0, -1).join("\n")}\n`);
+    const shortened = await both();
+    expect(shortened.original.code).toBe(1);
+    expect(shortened.copy).toEqual(shortened.original);
   });
 
   // proves the CLI's contract: bad usage exits 2
