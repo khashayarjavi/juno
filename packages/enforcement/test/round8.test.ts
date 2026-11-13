@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { executeOutbound } from "../../registry/src/index.js";
-import { readTrajectory } from "../../journal/src/index.js";
+import { readPayload, readTrajectory } from "../../journal/src/index.js";
 import { type AnchoringConfig, SessionLayer, type SessionLimits, anchoringState, gitAnchoring } from "../src/index.js";
 import { ordinaryHost } from "./layer.js";
 
@@ -104,10 +104,17 @@ describe("D-214 item 5 (round 8 note 2): the read-back catches a push that never
     expect(failed.length).toBeGreaterThan(0);
     for (const id of ["session-1", "session-2"]) {
       expect(running.session(id)?.stopped, id).toBe("anchor_unavailable");
-      expect(readTrajectory(running.root, id).length, id).toBeGreaterThan(0);
+      // The stop is in the session's own record (D-203), so a restart finds it: a `stopped` note naming the reason.
+      const stops = readTrajectory(running.root, id)
+        .filter((entry) => entry.kind === "note")
+        .map((entry) => {
+          const blob = readPayload(running.root, entry.payload_ref);
+          if (blob.status !== "present") throw new Error(`payload ${blob.status}`);
+          return JSON.parse(new TextDecoder().decode(blob.bytes)) as Record<string, unknown>;
+        })
+        .filter((payload) => payload["type"] === "stopped");
+      expect(stops, id).toEqual([{ type: "stopped", reason: "anchor_unavailable" }]);
     }
-    // A stopped session stays stopped: a call is not admitted to run.
-    expect(running.session("session-1")?.stopped).toBe("anchor_unavailable");
     expect(await running.close()).not.toEqual([]);
     // The pinned repository never received anything after the switch.
     expect((await git(["--git-dir", remote, "rev-parse", "main"])).trim()).toBe(pinnedBefore);

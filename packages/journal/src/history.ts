@@ -40,7 +40,8 @@ export async function anchorHistoryVerdict(dir: string, git = HISTORY_GIT): Prom
   const shallow = await run(["rev-parse", "--is-shallow-repository"]);
   if (!shallow.ok) return { ok: false, reason: `the anchor clone's history could not be read: ${shallow.err}` };
   if (shallow.out.trim() !== "false") return { ok: false, reason: "the anchor clone is shallow: its history is not all there; clone it without --depth" };
-  const status = await run(["status", "--porcelain", "--untracked-files=all", "--ignored=no"]);
+  // Ignored files count too (review round 2 of PR #54, restrictive): a fresh clone has none, so any file is a change.
+  const status = await run(["status", "--porcelain", "--untracked-files=all", "--ignored=traditional"]);
   if (!status.ok) return { ok: false, reason: `the anchor clone's files could not be compared with its commit: ${status.err}` };
   if (status.out.trim() !== "") return { ok: false, reason: `the anchor clone's files differ from its commit (${status.out.trim().split("\n")[0] ?? ""}); clone it afresh` };
   const head = await run(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]);

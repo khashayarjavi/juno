@@ -2710,3 +2710,15 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   - The earlier tests now commit their anchors to a real git repository and assert `"history": "checked"`. The "wrong folder finds no anchor" case keeps its assertion with `--no-history`, and gains one that the same folder is refused without it. The e2e asserts `"history": "checked"`.
   - Checked by hand with a throwaway test (deleted): the line `hook admit` prints passes on JUNO's own clone, as on a fresh clone.
 - Reason: §3.4.1 ("anyone can check that history was not rewritten"); D-204, D-205, D-211, D-214; CLAUDE.md §7 step 5; D8.
+
+## D-218 — Review round 2 on PR #54: MERGE, with three non-blocking notes, done before merging (autopilot ruling)
+- Date: 2026-11-13
+- Status: Accepted (built with tests)
+- Applies to: `STATE.md`, `packages/enforcement/test/round8.test.ts`, `packages/journal/src/history.ts`
+- **Round 2** (fresh reviewer, the review prompt verbatim; head 9239fba): **MERGE**, all six checks PASS. Mutations confirmed: switching off the read-back makes `round8.test.ts` fail, and switching off the history rule makes both of D-217's tests fail. Two probes the reviewer wrote were refused by the history check: a merge that drops an anchor, and an "evil merge" that changes one.
+- **The notes, all done before merging:**
+  1. STATE.md said both that `make mediated-e2e` ran 15/15 and that it was not run. The stale sentence is removed; `juno journal check` changed, and the e2e exercises it.
+  2. `round8.test.ts` said each stop is journalled but only counted entries. It now asserts that each session's own record holds exactly one `stopped` note with reason `anchor_unavailable` (D-203).
+  3. The history check ignored files matched by a `.gitignore` in the clone. It now counts them as a difference (`--ignored=traditional`): a fresh clone has none, so any is a change. (Restrictive.)
+- **Why not merge 9239fba as it stood (autopilot ruling):** the operator reads STATE.md, and a note that makes a test say what it claims costs one review round of the five allowed. The merge gate needs MERGE on the current head, so a round 3 reviews the new head.
+- Reason: CLAUDE.md §3, §7 steps 5 and 6; D-203, D-217; D8.
