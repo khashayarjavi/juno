@@ -1,0 +1,1 @@
+export default { test: { include: ["/tmp/claude-0/-home-user-juno/5ebd487a-3f2a-54e3-993b-964c92f1bec5/scratchpad/review7/*.test.ts"] }, server: { fs: { strict: false } } };

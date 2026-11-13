@@ -1,0 +1,161 @@
+
+ RUN  v5.0.5 /home/user/juno
+
+stdout | ../../../tmp/claude-0/-home-user-juno/5ebd487a-3f2a-54e3-993b-964c92f1bec5/scratchpad/review7/insteadof.test.ts > review 7: the clone's own config, changed while the service runs > redirects every push of the run, so the whole run can be rolled back before a restart
+anchorPending during the run (failures): []
+session-2 stopped for its anchor? "running"
+
+stdout | ../../../tmp/claude-0/-home-user-juno/5ebd487a-3f2a-54e3-993b-964c92f1bec5/scratchpad/review7/insteadof.test.ts > review 7: the clone's own config, changed while the service runs > redirects every push of the run, so the whole run can be rolled back before a restart
+pinned repository commits: 4; mirror commits: 6
+
+stdout | ../../../tmp/claude-0/-home-user-juno/5ebd487a-3f2a-54e3-993b-964c92f1bec5/scratchpad/review7/insteadof.test.ts > review 7: the clone's own config, changed while the service runs > redirects every push of the run, so the whole run can be rolled back before a restart
+restart: STARTED; admitted(session-1)=true admitted(session-2)=false
+
+ ❯ ../../../tmp/claude-0/-home-user-juno/5ebd487a-3f2a-54e3-993b-964c92f1bec5/scratchpad/review7/insteadof.test.ts (1 test | 1 failed) 885ms
+   ❯ review 7: the clone's own config, changed while the service runs (1)
+     × redirects every push of the run, so the whole run can be rolled back before a restart 883ms
+stdout | ../../../tmp/claude-0/-home-user-juno/5ebd487a-3f2a-54e3-993b-964c92f1bec5/scratchpad/review7/toctou.test.ts > review 7: symlink swap between the start-up check and the record id > swap lands after startupCheck, before journalRecordId
+third start: STARTED; admitted(session-1)=false; record=juno.journal.aae80651e87f1ddcdb5bfb049836b457
+re-admitted session-1 on the swapped journal
+
+ ❯ ../../../tmp/claude-0/-home-user-juno/5ebd487a-3f2a-54e3-993b-964c92f1bec5/scratchpad/review7/toctou.test.ts (1 test | 1 failed) 936ms
+   ❯ review 7: symlink swap between the start-up check and the record id (1)
+     × swap lands after startupCheck, before journalRecordId 934ms
+stdout | ../../../tmp/claude-0/-home-user-juno/5ebd487a-3f2a-54e3-993b-964c92f1bec5/scratchpad/review7/crash2.test.ts > review 7: a second power loss during the recovery itself > power lost after the torn entry is dropped and before recovered_truncation is written
+at 1: third start ok; recovery=partial_line; g-open=exhausted
+at 2: third start ok; recovery=null; g-open=HONOURED
+at 3: third start ok; recovery=null; g-open=HONOURED
+at 4: third start ok; recovery=null; g-open=HONOURED
+at 5: third start ok; recovery=null; g-open=HONOURED
+at 6: third start ok; recovery=null; g-open=HONOURED
+at 7: third start ok; recovery=null; g-open=HONOURED
+at 8: third start ok; recovery=null; g-open=HONOURED
+at 9: third start ok; recovery=null; g-open=HONOURED
+at 10: third start ok; recovery=null; g-open=HONOURED
+at 11: third start ok; recovery=null; g-open=HONOURED
+at 12: third start ok; recovery=null; g-open=HONOURED
+at 13: third start ok; recovery=unheaded_entry; g-open=exhausted
+at 14: third start ok; recovery=unheaded_entry; g-open=exhausted
+at 15: third start ok; recovery=unheaded_entry; g-open=exhausted
+at 16: third start ok; recovery=unheaded_entry; g-open=exhausted
+at 17: third start ok; recovery=unheaded_entry; g-open=exhausted
+at 18: third start ok; recovery=null; g-open=exhausted
+at 19: third start ok; recovery=null; g-open=exhausted
+at 20: third start ok; recovery=null; g-open=exhausted
+at 21: third start ok; recovery=null; g-open=exhausted
+at 22: third start ok; recovery=null; g-open=exhausted
+at 23: third start ok; recovery=null; g-open=exhausted
+at 24: third start ok; recovery=null; g-open=exhausted
+at 25: third start ok; recovery=null; g-open=exhausted
+at 26: third start ok; recovery=null; g-open=exhausted
+at 27: third start ok; recovery=null; g-open=exhausted
+at 28: third start ok; recovery=unheaded_entry; g-open=exhausted
+at 29: third start ok; recovery=unheaded_entry; g-open=exhausted
+at 30: third start ok; recovery=unheaded_entry; g-open=exhausted
+at 31: third start ok; recovery=unheaded_entry; g-open=exhausted
+at 32: third start ok; recovery=unheaded_entry; g-open=exhausted
+at 33: third start ok; recovery=null; g-open=exhausted
+at 34: third start ok; recovery=null; g-open=exhausted
+
+ ❯ ../../../tmp/claude-0/-home-user-juno/5ebd487a-3f2a-54e3-993b-964c92f1bec5/scratchpad/review7/crash2.test.ts (1 test | 1 failed) 1347ms
+   ❯ review 7: a second power loss during the recovery itself (1)
+     × power lost after the torn entry is dropped and before recovered_truncation is written 1345ms
+stdout | ../../../tmp/claude-0/-home-user-juno/5ebd487a-3f2a-54e3-993b-964c92f1bec5/scratchpad/review7/fakegit.test.ts > review 7: the service settings name a git program of the runner's own > a runner-owned --git that answers for the pinned URL with an empty repository
+third start: STARTED AS NEW; admitted(session-1)=false
+session-1 admitted again, with a fresh budget
+
+ ❯ ../../../tmp/claude-0/-home-user-juno/5ebd487a-3f2a-54e3-993b-964c92f1bec5/scratchpad/review7/fakegit.test.ts (1 test | 1 failed) 765ms
+   ❯ review 7: the service settings name a git program of the runner's own (1)
+     × a runner-owned --git that answers for the pinned URL with an empty repository 763ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 4 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  ../../../tmp/claude-0/-home-user-juno/5ebd487a-3f2a-54e3-993b-964c92f1bec5/scratchpad/review7/crash2.test.ts > review 7: a second power loss during the recovery itself > power lost after the torn entry is dropped and before recovered_truncation is written
+AssertionError: expected [ …(11) ] to deeply equal []
+
+- Expected
++ Received
+
+- []
++ [
++   "at 2: third start ok; recovery=null; g-open=HONOURED",
++   "at 3: third start ok; recovery=null; g-open=HONOURED",
++   "at 4: third start ok; recovery=null; g-open=HONOURED",
++   "at 5: third start ok; recovery=null; g-open=HONOURED",
++   "at 6: third start ok; recovery=null; g-open=HONOURED",
++   "at 7: third start ok; recovery=null; g-open=HONOURED",
++   "at 8: third start ok; recovery=null; g-open=HONOURED",
++   "at 9: third start ok; recovery=null; g-open=HONOURED",
++   "at 10: third start ok; recovery=null; g-open=HONOURED",
++   "at 11: third start ok; recovery=null; g-open=HONOURED",
++   "at 12: third start ok; recovery=null; g-open=HONOURED",
++ ]
+
+ ❯ ../../../tmp/claude-0/-home-user-juno/5ebd487a-3f2a-54e3-993b-964c92f1bec5/scratchpad/review7/crash2.test.ts:165:66
+    163|     }
+    164|     console.log(outcomes.join("\n"));
+    165|     expect(outcomes.filter((line) => line.includes("HONOURED"))).toEqu…
+       |                                                                  ^
+    166|   }, 120_000);
+    167| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/4]⎯
+
+ FAIL  ../../../tmp/claude-0/-home-user-juno/5ebd487a-3f2a-54e3-993b-964c92f1bec5/scratchpad/review7/fakegit.test.ts > review 7: the service settings name a git program of the runner's own > a runner-owned --git that answers for the pinned URL with an empty repository
+AssertionError: expected SessionLayer{} to be null
+
+- Expected:
+null
+
++ Received:
+SessionLayer {}
+
+ ❯ ../../../tmp/claude-0/-home-user-juno/5ebd487a-3f2a-54e3-993b-964c92f1bec5/scratchpad/review7/fakegit.test.ts:63:21
+     61|         await third.close();
+     62|       }
+     63|       expect(third).toBeNull();
+       |                     ^
+     64|     } finally {
+     65|       rmSync(dir, { recursive: true, force: true });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/4]⎯
+
+ FAIL  ../../../tmp/claude-0/-home-user-juno/5ebd487a-3f2a-54e3-993b-964c92f1bec5/scratchpad/review7/insteadof.test.ts > review 7: the clone's own config, changed while the service runs > redirects every push of the run, so the whole run can be rolled back before a restart
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ ../../../tmp/claude-0/-home-user-juno/5ebd487a-3f2a-54e3-993b-964c92f1bec5/scratchpad/review7/insteadof.test.ts:65:61
+
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/4]⎯
+
+ FAIL  ../../../tmp/claude-0/-home-user-juno/5ebd487a-3f2a-54e3-993b-964c92f1bec5/scratchpad/review7/toctou.test.ts > review 7: symlink swap between the start-up check and the record id > swap lands after startupCheck, before journalRecordId
+AssertionError: expected SessionLayer{} to be null
+
+- Expected:
+null
+
++ Received:
+SessionLayer {}
+
+ ❯ ../../../tmp/claude-0/-home-user-juno/5ebd487a-3f2a-54e3-993b-964c92f1bec5/scratchpad/review7/toctou.test.ts:66:21
+     64|         await third.close();
+     65|       }
+     66|       expect(third).toBeNull();
+       |                     ^
+     67|     } finally {
+     68|       rmSync(dir, { recursive: true, force: true });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/4]⎯
+
+
+ Test Files  4 failed (4)
+      Tests  4 failed (4)
+   Start at  11:42:47
+   Duration  2.35s (tests 81%, import 12%, transform 6%)
+

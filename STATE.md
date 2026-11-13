@@ -3,33 +3,22 @@
 ## Current increment
 **Slice 1.5 — finishing: your rulings of 2026-11-13 (D-206) on recovery and on the pinned anchor repository, then review rounds 6 and 7** (D-199, D-201 to D-206). Increment 6, the last increment of the plan, is merged (PR #48). Branch `claude/busy-bell-icjgn3` (this session's only pushable branch); it carries PR #50's commits from `claude/gracious-euler-mt05yr` unchanged, and its PR supersedes PR #50. Spec v0.6.1. No objection open.
 
-Status (2026-11-13): **your rulings 1 and 2 are built (D-207, D-208); `make verify` and the review rounds are next.** Nothing merged yet.
-- **Ruling 1, recovery (D-207).**
-  - *A power loss in the middle of a write.* At the next start, if only the journal's last entry is incomplete and everything before it verifies and agrees with the anchors, the service drops that entry, records it (`recovered_truncation`, in the journal's own record and in the record that lost it), and starts. Every grant held or used by a session open at that moment is exhausted for good; a newly signed grant (a new id) works. The service prints which grants.
-  - *Tested with a simulated power loss:* in the real journal writer, the power is lost before every single file operation of an append, and again with half of each write on disk; the service must start after each one.
-  - *Anything else still refuses the start,* and no byte of the journal is changed: for example a cut entry made to look torn that an anchor already names.
-  - *Manual recovery.* A new journal records a **recovery epoch** as its first entry: the time you gave when you, as root, registered the new journal folder. Every grant signed before it is refused, at admission and at every call. Tested through the real gateway and hook commands: the old grant is refused, a newly signed one is accepted.
-- **Ruling 2, the pinned anchor repository (D-208). Evidence items 22 and 24 are closed.**
-  - A root-owned file, `/etc/juno/anchors.json`, names the repository's SSH address, GitHub's host-key fingerprint (with the key in a root-owned `anchors_known_hosts` file), the runner's push key, and the journal folders that may anchor there. The start-up check of every service and `juno hook check` both verify it; a pin that is not root's is refused.
-  - Every start fetches the repository afresh from the pinned address, accepting only the pinned host key, with none of the runner's own git or SSH settings. The local clone is only a cache: it is compared, then replaced. A clone that is not a copy of your repository refuses the start.
-  - **The test you asked for, for every service, with the real git:** the journal, the journal key and the clone replaced together; the settings pointed at a new journal, key and clone; the settings pointed at a pin of the runner's own. None starts as new.
-  - One thing I added because the test cannot pass without it (autopilot ruling in D-208): the journal folders are listed in the same root-owned file. A service pointed at a new, empty journal folder would otherwise look exactly like a first start. This is also what makes a manual recovery your act as root.
-- **What this does not close (evidence item 25):** the pin stops *JUNO* from starting as new. Whoever takes over the `juno-runner` account can still stop the service or run a program of their own. Your check against a fresh copy from GitHub (guide, Part G step 7) remains the check that counts.
-- **New for you in the guide** (`docs/operator-setup.md`): Part D step 7 (write the two root-owned files and compare the fingerprint with GitHub's page); you no longer clone `juno-anchors` yourself; Part H step 3 (add the gateway's journal folder to the pin); "When something goes wrong" now has the torn-write message and the manual recovery, step by step.
-- **Found while testing, kept (fail-closed):** a session or task id used before a manual recovery cannot be used after it, because its fingerprints are already in `juno-anchors` and are never replaced. Use new ids (the guide says so).
-- **A journal written before today needs the manual recovery once** (it records no recovery epoch).
-- **Ruling 3:** review rounds 6 and 7, then the merge gate, then STOP.
+Status (2026-11-13, later): **STOPPED after review round 7 on PR #51 (D-210): your decision needed.** Nothing merged.
 
-**Done:** `make verify: GREEN` on head 80a2925 (1,419 unit, 118 container); `make mediated-e2e` 15/15 (real Claude Code); draft PR [khashayarjavi/juno#51](https://github.com/khashayarjavi/juno/pull/51) supersedes #50; CI run 43379238330 on 80a2925: `verify` and `verify-rootless` green. Review round 6 started (cut off once by a usage limit, resumed 2026-11-13 11:12 UTC).
+### STOP after review round 7 on PR #51 (2026-11-13) — your decision needed (D-210)
+- **Why this is a STOP.** Round 7 was the last round your ruling D-206 authorised, and it ended DO NOT MERGE. One of its findings (F3) also brings back round 6's mechanism, which CLAUDE.md §7 makes a STOP on its own.
+- **Round 7** (fresh reviewer; head a47eab4, `make verify` GREEN, real-binary suite 15/15): four problems, each shown with a test that fails on this head (kept in `docs/evidence/d210-round7/`). In plain words:
+  1. **F1.** The service's settings (which the runner account can edit) name the git program. A fake git program of the runner's own makes JUNO start as new.
+  2. **F2.** While the service runs, the runner account can edit the local copy's own git settings so that every fingerprint of that run goes to another repository, silently. It can then roll the whole run back before a restart.
+  3. **F3.** The symbolic-link trick from round 6 still works if it is timed exactly between JUNO's check and JUNO's opening of the journal. (This is the repeat.)
+  4. **F4.** If the power is lost a second time, during the repair of a torn write, the repair's record is lost, and the grants it should have exhausted work again.
+  - The documents: the guide's "two days ago" date fails if you do Part D two or more days after Part C; the steps after a torn write are not click by click; the evidence document claims more than holds.
+- **Nothing was fixed this time.** The authorised rounds are used up, and a fix nobody reviews cannot pass the merge gate. D-210 lists the fix for each, most restrictive first.
+- **Your decision:** authorise building D-210's fixes and further review rounds on PR #51 (how many), or direct otherwise.
 
-- **Review round 6 (head 80a2925, CI green): DO NOT MERGE, three new findings, all fixed with tests (D-209).** In plain words:
-  - JUNO's SSH helper did not pass git's traffic through, so with your real GitHub pin every service would have hung at start. Now proven end to end: the real git, through the real helper, to a stand-in SSH server carrying the git protocol. Also, a git command that runs over two minutes now counts as a failure, so a silent server refuses the start instead of hanging it.
-  - The guide's dates made your first grant (and every grant after a recovery) refused. The guide now gives commands that print the right dates, and a test checks the guide's text against what JUNO accepts.
-  - A folder above the journal replaced by a symbolic link made the service start as new. A journal path may now hold no symbolic link at all.
-  - Not a STOP: none repeats an earlier round's mechanism. Round 7 is the last you authorised.
-
-**Left, in order:**
-1. `make verify` green on the head, CI green, review round 7, the merge gate (CLAUDE.md §7 step 6). Then Slice 1.5 is complete: STOP and report. If round 7 says DO NOT MERGE, STOP and report.
+### Earlier this session (2026-11-13)
+- Your rulings of 2026-11-13 (D-206) were built as D-207 and D-208; round 6 found three problems, fixed as D-209 (the SSH helper, the guide's dates, a symbolic link above the journal).
+- Draft PR [khashayarjavi/juno#51](https://github.com/khashayarjavi/juno/pull/51) supersedes #50. CI run 43379238330 green on 80a2925 (round 6's head).
 
 ## Earlier status (2026-11-12, before your rulings)
 ### STOP after review round 5 on PR #50 (2026-11-12) — your decision needed (D-205)

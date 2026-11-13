@@ -1,0 +1,70 @@
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
+import { executeOutbound } from "/home/user/juno/packages/registry/src/index.js";
+import { SessionLayer, type SessionLimits, anchoringState, gitAnchoring } from "/home/user/juno/packages/enforcement/src/index.js";
+import { ordinaryHost } from "/home/user/juno/packages/enforcement/test/layer.js";
+
+const LIMITS: SessionLimits = { rejection_limit: 3, ttl: 3_600_000, budget: { tokens: 1, currency: 1, wall_clock_ms: 3_600_000, turns: 10 }, metered: ["turns", "wall_clock_ms"], clock: "from_admission" };
+const CLASS = { sensitivity: "internal" as const, integrity: "operator" as const };
+async function git(args: readonly string[]): Promise<string> {
+  const r = await executeOutbound({ file: "/usr/bin/git", args: ["-c", "user.name=o", "-c", "user.email=o@o", "-c", "init.defaultBranch=main", ...args] });
+  if (r.exitCode !== 0) throw new Error(r.stderr.toString("utf8"));
+  return r.stdout.toString("utf8");
+}
+
+describe("review 7: the clone's own config, changed while the service runs", () => {
+  it("redirects every push of the run, so the whole run can be rolled back before a restart", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "r7-insteadof-"));
+    try {
+      const remote = join(dir, "pinned.git");
+      await git(["init", "--bare", "--quiet", remote]);
+      const seed = join(dir, "seed");
+      await git(["clone", "--quiet", remote, seed]);
+      writeFileSync(join(seed, "README.md"), "x\n");
+      await git(["-C", seed, "add", "README.md"]);
+      await git(["-C", seed, "commit", "--quiet", "-m", "s"]);
+      await git(["-C", seed, "push", "--quiet", "origin", "HEAD:main"]);
+      const work = join(dir, "work"); mkdirSync(work);
+      const state = join(dir, "state"); mkdirSync(state, { mode: 0o700 });
+      const journal = join(state, "journal");
+      mkdirSync(join(dir, "root-owned"), { mode: 0o755 });
+      const pin = join(dir, "root-owned", "anchors.json");
+      writeFileSync(pin, JSON.stringify({ url: remote, branch: "main", host_key_fingerprint: null, known_hosts: null, push_key: null, journals: [{ path: journal, recovery_epoch: "2020-01-01T00:00:00Z" }] }), { mode: 0o644 });
+      chmodSync(pin, 0o644);
+      const config = { journalKeyDir: join(state, "journal-key"), anchorClone: join(state, "juno-anchors"), intervalMs: 60_000, git: "/usr/bin/git", pin };
+      const open = (): Promise<SessionLayer> => SessionLayer.open({ service: "hook", journal, workspaces: [work], state: anchoringState(config), anchor: null }, { host: ordinaryHost(), anchoring: (root, p) => gitAnchoring(config, root, p) });
+      const first = await open();
+      first.admit("session-1", LIMITS, { dataClass: CLASS, actor: "probe", payload: { admitted_at: new Date().toISOString(), task: { grants: ["g"] } } });
+      expect(await first.close()).toEqual([]);
+      // The runner's account keeps a copy of the journal as it now stands (everything in it is anchored on the pinned repository).
+      cpSync(journal, join(dir, "journal-at-T1"), { recursive: true });
+      // A service runs. While it runs, the runner's account points the clone's own config at a mirror of its own.
+      const running = await open();
+      const fake = join(dir, "mirror.git");
+      await git(["clone", "--quiet", "--bare", remote, fake]);
+      await git(["-C", config.anchorClone, "config", `url.${fake}.insteadOf`, remote]);
+      running.admit("session-2", LIMITS, { dataClass: CLASS, actor: "probe", payload: { admitted_at: new Date().toISOString(), task: { grants: ["g"] } } });
+      const pending = await running.anchorPending();
+      console.log("anchorPending during the run (failures):", JSON.stringify(pending));
+      console.log("session-2 stopped for its anchor?", JSON.stringify(running.session("session-2") === undefined ? "no session" : "running"));
+      expect(await running.close()).toEqual([]);
+      const pinnedLog = await git(["--git-dir", remote, "log", "--oneline", "main"]);
+      const mirrorLog = await git(["--git-dir", fake, "log", "--oneline", "main"]);
+      console.log(`pinned repository commits: ${pinnedLog.trim().split("\n").length}; mirror commits: ${mirrorLog.trim().split("\n").length}`);
+      // Before the restart: the journal rolled back to T1, the clone emptied.
+      rmSync(journal, { recursive: true, force: true });
+      cpSync(join(dir, "journal-at-T1"), journal, { recursive: true });
+      rmSync(config.anchorClone, { recursive: true, force: true });
+      let third: SessionLayer | null = null;
+      let refused: unknown = null;
+      try { third = await open(); } catch (e) { refused = e; }
+      console.log("restart:", third === null ? `REFUSED ${String(refused).slice(0, 300)}` : `STARTED; admitted(session-1)=${String(third.admitted("session-1"))} admitted(session-2)=${String(third.admitted("session-2"))}`);
+      if (third !== null) await third.close();
+      expect(third === null || third.admitted("session-2")).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+});

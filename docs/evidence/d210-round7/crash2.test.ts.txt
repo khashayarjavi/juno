@@ -1,0 +1,167 @@
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { type TrajectoryEntry } from "/home/user/juno/packages/contracts/src/index.js";
+import { checkAnchors, encodeHead, entryHash, readPayload, readTrajectory, taskDigest, tornTail, verifyTrajectory } from "/home/user/juno/packages/journal/src/index.js";
+import { entriesFile, headFile } from "/home/user/juno/packages/journal/src/layout.js";
+import { GrantStore, type SessionLayer, type SessionLimits } from "/home/user/juno/packages/enforcement/src/index.js";
+import { MemoryAnchorSink, testAnchoring, testJournalKey } from "/home/user/juno/packages/enforcement/test/anchoring.js";
+import { openTestLayer } from "/home/user/juno/packages/enforcement/test/layer.js";
+import { TEST_ANCHOR, signed } from "/home/user/juno/packages/enforcement/test/test-keys.js";
+
+/**
+ * Operator ruling D-206 item 1 (DECISIONS.md D-207): a torn final write is repaired at start, and only that.
+ *
+ * The power loss is simulated in the real journal writer: every file operation an append makes (open, write, flush,
+ * rename) goes through a counter, and the append is run once for every operation it makes, with the power lost just
+ * before that operation, and once more with only half of each write on disk. Whatever the writer left is then what the
+ * next start finds.
+ */
+
+const fault = vi.hoisted(() => ({ armed: false, at: 0, count: 0, half: false, fired: false }));
+
+vi.mock("node:fs", async (importOriginal) => {
+  const real = await importOriginal<typeof import("node:fs")>();
+  class PowerLoss extends Error {
+    override readonly name = "PowerLoss";
+  }
+  /** Counts one file operation; at the chosen one the power is lost before it happens. */
+  const step = (): boolean => {
+    if (!fault.armed) return false;
+    fault.count += 1;
+    return fault.count === fault.at;
+  };
+  const lose = (): never => {
+    fault.armed = false;
+    fault.fired = true;
+    throw new PowerLoss("simulated power loss");
+  };
+  const wrapped = {
+    ...real,
+    openSync: ((...args: Parameters<typeof real.openSync>) => {
+      if (step()) lose();
+      return real.openSync(...args);
+    }) as typeof real.openSync,
+    writeSync: ((fd: number, data: Uint8Array, offset: number, length: number) => {
+      if (step()) {
+        // Half of the write reached the disk.
+        if (fault.half) real.writeSync(fd, data, offset, Math.floor(length / 2));
+        lose();
+      }
+      return real.writeSync(fd, data, offset, length);
+    }) as typeof real.writeSync,
+    fsyncSync: ((fd: number) => {
+      if (step()) lose();
+      real.fsyncSync(fd);
+    }) as typeof real.fsyncSync,
+    renameSync: ((from: string, to: string) => {
+      if (step()) lose();
+      real.renameSync(from, to);
+    }) as typeof real.renameSync,
+  };
+  return { ...wrapped, default: wrapped };
+});
+
+const PRINCIPAL = "operator";
+const CLASS = { sensitivity: "internal" as const, integrity: "operator" as const };
+const LIMITS: SessionLimits = { rejection_limit: 3, ttl: 3_600_000, budget: { tokens: 0, currency: 0, wall_clock_ms: 3_600_000, turns: 50 }, metered: ["turns", "wall_clock_ms"], clock: "from_admission" };
+const TASK = { principal: PRINCIPAL, grants: ["g-open", "g-closed", "g-new"] };
+
+function grant(id: string): Record<string, unknown> {
+  return signed({ id, principal: PRINCIPAL, capability_selector: { capabilities: ["fs.read"] }, resource_scope: [{ kind: "path", prefix: "/work/project" }], data_class_bounds: { max_sensitivity: "secret", min_integrity: "untrusted" }, issuance: "preissued", issued_by: PRINCIPAL, issued_at: "2026-01-01T00:00:00Z", expires_at: "2099-01-01T00:00:00Z", max_invocations: null, attenuation_parent: null, revoked_at: null });
+}
+
+let dir: string;
+let journal: string;
+let sink: MemoryAnchorSink;
+const journalKey = testJournalKey();
+
+const open = (): Promise<SessionLayer> => openTestLayer("hook", { journal, workspaces: [join(dir, "work")], anchoring: testAnchoring({ sink, journalKey }) });
+
+/** A grant store as a restarted service builds it: the operator's grants, then the journal's counts and recoveries. */
+function storeOn(layer: SessionLayer): GrantStore {
+  const store = new GrantStore(TEST_ANCHOR);
+  for (const id of TASK.grants) store.add(grant(id));
+  layer.requireGrants(store);
+  return store;
+}
+
+const refusedGrants = (store: GrantStore): Record<string, string> => Object.fromEntries(store.coverage(TASK, "fs.read", new Date("2026-06-01T00:00:00Z")).refused.map((item) => [item.grant, item.reason]));
+
+function notes(id: string): Record<string, unknown>[] {
+  return readTrajectory(journal, id).map((entry: TrajectoryEntry) => {
+    const blob = readPayload(journal, entry.payload_ref);
+    return blob.status === "present" ? (JSON.parse(new TextDecoder().decode(blob.bytes)) as Record<string, unknown>) : {};
+  });
+}
+
+/**
+ * A journal with a session open at the crash (it holds `g-open`), a session that had already closed (`g-closed`), and
+ * everything anchored. (A grant an open session used in a call is covered through the real services, in
+ * packages/runner/test/entry-points.test.ts part G.)
+ */
+async function seeded(): Promise<SessionLayer> {
+  const layer = await open();
+  const session = layer.admit("session-open", LIMITS, { dataClass: CLASS, actor: "test", payload: { admitted_at: "2026-05-01T00:00:00.000Z", task: { grants: ["g-open"] } } });
+  session.record("note", CLASS, { type: "authorized", tool_use_id: "t-1" }, { actor: "test" });
+  const closed = layer.admit("session-closed", LIMITS, { dataClass: CLASS, actor: "test", payload: { admitted_at: "2026-05-01T00:00:00.000Z", task: { grants: ["g-closed"] } } });
+  closed.record("note", CLASS, { type: "state", to: "failed", reason: "ttl_expired" }, { actor: "test" });
+  expect(await layer.anchorPending()).toEqual([]);
+  return layer;
+}
+
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), "juno-recovery-"));
+  journal = join(dir, "journal");
+  mkdirSync(join(dir, "work"));
+  sink = new MemoryAnchorSink();
+});
+
+afterEach(() => {
+  fault.armed = false;
+  rmSync(dir, { recursive: true, force: true });
+});
+
+/** Runs `write` with the power lost before its `at`-th file operation. Answers whether the power was lost at all. */
+function withPowerLossAt(at: number, half: boolean, write: () => void): boolean {
+  Object.assign(fault, { armed: true, at, count: 0, half, fired: false });
+  try {
+    write();
+  } catch (error: unknown) {
+    if (!(error instanceof Error) || error.name !== "PowerLoss") throw error;
+  } finally {
+    fault.armed = false;
+  }
+  return fault.fired;
+}
+
+
+describe("review 7: a second power loss during the recovery itself", () => {
+  it("power lost after the torn entry is dropped and before recovered_truncation is written", async () => {
+    const outcomes: string[] = [];
+    for (let at = 1; at < 300; at += 1) {
+      rmSync(journal, { recursive: true, force: true });
+      sink = new MemoryAnchorSink();
+      const layer = await seeded();
+      void layer;
+      // the first power loss: a cut-short line in the open session's record
+      appendFileSync(entriesFile(journal as never, "session-open"), '{"cut":"sho');
+      // the machine comes back; the power is lost again at operation `at` of the recovering start
+      Object.assign(fault, { armed: true, at, count: 0, half: false, fired: false });
+      let crashed = false;
+      try { await open(); } catch (error: unknown) { crashed = error instanceof Error && /power loss/.test(error.message); if (!crashed) { /* refusal */ } }
+      finally { fault.armed = false; }
+      if (!fault.fired) break;
+      // third start, no fault
+      let third: SessionLayer | null = null;
+      try { third = await open(); } catch (e) { outcomes.push(`at ${at}: third start refused: ${String(e).slice(0, 120)}`); continue; }
+      const store = storeOn(third);
+      const refused = refusedGrants(store);
+      outcomes.push(`at ${at}: third start ok; recovery=${third.recovery === null ? "null" : third.recovery.how}; g-open=${refused["g-open"] ?? "HONOURED"}`);
+      await third.close();
+    }
+    console.log(outcomes.join("\n"));
+    expect(outcomes.filter((line) => line.includes("HONOURED"))).toEqual([]);
+  }, 120_000);
+});
