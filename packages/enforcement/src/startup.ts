@@ -1,7 +1,7 @@
 import { type Stats, accessSync, constants, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
 import { WORK_NAMESPACE, pathsOverlap } from "../../contracts/src/index.js";
-import { type VerifiedPin, knownHostsRefusals, parseAnchorPin } from "./anchor-pin.js";
+import { PINNED_SSH, type VerifiedPin, knownHostsRefusals, parseAnchorPin } from "./anchor-pin.js";
 import { type TrustAnchor, trustAnchorFromPem } from "./signature.js";
 
 /**
@@ -203,6 +203,8 @@ export function verifyAnchorPin(path: string, journal: string, workspaces: reado
       }
     }
     refusals.push(...laterFileRefusals("the anchor push key", parsed.push_key, workspaces, host));
+    // The ssh program itself is state too: it must exist and be changeable by no one but root and this process.
+    refusals.push(...laterFileRefusals("the ssh program", PINNED_SSH, workspaces, host));
   } else if (parsed.transport === "local") {
     // A local repository is JUNO's own test stand-in: it is state, and must not be reachable from a workspace.
     for (const root of workspaces) {

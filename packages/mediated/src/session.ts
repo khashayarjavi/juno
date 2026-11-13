@@ -360,8 +360,9 @@ export class MediatedSessions {
       const trial = new GrantStore(this.#grants.trustAnchor);
       const id = trial.add(grant).id;
       if (trial.signed(id) === undefined) return { ok: false, failures: [`the grant file ${grantFile} holds grant ${id} without a valid operator signature (§3.2)`] };
-      // A grant already held (verified by an earlier admission) is not added twice.
-      if (this.#grants.signed(id) === undefined) this.#grants.add(grant);
+      // A grant already held (verified by an earlier admission) is not added twice. One held and refused for the
+      // journal's recovery epoch (D-207) stays held and refused; the admission below says why.
+      if (this.#grants.signed(id) === undefined && !this.#grants.issuedBeforeRecovery(id)) this.#grants.add(grant);
       return { ok: true, id };
     } catch (error: unknown) {
       return { ok: false, failures: [`the grant file ${grantFile} holds no valid grant: ${error instanceof Error ? error.message : String(error)}`] };

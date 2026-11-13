@@ -116,6 +116,9 @@ export function parseAnchorPin(text: string): AnchorPinFile & { readonly transpo
   return { ...pin, transport: "local", host: null };
 }
 
+/** D-208: ssh is named by an absolute path, never looked up on PATH; the start-up check judges it for an SSH pin. */
+export const PINNED_SSH = "/usr/bin/ssh";
+
 /** The recovery epoch as a time. */
 export function recoveryEpochOf(pin: VerifiedPin): number {
   return instant(pin.journal.recovery_epoch);
