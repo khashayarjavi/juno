@@ -13,6 +13,7 @@ export {
 export { type BlobRead } from "./blobs.js";
 export { JournalLocationError, journalRoot } from "./layout.js";
 export { type EntryDraft, JournalIntegrityError, JournalWriter, type JournalWriterOptions } from "./writer.js";
+export { type TornTail, dropTornTail, tornTail } from "./repair.js";
 export { type StoredRecord, listRecords, readPayload, readTrajectory, verifyTrajectory } from "./read.js";
 export {
   Anchor,

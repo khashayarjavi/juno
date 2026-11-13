@@ -14,15 +14,19 @@ import {
   canonicalJson,
   checkAnchors,
   contentAddress,
+  dropTornTail,
   listRecords,
   readPayload,
   sameKey,
   taskDigest,
+  type TornTail,
+  tornTail,
   verifyTrajectory,
 } from "../../journal/src/index.js";
 import type { CapabilityRegistry } from "../../registry/src/index.js";
 import { EnforcementBoundary } from "./boundary.js";
 import type { GrantStore } from "./grants.js";
+import { type VerifiedPin, recoveryEpochOf } from "./anchor-pin.js";
 import { type TrustAnchor } from "./signature.js";
 import { type HostIo, type ServiceName, type StartupSpec, StartupRefused, laterFileRefusals, socketRefusals, startupCheck, systemHostIo } from "./startup.js";
 
@@ -47,7 +51,17 @@ import { type HostIo, type ServiceName, type StartupSpec, StartupRefused, laterF
  * an anchor, anchors of a record the journal no longer holds, or a destination that cannot be read, refuses the start.
  * Only then is state rebuilt from the journal, here, for every mode: each grant's use count (`requireGrants`), every
  * admitted id (`admit` refuses it again), and each session's spend, consecutive rejections and stop (`resume`).
+ *
+ * Recovery (operator ruling D-206 item 1; DECISIONS.md D-207). One failure is repaired at start: a torn final write (a
+ * power loss in the middle of one append). If everything before the incomplete last entry verifies and agrees with the
+ * anchors, the incomplete entry is dropped, a `recovered_truncation` note records it, and every grant used by a session
+ * open at the crash is exhausted for good. Every other failure still refuses the start. A journal also records its
+ * recovery epoch, the time the operator registered its folder in the anchor pin (D-208); a grant issued before it is
+ * refused, so a manual recovery to a new journal folder invalidates every grant issued before it.
  */
+
+/** The task states after which a session is no longer open (§6). */
+const CLOSED_STATES: ReadonlySet<string> = new Set(["verified", "failed", "aborted", "accepted"]);
 
 /** The reserved prefix of JUNO's own records (the runner's `RESERVED_ID_PREFIX`); no task or session id may start with it. */
 const OWN_RECORD_PREFIX = "juno.";
@@ -154,6 +168,9 @@ const INDEX_CLASS: DataClass = { sensitivity: "internal", integrity: "derived" }
 
 export type RecordOptions = { readonly actor: string; readonly provider?: string | null; readonly cost?: EntryDraft["cost"] };
 
+/** A torn final write a start repaired (D-207). */
+export type RecoveredTruncation = { readonly record: string | null; readonly how: "partial_line" | "unheaded_entry"; readonly kept_entries: number; readonly open_sessions: readonly string[]; readonly exhausted_grants: readonly string[] };
+
 export type LayerOpened = { readonly spec: StartupSpec; readonly refusals: readonly string[]; readonly layer: SessionLayer | null };
 const OBSERVERS = new Set<(event: LayerOpened) => void>();
 
@@ -190,12 +207,21 @@ export class SessionLayer {
   readonly #adopted = new WeakSet<GrantStore>();
   /** The store last given its counts. */
   #counted: GrantStore | null = null;
+  /** The anchor pin the start-up check verified, or null when the entry named none (D-208). */
+  readonly #pin: VerifiedPin | null;
+  /** The journal's recovery epoch, as its own record holds it (D-207); null when it records none. */
+  #recoveryEpoch: number | null = null;
+  /** Every grant a recovered torn write exhausted, from the journal's own record (D-207). */
+  readonly #exhausted = new Set<string>();
+  /** What this start recovered, if anything (D-207). */
+  #recovery: RecoveredTruncation | null = null;
 
-  private constructor(token: symbol, spec: StartupSpec, anchor: TrustAnchor | null, host: HostIo, clock: () => Date, journal: JournalWriterOptions, anchoring: Anchoring) {
+  private constructor(token: symbol, spec: StartupSpec, anchor: TrustAnchor | null, pin: VerifiedPin | null, host: HostIo, clock: () => Date, journal: JournalWriterOptions, anchoring: Anchoring) {
     // Only `open` holds the token, so no code can make a layer without the start-up check (D-194).
     if (token !== OPENED_BY_CHECK) throw new SessionLayerError("a session layer is made only by SessionLayer.open, after the shared start-up check (D-194)");
     this.#spec = spec;
     this.#anchor = anchor;
+    this.#pin = pin;
     this.#host = host;
     this.#clock = clock;
     this.#workspaces = spec.workspaces.map((path) => ({ path, real: realOrGiven(path) }));
@@ -210,7 +236,7 @@ export class SessionLayer {
    * (operator ruling D-201). Throws `StartupRefused` with every refusal otherwise; a start refused by the start-up
    * check has opened nothing, and one refused for its journal or anchors hands out no layer, so nothing is served.
    */
-  static async open(spec: StartupSpec, options: { readonly anchoring: Anchoring | ((journalRoot: string) => Anchoring); readonly host?: HostIo; readonly clock?: () => Date; readonly journal?: JournalWriterOptions }): Promise<SessionLayer> {
+  static async open(spec: StartupSpec, options: { readonly anchoring: Anchoring | ((journalRoot: string, pin: VerifiedPin | null) => Anchoring); readonly host?: HostIo; readonly clock?: () => Date; readonly journal?: JournalWriterOptions }): Promise<SessionLayer> {
     const host = options.host ?? systemHostIo();
     const checked = startupCheck(spec, host);
     const refuse = (refusals: readonly string[]): never => {
@@ -221,10 +247,10 @@ export class SessionLayer {
     // D-198: every mode's journal is anchored (§3.4.1), so a layer without an anchor destination and a journal key of its
     // own is refused like any other start-up refusal. A factory (the services' real key and clone) runs only once the
     // check has passed, so nothing is created for a refused start. The journal key is never the operator's.
-    const given = (options as { readonly anchoring?: Anchoring | ((journalRoot: string) => Anchoring) } | undefined)?.anchoring;
+    const given = (options as { readonly anchoring?: Anchoring | ((journalRoot: string, pin: VerifiedPin | null) => Anchoring) } | undefined)?.anchoring;
     let anchoring: Anchoring | undefined;
     try {
-      anchoring = typeof given === "function" ? given(spec.journal) : given;
+      anchoring = typeof given === "function" ? given(spec.journal, checked.ok ? checked.pin : null) : given;
     } catch (error: unknown) {
       refuse([`the journal key or the anchor destination could not be opened: ${error instanceof Error ? error.message : String(error)} (§3.4.1, D-198)`]);
     }
@@ -233,7 +259,7 @@ export class SessionLayer {
       refusals.push("the journal key is the operator's grant-signing key; the runner must hold its own (§3.4.1 V6-4)");
     }
     if (refusals.length > 0 || anchoring === undefined || !checked.ok) return refuse(refusals);
-    const layer = new SessionLayer(OPENED_BY_CHECK, Object.freeze({ ...spec, workspaces: [...spec.workspaces], state: spec.state.map((item) => ({ ...item })) }), checked.anchor, host, options.clock ?? (() => new Date()), options.journal ?? {}, anchoring);
+    const layer = new SessionLayer(OPENED_BY_CHECK, Object.freeze({ ...spec, workspaces: [...spec.workspaces], state: spec.state.map((item) => ({ ...item })) }), checked.anchor, checked.pin, host, options.clock ?? (() => new Date()), options.journal ?? {}, anchoring);
     // D-201: the journal and its anchors are verified before anything is rebuilt, admitted or served.
     let unverified: string[];
     try {
@@ -260,18 +286,48 @@ export class SessionLayer {
   async #recover(): Promise<string[]> {
     const refusals: string[] = [];
     const stored = new Map<string, StoredRecord>();
+    // D-206 item 1: one record may end in a torn final write. It is judged, with everything else, as it stands without
+    // its incomplete last entry; nothing on disk is changed until every check below has passed.
+    let torn: TornTail | null = null;
     for (const record of listRecords(this.#journal.root)) {
-      if (!record.verdict.ok) refusals.push(`journal record ${record.taskId ?? record.digest} does not verify: ${record.verdict.failure.code} (${record.verdict.failure.message}) (§3.4.2)`);
-      else if (record.taskId !== null) stored.set(record.taskId, record);
+      if (record.verdict.ok) {
+        if (record.taskId !== null) stored.set(record.taskId, record);
+        continue;
+      }
+      const tail = tornTail(this.#journal.root, record.digest);
+      if (tail !== null && torn === null) {
+        torn = tail;
+        if (tail.taskId !== null) stored.set(tail.taskId, { digest: record.digest, taskId: tail.taskId, verdict: tail.kept });
+        continue;
+      }
+      const also = tail !== null ? "; a second record ends in an incomplete entry, and a single interrupted write leaves only one" : "";
+      refusals.push(`journal record ${record.taskId ?? record.digest} does not verify: ${record.verdict.failure.code} (${record.verdict.failure.message})${also} (§3.4.2)`);
     }
     if (refusals.length > 0) return refusals;
     const named: string[] = [];
-    for (const item of this.#read(this.#indexId, stored.get(this.#indexId)?.verdict)) {
+    let journalEpoch: string | null = null;
+    const index = this.#read(this.#indexId, stored.get(this.#indexId)?.verdict);
+    for (const item of index) {
       const task = field(item.payload, "task");
-      if (item.entry.kind === "note" && field(item.payload, "type") === "record" && typeof task === "string") named.push(task);
+      const type = field(item.payload, "type");
+      const own = item.entry.kind === "note" && item.entry.actor === LAYER_ACTOR;
+      if (own && type === "record" && typeof task === "string") named.push(task);
       // D-203 journals a failed anchor of this record in it; that note is JUNO's own and names no record (D-205).
-      else if (item.entry.kind === "note" && item.entry.actor === ANCHOR_ACTOR && field(item.payload, "type") === "anchor_failed") continue;
+      else if (item.entry.kind === "note" && item.entry.actor === ANCHOR_ACTOR && type === "anchor_failed") continue;
+      // D-207: the recovery epoch is this record's first entry and no other; a recovered torn write is recorded here.
+      else if (own && type === "recovery_epoch" && item.entry.seq === 0 && typeof field(item.payload, "epoch") === "string") journalEpoch = field(item.payload, "epoch") as string;
+      else if (own && type === "recovered_truncation" && Array.isArray(field(item.payload, "exhausted_grants"))) continue;
       else refusals.push(`the journal's own record has an entry (seq ${String(item.entry.seq)}) that is not one JUNO writes there (D-202)`);
+    }
+    // D-206, D-207: the journal and the anchor pin must name the same recovery epoch. A journal that already has entries
+    // was registered at the epoch it records; a pin that now says otherwise (or a journal with an epoch and no pin) is a
+    // journal or a setting that was replaced.
+    const pinnedEpoch = this.#pin === null ? null : this.#pin.journal.recovery_epoch;
+    const fresh = index.length === 0;
+    if (!fresh && (journalEpoch === null) !== (pinnedEpoch === null)) {
+      refusals.push(journalEpoch === null ? `the anchor pin names a recovery epoch for this journal (${String(pinnedEpoch)}), but the journal records none: it was not started under this pin (D-206, D-207)` : `the journal records a recovery epoch (${journalEpoch}), but no anchor pin names it (D-206, D-207)`);
+    } else if (!fresh && journalEpoch !== null && pinnedEpoch !== null && Date.parse(journalEpoch) !== Date.parse(pinnedEpoch)) {
+      refusals.push(`the journal records the recovery epoch ${journalEpoch}, but the anchor pin says ${pinnedEpoch}; they must agree (D-206, D-207)`);
     }
     for (const id of stored.keys()) {
       if (id !== this.#indexId && !named.includes(id)) refusals.push(`journal record ${id} is not named by the journal's own record, so this journal did not write it (D-202)`);
@@ -302,29 +358,101 @@ export class SessionLayer {
       refusals.push(`journal record ${id} disagrees with its off-host anchors: ${what} (§3.4.1, D-201)`);
     }
     if (refusals.length > 0) return refusals;
-    // Verified. Only now is anything rebuilt (D-201).
+    // Every entry's payload must be there and readable, whatever its kind (D-204): the chain and the anchors cover the
+    // entries, and a payload removed or damaged in the blob store would otherwise be state silently dropped.
     for (const id of ids) {
-      const record = stored.get(id);
+      if (id === this.#indexId) continue;
+      for (const item of this.#read(id, stored.get(id)?.verdict)) {
+        if (item.payload === undefined) refusals.push(`journal record ${id} entry ${String(item.entry.seq)} has no readable payload, so what it records cannot be rebuilt (§3.4.5, D-201)`);
+      }
+    }
+    if (refusals.length > 0) return refusals;
+    // Verified. Only now is anything changed or rebuilt (D-201).
+    // D-207: a journal opened for the first time under a pin records its recovery epoch as its own record's first entry.
+    if (fresh && pinnedEpoch !== null) {
+      this.#write(this.#indexId, "note", INDEX_CLASS, { type: "recovery_epoch", epoch: pinnedEpoch }, { actor: LAYER_ACTOR });
+      journalEpoch = pinnedEpoch;
+    }
+    this.#recoveryEpoch = journalEpoch === null ? null : Date.parse(journalEpoch);
+    if (this.#pin !== null && this.#recoveryEpoch !== recoveryEpochOf(this.#pin)) return ["the journal's recovery epoch could not be set from the anchor pin (D-207)"];
+    if (torn !== null) this.#recoverTornWrite(torn, ids, stored);
+    for (const id of ids) {
+      // A record this start wrote to (the recovery's own notes) is read again from the journal.
+      const verdict = torn !== null || (fresh && id === this.#indexId) ? verifyTrajectory(this.#journal.root, id) : stored.get(id)?.verdict;
       if (id !== this.#indexId) this.#known.add(id);
-      if (record === undefined || !record.verdict.ok) continue;
-      const entries = this.#read(id, record.verdict);
+      if (verdict === undefined || !verdict.ok) continue;
+      const entries = this.#read(id, verdict);
       const last = entries.at(-1);
       if (last !== undefined) this.#written.set(id, last.entry.data_class);
-      if (id === this.#indexId) continue;
-      for (const item of entries) {
-        // Every entry's payload must be there and readable, whatever its kind (D-204): the chain and the anchors cover the
-        // entries, and a payload removed or damaged in the blob store would otherwise be state silently dropped.
-        if (item.payload === undefined) {
-          refusals.push(`journal record ${id} entry ${String(item.entry.seq)} has no readable payload, so what it records cannot be rebuilt (§3.4.5, D-201)`);
+      if (id === this.#indexId) {
+        for (const item of entries) {
+          if (field(item.payload, "type") !== "recovered_truncation") continue;
+          for (const grant of field(item.payload, "exhausted_grants") as unknown[]) if (typeof grant === "string") this.#exhausted.add(grant);
         }
+        continue;
       }
       const admission = entries.find((item) => item.entry.kind === "note" && field(item.payload, "type") === "admission" && field(item.payload, "outcome") === "admitted");
       this.#recovered.set(id, { id, entries, admission: admission === undefined ? null : (admission.payload as Readonly<Record<string, unknown>>) });
     }
-    if (refusals.length > 0) return refusals;
     // §3.4.1: what was written and not yet copied off the host is copied before the service serves anything.
     const unanchored = await this.anchorPending();
     return unanchored.map((id) => `journal record ${id} could not be anchored off the host (journalled as anchor_failed), so the service does not start (§3.4.1, D-201)`);
+  }
+
+  /**
+   * Repairs a torn final write (operator ruling D-206 item 1; D-207). Called only when every entry before the
+   * incomplete one has verified (§3.4.2), agrees with every anchor held off the host (§3.4.1) and has its payload.
+   *   1. The incomplete entry is cut off, durably.
+   *   2. Every session open at the crash is found: one the journal admitted whose record shows no closing state. Every
+   *      grant such a session holds (its admission's list) or used (any call it made under one) is exhausted.
+   *   3. A `recovered_truncation` note in the journal's own record says which record, how many entries were kept, the
+   *      size and digest of what was dropped, the open sessions and the exhausted grants. The record that lost the
+   *      entry gets a note of its own, so whoever reads that record alone sees it (§3.4.5).
+   * The exhausted grants are read back from that note at every later start: the journal is the only memory of it.
+   */
+  #recoverTornWrite(torn: TornTail, ids: readonly string[], stored: ReadonlyMap<string, StoredRecord>): void {
+    const open: string[] = [];
+    const grants = new Set<string>();
+    for (const id of ids) {
+      if (id === this.#indexId) continue;
+      const entries = this.#read(id, stored.get(id)?.verdict);
+      const admission = entries.find((item) => item.entry.kind === "note" && field(item.payload, "type") === "admission" && field(item.payload, "outcome") === "admitted");
+      if (admission === undefined) continue;
+      let state: unknown = null;
+      for (const item of entries) if (item.entry.kind === "note" && field(item.payload, "type") === "state") state = field(item.payload, "to");
+      if (typeof state === "string" && CLOSED_STATES.has(state)) continue;
+      open.push(id);
+      const held = field(field(admission.payload, "task"), "grants");
+      if (Array.isArray(held)) for (const grant of held) if (typeof grant === "string") grants.add(grant);
+      for (const item of entries) {
+        const grant = field(item.payload, "grant");
+        if (item.entry.kind === "capability_call" && typeof grant === "string") grants.add(grant);
+      }
+    }
+    dropTornTail(this.#journal.root, torn);
+    const what = { how: torn.how, kept_entries: torn.kept.entries.length, dropped_bytes: torn.droppedBytes, dropped_sha256: torn.droppedSha256 };
+    const exhausted = [...grants].sort();
+    this.#write(this.#indexId, "note", INDEX_CLASS, { type: "recovered_truncation", record: torn.taskId, record_digest: torn.digest, ...what, open_sessions: open.sort(), exhausted_grants: exhausted }, { actor: LAYER_ACTOR });
+    const last = torn.kept.entries.at(-1);
+    if (torn.taskId !== null && torn.taskId !== this.#indexId && last !== undefined) {
+      this.#journal.append(torn.taskId, { kind: "note", actor: LAYER_ACTOR, provider: null, data_class: last.data_class, cost: NO_COST }, encoder.encode(canonicalJson({ type: "recovered_truncation", ...what })));
+    }
+    this.#recovery = { record: torn.taskId, how: torn.how, kept_entries: torn.kept.entries.length, open_sessions: open, exhausted_grants: exhausted };
+  }
+
+  /** What this start recovered from a torn final write, or null (D-207). A service says it on its output. */
+  get recovery(): RecoveredTruncation | null {
+    return this.#recovery;
+  }
+
+  /** The journal's recovery epoch in milliseconds, or null when it records none (D-207). */
+  get recoveryEpoch(): number | null {
+    return this.#recoveryEpoch;
+  }
+
+  /** The anchor pin the start-up check verified for this service, or null (D-208). */
+  get pin(): VerifiedPin | null {
+    return this.#pin;
   }
 
   /** A verified record's entries with their payloads. */
@@ -448,6 +576,8 @@ export class SessionLayer {
     // store here before it can get a boundary, so no mode can leave it out.
     if (this.#adopted.has(grants)) return;
     grants.restoreUse(this.grantUse());
+    // D-206, D-207: what the journal's recoveries decide for grants goes with the counts, for every mode.
+    grants.restoreRecovery({ exhausted: this.#exhausted, recoveryEpoch: this.#recoveryEpoch });
     this.#adopted.add(grants);
     this.#counted = grants;
   }

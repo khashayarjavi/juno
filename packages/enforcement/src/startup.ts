@@ -1,6 +1,7 @@
 import { type Stats, accessSync, constants, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
 import { WORK_NAMESPACE, pathsOverlap } from "../../contracts/src/index.js";
+import { type VerifiedPin, knownHostsRefusals, parseAnchorPin } from "./anchor-pin.js";
 import { type TrustAnchor, trustAnchorFromPem } from "./signature.js";
 
 /**
@@ -22,7 +23,11 @@ import { type TrustAnchor, trustAnchorFromPem } from "./signature.js";
  *      group or others without the sticky bit (they could replace the entry); for a socket, a folder writable by group
  *      or others at all (D-173, D-191);
  *   5. a trust anchor that is not verified: missing, a symbolic link, not a file, writable by this process or replaceable
- *      through its folder (D-116), writable by group or others, or not an Ed25519 public key (§3.2 C1).
+ *      through its folder (D-116), writable by group or others, or not an Ed25519 public key (§3.2 C1);
+ *   6. an anchor pin that is not verified (operator ruling D-206; D-208): the file that pins the anchor repository's
+ *      address, its SSH host key and the journal folders that may anchor there. It is protected like the trust anchor
+ *      (the runner can change neither it nor its folder), its known-hosts file likewise and holding exactly the pinned
+ *      key, and the journal this service was started on must be one it names.
  */
 
 /** Which service is starting. A new service adds its name here, and to the entry-point registry (D-194). */
@@ -37,9 +42,9 @@ export type StateItem = {
   /**
    * `file`: must exist (a file JUNO reads); `dir`: a folder JUNO owns (may not exist yet); `socket`: the Unix socket JUNO
    * will listen on (its folder must exist); `path`: something JUNO protects but does not own or open (only the overlap
-   * rule applies, e.g. Claude Code's root-owned settings files).
+   * rule applies, e.g. Claude Code's root-owned settings files); `pin`: the anchor pin file (rule 6 above; at most one).
    */
-  readonly kind: "file" | "dir" | "socket" | "path";
+  readonly kind: "file" | "dir" | "socket" | "path" | "pin";
 };
 
 export type StartupSpec = {
@@ -90,7 +95,7 @@ export function systemHostIo(): HostIo {
   };
 }
 
-export type StartupResult = { readonly ok: true; readonly anchor: TrustAnchor | null } | { readonly ok: false; readonly refusals: readonly string[] };
+export type StartupResult = { readonly ok: true; readonly anchor: TrustAnchor | null; readonly pin: VerifiedPin | null } | { readonly ok: false; readonly refusals: readonly string[] };
 
 /** The shared start-up check: every refusal, or the verified anchor. Opens and changes nothing. */
 export function startupCheck(spec: StartupSpec, host: HostIo): StartupResult {
@@ -124,7 +129,7 @@ export function startupCheck(spec: StartupSpec, host: HostIo): StartupResult {
   }
   // 4. Nothing someone else could change.
   for (const item of owned) {
-    if (item.kind === "path" || item.kind === "anchor") continue;
+    if (item.kind === "path" || item.kind === "anchor" || item.kind === "pin") continue;
     refusals.push(...changeableRefusals(item.what, item.path, item.kind, host));
   }
   // 5. A verified anchor.
@@ -134,7 +139,73 @@ export function startupCheck(spec: StartupSpec, host: HostIo): StartupResult {
     if (verified.ok) anchor = verified.anchor;
     else refusals.push(...verified.refusals);
   }
-  return refusals.length > 0 ? { ok: false, refusals } : { ok: true, anchor };
+  // 6. A verified anchor pin, naming this journal (D-206, D-208).
+  let pin: VerifiedPin | null = null;
+  const pins = spec.state.filter((item) => item.kind === "pin");
+  if (pins.length > 1) refusals.push("more than one anchor pin was named; a service has one (D-208)");
+  const named = pins[0];
+  if (named !== undefined && pins.length === 1) {
+    const verified = verifyAnchorPin(named.path, spec.journal, spec.workspaces, host);
+    if (verified.ok) pin = verified.pin;
+    else refusals.push(...verified.refusals);
+  }
+  return refusals.length > 0 ? { ok: false, refusals } : { ok: true, anchor, pin };
+}
+
+/** Why this process, or anyone but root and the file's owner, could change a file the runner must only read (D-116, D-208). */
+function protectedFileRefusals(what: string, path: string, host: HostIo): string[] {
+  if (!path.startsWith("/")) return [`${what} ${path} is not an absolute path`];
+  if (pathsOverlap(path, WORK_NAMESPACE)) return [`${what} ${path} lies in the capability namespace ${WORK_NAMESPACE}, which grants can name (§3.2)`];
+  const refusals: string[] = [];
+  for (const target of [path, dirname(path)]) {
+    if (host.writable(target)) refusals.push(`${what} ${path} is not protected: this process can write ${target}; it must be read-only to the runner (D-116, D-208)`);
+  }
+  refusals.push(...changeableRefusals(what, path, "anchor", host));
+  return refusals;
+}
+
+/**
+ * The anchor pin rule (operator ruling D-206 item 2; D-208), the one implementation the start-up check and
+ * `juno hook check` use. The pin file, and the known-hosts file it names, must be files the runner cannot change
+ * (neither the file nor its folder writable by this process; owned by root or this process; writable by no group or
+ * other; not a symbolic link). The known-hosts file must hold exactly the pinned host key for the pinned host. The push
+ * key is the runner's own file and is judged like any of JUNO's state. `journal` must be one of the journal folders
+ * the pin names, as the kernel resolves both.
+ */
+export function verifyAnchorPin(path: string, journal: string, workspaces: readonly string[], host: HostIo): { readonly ok: true; readonly pin: VerifiedPin } | { readonly ok: false; readonly refusals: readonly string[] } {
+  const refusals = protectedFileRefusals("the anchor pin", path, host);
+  if (refusals.length > 0) return { ok: false, refusals };
+  let parsed: ReturnType<typeof parseAnchorPin>;
+  try {
+    parsed = parseAnchorPin(host.readFile(path));
+  } catch (error: unknown) {
+    return { ok: false, refusals: [`the anchor pin ${path} cannot be used: ${error instanceof Error ? error.message : String(error)} (D-208)`] };
+  }
+  if (parsed.transport === "ssh" && parsed.known_hosts !== null && parsed.push_key !== null && parsed.host_key_fingerprint !== null && parsed.host !== null) {
+    const known = protectedFileRefusals("the pinned known-hosts file", parsed.known_hosts, host);
+    refusals.push(...known);
+    if (known.length === 0) {
+      try {
+        refusals.push(...knownHostsRefusals(host.readFile(parsed.known_hosts), parsed.host, parsed.host_key_fingerprint).map((line) => `${line} (${parsed.known_hosts ?? ""}, D-208)`));
+      } catch (error: unknown) {
+        refusals.push(`the pinned known-hosts file ${parsed.known_hosts} cannot be read: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    refusals.push(...laterFileRefusals("the anchor push key", parsed.push_key, workspaces, host));
+  } else if (parsed.transport === "local") {
+    // A local repository is JUNO's own test stand-in: it is state, and must not be reachable from a workspace.
+    for (const root of workspaces) {
+      if (pathsOverlap(resolved(parsed.url, host), resolved(root, host)) || pathsOverlap(parsed.url, root)) refusals.push(`the pinned anchor repository ${parsed.url} overlaps the workspace ${root} (D-208)`);
+    }
+  }
+  const real = resolved(journal, host);
+  const entry = parsed.journals.find((candidate) => candidate.path === journal || resolved(candidate.path, host) === real);
+  if (entry === undefined) refusals.push(`the journal ${journal} is not a journal folder the anchor pin ${path} names; only the operator, as root, adds one there (D-206, D-208)`);
+  if (refusals.length > 0 || entry === undefined) return { ok: false, refusals };
+  return {
+    ok: true,
+    pin: { path, url: parsed.url, branch: parsed.branch, transport: parsed.transport, host: parsed.host, fingerprint: parsed.host_key_fingerprint, knownHosts: parsed.known_hosts, pushKey: parsed.push_key, journals: parsed.journals, journal: entry },
+  };
 }
 
 /**
