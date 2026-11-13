@@ -3,7 +3,7 @@
 ## Current increment
 **1.5-setup — the follow-up you authorised before you run the setup guide (your rulings of 2026-11-13, D-214).** Slice 1.5 is complete and merged (PR #52, cd8d9b5). Branch `claude/focused-goodall-yow05e` (this session's only pushable branch, D-215); it carries PR #53's STATE.md commit, and its PR supersedes PR #53. Spec v0.6.1. No objection open.
 
-Status (2026-11-13, this session): **all five rulings built as D-216, with tests. `make verify` running; review next.** Nothing merged yet.
+Status (2026-11-13, this session): **all five rulings built as D-216, with tests. `make verify: GREEN` on 4b0c172's code (1,452 unit, 118 container; afa8ad9 adds only DECISIONS.md and STATE.md). Draft PR [khashayarjavi/juno#54](https://github.com/khashayarjavi/juno/pull/54) supersedes #53. Review round 1 next.** Nothing merged yet. `make mediated-e2e` was not run: nothing it exercises changed (the code change is the help line of a failed `grant sign --ssh-key`).
 
 ### What 1.5-setup changes, in plain words
 1. **Installing JUNO without a second GitHub sign-in (ruling 1).** You clone JUNO once on Windows, where Git for Windows signs you in through the browser, and check out the exact commit I give you. You pack it into one file (`juno.bundle`). Part E copies that file into WSL as root's read-only file, and both copies of JUNO (`~/juno` for `juno-runner`, `/opt/juno` for root) are cloned from it. After each clone you compare the printed hash with the one I gave you. Tested in CI with the real git and `dd`.
@@ -19,7 +19,7 @@ Status (2026-11-13, this session): **all five rulings built as D-216, with tests
    - Found while doing it: the old steps said admission would report an exhausted grant; it does not. Calls are refused with `exhausted`. The guide now says what JUNO actually prints.
    - Round 8's note 5 (the start-up check judges the git program and its own folder; `juno hook check` judges every folder up to `/`) was not in your ruling and is unchanged.
 
-**Left, in order:** `make verify` GREEN; open the PR (supersedes #53); review rounds (up to 5); the merge gate; then STOP and report the merge commit hash in full, for Part A step 4.
+**Left, in order:** review rounds (up to 5); the merge gate; then STOP and report the merge commit hash in full, for Part A step 4.
 
 ## Slice 1.5 — completion record
 ### Merges this session (2026-11-13)
