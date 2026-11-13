@@ -1,5 +1,6 @@
 import { type Stats, lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { knownHostsRefusals, parseAnchorPin } from "../../enforcement/src/anchor-pin.js";
 import { type FilesystemIo, caseFoldingRefusals, systemFilesystemIo } from "./filesystem.js";
 import { type GatewayInstall, MANAGED_MCP_NAME, MANAGED_SETTINGS, gatewayInputRefusals, gatewaySettingsRefusals, hookRefusals, managedMcpRefusals } from "./install.js";
 
@@ -36,6 +37,11 @@ export type PreflightInput = {
   readonly state: readonly string[];
   /** The trust anchor: public (D-116), so the agent may read it, but never write or replace it. */
   readonly anchor?: string;
+  /**
+   * The anchor pin (operator ruling D-206 item 2; D-208): root's own file naming the anchor repository, GitHub's SSH
+   * host key and the journal folders that may anchor there. `juno hook check` always judges it.
+   */
+  readonly anchorPin?: string;
   /**
    * JUNO's gateway relay, when the hook is to let the gateway's calls through (D-190): its server name, the shim Claude
    * Code starts, and the runner's gateway socket. Node is `node` above.
@@ -225,6 +231,47 @@ export function hookPreflight(input: PreflightInput, io: PreflightIo): string[] 
     }
     refusals.push(...socketRefusals("the gateway socket", input.gateway.socket, agent, runner, io));
   }
+
+  // 7. The anchor pin (D-206, D-208): root's own, naming an SSH repository with exactly the pinned host key, the
+  // runner's own push key, and journal folders that are among the state judged above.
+  if (input.anchorPin !== undefined) refusals.push(...anchorPinRefusals(input.anchorPin, input.state, agent, runner, io));
+  return refusals;
+}
+
+/**
+ * Why the anchor pin is not what the operator's set-up requires (operator ruling D-206 item 2; D-208). The pin and its
+ * known-hosts file, and every folder above them, must be owned by root and writable by no one else, so neither the
+ * runner nor the Claude Code user can change where the journal is anchored or which server is believed. The pin must
+ * name an SSH address (a local path is for JUNO's own tests), the known-hosts file must hold exactly the key with the
+ * pinned fingerprint, the push key must be the runner's own private file, and each journal folder must be state this
+ * check was given, so that everything above has judged it.
+ */
+export function anchorPinRefusals(pin: string, state: readonly string[], agent: Account, runner: Account, io: PreflightIo): string[] {
+  const refusals = rootOnly("the anchor pin", pin, io);
+  const text = io.readFile(pin);
+  if (text === null) return [...refusals, `the anchor pin ${pin} cannot be read`];
+  let parsed: ReturnType<typeof parseAnchorPin>;
+  try {
+    parsed = parseAnchorPin(text);
+  } catch (error: unknown) {
+    return [...refusals, `the anchor pin ${pin} cannot be used: ${error instanceof Error ? error.message : String(error)} (D-208)`];
+  }
+  if (parsed.transport !== "ssh" || parsed.known_hosts === null || parsed.push_key === null || parsed.host_key_fingerprint === null || parsed.host === null) {
+    return [...refusals, `the anchor pin ${pin} names a local path (${parsed.url}); the operator's pin names the anchor repository's SSH address, with its host key (D-208)`];
+  }
+  refusals.push(...rootOnly("the pinned known-hosts file", parsed.known_hosts, io));
+  const known = io.readFile(parsed.known_hosts);
+  if (known === null) refusals.push(`the pinned known-hosts file ${parsed.known_hosts} cannot be read`);
+  else refusals.push(...knownHostsRefusals(known, parsed.host, parsed.host_key_fingerprint).map((line) => `${line} (${parsed.known_hosts ?? ""}, D-208)`));
+  const key = io.lstat(parsed.push_key);
+  if (key === null) refusals.push(`the anchor push key ${parsed.push_key} does not exist`);
+  else {
+    if (key.kind !== "file" || key.uid !== runner.uid || (key.mode & 0o077) !== 0) refusals.push(`the anchor push key ${parsed.push_key} must be the runner's own file, readable by no one else (${describeMode(key)})`);
+    if (canReplace(agent, parsed.push_key, io)) refusals.push(`the Claude Code user can replace the anchor push key ${parsed.push_key} through its folder (D-173)`);
+  }
+  for (const journal of parsed.journals) {
+    if (!state.some((path) => journal.path === path || journal.path.startsWith(`${path}/`))) refusals.push(`the anchor pin names the journal folder ${journal.path}, which is not under any --state path this check was given, so its separation was not judged (D-208)`);
+  }
   return refusals;
 }
 
@@ -269,14 +316,17 @@ export function systemPreflightIo(): PreflightIo {
   };
 }
 
-const CHECK_USAGE = "usage: juno hook check --agent-user <name> --runner-user <name> --socket <path> --client <juno-hook.js> --node <node> --state <path> [--state <path> ...] --workspace <path> [--workspace <path> ...] [--source <path> ...] [--anchor <file>] [--settings <file>] [--gateway <name> --shim <juno-mcp.js> --gateway-socket <path>]\n";
+const CHECK_USAGE = "usage: juno hook check --agent-user <name> --runner-user <name> --socket <path> --client <juno-hook.js> --node <node> --state <path> [--state <path> ...] --workspace <path> [--workspace <path> ...] [--source <path> ...] [--anchor <file>] [--anchor-pin <file>] [--settings <file>] [--gateway <name> --shim <juno-mcp.js> --gateway-socket <path>]\n";
+
+/** D-208: the anchor pin's place unless the operator names another (the services' default too). */
+const ANCHOR_PIN = "/etc/juno/anchors.json";
 
 /**
  * `juno hook check …` (see USAGE in install.ts). Exit 0 when the separation holds and every workspace and source is on
  * a case-sensitive Linux file system with no case-folding folder (D-178), 1 refused, 2 bad usage.
  */
 export async function runHookCheckCli(args: readonly string[], out: (text: string) => void, err: (text: string) => void, io: PreflightIo = systemPreflightIo(), fsIo: FilesystemIo = systemFilesystemIo()): Promise<number> {
-  const single = ["--agent-user", "--runner-user", "--socket", "--client", "--node", "--settings", "--anchor", "--gateway", "--shim", "--gateway-socket"];
+  const single = ["--agent-user", "--runner-user", "--socket", "--client", "--node", "--settings", "--anchor", "--anchor-pin", "--gateway", "--shim", "--gateway-socket"];
   const repeated = ["--state", "--workspace", "--source"];
   const options = new Map<string, string>();
   const lists = new Map<string, string[]>(repeated.map((name) => [name, []]));
@@ -309,12 +359,12 @@ export async function runHookCheckCli(args: readonly string[], out: (text: strin
     return 2;
   }
   const gateway = gatewayName === undefined || shim === undefined || gatewaySocket === undefined ? undefined : { name: gatewayName, shim, socket: gatewaySocket };
-  const refusals = hookPreflight({ agentUser, runnerUser, socket, client, node, state, settings: options.get("--settings") ?? MANAGED_SETTINGS, ...(anchor === undefined ? {} : { anchor }), ...(gateway === undefined ? {} : { gateway }) }, io);
+  const refusals = hookPreflight({ agentUser, runnerUser, socket, client, node, state, settings: options.get("--settings") ?? MANAGED_SETTINGS, ...(anchor === undefined ? {} : { anchor }), anchorPin: options.get("--anchor-pin") ?? ANCHOR_PIN, ...(gateway === undefined ? {} : { gateway }) }, io);
   refusals.push(...(await caseFoldingRefusals([...workspaces.map((path) => ({ what: "the workspace", path })), ...sources.map((path) => ({ what: "the source", path }))], fsIo)));
   if (refusals.length > 0) {
     err(`juno hook check: refused:\n${refusals.map((line) => `  - ${line}`).join("\n")}\n`);
     return 1;
   }
-  out(`juno hook check: the Claude Code user ${agentUser} is separated from the runner ${runnerUser} as D-173 requires, and the workspace is on a case-sensitive Linux file system with no case-folding folder (D-178).${gateway === undefined ? "" : ` JUNO's gateway relay ${gateway.name} is the only MCP server Claude Code can load, and the Claude Code user cannot change it (D-190).`}\n`);
+  out(`juno hook check: the Claude Code user ${agentUser} is separated from the runner ${runnerUser} as D-173 requires, and the workspace is on a case-sensitive Linux file system with no case-folding folder (D-178).${gateway === undefined ? "" : ` JUNO's gateway relay ${gateway.name} is the only MCP server Claude Code can load, and the Claude Code user cannot change it (D-190).`} The anchor repository and its host key are pinned in root's own file (D-208).\n`);
   return 0;
 }

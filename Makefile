@@ -37,11 +37,13 @@ test-watch:
 
 # The capability definitions the built code loads at run time (the hook sessions' tool table, the program list, shell.run)
 # go beside it, where `dist/<package>/src/*.js` finds them as the sources do (DECISIONS.md D-197).
+# `juno-anchor-ssh.js` is run by git itself as GIT_SSH, so it is made executable (DECISIONS.md D-208).
 build:
 	rm -rf dist
 	npx tsc -p tsconfig.build.json
 	cp -R packages/mediated/definitions dist/mediated/definitions
 	cp -R packages/registry/definitions dist/registry/definitions
+	chmod 0755 dist/journal/src/juno-anchor-ssh.js
 
 # Production dependencies, installed on the host for COPY into images (D-001).
 stage:

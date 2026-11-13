@@ -37,7 +37,15 @@ const sessionFile = (overrides: Record<string, unknown> = {}, grants: readonly s
   grants,
 });
 
-const args = (): string[] => ["--socket", join(sockets, "hook.sock"), "--control", join(sockets, "admit.sock"), "--journal", join(dir, "state", "journal"), "--anchor", join(dir, "anchor", "operator.pub"), "--workspace", work, "--checkpoints", join(dir, "state", "checkpoints"), "--journal-key", join(dir, "state", "journal-key"), "--anchors", join(dir, "state", "juno-anchors"), "--protect", join(dir, "claude-home")];
+/** The anchor pin, as the operator writes it as root (D-208): under a folder the test host reports as root's own. */
+function writePin(dir: string, journal: string): string {
+  const path = join(dir, "root-owned", "anchors.json");
+  mkdirSync(join(dir, "root-owned"), { recursive: true, mode: 0o755 });
+  writeFileSync(path, JSON.stringify({ url: join(dir, "pinned-juno-anchors.git"), branch: "main", host_key_fingerprint: null, known_hosts: null, push_key: null, journals: [{ path: journal, recovery_epoch: "2020-01-01T00:00:00Z" }] }), { mode: 0o644 });
+  return path;
+}
+
+const args = (): string[] => ["--socket", join(sockets, "hook.sock"), "--control", join(sockets, "admit.sock"), "--journal", join(dir, "state", "journal"), "--anchor", join(dir, "anchor", "operator.pub"), "--workspace", work, "--checkpoints", join(dir, "state", "checkpoints"), "--journal-key", join(dir, "state", "journal-key"), "--anchors", join(dir, "state", "juno-anchors"), "--anchor-pin", writePin(dir, join(dir, "state", "journal")), "--protect", join(dir, "claude-home")];
 
 const quiet = { out: (text: string) => said.push(text), err: (text: string) => said.push(text) };
 

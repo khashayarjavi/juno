@@ -5,7 +5,7 @@
 // then runs the Claude Code user's attempts as uid 1001, and the check's negative controls. Prints one JSON object.
 // Every program is started with execFile and an argument array; there is no shell.
 import { execFile } from "node:child_process";
-import { generateKeyPairSync } from "node:crypto";
+import { createHash, generateKeyPairSync } from "node:crypto";
 import { appendFileSync, chmodSync, chownSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import process from "node:process";
 import { TextDecoder } from "node:util";
@@ -51,6 +51,26 @@ mkdirSync("/etc/juno", { mode: 0o755 });
 const operator = generateKeyPairSync("ed25519");
 writeFileSync("/etc/juno/operator.pub", operator.publicKey.export({ type: "spki", format: "pem" }), { mode: 0o444 });
 
+// The anchor pin `juno hook check` judges (operator ruling D-206 item 2; D-208), shaped as the operator's: an SSH
+// address, the pinned host key in a root-owned known-hosts file, and the runner's own push key. (The services in this
+// container anchor through the image's own pin, /etc/juno/anchors.json, which names a stand-in destination: the image
+// has no git and no network. The check refuses such a pin; that is one of its negative controls below.)
+{
+  const hostKey = Buffer.from("the pinned host key of this test").toString("base64");
+  const fingerprint = `SHA256:${createHash("sha256").update(Buffer.from(hostKey, "base64")).digest("base64").replace(/=+$/, "")}`;
+  writeFileSync("/etc/juno/anchors_known_hosts", `github.com ssh-ed25519 ${hostKey}\n`, { mode: 0o644 });
+  mkdirSync("/var/lib/juno-anchor-key", { mode: 0o755 });
+  writeFileSync("/var/lib/juno-anchor-key/juno_anchors", "not a real key\n", { mode: 0o600 });
+  chownSync("/var/lib/juno-anchor-key/juno_anchors", RUNNER, RUNNER);
+  chmodSync("/var/lib/juno-anchor-key", 0o700);
+  chownSync("/var/lib/juno-anchor-key", RUNNER, RUNNER);
+  // The same pin in a file of the runner's own: the check must refuse it.
+  mkdirSync("/var/lib/juno-runner-pin", { mode: 0o755 });
+  writeFileSync("/var/lib/juno-runner-pin/anchors.json", JSON.stringify({ url: "git@github.com:operator/juno-anchors.git", branch: "main", host_key_fingerprint: fingerprint, known_hosts: "/etc/juno/anchors_known_hosts", push_key: "/var/lib/juno-anchor-key/juno_anchors", journals: [{ path: "/var/lib/juno-runner/journal", recovery_epoch: "2026-01-01T00:00:00Z" }] }), { mode: 0o644 });
+  chownSync("/var/lib/juno-runner-pin/anchors.json", RUNNER, RUNNER);
+  writeFileSync("/etc/juno/anchors-check.json", JSON.stringify({ url: "git@github.com:operator/juno-anchors.git", branch: "main", host_key_fingerprint: fingerprint, known_hosts: "/etc/juno/anchors_known_hosts", push_key: "/var/lib/juno-anchor-key/juno_anchors", journals: [{ path: "/var/lib/juno-runner/journal", recovery_epoch: "2026-01-01T00:00:00Z" }] }), { mode: 0o644 });
+}
+
 // The runner's state folder and the socket folder (Part E: `install -d -o juno-runner -m 0700` and `-g juno-hook -m 2750`).
 // The mode first, while root owns the folder; then the owner (changing a mode needs the owner, or CAP_FOWNER).
 // The runner image already holds it, the runner's and 0700, as Part E makes it (D-198: the journal key and the anchor
@@ -80,7 +100,7 @@ results.settings = JSON.parse(readFileSync("/etc/claude-code/managed-settings.js
 results.modes = Object.fromEntries(["/var/lib/juno-runner", "/var/lib/juno-hook", "/etc/claude-code", "/etc/claude-code/managed-settings.json"].map((path) => { const stats = statSync(path); return [path, { uid: stats.uid, gid: stats.gid, mode: (stats.mode & 0o7777).toString(8) }]; }));
 
 const check = (overrides = {}, states = ["/var/lib/juno-runner", "/var/lib/juno-runner/journal", "/var/lib/juno-runner/grants", "/var/lib/juno-runner/checkpoints"]) => {
-  const options = { "--agent-user": "juno-agent", "--runner-user": "node", "--socket": SOCKET, "--client": CLIENT, "--node": NODE, "--anchor": "/etc/juno/operator.pub", "--workspace": "/srv/work", ...overrides };
+  const options = { "--agent-user": "juno-agent", "--runner-user": "node", "--socket": SOCKET, "--client": CLIENT, "--node": NODE, "--anchor": "/etc/juno/operator.pub", "--anchor-pin": "/etc/juno/anchors-check.json", "--workspace": "/srv/work", ...overrides };
   const args = [JUNO, "hook", "check", ...Object.entries(options).flat()];
   for (const state of states) args.push("--state", state);
   return exit(args);
@@ -119,6 +139,9 @@ results.negative.settingsWritable = await check();
 chmodSync("/etc/claude-code/managed-settings.json", 0o644);
 // D-178: a workspace on a file system that is not a native case-sensitive Linux one (here the container's overlay root).
 results.negative.workspaceOnOverlay = await check({ "--workspace": "/srv/overlay-work" });
+// D-208: a pin that names a local path (the image's own test pin), and a pin that is the runner's own file.
+results.negative.pinIsLocal = await check({ "--anchor-pin": "/etc/juno/anchors.json" });
+results.negative.pinIsRunners = await check({ "--anchor-pin": "/var/lib/juno-runner-pin/anchors.json" });
 results.recheck = await check();
 
 runner.stdin.end();

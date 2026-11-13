@@ -17,7 +17,7 @@ describe("parseRunnerConfig", () => {
       journalDir: "/journal",
       workDir: "/work",
       trustAnchor: null,
-      anchoring: { journalKeyDir: "/var/lib/juno-runner/journal-key", anchorClone: "/var/lib/juno-runner/juno-anchors", intervalMs: 60_000, git: "/usr/bin/git" },
+      anchoring: { journalKeyDir: "/var/lib/juno-runner/journal-key", anchorClone: "/var/lib/juno-runner/juno-anchors", intervalMs: 60_000, git: "/usr/bin/git", pin: "/etc/juno/anchors.json" },
     });
   });
 

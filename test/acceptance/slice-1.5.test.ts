@@ -50,6 +50,14 @@ const state = join(dir, "state");
 const sockets = join(dir, "sock");
 const anchorFile = join(dir, "anchor", "operator.pub");
 
+/** The anchor pin (D-208), as the operator writes it as root: it names the journal the service is started on. */
+function pinFor(journal: string): string {
+  const path = join(dir, "root-owned", "anchors.json");
+  mkdirSync(join(dir, "root-owned"), { recursive: true, mode: 0o755 });
+  writeFileSync(path, JSON.stringify({ url: join(dir, "pinned-juno-anchors.git"), branch: "main", host_key_fingerprint: null, known_hosts: null, push_key: null, journals: [{ path: journal, recovery_epoch: "2020-01-01T00:00:00Z" }] }), { mode: 0o644 });
+  return path;
+}
+
 async function docker(args: readonly string[]): Promise<void> {
   await run("docker", args, { cwd: repoRoot, maxBuffer: 16 * 1024 * 1024 });
 }
@@ -126,7 +134,7 @@ async function hookServe(journal: string, drive: (admit: (file: string) => Promi
   let driving: Promise<void> = Promise.resolve();
   let root = "";
   const code = await runHookServeCli(
-    ["--socket", socket, "--control", control, "--journal", journal, "--anchor", anchorFile, "--workspace", work, "--checkpoints", join(state, "checkpoints"), "--journal-key", join(state, "journal-key"), "--anchors", join(state, "juno-anchors")],
+    ["--socket", socket, "--control", control, "--journal", journal, "--anchor", anchorFile, "--workspace", work, "--checkpoints", join(state, "checkpoints"), "--journal-key", join(state, "journal-key"), "--anchors", join(state, "juno-anchors"), "--anchor-pin", pinFor(journal)],
     {
       host: ordinaryHost(),
       filesystem: systemFilesystemIo(),
@@ -238,7 +246,7 @@ describe("§4.3 acceptance test 3 (mode B): an untrusted target of an external e
     const said: string[] = [];
     let finished = false;
     const running = runGatewayCli(
-      ["serve", "--session", sessionFile, "--socket", socket, "--journal", journal, "--anchor", anchorFile, "--workspace", work, "--journal-key", join(state, "journal-key"), "--anchors", join(state, "juno-anchors"), "--grant", grantFile],
+      ["serve", "--session", sessionFile, "--socket", socket, "--journal", journal, "--anchor", anchorFile, "--workspace", work, "--journal-key", join(state, "journal-key"), "--anchors", join(state, "juno-anchors"), "--anchor-pin", pinFor(journal), "--grant", grantFile],
       { host: ordinaryHost(), readFile: (path) => readFileSync(path, "utf8"), filesystem: systemFilesystemIo(), anchoring: anchoring(), stopped: () => stopped, out: (text) => said.push(text), err: (text) => said.push(text) },
     ).finally(() => (finished = true));
     for (let tries = 0; tries < 800 && !finished && !existsSync(socket); tries += 1) await new Promise((resolve) => setTimeout(resolve, 25));
