@@ -233,3 +233,31 @@ describe("D-214 items 3 and 4: the Windows account's rules, the signing key's wi
     expect(partA).toContain("If it is still older than 8.2, **stop**");
   });
 });
+
+describe("D-219: CI covers the operator's own Docker and login shell, and the guide checks for files others could change", () => {
+  const setup = readFileSync(new URL("../../scripts/rootless/setup-root.sh", import.meta.url), "utf8");
+  const workflow = readFileSync(new URL("../../.github/workflows/verify.yml", import.meta.url), "utf8");
+
+  // proves D-219: the CI job that stands for the operator's machine installs exactly the Docker version the guide pins
+  // (Part E step 3) and runs in the runner's login shell (steps 8 and 11), so issue #56's setup is in CI from now on
+  it("installs in CI the Docker version the guide pins, and runs in the login shell", () => {
+    const pinned = /^ {3}V=(\S+)$/m.exec(guide)?.[1];
+    expect(pinned).toBe("5:29.9.2-1~ubuntu.24.04~noble");
+    expect(setup).toContain(`APT_VERSION=${pinned ?? "missing"}`);
+    expect(guide).toContain("sudo apt install -y docker-ce=$V docker-ce-cli=$V docker-ce-rootless-extras=$V containerd.io docker-buildx-plugin docker-compose-plugin");
+    expect(setup).toContain('"docker-ce=$APT_VERSION" "docker-ce-cli=$APT_VERSION" "docker-ce-rootless-extras=$APT_VERSION"');
+    expect(setup).toContain("containerd.io docker-buildx-plugin docker-compose-plugin");
+    expect(setup).toContain("systemctl disable --now docker.service docker.socket");
+    expect(workflow).toContain("sudo bash scripts/rootless/setup-root.sh --docker-from-apt");
+    expect(workflow).toContain("bash scripts/rootless/run-verify.sh --login-shell");
+  });
+
+  // proves D-219 in the guide: step 11 can be run again on a new commit, and step 12 checks every file and folder of
+  // JUNO's root copy and of node for write access by anyone but root, as `juno hook check` will
+  it("lets step 11 be run again and checks every file of the root copy in step 12", () => {
+    const partE = guide.slice(guide.indexOf("## Part E"), guide.indexOf("## Part D"));
+    expect(partE).toContain("remove it first with `rm -rf ~/juno`");
+    expect(partE).toContain("find /opt/juno /opt/node22 ! -type l -perm /022 -print");
+    expect(partE.indexOf("find /opt/juno /opt/node22")).toBeGreaterThan(partE.indexOf("sudo env PATH=/opt/node22/bin:$PATH make build"));
+  });
+});

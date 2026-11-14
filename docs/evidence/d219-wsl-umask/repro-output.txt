@@ -1,0 +1,24 @@
+{"code":1,"stdout":""}
+juno hook check: refused:
+  - the hook client: /app/dist/mediated must be owned by root and writable by no one else (owner 0, group 0, mode 0775), or the Claude Code user could change it
+  - the hook client: /app/dist/mediated/src must be owned by root and writable by no one else (owner 0, group 0, mode 0775), or the Claude Code user could change it
+  - the hook client: /app/dist/mediated/src/juno-hook.js must be owned by root and writable by no one else (owner 0, group 0, mode 0664), or the Claude Code user could change it
+  - the hook client's folder holds filesystem.js, which must be owned by root and writable by no one else (owner 0, group 0, mode 0664)
+  - the hook client's folder holds gateway-cli.js, which must be owned by root and writable by no one else (owner 0, group 0, mode 0664)
+  - the hook client's folder holds gateway-service.js, which must be owned by root and writable by no one else (owner 0, group 0, mode 0664)
+  - the hook client's folder holds gateway-stdio.js, which must be owned by root and writable by no one else (owner 0, group 0, mode 0664)
+  - the hook client's folder holds gateway.js, which must be owned by root and writable by no one else (owner 0, group 0, mode 0664)
+  - the hook client's folder holds hook-admission.js, which must be owned by root and writable by no one else (owner 0, group 0, mode 0664)
+  - the hook client's folder holds hook-client.js, which must be owned by root and writable by no one else (owner 0, group 0, mode 0664)
+  - the hook client's folder holds hook-serve.js, which must be owned by root and writable by no one else (owner 0, group 0, mode 0664)
+  - the hook client's folder holds hook-service.js, which must be owned by root and writable by no one else (owner 0, group 0, mode 0664)
+  - the hook client's folder holds hook-session-file.js, which must be owned by root and writable by no one else (owner 0, group 0, mode 0664)
+  - the hook client's folder holds install.js, which must be owned by root and writable by no one else (owner 0, group 0, mode 0664)
+  - the hook client's folder holds juno-hook.js, which must be owned by root and writable by no one else (owner 0, group 0, mode 0664)
+  - the hook client's folder holds juno-mcp.js, which must be owned by root and writable by no one else (owner 0, group 0, mode 0664)
+  - the hook client's folder holds mcp-shim.js, which must be owned by root and writable by no one else (owner 0, group 0, mode 0664)
+  - the hook client's folder holds paths.js, which must be owned by root and writable by no one else (owner 0, group 0, mode 0664)
+  - the hook client's folder holds preflight.js, which must be owned by root and writable by no one else (owner 0, group 0, mode 0664)
+  - the hook client's folder holds reads.js, which must be owned by root and writable by no one else (owner 0, group 0, mode 0664)
+  - the hook client's folder holds rebuild.js, which must be owned by root and writable by no one else (owner 0, group 0, mode 0664)
+  - the hook client's folder holds session.js, which must be owned by root and writable by no one else (owner 0, group 0, mode 0664)

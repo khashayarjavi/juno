@@ -240,7 +240,7 @@ Part E comes before Part D because Part D's push key is made inside WSL.
     wsl -d Ubuntu-24.04 -u root --exec /usr/bin/ls -l /opt/juno-setup/juno.bundle
     ```
     **Check:** the last line starts `-r--r--r--` and names `root root`.
-    Then, runner terminal:
+    Then, runner terminal. If `~/juno` is there from an earlier attempt, remove it first with `rm -rf ~/juno` (it is only the runner's copy for this check; nothing else uses it):
     ```
     git clone --quiet /opt/juno-setup/juno.bundle ~/juno
     git -C ~/juno rev-parse HEAD
@@ -253,6 +253,7 @@ Part E comes before Part D because Part D's push key is made inside WSL.
     make verify-rootless
     ```
     **Check:** after 10 to 20 minutes the last line is `make verify-rootless: GREEN`. Send the agent the summary lines, or the last 15 lines if it is not green.
+    This terminal is a login shell, where Ubuntu lets your group write the files you make (umask `0002`). `make` takes that write access off everything it builds, so the result is the same as in any other terminal (D-219).
 12. **A root-owned copy of JUNO, its folders, and the governed workspace.** Admin terminal, first the copy of JUNO, from the same file:
     ```
     sudo git clone --quiet /opt/juno-setup/juno.bundle /opt/juno
@@ -270,7 +271,11 @@ Part E comes before Part D because Part D's push key is made inside WSL.
     sudo install -d -o juno-agent -g juno-agent -m 0755 /srv/juno-work
     ls -ld /opt/juno /opt/juno/dist/mediated/src /opt/juno/dist/mediated/definitions /var/lib/juno-runner /var/lib/juno-hook /srv/juno-work
     ```
-    `make build` (not `tsc` alone) also copies the capability definitions the hook service needs beside the built code (D-197).
+    `make build` (not `tsc` alone) also copies the capability definitions the hook service needs beside the built code (D-197), and leaves everything it builds writable by root alone (D-219). Then:
+    ```
+    find /opt/juno /opt/node22 ! -type l -perm /022 -print
+    ```
+    **Check:** it prints nothing. Anything it prints is a file or folder that someone other than root could change; stop and send the agent the lines. (`juno hook check` in Part G would refuse it too.)
     **Check**, in the listing: `/opt/juno`, its `dist/mediated/src` and `dist/mediated/definitions` start `drwxr-xr-x` and name `root root`; `/var/lib/juno-runner` is `drwx------ juno-runner juno-runner`; `/var/lib/juno-hook` is `drwxr-s--- juno-runner juno-hook`; `/srv/juno-work` is `drwxr-xr-x juno-agent juno-agent`. Then `stat -f -c %T /srv/juno-work` prints `ext2/ext3` (that is how `stat` names ext4) and `lsattr -d /srv/juno-work` prints a line with no `F` before the path.
     **Never use a Windows folder** (anything under `/mnt/`, or a folder mounted from Windows) as the workspace or a source: JUNO refuses it (D-178).
 13. **Put your public key (Part B) where JUNO reads it.** It is public; this copies it byte for byte from Windows into WSL. **PowerShell** (normal):

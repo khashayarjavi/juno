@@ -38,19 +38,23 @@ test-watch:
 # The capability definitions the built code loads at run time (the hook sessions' tool table, the program list, shell.run)
 # go beside it, where `dist/<package>/src/*.js` finds them as the sources do (DECISIONS.md D-197).
 # `juno-anchor-ssh.js` is run by git itself as GIT_SSH, so it is made executable (DECISIONS.md D-208).
+# The last step makes everything built writable by its owner only, whatever the umask of whoever runs make: Ubuntu's
+# login shell gives 0002, and `juno hook check` rightly refuses a hook client its group could change (DECISIONS.md D-219).
 build:
 	rm -rf dist
 	npx tsc -p tsconfig.build.json
 	cp -R packages/mediated/definitions dist/mediated/definitions
 	cp -R packages/registry/definitions dist/registry/definitions
 	chmod 0755 dist/journal/src/juno-anchor-ssh.js
+	chmod -R go-w dist
 
-# Production dependencies, installed on the host for COPY into images (D-001).
+# Production dependencies, installed on the host for COPY into images (D-001), writable by their owner only (D-219).
 stage:
 	rm -rf build/stage
 	mkdir -p build/stage
 	cp package.json package-lock.json build/stage/
 	cd build/stage && npm ci --omit=dev --ignore-scripts --no-audit --no-fund --prefer-offline
+	chmod -R go-w build/stage
 
 # The same container suite as the runner's unprivileged user under the rootless runtime (DECISIONS.md D-130,
 # D-131). Run it through scripts/rootless/run-verify.sh, never as root. The first step proves the user and the
