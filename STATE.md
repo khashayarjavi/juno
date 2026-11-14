@@ -1,6 +1,18 @@
 # STATE
 
 ## Current increment
+**1.5-wsl-fix — `make verify-rootless` fails 2 of 118 on your machine (issue [khashayarjavi/juno#56](https://github.com/khashayarjavi/juno/issues/56)), authorised by you on 2026-11-14 (D-219).** Branch `claude/festive-cori-73zvj7` (this session's only pushable branch). It carries PR #55's two STATE.md commits; its PR supersedes #55. Spec v0.6.1. No objection open.
+
+Status (2026-11-14, this session): **cause found and reproduced here; fix in progress.** Nothing merged yet.
+
+- **Cause, reproduced in this session with nothing but `umask 0002`:** the test image copies `dist/` from the host with whatever permissions the build gave it. Your guide's runner terminal is a login shell (`sudo -iu juno-runner`), where Ubuntu sets the umask to 0002, so every built file was writable by its group. `juno hook check` then correctly refused the image's own hook client. Docker's packaging and its containerd snapshotter play no part: the same refusal appears on this session's plain Docker with the umask alone.
+
+### Open design items (not started)
+1. **Anchoring over HTTPS, for networks that intercept SSH.** Your network intercepts SSH to GitHub and you are using a VPN. This increment does not change how anchoring connects.
+
+**Previous increment, for reference:** 1.5-setup is complete and merged as `dbb272f21988f94cfbf4a849e408de29df0586ce` (below).
+
+## 1.5-setup — completion record
 **1.5-setup is complete and merged** (your rulings of 2026-11-13, D-214). The autopilot has STOPPED, as the ruling directs: nothing further is started. Spec v0.6.1. No objection open.
 
 **For Part A step 4 of the guide, the commit hash is: `dbb272f21988f94cfbf4a849e408de29df0586ce`** (the merge of PR #54 into main).
