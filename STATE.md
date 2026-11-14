@@ -3,8 +3,20 @@
 ## Current increment
 **1.5-wsl-fix — `make verify-rootless` fails 2 of 118 on your machine (issue [khashayarjavi/juno#56](https://github.com/khashayarjavi/juno/issues/56)), authorised by you on 2026-11-14 (D-219).** Branch `claude/festive-cori-73zvj7` (this session's only pushable branch). It carries PR #55's two STATE.md commits; its PR supersedes #55. Spec v0.6.1. No objection open.
 
-Status (2026-11-14, this session): **fix built with tests (D-219). `make verify: GREEN` on 8b3023a (1,456 unit, 121 container). Draft PR [khashayarjavi/juno#57](https://github.com/khashayarjavi/juno/pull/57) supersedes #55. Review round 1 next.** Nothing merged yet.
-- **CI reproduced your failure, then passed with the fix.** On aef225f (the fix removed on purpose, reverted by the next commit), the new job running your setup failed exactly your two tests, with 116 others passing (run 43627885303). On 8b3023a (the fix) it passed 121 of 121 (run 43627931735), with Docker 29.9.2 and containerd 2.4.2 from Docker's apt repository, containerd's snapshotter, and umask `0002`: your `docker info` and your umask.
+**1.5-wsl-fix is complete and merged.** The autopilot has STOPPED, as your instruction directs.
+
+**For Part A step 4 of the guide, the commit hash is: `6706b5a30a9d6aca96d046a31de85a741a9804ef`** (the merge of PR #57 into main). Redo Part A steps 4 and 5 with it, then Part E step 11 (remove the old `~/juno` first, as the step now says) and go on from there.
+
+### Merge record (2026-11-14)
+- **PR [khashayarjavi/juno#57](https://github.com/khashayarjavi/juno/pull/57) (1.5-wsl-fix, supersedes #55): merged** as `6706b5a30a9d6aca96d046a31de85a741a9804ef`, pinned to head `dac77604b19cceee372bfa5abb2d0f1ad05687c7`.
+  - **Review round 1** (fresh reviewer, the review prompt verbatim): **MERGE** on dac7760. All six checks PASS.
+  - **CI on dac7760:** run 43628433488, `verify`, `verify-rootless` and `verify-rootless-operator` green.
+  - **CI on main for 6706b5a:** run 43629203792, all three jobs **green**.
+  - **Locally:** `make verify: GREEN` on 8b3023a (1,456 unit, 121 container); dac7760 adds only DECISIONS.md and STATE.md.
+  - **CI reproduced your failure, then passed with the fix.** On aef225f (the fix removed on purpose, reverted by the next commit), the new job running your setup failed exactly your two tests, with 116 others passing (run 43627885303). On 8b3023a it passed 121 of 121 (run 43627931735), with Docker 29.9.2 and containerd 2.4.2 from Docker's apt repository, containerd's snapshotter, and umask `0002`: your `docker info` and your umask.
+  - PR #55 is left open and untouched; #57 carried its two commits.
+  - Issue #56 is closed with the plain-language cause.
+- **This branch, after the merge:** it adds only this record. Its draft PR is the post-merge record, like #55, and is not merged by the autopilot.
 
 ### What went wrong on your machine, in plain words
 - Your runner terminal is a login shell (`sudo -iu juno-runner`). In a login shell Ubuntu lets your group write every file you make (umask `0002`).
@@ -20,7 +32,7 @@ Status (2026-11-14, this session): **fix built with tests (D-219). `make verify:
 4. **The guide:** step 11 says to remove an earlier `~/juno` before cloning the new commit; step 12 adds one check, `find /opt/juno /opt/node22 ! -type l -perm /022 -print`, which must print nothing. Your root copy (step 12 onward) was not affected: `sudo` gives root's commands the umask `022` whatever your own is.
 5. Neither `juno hook check` nor any test was weakened.
 
-**Left, in order:** review rounds (up to 5); the merge gate; then STOP and report the merge commit hash in full, for Part A step 4.
+**Left:** nothing in 1.5-wsl-fix. Your next step is the guide, with the commit hash above.
 
 ### Open design items (not started)
 1. **Anchoring over HTTPS, for networks that intercept SSH.** Your network intercepts SSH to GitHub and you are using a VPN. This increment does not change how anchoring connects.
