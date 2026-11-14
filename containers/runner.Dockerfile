@@ -11,6 +11,10 @@ WORKDIR /app
 COPY build/stage/package.json ./package.json
 COPY build/stage/node_modules ./node_modules
 COPY dist ./dist
+# COPY keeps the modes the files had on the host, so the image would depend on the umask of whoever built them. Take
+# group and other write off everything copied, whatever the host gave it: only root may change the runner's code and
+# the hook client (DECISIONS.md D-219). Symbolic links are skipped (their mode is fixed); nothing else is touched.
+RUN ["find", "/app", "!", "-type", "l", "-perm", "/022", "-exec", "chmod", "go-w", "{}", "+"]
 
 # The journal-vol mount point, owned by the runner user and closed to everyone
 # else. A new named volume takes this ownership and mode on first mount.

@@ -1,11 +1,51 @@
 # STATE
 
 ## Current increment
-**1.5-setup — the follow-up you authorised before you run the setup guide (your rulings of 2026-11-13, D-214).** Slice 1.5 is complete and merged (PR #52, cd8d9b5). Branch `claude/focused-goodall-yow05e` (this session's only pushable branch, D-215); it carries PR #53's STATE.md commit, and its PR supersedes PR #53. Spec v0.6.1. No objection open.
+**1.5-wsl-fix — `make verify-rootless` fails 2 of 118 on your machine (issue [khashayarjavi/juno#56](https://github.com/khashayarjavi/juno/issues/56)), authorised by you on 2026-11-14 (D-219).** Branch `claude/festive-cori-73zvj7` (this session's only pushable branch). It carries PR #55's two STATE.md commits; its PR supersedes #55. Spec v0.6.1. No objection open.
 
-Status (2026-11-13, this session): **all five rulings built as D-216, with tests. `make verify: GREEN` on 4b0c172's code (1,452 unit, 118 container; afa8ad9 adds only DECISIONS.md and STATE.md). Draft PR [khashayarjavi/juno#54](https://github.com/khashayarjavi/juno/pull/54) supersedes #53. Review round 1 next.** Nothing merged yet.
+Status (2026-11-14, this session): **fix built with tests (D-219). `make verify: GREEN` on 8b3023a (1,456 unit, 121 container). Draft PR [khashayarjavi/juno#57](https://github.com/khashayarjavi/juno/pull/57) supersedes #55. Review round 1 next.** Nothing merged yet.
+- **CI reproduced your failure, then passed with the fix.** On aef225f (the fix removed on purpose, reverted by the next commit), the new job running your setup failed exactly your two tests, with 116 others passing (run 43627885303). On 8b3023a (the fix) it passed 121 of 121 (run 43627931735), with Docker 29.9.2 and containerd 2.4.2 from Docker's apt repository, containerd's snapshotter, and umask `0002`: your `docker info` and your umask.
 
-**Review round 1 (head f9e18ed): DO NOT MERGE, one finding, fixed (D-217).** Your admin-run check read the anchor files but not the repository's history. Whoever holds the runner's push key could replace a session's anchors with an ordinary commit, swap the key file, and the check passed; the evidence document had recorded that as failing safe. The check now refuses any history that ever removed, changed or renamed an anchor file (as the services already did, D-204), a shallow clone, and a clone edited after cloning. Not a STOP: it needs the runner account, which your rulings make a residual; it is fixed rather than only recorded because the record was wrong and the fix is small. After the fix: `make verify: GREEN` on f5398e7 (1,454 unit, 118 container); `make mediated-e2e` 15/15 with the real Claude Code 2.1.325. **Review round 2 (head 9239fba): MERGE**, with three small notes, done before merging (D-218): a stale sentence here, a test that now checks each stop is journalled, and the history check now also counting ignored files. Round 3 reviews the new head.
+### What went wrong on your machine, in plain words
+- Your runner terminal is a login shell (`sudo -iu juno-runner`). In a login shell Ubuntu lets your group write every file you make (umask `0002`).
+- `make` built JUNO there, so every built file was writable by its group, and the test image copied the files as they were.
+- `juno hook check` then refused the image's own hook client: a file anyone but root could change is a file the Claude Code user might one day change. **The check was right.** The build was wrong: its result depended on which terminal ran it.
+- CI never saw it because it ran the build through `runuser`, which does not change the umask (`0022`).
+- I reproduced it here with nothing but `umask 0002`, on ordinary Docker. Docker's apt packages and containerd play no part.
+
+### What 1.5-wsl-fix changes, in plain words
+1. **`make` now takes group and other write access off everything it builds**, whatever terminal runs it.
+2. **The test image does the same itself**, so it never depends on the machine that built it. Each of the two is enough alone; a test proves each.
+3. **CI now runs your setup** in a third job: Docker from Docker's apt repository at the guide's version, the root-run Docker switched off, containerd's snapshotter, and the whole run in the runner's login shell with umask `0002`.
+4. **The guide:** step 11 says to remove an earlier `~/juno` before cloning the new commit; step 12 adds one check, `find /opt/juno /opt/node22 ! -type l -perm /022 -print`, which must print nothing. Your root copy (step 12 onward) was not affected: `sudo` gives root's commands the umask `022` whatever your own is.
+5. Neither `juno hook check` nor any test was weakened.
+
+**Left, in order:** review rounds (up to 5); the merge gate; then STOP and report the merge commit hash in full, for Part A step 4.
+
+### Open design items (not started)
+1. **Anchoring over HTTPS, for networks that intercept SSH.** Your network intercepts SSH to GitHub and you are using a VPN. This increment does not change how anchoring connects.
+
+**Previous increment, for reference:** 1.5-setup is complete and merged as `dbb272f21988f94cfbf4a849e408de29df0586ce` (below).
+
+## 1.5-setup — completion record
+**1.5-setup is complete and merged** (your rulings of 2026-11-13, D-214). The autopilot has STOPPED, as the ruling directs: nothing further is started. Spec v0.6.1. No objection open.
+
+~~For Part A step 4 of the guide, the commit hash is `dbb272f…`~~ **Superseded:** use the hash 1.5-wsl-fix's merge gives (top of this file), since `dbb272f` fails `make verify-rootless` in your runner terminal (issue #56).
+
+### Merges this session (2026-11-13)
+- **PR [khashayarjavi/juno#54](https://github.com/khashayarjavi/juno/pull/54) (1.5-setup, supersedes #53): merged** as dbb272f21988f94cfbf4a849e408de29df0586ce, pinned to head 5cac38e.
+  - **Review round 3** (fresh reviewer, the review prompt verbatim): **MERGE** on 5cac38e. All six checks PASS.
+  - **CI on 5cac38e:** run 43513373811, `verify` and `verify-rootless` green.
+  - **CI on main for dbb272f:** run 43515012702, `verify` and `verify-rootless` **green**.
+  - **Locally:**
+    - `make verify: GREEN` on 5cac38e (1,454 unit, 118 container).
+    - `make mediated-e2e` 15/15 with the real Claude Code 2.1.325, on f5398e7. 5cac38e changes only a test assertion, the history check's treatment of ignored files, and documents.
+  - PR #53 is left open and untouched; #54 carried its commit.
+- **Review history of PR #54:**
+  - **Round 1** (f9e18ed): DO NOT MERGE, one finding, fixed (D-217). Your admin-run check read the anchor files but not their history. It now reads the history.
+  - **Round 2** (9239fba): MERGE, with three notes, done before merging (D-218).
+  - **Round 3** (5cac38e): MERGE.
+- **This branch, after the merge:** it adds this record. It also marks evidence residual 23 closed by D-217; round 3 noted that it still said the check does not read history. The branch's draft PR is the post-merge record, like #53, and is not merged by the autopilot.
 
 ### What 1.5-setup changes, in plain words
 1. **Installing JUNO without a second GitHub sign-in (ruling 1).** You clone JUNO once on Windows, where Git for Windows signs you in through the browser, and check out the exact commit I give you. You pack it into one file (`juno.bundle`). Part E copies that file into WSL as root's read-only file, and both copies of JUNO (`~/juno` for `juno-runner`, `/opt/juno` for root) are cloned from it. After each clone you compare the printed hash with the one I gave you. Tested in CI with the real git and `dd`.
@@ -21,7 +61,7 @@ Status (2026-11-13, this session): **all five rulings built as D-216, with tests
    - Found while doing it: the old steps said admission would report an exhausted grant; it does not. Calls are refused with `exhausted`. The guide now says what JUNO actually prints.
    - Round 8's note 5 (the start-up check judges the git program and its own folder; `juno hook check` judges every folder up to `/`) was not in your ruling and is unchanged.
 
-**Left, in order:** review rounds (up to 5); the merge gate; then STOP and report the merge commit hash in full, for Part A step 4.
+**Left:** nothing in 1.5-setup. Your next step is the guide itself, starting at Part A, with the commit hash above. Possible follow-up, not started (D-217): pin the journal's public key where only root can change it.
 
 ## Slice 1.5 — completion record
 ### Merges this session (2026-11-13)

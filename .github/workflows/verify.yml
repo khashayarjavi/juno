@@ -76,3 +76,23 @@ jobs:
 
       - name: make verify-rootless (as the runner's user)
         run: sudo env JUNO_NODE_BIN="$(dirname "$(command -v node)")" bash scripts/rootless/run-verify.sh
+
+  # The operator's own setup (issue #56, DECISIONS.md D-219): Docker from Docker's apt repository at the guide's pinned
+  # version with the root-run Docker switched off (guide Part E steps 3 and 4), the containerd snapshotter, and the
+  # whole run in the runner's login shell (`sudo -iu juno-runner`, steps 8 and 11), where Ubuntu's umask is 0002.
+  # `verify-rootless` above keeps the static binaries and umask 0022; the merge gate reads all three jobs.
+  verify-rootless-operator:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Set up Docker as the guide does, rootless, and the runner's user (as root)
+        run: sudo bash scripts/rootless/setup-root.sh --docker-from-apt
+
+      - name: make verify-rootless (in the runner's login shell, umask 0002)
+        run: sudo env JUNO_NODE_BIN="$(dirname "$(command -v node)")" bash scripts/rootless/run-verify.sh --login-shell

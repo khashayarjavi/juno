@@ -121,7 +121,7 @@ Each is a limit JUNO states rather than hides. Where a decision number is given,
 20. **Which anchor repository a service uses is what root's file `/etc/juno/anchors.json` says** (D-208). Whoever is root on the machine, or you by mistake, can still pin the wrong repository or the wrong host key; JUNO checks that the file is root's and well formed, not that it names the right thing. Comparing the fingerprint with GitHub's page is your step (guide, Part D step 7).
 21. **Nothing stops two services being given one journal folder.** The guide gives each its own; two on one folder would both write the journal's own record.
 22. *(Closed by D-206 and D-208; see below.)*
-23. **`juno journal check` reads the anchor files of the copy you give it, not its history.** If an anchor file was removed by a commit, the check of that task fails for lack of anchors (fail-closed, D-126); it does not say who removed it.
+23. *(Closed by D-217: `juno journal check` now reads the anchor clone's history and refuses one that ever removed, changed or renamed an anchor file; property 20.)*
 24. *(Closed by D-206 and D-208; see below.)*
 
 **Recovery and the pinned repository (D-206 to D-208)**

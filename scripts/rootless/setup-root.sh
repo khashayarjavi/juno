@@ -5,10 +5,14 @@
 # own packages. This script installs Docker's pinned static rootless binaries instead, so CI and cloud sessions
 # run the same versions whatever Docker their machine already has.
 #
-#   sudo bash scripts/rootless/setup-root.sh [--preload-images]
+#   sudo bash scripts/rootless/setup-root.sh [--preload-images] [--docker-from-apt]
 #
 # --preload-images copies the Dockerfiles' base images from the rootful daemon into the rootless one, for cloud
 # sessions whose rootless daemon cannot reach the network (D-001). CI pulls them itself.
+#
+# --docker-from-apt installs Docker the way the operator's guide does instead (docs/operator-setup.md Part E steps 3
+# and 4): Docker's own apt packages at the guide's pinned version, then the root-run Docker switched off with nobody
+# left in the docker group. CI's `verify-rootless-operator` job uses it, so CI covers the operator's setup (D-219).
 #
 # What it does, each step fail-closed (set -euo pipefail):
 #  1. installs uidmap (newuidmap, newgidmap), dbus-user-session and iproute2, which rootless mode needs;
@@ -32,10 +36,15 @@ EXTRAS_SHA256=f2663b230a7afc13dea88fc589685331d01f5f3fc458b92ab40e2388db452ed2
 BIN=/opt/juno-rootless/bin
 BASE_URL=https://download.docker.com/linux/static/stable/x86_64
 
+# The guide's pinned apt version (docs/operator-setup.md Part E step 3); test/evidence/operator-setup.test.ts keeps them equal.
+APT_VERSION=5:29.9.2-1~ubuntu.24.04~noble
+
 preload=false
+from_apt=false
 for arg in "$@"; do
   case "$arg" in
     --preload-images) preload=true ;;
+    --docker-from-apt) from_apt=true ;;
     *) echo "setup-root: unknown argument $arg" >&2; exit 2 ;;
   esac
 done
@@ -68,22 +77,51 @@ RUNNER_HOME="$(getent passwd "$RUNNER_USER" | cut -d: -f6)"
 getfacl -p /home "$RUNNER_HOME" 2>/dev/null | grep -E '^(# file|default:|user:[^:])' | sed 's/^/setup-root:    acl before: /' || true
 setfacl -R -b -k "$RUNNER_HOME"
 
-echo "setup-root: 3. Docker $DOCKER_VERSION rootless binaries in $BIN"
 download="$(mktemp -d)"
 trap 'rm -rf "$download"' EXIT
-curl -fsSL --max-time 300 -o "$download/docker.tgz" "$BASE_URL/docker-$DOCKER_VERSION.tgz"
-curl -fsSL --max-time 300 -o "$download/extras.tgz" "$BASE_URL/docker-rootless-extras-$DOCKER_VERSION.tgz"
-echo "$DOCKER_SHA256  $download/docker.tgz" | sha256sum -c --quiet -
-echo "$EXTRAS_SHA256  $download/extras.tgz" | sha256sum -c --quiet -
-rm -rf "$BIN"
-mkdir -p "$BIN"
-tar xzf "$download/docker.tgz" -C "$BIN" --strip-components=1 --no-same-owner
-tar xzf "$download/extras.tgz" -C "$BIN" --strip-components=1 --no-same-owner
-chown -R root:root /opt/juno-rootless
-chmod -R go-w /opt/juno-rootless
+if [ "$from_apt" = true ]; then
+  BIN=/usr/bin
+  echo "setup-root: 3. Docker $APT_VERSION from Docker's apt repository, as the guide installs it (Part E steps 3, 4)"
+  # Only the guide's source for Docker's repository: another one naming it with a different key makes apt refuse both.
+  { grep -l 'download.docker.com' /etc/apt/sources.list.d/* 2>/dev/null || true; } | while read -r other; do
+    echo "setup-root:    removing the machine's own source $other"
+    rm -f "$other"
+  done
+  install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL --max-time 120 https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+  chmod a+r /etc/apt/keyrings/docker.asc
+  printf 'Types: deb\nURIs: https://download.docker.com/linux/ubuntu\nSuites: noble\nComponents: stable\nArchitectures: amd64\nSigned-By: /etc/apt/keyrings/docker.asc\n' > /etc/apt/sources.list.d/docker.sources
+  apt-get update -q >/dev/null
+  apt-get install -y -q --allow-downgrades "docker-ce=$APT_VERSION" "docker-ce-cli=$APT_VERSION" "docker-ce-rootless-extras=$APT_VERSION" \
+    containerd.io docker-buildx-plugin docker-compose-plugin >/dev/null
+  dpkg-query -W -f 'setup-root:    ${Package} ${Version}\n' docker-ce docker-ce-cli docker-ce-rootless-extras containerd.io
+  [ "$(dpkg-query -W -f '${Version}' docker-ce-rootless-extras)" = "$APT_VERSION" ] || { echo "setup-root: docker-ce-rootless-extras is not $APT_VERSION" >&2; exit 1; }
+  # Part E step 4: anyone who can reach the root-run Docker is root.
+  systemctl disable --now docker.service docker.socket
+  rm -f /var/run/docker.sock
+  for member in $(getent group docker | cut -d: -f4 | tr ',' ' '); do gpasswd -d "$member" docker >/dev/null; done
+  echo "setup-root:    $(getent group docker)"
+  [ -z "$(getent group docker | cut -d: -f4)" ] || { echo "setup-root: the docker group still has members" >&2; exit 1; }
+else
+  echo "setup-root: 3. Docker $DOCKER_VERSION rootless binaries in $BIN"
+  curl -fsSL --max-time 300 -o "$download/docker.tgz" "$BASE_URL/docker-$DOCKER_VERSION.tgz"
+  curl -fsSL --max-time 300 -o "$download/extras.tgz" "$BASE_URL/docker-rootless-extras-$DOCKER_VERSION.tgz"
+  echo "$DOCKER_SHA256  $download/docker.tgz" | sha256sum -c --quiet -
+  echo "$EXTRAS_SHA256  $download/extras.tgz" | sha256sum -c --quiet -
+  rm -rf "$BIN"
+  mkdir -p "$BIN"
+  tar xzf "$download/docker.tgz" -C "$BIN" --strip-components=1 --no-same-owner
+  tar xzf "$download/extras.tgz" -C "$BIN" --strip-components=1 --no-same-owner
+  chown -R root:root /opt/juno-rootless
+  chmod -R go-w /opt/juno-rootless
+fi
 
 echo "setup-root: 4. AppArmor"
-if [ -d /sys/kernel/security/apparmor ] && command -v apparmor_parser >/dev/null 2>&1; then
+shipped="$(grep -ls "^[^#]*$BIN/rootlesskit" /etc/apparmor.d/* 2>/dev/null | head -n 1 || true)"
+if [ "$from_apt" = true ] && [ -n "$shipped" ]; then
+  # Docker's deb ships its own rootlesskit profile (DECISIONS.md D-130); the guide relies on it, and so does this job.
+  echo "setup-root:    the package's own profile: $shipped"
+elif [ -d /sys/kernel/security/apparmor ] && command -v apparmor_parser >/dev/null 2>&1; then
   profile=/etc/apparmor.d/opt.juno-rootless.bin.rootlesskit
   cat > "$profile" <<PROFILE
 abi <abi/4.0>,
@@ -186,6 +224,13 @@ for _ in $(seq 1 90); do
   sleep 1
 done
 as_runner "$BIN/docker" --host "unix://$socket" info --format 'rootless daemon {{.ServerVersion}}: cgroup v{{.CgroupVersion}}, driver {{.CgroupDriver}}, {{json .SecurityOptions}}'
+storage="$(as_runner "$BIN/docker" --host "unix://$socket" info --format '{{.Driver}} {{json .DriverStatus}}')"
+echo "setup-root:    storage: $storage"
+if [ "$from_apt" = true ] && ! grep -q 'io.containerd.snapshotter.v1' <<<"$storage"; then
+  # The operator's daemon stores images with containerd's snapshotter (issue #56's docker info); this job must too.
+  echo "setup-root: the rootless daemon does not use containerd's snapshotter, as the operator's does" >&2
+  exit 1
+fi
 
 if [ "$preload" = true ]; then
   echo "setup-root: preloading base images from the rootful daemon"
