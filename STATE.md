@@ -3,15 +3,26 @@
 ## Current increment
 **1.5-field — the field report of the first real install (issue [khashayarjavi/juno#59](https://github.com/khashayarjavi/juno/issues/59)), authorised by you on 2026-11-20 (D-220).** Branch `claude/epic-tesla-dsn63d` (this session's only pushable branch). It carries draft PR #58's STATE.md commit (27563ff); its PR supersedes #58. Spec v0.6.1. No objection open.
 
-Status (2026-11-20, this session): **started.** Nothing merged yet.
+Status (2026-11-20, this session): **all four items built with tests (D-221, D-222). `make verify` being run on the final head; review rounds next.** Nothing merged yet.
 
-**The four items you authorised:**
-1. A restore for the host-folder workspaces of hook and gateway sessions (§2.2.2), tested end to end against the real hook service; or, if it cannot be built, hook-mode writes park and the autopilot STOPS.
-2. `docs/examples/session.example.json`: `reversible_workspaces` with a comment line.
-3. The guide, from the field report, and a section "Upgrading JUNO to a new commit"; CI proves the service starts on its old journal after an upgrade.
-4. The open item "anchoring over HTTPS, for networks that intercept SSH" rewritten to match the VPN test in the issue, or removed.
+### What 1.5-field changes, in plain words
+1. **You can now undo what Claude did in a hook session (§2.2.2).** `juno checkpoint restore --workspace /srv/juno-work ...`, run as `juno-runner` with the service stopped, puts the session's folder back exactly as it was when the session was admitted: files Claude made are removed, files it changed or deleted come back. It is recorded in the journal under your name. `juno checkpoint list` finds the checkpoint. The guide's new section "Undo what Claude did in a session" gives the steps.
+   - **Why it did not work before:** your workspace belonged to `juno-agent`, so `juno-runner` could change nothing in it. The guide now gives `juno-runner` an access list on `/srv/juno-work` that everything made there inherits (`setfacl`, package `acl`).
+   - **It refuses, changing nothing:** while the service runs (the services now hold the journal's lock), as root, as anyone but the journal's owner, for another principal, for another folder, for a checkpoint from before this version (it does not record its folder), and whenever it could not finish (for example a folder `juno-runner` cannot change). It never follows a link out of the folder and never writes through a hard link.
+   - **Reversible now means restorable:** JUNO refuses to admit a reversible workspace `juno-runner` could not restore, and parks (cannot be overridden) a write below a folder `juno-runner` could no longer change.
+   - **Gateway sessions** still have no reversible workspace: the MCP server makes its own changes, outside any folder JUNO can copy, so their writes park unless the grant names the exact target. Nothing to restore there.
+   - **Proven end to end** in a sealed container against the kernel, with the real hook service as `juno-runner` and the Claude Code user making its own changes, then the service started again on the same journal.
+2. **The example session file** has `"reversible_workspaces": ["/work/project"]` and a comment line saying what it does and how to undo.
+3. **The guide**, finding by finding: GitHub's host key compared in full with `api.github.com/meta` (no `ssh-keyscan`; no banner check); WSL's disk (SATA, NVMe or SAS; not compressed; free space); `landscape-client` masked; the Start-menu default user; `claude auth login`, never a copied credential; one admitted session is one Claude Code run; `/mnt/c` wording; GitHub reachable at every start; a full drive is not a broken disk; Node 22 beside another version; and **"Upgrading JUNO to a new commit"**. CI now builds your installed commit (6706b5a), lets it write a journal, and proves this commit's service starts on it with its grants, checkpoints and sessions.
+4. **The open item "anchoring over HTTPS, for networks that intercept SSH" is withdrawn.** Your test of 2026-11-20 shows JUNO starting, reading its anchors and pushing a new one with the VPN switched off; the earlier failure was a DNS failure, and the "interception" reading came from my out-of-date banner check. What remains is a standing requirement, now in the guide: GitHub must be reachable every time the service starts.
 
-**Plan for item 1 (decided this session, recorded as D-221 when built):** the restore can be built. Today `/srv/juno-work` belongs to `juno-agent` (0755), so `juno-runner` cannot change anything in it; the guide will give `juno-runner` (and `juno-agent`) a default access list on the folder, so everything Claude Code creates there stays changeable by the runner whatever its umask. The restore never follows a symbolic link, refuses before changing anything when it could not finish, requires the service stopped (the services will hold the journal's lock), compares the result with the checkpoint, and journals what happened.
+**Autopilot rulings (D-221, D-222), one line each:**
+- "The session closed or the service stopped" is read as **the service stopped**, always: a running service is the journal's one writer.
+- A workspace `juno-runner` could not restore is not reversible: refused at admission, and a write below such a folder parks.
+- Gateway sessions keep no reversible workspace.
+- Checkpoints taken before this version are refused by the host restore (they do not record their folder).
+
+**Left, in order:** `make verify` GREEN on the final head; review rounds (up to 5); the merge gate; then STOP and report the merge commit and the upgrade steps; close issue #59.
 
 ## Previous increment: 1.5-wsl-fix (complete)
 **1.5-wsl-fix — `make verify-rootless` fails 2 of 118 on your machine (issue [khashayarjavi/juno#56](https://github.com/khashayarjavi/juno/issues/56)), authorised by you on 2026-11-14 (D-219).** Branch `claude/festive-cori-73zvj7` (this session's only pushable branch). It carries PR #55's two STATE.md commits; its PR supersedes #55. Spec v0.6.1. No objection open.
@@ -47,8 +58,8 @@ Status (2026-11-20, this session): **started.** Nothing merged yet.
 
 **Left:** nothing in 1.5-wsl-fix. Your next step is the guide, with the commit hash above.
 
-### Open design items (not started)
-1. **Anchoring over HTTPS, for networks that intercept SSH.** Your network intercepts SSH to GitHub and you are using a VPN. This increment does not change how anchoring connects.
+### Open design items
+None. ("Anchoring over HTTPS, for networks that intercept SSH" was withdrawn by 1.5-field, D-222: it rested on a wrong diagnosis; JUNO anchors without the VPN.)
 
 **Previous increment, for reference:** 1.5-setup is complete and merged as `dbb272f21988f94cfbf4a849e408de29df0586ce` (below).
 
