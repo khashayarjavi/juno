@@ -38,11 +38,20 @@ export const MAX_SCAN = 200_000;
 
 const DIR_FLAGS = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
 const FILE_FLAGS = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK | constants.O_NOCTTY;
-const at = (fd, name) => `/proc/self/fd/${String(fd)}/${name}`;
+// A name is a string when JUNO wrote it (a manifest's, always valid UTF-8) and a Buffer when it was read from a folder:
+// folders are listed as bytes, so a name that is not valid UTF-8 is acted on as the bytes it is, never as a string node
+// would have changed (review round 7 on PR #61, D-231).
+const at = (fd, name) => (typeof name === "string" ? `/proc/self/fd/${String(fd)}/${name}` : Buffer.concat([Buffer.from(`/proc/self/fd/${String(fd)}/`), name]));
 const self = (fd) => `/proc/self/fd/${String(fd)}`;
+const namesIn = (fd) => readdirSync(self(fd), { encoding: "buffer" }).sort(Buffer.compare);
+/** The name as a string when its bytes are valid UTF-8 (and so recorded exactly), else null. */
+const utf8 = (bytes) => {
+  const text = bytes.toString("utf8");
+  return Buffer.from(text, "utf8").equals(bytes) ? text : null;
+};
+const nameOf = (bytes) => utf8(bytes) ?? `<bytes ${bytes.toString("hex")}>`;
 const code = (error) => (error !== null && typeof error === "object" && typeof error.code === "string" ? error.code : "error");
 const plain = (name) => name !== "" && name !== "." && name !== ".." && !name.includes("/") && !name.includes("\0");
-const byBytes = (a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b));
 const shown = (rel) => (rel === "" ? "the workspace root" : JSON.stringify(rel));
 const octal = (mode) => (mode & 0o7777).toString(8);
 const kindOf = (stats) =>
@@ -140,11 +149,13 @@ export function listTree(rootFd, options = {}) {
     }
     let names;
     try {
-      names = readdirSync(self(fd)).sort(byBytes);
+      names = namesIn(fd);
     } catch (error) {
       return fail(`${shown(rel)} cannot be listed (${code(error)})`);
     }
-    for (const name of names) {
+    for (const raw of names) {
+      const name = utf8(raw);
+      if (name === null) fail(`${shown(rel)} holds a name that is not valid UTF-8 (${nameOf(raw)}): JUNO takes from a workspace only names it can record exactly; rename it (D-231)`);
       const path = rel === "" ? name : `${rel}/${name}`;
       if (manifest.length >= MAX_ENTRIES) fail(`the workspace has more than ${String(MAX_ENTRIES)} entries`);
       let seen;
@@ -246,7 +257,7 @@ export function restoreRefusals(rootFd, manifest, options = {}) {
     }
     let names;
     try {
-      names = readdirSync(self(fd)).sort(byBytes);
+      names = namesIn(fd);
     } catch (error) {
       refusals.push(`${shown(rel)} cannot be listed (${code(error)})`);
       return;
@@ -257,7 +268,7 @@ export function restoreRefusals(rootFd, manifest, options = {}) {
         refusals.push(`the workspace holds more than ${String(MAX_SCAN)} entries; it is refused, never partly restored`);
         return;
       }
-      const path = rel === "" ? name : `${rel}/${name}`;
+      const path = rel === "" ? nameOf(name) : `${rel}/${nameOf(name)}`;
       let stats;
       try {
         stats = lstatSync(at(fd, name));
@@ -301,7 +312,7 @@ function remove(dirFd, name) {
   }
   const fd = openSync(at(dirFd, name), DIR_FLAGS);
   try {
-    for (const inner of readdirSync(self(fd))) remove(fd, inner);
+    for (const inner of namesIn(fd)) remove(fd, inner);
   } finally {
     closeSync(fd);
   }
@@ -350,8 +361,10 @@ export function restoreTree(rootFd, manifest, content, options = {}) {
   }
   // 1. Remove what the checkpoint lacks, or holds as another type, or (for a file) holds otherwise.
   const prune = (fd, rel) => {
-    for (const name of readdirSync(self(fd))) {
-      const path = rel === "" ? name : `${rel}/${name}`;
+    for (const name of namesIn(fd)) {
+      // A name that is not valid UTF-8 is in no checkpoint (none records one), so it is removed as the bytes it is.
+      const text = utf8(name);
+      const path = text === null ? null : rel === "" ? text : `${rel}/${text}`;
       let stats;
       try {
         stats = lstatSync(at(fd, name));
@@ -359,7 +372,7 @@ export function restoreTree(rootFd, manifest, content, options = {}) {
         if (code(error) === "ENOENT") continue;
         throw error;
       }
-      const entry = want.get(path);
+      const entry = path === null ? undefined : want.get(path);
       if (!keeps(fd, name, stats, entry, uid)) {
         remove(fd, name);
         continue;

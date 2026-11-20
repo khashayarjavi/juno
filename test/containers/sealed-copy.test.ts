@@ -188,6 +188,32 @@ describe("the sealed copy context can reach nothing of the runner's (D-228)", ()
     expect(await sealed().checkpoint("/work/project")).toMatchObject({ ok: false, reason: expect.stringContaining('"planted" is a symbolic link') });
   }, 60_000);
 
+  // proves D-231 (review round 7 on PR #61) against the real runtime: a file named in Latin-1 made after the checkpoint
+  // (the reviewer's reproduction) is removed by the sealed restore, which brings the changed file back
+  it("restores past a name that is not valid UTF-8", async () => {
+    const manifest = await checkpoint();
+    writeFileSync(join(work, "project", "notes.txt"), "changed\n");
+    const resume = Buffer.concat([Buffer.from(`${join(work, "project")}/`), Buffer.from([0x52, 0xe9, 0x73, 0x75, 0x6d, 0xe9, 0x2e, 0x74, 0x78, 0x74])]);
+    writeFileSync(resume, "unzipped\n");
+    expect(await sealed().restore("/work/project", manifest, (hash) => store.get(hash))).toEqual({ ok: true });
+    expect(readFileSync(join(work, "project", "notes.txt"), "utf8")).toBe("notes\n");
+    expect(existsSync(resume)).toBe(false);
+  }, 60_000);
+
+  // proves D-231: a sealed container that outlives its limit is killed, and the run is answered as one with no answer
+  // (so a restore is journalled failed and a checkpoint refused); nothing is left running
+  it("kills a sealed container that runs past its limit", async () => {
+    const started = Date.now();
+    const stuck = dockerSealedLauncher({ rootless, timeoutMs: 3000, program: "await new Promise(() => setInterval(() => undefined, 1000));" });
+    const identity = statSync(work, { bigint: true });
+    const result = await stuck({ op: "restore", workspace: work, root: "/work/project", dev: String(identity.dev), ino: String(identity.ino), input: "{}" });
+    expect(result).toMatchObject({ exitCode: null, stdout: "", stderr: expect.stringContaining("was killed") });
+    expect(Date.now() - started).toBeLessThan(60_000);
+    const running = await runProgram("docker", ["ps", "-q", "--filter", "name=juno-sealed-"], null, 30_000);
+    expect(running.stdout.trim()).toBe("");
+    expect(await new SealedWorkspace(work, stuck).restore("/work/project", await checkpoint(), (hash) => store.get(hash))).toMatchObject({ ok: false, changed: true });
+  }, 120_000);
+
   // proves D-228: a folder put in the workspace's place before the container mounts it is refused by the sealed program
   // before it reads or changes anything
   it("refuses a folder put in the workspace's place before the mount", async () => {

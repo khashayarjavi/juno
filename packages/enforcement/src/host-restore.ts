@@ -1,9 +1,9 @@
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { type Stats, closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
 import { z } from "zod";
-import { MAX_CHECKPOINT_ENTRIES, type ManifestEntry, type Snapshot, Workspace, sameManifest } from "./checkpoint.js";
+import { MAX_CHECKPOINT_BYTES, MAX_CHECKPOINT_ENTRIES, type ManifestEntry, type Snapshot, Workspace, sameManifest } from "./checkpoint.js";
 import { WORKLOAD_NODE } from "./canonical.js";
 import { DIR_MODE, FILE_MODE } from "./workspace-copy.mjs";
 
@@ -68,11 +68,12 @@ const SAFE_PATH = /^\/[A-Za-z0-9._@+/-]+$/;
  * to the runner (Docker's rootless mode), so the program runs as 0:0 there; on a root-run daemon it runs as the
  * runner's own uid and gid. `program`: the text node evaluates (the sealed program; tests probe with their own).
  */
-export function sealedDockerArgs(request: SealedRequest, options: { readonly rootless: boolean; readonly image?: string; readonly uid?: number; readonly gid?: number }, program: string = sealedProgram()): string[] {
+export function sealedDockerArgs(request: SealedRequest, options: { readonly rootless: boolean; readonly image?: string; readonly uid?: number; readonly gid?: number; readonly name?: string }, program: string = sealedProgram()): string[] {
   if (!SAFE_PATH.test(request.workspace)) throw new Error(`the workspace ${request.workspace} holds a character a mount cannot carry`);
   const user = options.rootless ? "0:0" : `${String(options.uid ?? process.getuid?.() ?? -1)}:${String(options.gid ?? process.getgid?.() ?? -1)}`;
   return [
     "run", "--rm", "-i", "--pull", "never",
+    ...(options.name === undefined ? [] : ["--name", options.name]),
     "--network", "none", "--ipc", "none", "--log-driver", "none",
     "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--read-only",
     "--user", user,
@@ -98,9 +99,31 @@ export function runProgram(file: string, args: readonly string[], input: string 
   });
 }
 
-/** The sealed context on the runner's own container runtime (D-228). */
-export function dockerSealedLauncher(options: { readonly rootless: boolean; readonly image?: string; readonly docker?: string }): SealedLauncher {
-  return (request) => runProgram(options.docker ?? "docker", sealedDockerArgs(request, options), request.input);
+/** How long one sealed run may take before its container is killed (D-231). */
+export const SEALED_TIMEOUT_MS = 180_000;
+
+/**
+ * The sealed context on the runner's own container runtime (D-228). Each run's container has its own random name; one
+ * still running after `timeoutMs` is killed by that name (`docker kill`: node, as the container's first process, ignores
+ * the stop signal `docker run` passes on), and the run is answered as one with no answer, so a restore cut off is
+ * `failed` and a checkpoint is refused (D-230, D-231). `program`: tests only, to run a probe in the same context.
+ */
+export function dockerSealedLauncher(options: { readonly rootless: boolean; readonly image?: string; readonly docker?: string; readonly timeoutMs?: number; readonly program?: string }): SealedLauncher {
+  const docker = options.docker ?? "docker";
+  return async (request) => {
+    const name = `juno-sealed-${randomBytes(8).toString("hex")}`;
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      execFile(docker, ["kill", name], { shell: false }, () => undefined);
+    }, options.timeoutMs ?? SEALED_TIMEOUT_MS);
+    try {
+      const result = await runProgram(docker, sealedDockerArgs(request, { ...options, name }, options.program ?? sealedProgram()), request.input, 0);
+      return timedOut ? { exitCode: null, stdout: "", stderr: `the sealed container ran longer than ${String((options.timeoutMs ?? SEALED_TIMEOUT_MS) / 1000)} s and was killed` } : result;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
 }
 
 /**
@@ -305,6 +328,9 @@ function listNames(workspace: string, root: string): { ok: true; snapshot: Snaps
     const top = fstatSync(fd);
     const manifest: ManifestEntry[] = [{ path: "", type: "directory", mode: top.mode & 0o7777 }];
     const hardLinks: string[] = [];
+    // The bound a checkpoint has, counted from the files' sizes (never by reading them): a larger tree is not listed, so
+    // a read of it counts at the highest class, as before D-228 (review round 7 on PR #61, D-231).
+    let bytes = 0;
     const walk = (dirFd: number, rel: string): string | null => {
       const names = readdirSync(`/proc/self/fd/${String(dirFd)}`).sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
       for (const name of names) {
@@ -314,6 +340,8 @@ function listNames(workspace: string, root: string): { ok: true; snapshot: Snaps
         const mode = seen.mode & 0o7777;
         if (seen.isSymbolicLink()) manifest.push({ path, type: "symlink", mode, target: readlinkSync(at(dirFd, name)) });
         else if (seen.isFile()) {
+          bytes += seen.size;
+          if (bytes > MAX_CHECKPOINT_BYTES) return `the workspace holds more than ${String(MAX_CHECKPOINT_BYTES)} bytes`;
           if (seen.nlink > 1) hardLinks.push(path);
           manifest.push({ path, type: "file", mode, sha256: NOT_READ });
         } else if (seen.isDirectory()) {

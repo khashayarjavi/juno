@@ -1,4 +1,4 @@
-import { chmodSync, closeSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { execFile } from "node:child_process";
@@ -326,6 +326,35 @@ describe("JUNO takes only files and folders from a workspace (operator ruling 2 
     expect(await new SealedWorkspace(work, silent).restore("/work/project", manifest, (hash) => store.get(hash))).toMatchObject({ ok: false, changed: true });
     // Refusals before the context starts, and the program's own refusals before any change, still say so.
     expect(await new SealedWorkspace(join(dir, "missing"), unsealedLauncher).restore("/work/project", manifest, (hash) => store.get(hash))).toMatchObject({ ok: false, changed: false });
+  });
+
+  // proves D-231 (review round 7 on PR #61): a name that is not valid UTF-8 is acted on as the bytes it is. A checkpoint
+  // refuses one with a true reason (JUNO records only names it can record exactly); one made after the checkpoint (an
+  // archive unpacked by a tool, say) is removed by the restore like anything else the checkpoint lacks, so it never
+  // makes the undo impossible while writes beside it proceed
+  it("removes a name that is not valid UTF-8 made after the checkpoint, and refuses a checkpoint holding one", async () => {
+    const latin1 = (folder: string, name: number[]): Buffer => Buffer.concat([Buffer.from(`${join(work, "project", folder)}/`), Buffer.from(name)]);
+    const resume = [0x52, 0xe9, 0x73, 0x75, 0x6d, 0xe9, 0x2e, 0x74, 0x78, 0x74];
+    const manifest = await checkpoint();
+    writeFileSync(join(work, "project", "notes.txt"), "changed by Claude\n");
+    writeFileSync(latin1("", resume), "made by an unzip\n");
+    mkdirSync(latin1("docs", [0x44, 0xe9, 0x6a, 0xe0]));
+    writeFileSync(Buffer.concat([latin1("docs", [0x44, 0xe9, 0x6a, 0xe0]), Buffer.from("/inner.txt")]), "inner\n");
+    expect(await restore(manifest)).toEqual({ ok: true });
+    expect(read("notes.txt")).toBe("notes\n");
+    expect(existsSync(latin1("", resume))).toBe(false);
+    expect(existsSync(latin1("docs", [0x44, 0xe9, 0x6a, 0xe0]))).toBe(false);
+    writeFileSync(latin1("docs", resume), "x");
+    expect(await sealed().checkpoint("/work/project")).toMatchObject({ ok: false, reason: expect.stringContaining('"docs" holds a name that is not valid UTF-8 (<bytes 52e973756de92e747874>)') });
+  });
+
+  // proves D-231: the read view keeps a checkpoint's byte bound, counted from the files' sizes without opening them: a
+  // larger tree is not listed, so a read of it counts at the highest class
+  it("the read view refuses a tree larger than a checkpoint's bound, without reading it", async () => {
+    writeFileSync(join(work, "project", "big.bin"), "");
+    truncateSync(join(work, "project", "big.bin"), 9 * 1024 * 1024);
+    chmodSync(join(work, "project", "big.bin"), 0o000);
+    expect(await new HostReadView(work).list("/work/project", false)).toMatchObject({ ok: false, reason: expect.stringContaining("holds more than") });
   });
 
   // proves D-228: the read view lists names, kinds and link targets for classifying a read, and never opens a file
