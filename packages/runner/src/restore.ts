@@ -1,3 +1,4 @@
+import { dirname } from "node:path";
 import { statSync } from "node:fs";
 import { z } from "zod";
 import { type AbsolutePath, type DataClass, DataClass as DataClassSchema } from "../../contracts/src/index.js";
@@ -170,8 +171,12 @@ export async function restoreHostCheckpoint(
   if (takenIn !== workspace) return refused(`checkpoint ${checkpoint} was taken in ${takenIn}, not in ${workspace}; nothing was changed`);
   // D-228: only a checkpoint the sealed context took holds nothing but files and folders with the fixed modes.
   if (!sealed) return refused(`checkpoint ${checkpoint} was not taken in the sealed copy context (it was taken before D-228), so this command will not restore it; nothing was changed`);
+  // D-178 for what the undo touches (D-237, review round 11 on PR #62): the folder holding the session's folder, where
+  // the folder is made again and whose case-folding attribute a new folder would inherit. Never the tree the undo moves
+  // aside, which it does not look into (D-234): what that tree holds (its size, its depth, a folder the runner cannot
+  // list) cannot stop the undo.
   const hostRoot = workspace + root.slice("/work".length);
-  const folding = await caseFoldingRefusals([{ what: "the workspace", path: hostRoot }], host.filesystem);
+  const folding = await caseFoldingRefusals([{ what: "the folder holding the session's folder", path: dirname(hostRoot) }], host.filesystem, { tree: false });
   if (folding.length > 0) return refused(`${folding.join("; ")}; nothing was changed`);
   let outcome: Awaited<ReturnType<SealedWorkspace["restore"]>>;
   try {

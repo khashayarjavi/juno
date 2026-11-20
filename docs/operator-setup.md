@@ -552,7 +552,7 @@ An empty project gives an empty checkpoint: if `/srv/juno-work/project` held not
    sudo -u juno-agent setfacl -d -m u:juno-runner:rwx,u:juno-agent:rwx <folder>
    ```
    Then restore again; if it names another folder, fix that one the same way. If a line prints `Operation not permitted`, send the agent the restore's reason and that line. If the reason ends `the folder as it was is kept, whole, at <folder>`, the undo stopped after moving the folder aside: nothing is lost (it is all in that folder), and you can run the restore again; if it fails the same way, send the agent the whole output.
-4. **Start the service again:** `systemctl --user start juno-hook.service`. The session goes on, with what it had used.
+4. **Start the service again:** `systemctl --user start juno-hook.service`. The session goes on, with what it had used. At every start, and at every admission, JUNO checks every folder in `/srv/juno-work`, the moved-aside one included. If the start or an admission is refused because the workspace `holds more than 50000 folders`, or because `JUNO cannot list` a folder, the moved-aside folder is usually the cause (a `node_modules`, or a folder Claude locked): do step 5 first, then start again. Writes are not affected: while it is refused, nothing gets through.
 5. **When you no longer need the moved-aside folder, remove it yourself** (JUNO never does). Admin terminal, with `<kept>` the `kept` folder step 3 printed, as `juno-agent` for step 3's reason:
    ```
    sudo -u juno-agent rm -rf <kept>
