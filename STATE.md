@@ -1,22 +1,34 @@
 # STATE
 
 ## Current increment
-**1.5-field — the field report of the first real install (issue [khashayarjavi/juno#59](https://github.com/khashayarjavi/juno/issues/59)), authorised by you on 2026-11-20 (D-220).** Branch `claude/epic-tesla-dsn63d` (this session's only pushable branch). It carries draft PR #58's STATE.md commit (27563ff); its PR supersedes #58. Spec v0.6.1. No objection open.
+**1.5-field — the field report of the first real install (issue [khashayarjavi/juno#59](https://github.com/khashayarjavi/juno/issues/59)), authorised by you on 2026-11-20 (D-220); your rulings of 2026-11-20 on PR #60 (D-228).** Branch `claude/gallant-ritchie-rqulim` (this session's only pushable branch, D-229). It carries PR [khashayarjavi/juno#60](https://github.com/khashayarjavi/juno/pull/60)'s sixteen commits unchanged; its draft PR supersedes #60, and review rounds 6 to 10 run there. Spec v0.6.1. No objection open.
 
-Status (2026-11-20, this session): **STOP after review round 5 on PR [khashayarjavi/juno#60](https://github.com/khashayarjavi/juno/pull/60) — your decision needed (D-227).** Nothing merged. Main is unchanged at 6706b5a; your machine is unaffected.
+Status (2026-11-20, this session): **your structural fix is built with tests (D-228). Next: `make verify`, the superseding PR, review round 6.** Nothing merged; main is unchanged at 6706b5a.
 
-### STOP after review round 5 (D-227)
-- **Why this is a STOP.** Round 5 was the last round your instruction authorised, and it ended DO NOT MERGE (CLAUDE.md §7).
-- **The finding, in plain words.** When JUNO copied a hook session's folder at admission, it read each file by name. A program of the Claude Code user could swap a file for a link at the right moment, so the copy picked up one of `juno-runner`'s private files (for example its journal key). The new "undo" would then have written that file back into the folder, where the Claude Code user can read it.
-- **What I did anyway, so a further round can start at once. Not reviewed.** The copy is now taken through folder handles that never follow a link: an entry that changes while it is read makes the copy fail, so the admission is refused. A test races exactly this for three seconds and never sees the secret; the old way leaked it 5 times in the same test.
-- **Review history of PR #60** (each finding new, each fixed with tests):
-  - **Round 1** (c31be0f): a restore could recreate a set-user-ID program owned by the runner (D-223). Also, the write check asked less than the restore needs.
-  - **Round 2** (8cffccd): after a restart, a session's writes stayed "undoable" even when its checkpoint could not be restored (D-224). Also, two refusals went unjournalled.
-  - **Round 3** (58e270b): a sticky bit set after admission made the restore fail part way (D-225).
-  - **Round 4** (386439c): the guide had root run `setfacl`/`chmod` inside the Claude Code user's folder (D-226).
-  - **Round 5** (192bc4f): the finding above (D-227).
-- **`make verify`:** GREEN on 192bc4f (round 5's head; 1,476 unit, 127 container), and GREEN on db9367e with the unreviewed fix (1,477 unit, 127 container).
-- **Your decision:** authorise further review rounds on PR #60 (how many), or direct otherwise. Issue #59 stays open until the merge.
+### What D-228 changes, in plain words
+1. **JUNO never copies or undoes your project folder with its own privileges any more.** Every copy into a checkpoint, every check that the folder could be restored, and every restore runs in a new, sealed container of `juno-runner`'s own Docker: no network, no capabilities, no new privileges, a read-only image, and **one mount: your project folder** (read-only for the copy). The checkpoint's bytes go in and out through the container's input and output, so not even the checkpoint store is mounted. A link planted in the folder leads nowhere: JUNO's journal, keys and home do not exist inside that container. No sudo, no root, no new privilege for `juno-runner`.
+2. **JUNO takes only files and folders from your project.** A link, FIFO, socket, hard link, or a set-user-ID, set-group-ID or sticky bit anywhere inside makes admission refuse that reversible workspace, naming the entry. **An undo puts back content, not permissions:** every file comes back `rw-rw----`, every folder it makes `rwxrwx---` (executable bits are not kept).
+3. **The read view no longer reads file contents on the host** (it lists names and kinds only); the old one hashed every file it listed, by path.
+4. **Proven against the real container runtime** (`test/containers/sealed-copy.test.ts`): the sealed context cannot open the runner's journal key even handed its exact path (directly, through a planted link, or through `/proc`); and the traps of rounds 1 (set-user-ID program), 3 (sticky folder), 4 (planted links) and 5 (a link swapped in while copying) are each refused or harmless. Every existing test kept; where your ruling replaces an old expectation (links and modes restored), the test now asserts the stricter rule (D-228 lists each).
+5. **The guide** (Part E step 11, Part G step 2, "Undo what Claude did in a session", "Upgrading", "When something goes wrong") and **the evidence document** (property 22; residuals 40 to 42, 45 to 49) say this in plain words.
+
+**Autopilot rulings (D-228, D-229), one line each:**
+- The container mounts the workspace only, not the checkpoint store (more restrictive than the ruling's example).
+- The copy is on a read-only mount; whether the runner could restore is judged in a second sealed run with a writable mount that reads and changes nothing (the kernel refuses every write test on a read-only mount).
+- A file with a second name (hard link) refuses the checkpoint.
+- Fixed modes: files 0660, folders 0770.
+- The read view never opens a file on the host (the class closed beyond copies and restores).
+- Checkpoints not taken sealed (PR #60's unmerged commits only) are not restored and not confirmed after a restart.
+- Review rounds 6 to 10 run on the superseding PR, numbered on from #60.
+
+**Left, in order:** `make verify` green; the superseding PR; review rounds 6 to 10 (D-228 ruling 2); the merge gate; then STOP with the merge commit hash and the upgrade steps; close issue #59.
+
+### PR #60's review history (rounds 1 to 5; the STOP of D-227, now ruled on)
+- **Round 1** (c31be0f): a restore could recreate a set-user-ID program owned by the runner (D-223).
+- **Round 2** (8cffccd): after a restart, a session's writes stayed "undoable" though its checkpoint could not be restored (D-224).
+- **Round 3** (58e270b): a sticky bit set after admission made the restore fail part way (D-225).
+- **Round 4** (386439c): the guide had root run `setfacl`/`chmod` inside the Claude Code user's folder (D-226).
+- **Round 5** (192bc4f): the hook-mode checkpoint read files by name, so a swapped link could copy a runner-only file into it (D-227).
 
 ### What 1.5-field changes, in plain words
 1. **You can now undo what Claude did in a hook session (§2.2.2).** `juno checkpoint restore --workspace /srv/juno-work ...`, run as `juno-runner` with the service stopped, puts the session's folder back exactly as it was when the session was admitted: files Claude made are removed, files it changed or deleted come back. It is recorded in the journal under your name. `juno checkpoint list` finds the checkpoint. The guide's new section "Undo what Claude did in a session" gives the steps.

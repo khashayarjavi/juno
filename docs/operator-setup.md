@@ -281,6 +281,7 @@ Part E comes before Part D because Part D's push key is made inside WSL.
     make verify-rootless
     ```
     **Check:** after 10 to 20 minutes the last line is `make verify-rootless: GREEN`. Send the agent the summary lines, or the last 15 lines if it is not green.
+    It also builds, in `juno-runner`'s own Docker, the image JUNO uses to copy and to undo a session's folder (`juno-workload:local`; see "Undo what Claude did in a session"). **Check:** `docker image ls juno-workload:local` prints a line naming it. Leave it there: without it, every session with `reversible_workspaces` is refused at admission.
     This terminal is a login shell, where Ubuntu lets your group write the files you make (umask `0002`). `make` takes that write access off everything it builds, so the result is the same as in any other terminal (D-219).
 12. **A root-owned copy of JUNO, its folders, and the governed workspace.** Admin terminal, first the copy of JUNO, from the same file:
     ```
@@ -448,6 +449,7 @@ A `sources` list with folders and the web looks like this:
    ```
    In nano, change only what the file's comments name: put the UUID the `cat` line printed into `session_id`; set `sources` and `provider_clearance` as you decided in Part F; keep `grants` as `grant-operator-first` unless you signed another. Save with **Ctrl+O**, Enter, and leave with **Ctrl+X**.
    Keep `"reversible_workspaces": ["/work/project"]`: JUNO copies that folder when it admits the session and lets Claude create and change files inside it, because you can undo them ("Undo what Claude did in a session", below). **Without it, every write is parked** (`integrity_floor`, which nobody can override): Claude can read the project but not change it.
+   JUNO takes **only files and folders** from that folder. If it holds anything else anywhere inside it (a symbolic link, a FIFO, a socket, a file with a second name elsewhere, which is a hard link, or a set-user-ID, set-group-ID or sticky bit), `hook admit` refuses the session and names the entry, for example `could not be checkpointed: "node_modules/.bin/tsc" is a symbolic link`. Remove that entry in the governed terminal (as `juno-agent`), or admit the session without `reversible_workspaces` (D-228).
 3. **Start the service.** **Creates a credential:** on its first start the service makes JUNO's journal key (`/var/lib/juno-runner/journal-key`, readable by `juno-runner` only), which signs every anchor. It is not your grant-signing key, and you never handle it. Runner terminal:
    ```
    mkdir -p ~/.config/systemd/user
@@ -521,6 +523,8 @@ So replacing the journal, the copy and the service's settings together does not 
 
 When JUNO admits a session with `reversible_workspaces` (Part G step 2), it copies each of those folders first: the **checkpoint**, in `/var/lib/juno-runner/checkpoints`, listed in the journal. Restoring it puts the folder back exactly as it was then: files Claude created are removed, files it changed or deleted come back, and the restore is written into the journal under your name (§2.2.2, D-221). It is for the whole folder, never one file.
 
+**How the copy and the undo are done, in plain words (D-228).** Your project folder belongs to the Claude Code user, who could plant a link in it pointing at one of JUNO's own files. So JUNO never copies or restores the folder with its own privileges. Each copy, each check that the folder could be restored, and each restore runs in a new, sealed container of `juno-runner`'s own Docker that can see **only your project folder**: not JUNO's journal, not its keys, not the checkpoint store, not `juno-runner`'s home, and no network. The copied bytes leave that container, and come back for an undo, through its input and output; JUNO checks each against its fingerprint. A link planted in the folder therefore leads nowhere: the files it names do not exist inside that container. JUNO also takes only files and folders from your project (Part G step 2), and **an undo puts back each file's content, not its permissions**: every file comes back readable and writable by `juno-runner` and `juno-agent` only (`rw-rw----`), not executable, and every folder the undo makes `rwxrwx---`. If a script must be executable again, run `chmod +x` on it in the governed terminal.
+
 An empty project gives an empty checkpoint: if `/srv/juno-work/project` held nothing when you admitted the session, the checkpoint store gains nothing, and restoring it empties the folder again. That is correct, not a fault.
 
 1. **Stop the service.** Runner terminal: `systemctl --user stop juno-hook.service`. (The restore refuses while it runs: `the journal is in use, so its service is running`. Claude Code is refused every call meanwhile.)
@@ -542,7 +546,7 @@ An empty project gives an empty checkpoint: if `/srv/juno-work/project` held not
    Then restore again; if it names another folder, fix that one the same way. If a line prints `Operation not permitted`, send the agent the restore's reason and that line.
 4. **Start the service again:** `systemctl --user start juno-hook.service`. The session goes on, with what it had used.
 
-A checkpoint taken by a JUNO from before this version (commit 6706b5a and earlier) does not record its folder, and the restore refuses it (`does not record the host folder it was taken in`). A session admitted before the upgrade goes on, but since its changes cannot be undone, JUNO parks its writes (`integrity_floor`); admit a new session (Part G steps 2 and 5) to write again. Sessions admitted after the upgrade are restorable.
+A checkpoint taken by a JUNO from before this version (commit 6706b5a and earlier) does not record its folder, and the restore refuses it (`does not record the host folder it was taken in`); one not taken in the sealed container is refused too (`was not taken in the sealed copy context`). A session admitted before the upgrade goes on, but since its changes cannot be undone, JUNO parks its writes (`integrity_floor`); admit a new session (Part G steps 2 and 5) to write again. Sessions admitted after the upgrade are restorable.
 
 ## Part H — optional: govern an MCP server through JUNO's gateway (mode B)
 
@@ -608,7 +612,7 @@ For a machine where JUNO is already installed (Parts A to G done). The agent giv
    npm ci
    make verify-rootless
    ```
-   **Check:** the hash is the new one, and after 10 to 20 minutes the last line is `make verify-rootless: GREEN`.
+   **Check:** the hash is the new one, and after 10 to 20 minutes the last line is `make verify-rootless: GREEN`. It also rebuilds the image JUNO copies and undoes a session's folder in: `docker image ls juno-workload:local` prints a line naming it.
 5. **Root's copy.** Admin terminal:
    ```
    sudo rm -rf /opt/juno
@@ -643,6 +647,7 @@ If the agent's note for the new commit says the example service file changed, al
 
 - A check does not show what it says: stop, and send the agent the last 15 lines on screen. Do not work around it.
 - The hook service will not start: `journalctl --user -u juno-hook.service --no-pager | tail -20` (runner terminal) lists every refusal.
+- **`hook admit` or `checkpoint restore` says `the sealed copy context did not answer`**: JUNO could not start the sealed container it copies and undoes the folder in (D-228). Runner terminal: `docker image ls juno-workload:local` must print a line; if it prints none, run `cd ~/juno && make verify-rootless` again (Part E step 11), which builds it. If the image is there, send the agent the whole reason.
 - Claude Code says JUNO blocked every call: the service is not running (`systemctl --user status juno-hook.service`), or the session was not admitted (Part G step 5). JUNO fails closed: when in doubt, it blocks.
 - **WSL suddenly shows `Bus error`, `Input/output error`, or commands such as `rm` and `which` "not found".** Check free space on the Windows drive that holds WSL's disk file **first** (File Explorer → This PC, or Part E step 1's check): a full drive makes every write in WSL fail in exactly these ways. Free space on that drive, then `wsl --terminate Ubuntu-24.04` and open it again. Do **not** run `e2fsck` or any repair before checking the space, and send the agent what you saw. On your machine, a full `C:` produced all of these and the file system was undamaged.
 - **Claude Code says `OAuth session expired`**: its own sign-in in the governed terminal ran out. Run `claude auth login` there again (Part E step 14). Never copy a credentials file in.

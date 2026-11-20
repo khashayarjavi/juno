@@ -4,7 +4,7 @@
     "Change only: session_id (a new UUID for each Claude Code session: run cat /proc/sys/kernel/random/uuid), sources (what Claude may read, and its class),",
     "grants (the ids of your signed grants) and the grant file paths below, and provider_clearance (the highest class Claude may read).",
     "Keep this file and the grant files under /var/lib/juno-runner, never under /srv/juno-work.",
-    "reversible_workspaces: JUNO copies these folders when it admits the session, and lets Claude create and change files inside them; without them every write is parked. To undo what Claude did there, see the guide's section \"Undo what Claude did in a session\" (juno checkpoint restore, run as juno-runner with the service stopped)."
+    "reversible_workspaces: JUNO copies these folders when it admits the session, and lets Claude create and change files inside them; without them every write is parked. To undo what Claude did there, see the guide's section \"Undo what Claude did in a session\" (juno checkpoint restore, run as juno-runner with the service stopped). JUNO takes only files and folders from them: a link, FIFO, socket, hard link or set-user-ID, set-group-ID or sticky bit inside makes admission refuse, and an undo writes every file back as rw-rw----."
   ],
   "session": {
     "session_id": "00000000-0000-4000-8000-000000000000",
