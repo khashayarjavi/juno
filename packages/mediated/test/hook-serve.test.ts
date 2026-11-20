@@ -1,9 +1,9 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { SessionLayer } from "../../enforcement/src/index.js";
-import { MemoryAnchorSink, testAnchoring } from "../../enforcement/test/anchoring.js";
+import { MemoryAnchorSink, testAnchoring, testJournalKey } from "../../enforcement/test/anchoring.js";
 import { ordinaryHost } from "../../enforcement/test/layer.js";
 import { TEST_ANCHOR, signed } from "../../enforcement/test/test-keys.js";
 import { readPayload, readTrajectory } from "../../journal/src/index.js";
@@ -11,7 +11,7 @@ import { systemFilesystemIo } from "../src/filesystem.js";
 import { runHookClient } from "../src/hook-client.js";
 import { type HookServeIo, runHookAdmitCli, runHookServeCli } from "../src/hook-serve.js";
 import { HookSessionFile } from "../src/hook-session-file.js";
-import { readFileSync } from "node:fs";
+
 import { fileURLToPath } from "node:url";
 
 // Plan Increment 6, operator ruling D-180 (DECISIONS.md D-196): `juno hook serve` starts JUNO's hook service on the
@@ -242,4 +242,109 @@ describe("juno hook serve and juno hook admit (plan Increment 6, D-180, D-196)",
     });
     expect(code).toBe(0);
   }, 60_000);
+});
+
+describe("juno checkpoint restore for a hook session's host folder (§2.2.2, D-221)", () => {
+  const cliIo = (): { text: () => string; io: { readFile: () => string; out: (text: string) => void; err: (text: string) => void } } => {
+    const said: string[] = [];
+    return { text: () => said.join(""), io: { readFile: () => "", out: (text) => said.push(text), err: (text) => said.push(text) } };
+  };
+  // The user running the command owns the journal and the checkpoint store (the runner); never root (D-221).
+  const runner = { uid: () => 4242, ownerOf: () => 4242, filesystem: systemFilesystemIo() };
+  const journal = (): string => join(dir, "state", "journal");
+  const restoreArgs = (checkpoint: string, overrides: { principal?: string; workspace?: string } = {}): string[] => ["restore", "--journal", journal(), "--checkpoints", join(dir, "state", "checkpoints"), "--workspace", overrides.workspace ?? work, "--principal", overrides.principal ?? PRINCIPAL, `session-${SESSION}`, checkpoint];
+
+  // proves §2.2.2 "restoring that checkpoint is an operator action recorded in the journal" for hook mode, through the
+  // real service and the operator's command: refused while the service runs; once it is stopped, the folder's full
+  // content comes back (created files removed, changed and deleted ones put back), the restore is journalled with the
+  // operator as actor, and the service starts again on that journal with the session going on
+  it("restores the session's folder only once the service is stopped, journals it, and the service starts again", async () => {
+    writeFileSync(join(dir, "state", "session.json"), JSON.stringify(sessionFile({ reversible_workspaces: ["/work/project"] })), { mode: 0o600 });
+    const { runCheckpointCli } = await import("../../runner/src/restore.js");
+    let held = "";
+    const key = testJournalKey();
+    const code = await serving(async () => {
+      expect(await runHookAdmitCli(["--control", join(sockets, "admit.sock"), join(dir, "state", "session.json")], quiet), said.join("")).toBe(0);
+      // What Claude Code did in the folder (the hook judged each call; Claude Code itself writes).
+      writeFileSync(join(work, "project", "created.txt"), "made by Claude\n");
+      writeFileSync(join(work, "project", "notes.txt"), "changed by Claude\n");
+      // While the service runs, the restore is refused and changes nothing.
+      const listed = cliIo();
+      expect(await runCheckpointCli(["list", "--journal", journal(), `session-${SESSION}`], listed.io)).toBe(0);
+      const checkpoint = (JSON.parse(listed.text()) as { checkpoints: { checkpoint: string; workspace: string }[] }).checkpoints[0];
+      expect(checkpoint?.workspace).toBe(work);
+      held = checkpoint?.checkpoint ?? "";
+      const running = cliIo();
+      expect(await runCheckpointCli(restoreArgs(held), running.io, undefined, undefined, runner)).toBe(1);
+      expect(running.text()).toContain("its service is running");
+      expect(readFileSync(join(work, "project", "notes.txt"), "utf8")).toBe("changed by Claude\n");
+    }, { anchoring: testAnchoring({ sink: anchors, journalKey: key }) });
+    expect(code).toBe(0);
+    rmSync(join(work, "project", "notes.txt"));
+    // Mismatches are refused and change nothing: another principal, another folder, root.
+    const other = cliIo();
+    expect(await runCheckpointCli(restoreArgs(held, { principal: "someone-else" }), other.io, undefined, undefined, runner)).toBe(1);
+    mkdirSync(join(dir, "elsewhere", "project"), { recursive: true });
+    const elsewhere = cliIo();
+    expect(await runCheckpointCli(restoreArgs(held, { workspace: join(dir, "elsewhere") }), elsewhere.io, undefined, undefined, runner)).toBe(1);
+    expect(elsewhere.text()).toContain(`was taken in ${work}`);
+    const asRoot = cliIo();
+    expect(await runCheckpointCli(restoreArgs(held), asRoot.io, undefined, undefined, { ...runner, uid: () => 0, ownerOf: () => 0 })).toBe(1);
+    expect(asRoot.text()).toContain("never as root");
+    const notOwner = cliIo();
+    expect(await runCheckpointCli(restoreArgs(held), notOwner.io, undefined, undefined, { ...runner, ownerOf: () => 1 })).toBe(1);
+    expect(existsSync(join(work, "project", "created.txt"))).toBe(true);
+    // Stopped: restored.
+    const done = cliIo();
+    expect(await runCheckpointCli(restoreArgs(held), done.io, undefined, undefined, runner), done.text()).toBe(0);
+    expect(JSON.parse(done.text())).toEqual({ ok: true, root: "/work/project" });
+    expect(existsSync(join(work, "project", "created.txt"))).toBe(false);
+    expect(readFileSync(join(work, "project", "notes.txt"), "utf8")).toBe("notes\n");
+    const recorded = entries(journal()).filter((entry) => entry["type"] === "checkpoint_restore");
+    expect(recorded).toEqual([expect.objectContaining({ checkpoint: held, outcome: "restored", principal: PRINCIPAL, workspace: work, root: "/work/project" })]);
+    expect(readTrajectory(journal(), `session-${SESSION}`).at(-1)?.actor).toBe(PRINCIPAL);
+    // The service starts again on the journal the restore wrote to; the session goes on from it (D-201).
+    // (The same journal key as the first start: the in-memory anchors were signed with it, as the real key file persists.)
+    said = [];
+    expect(await serving(() => Promise.resolve(), { anchoring: testAnchoring({ sink: anchors, journalKey: key }) }), said.join("")).toBe(0);
+    expect(said.join("")).toContain("1 session(s) admitted before this start go on from the journal");
+  }, 90_000);
+
+  // proves D-221: a checkpoint that does not record the host folder it was taken in (one taken before 1.5-field) is
+  // refused by the host form, and nothing is changed
+  it("refuses a checkpoint that does not record its host folder", async () => {
+    writeFileSync(join(dir, "state", "session.json"), JSON.stringify(sessionFile({ reversible_workspaces: ["/work/project"] })), { mode: 0o600 });
+    const { runCheckpointCli } = await import("../../runner/src/restore.js");
+    const { JournalWriter } = await import("../../journal/src/index.js");
+    const { checkpointId } = await import("../../enforcement/src/index.js");
+    expect(await serving(async () => {
+      expect(await runHookAdmitCli(["--control", join(sockets, "admit.sock"), join(dir, "state", "session.json")], quiet)).toBe(0);
+    })).toBe(0);
+    const manifest = [{ path: "", type: "directory", mode: 0o755 }];
+    const old = checkpointId("/work/project", manifest as never);
+    JournalWriter.open(journal()).append(`session-${SESSION}`, { kind: "note", actor: "juno.hook", provider: null, data_class: { sensitivity: "internal", integrity: "derived" }, cost: { tokens_in: 0, tokens_out: 0, tokens_cached: 0, currency: 0, duration_ms: 0 } }, new TextEncoder().encode(JSON.stringify({ type: "checkpoint", root: "/work/project", checkpoint: old, manifest })));
+    writeFileSync(join(work, "project", "created.txt"), "kept\n");
+    const refused = cliIo();
+    expect(await runCheckpointCli(restoreArgs(old), refused.io, undefined, undefined, runner)).toBe(1);
+    expect(refused.text()).toContain("does not record the host folder it was taken in");
+    expect(readFileSync(join(work, "project", "created.txt"), "utf8")).toBe("kept\n");
+  }, 60_000);
+});
+
+describe("the hook service holds the journal's lock (D-221)", () => {
+  // proves D-221: while another process holds the journal (a restore in progress, or a service already running on it),
+  // the service refuses to start and listens on nothing; once it is released, it starts
+  it("refuses to start on a journal another process holds", async () => {
+    const { acquireRunnerLock } = await import("../../journal/src/index.js");
+    const key = testJournalKey();
+    expect(await serving(() => Promise.resolve(), { anchoring: testAnchoring({ sink: anchors, journalKey: key }) })).toBe(0);
+    const lock = acquireRunnerLock(join(dir, "state", "journal") as never);
+    said = [];
+    expect(await serving(() => Promise.resolve())).toBe(1);
+    expect(said.join("")).toContain("is in use by another process");
+    expect(existsSync(join(sockets, "hook.sock"))).toBe(false);
+    lock.release();
+    said = [];
+    expect(await serving(() => Promise.resolve(), { anchoring: testAnchoring({ sink: anchors, journalKey: key }) }), said.join("")).toBe(0);
+  });
 });
