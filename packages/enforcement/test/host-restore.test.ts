@@ -2,7 +2,7 @@ import { chmodSync, closeSync, existsSync, linkSync, lstatSync, mkdirSync, mkdte
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CheckpointStore, Workspace, execFileScript, hostRestoreRefusals, openWorkspaceRoot, restoreHostTree, sameManifest } from "../src/index.js";
+import { CheckpointStore, HostPathResolver, Workspace, execFileScript, hostRestoreRefusals, openWorkspaceRoot, restoreHostTree, sameManifest } from "../src/index.js";
 import type { ManifestEntry } from "../src/index.js";
 
 // §2.2.2 (v0.6 A1): "A scope is reversible when a checkpoint of its full content is taken before the task's first effect
@@ -162,6 +162,23 @@ describe("restoring a host-folder checkpoint (§2.2.2, D-221)", () => {
       chmodSync(join(work, "project", "notes.txt"), 0o644);
       rmSync(join(work, "project", "created.txt"));
     }
+  });
+
+  // proves D-225 (review round 3 of PR #60): a folder that carries a sticky (or set-user-ID, set-group-ID) bit as it
+  // stands refuses the restore before anything changes, and a write below it is reported as one the restore could not undo
+  it("refuses a folder with a sticky bit as it stands, changing nothing, and reports it on a write's path", async () => {
+    const manifest = await checkpoint();
+    mkdirSync(join(work, "project", "made"));
+    writeFileSync(join(work, "project", "made", "a.txt"), "a\n");
+    chmodSync(join(work, "project", "made"), 0o1775);
+    writeFileSync(join(work, "project", "notes.txt"), "changed\n");
+    const result = await restore(manifest);
+    expect(result.refusals).toEqual([expect.stringContaining('"made" has a set-user-ID, set-group-ID or sticky bit (mode 1775)')]);
+    expect(read("notes.txt")).toBe("changed\n");
+    expect(read("made/a.txt")).toBe("a\n");
+    const resolved = (await new HostPathResolver(work).resolve(["/work/project/made/b.txt", "/work/project/docs/c.txt"]));
+    expect(resolved.get("/work/project/made/b.txt")).toMatchObject({ ok: true, unwritable: ["/work/project/made"] });
+    expect(resolved.get("/work/project/docs/c.txt")).not.toHaveProperty("unwritable");
   });
 
   // proves D-221: content is checked against its hash before the first change; a missing or altered blob changes nothing

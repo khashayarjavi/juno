@@ -114,12 +114,14 @@ const results = paths.map((path) => {
       const names = real.slice(to.length).split("/").filter((part) => part !== "");
       let folder = to;
       // The restore's own test (kernelMayChange, D-221, D-223): read, change and enter.
-      const judge = (host) => { try { fs.accessSync(host, fs.constants.R_OK | fs.constants.W_OK | fs.constants.X_OK); } catch { unwritable.push(outside(host)); } };
+      // A folder with a set-user-ID, set-group-ID or sticky bit counts too: in a sticky folder the restore may remove only
+      // its own files (D-225).
+      const judge = (host, mode) => { try { if ((mode & 0o7000) !== 0) throw new Error("special bit"); fs.accessSync(host, fs.constants.R_OK | fs.constants.W_OK | fs.constants.X_OK); } catch { unwritable.push(outside(host)); } };
       for (let index = 0; index <= names.length; index += 1) {
         if (index > 0) folder = folder + "/" + names[index - 1];
         let kind; try { kind = fs.lstatSync(folder); } catch { break; }
         if (!kind.isDirectory()) break;
-        judge(folder);
+        judge(folder, kind.mode);
       }
     }
     const extra = unwritable.length > 0 ? { unwritable } : {};

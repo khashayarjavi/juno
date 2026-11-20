@@ -29,6 +29,11 @@ type Results = {
   lockRead: { done: boolean }[];
   writeUnreadable: Exit;
   unlockRead: { done: boolean }[];
+  stickyMade: { done: boolean }[];
+  writeSticky: Exit;
+  sticky: Exit;
+  afterSticky: string[];
+  unstick: { done: boolean }[];
   restoreWhileServing: Exit;
   stopped: Exit;
   list: Exit;
@@ -89,6 +94,9 @@ describe("restoring a hook session's host folder, end to end against the real ho
     // D-223 (F2): a folder the runner may change and enter but not read parks too: the restore needs all three.
     expect(results.lockRead.every((step) => step.done)).toBe(true);
     expect(results.unlockRead.every((step) => step.done)).toBe(true);
+    // D-225: below a sticky folder of the Claude Code user's own, too.
+    expect(results.stickyMade.every((step) => step.done)).toBe(true);
+    expect(JSON.parse(results.writeSticky.stdout)).toMatchObject({ hookSpecificOutput: { permissionDecision: "deny", permissionDecisionReason: expect.stringContaining("integrity_floor") } });
     expect(JSON.parse(results.writeUnreadable.stdout)).toMatchObject({ hookSpecificOutput: { permissionDecision: "deny", permissionDecisionReason: expect.stringContaining("integrity_floor") } });
   });
 
@@ -110,18 +118,24 @@ describe("restoring a hook session's host folder, end to end against the real ho
     expect(JSON.parse(results.locked.stdout)).toMatchObject({ ok: false, reason: expect.stringContaining('juno-runner cannot read, change and enter "locked"') });
     expect(results.afterLocked).toEqual(results.before);
     expect(results.before).not.toEqual(BEFORE);
+    // D-225: a sticky folder as it stands refuses the restore before anything changes (the kernel would stop it part way).
+    expect(results.sticky.code).toBe(1);
+    expect(JSON.parse(results.sticky.stdout)).toMatchObject({ ok: false, reason: expect.stringContaining('"sticky" has a set-user-ID, set-group-ID or sticky bit') });
+    expect(results.afterSticky).toEqual(results.before);
   });
 
   // proves §2.2.2's reversible workspace in hook mode: the restore brings back the checkpoint's full content (the files
   // made after it removed, the changed file and the deleted one put back) and is journalled with the operator as actor
   it("restores the folder's full content and records it in the journal", () => {
     expect(results.unlock.every((step) => step.done)).toBe(true);
+    expect(results.unstick.every((step) => step.done)).toBe(true);
     expect(results.restored.code, results.restored.stderr + results.restored.stdout).toBe(0);
     expect(JSON.parse(results.restored.stdout)).toEqual({ ok: true, root: "/work/project" });
     expect(results.after).toEqual(BEFORE);
     const restores = results.journal.filter((entry) => entry.type === "checkpoint_restore");
     expect(restores).toEqual([
       expect.objectContaining({ actor: "alireza", outcome: "refused", reason: expect.stringContaining("nothing was changed") }),
+      expect.objectContaining({ actor: "alireza", outcome: "refused", reason: expect.stringContaining("sticky bit") }),
       expect.objectContaining({ actor: "alireza", outcome: "restored" }),
     ]);
     expect(results.journal.findIndex((entry) => entry.type === "checkpoint")).toBeLessThan(results.journal.findIndex((entry) => entry.kind === "capability_call" || entry.type === "authorized"));

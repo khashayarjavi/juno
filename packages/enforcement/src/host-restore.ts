@@ -144,13 +144,22 @@ export function hostRestoreRefusals(rootFd: number, manifest: readonly ManifestE
   let seen = 0;
   const walk = (fd: number, rel: string): void => {
     if (refusals.length > 0) return;
+    // D-225 (review round 3 of PR #60): a folder carrying a set-user-ID, set-group-ID or sticky bit as it stands is
+    // refused, before anything changes: in a sticky folder the kernel lets the runner remove only its own files, so the
+    // restore could not finish; the other two bits are refused with it (restrictive).
+    const mode = fstatSync(fd).mode & 0o7777;
+    if ((mode & 0o7000) !== 0) {
+      refusals.push(`${rel === "" ? "the workspace root" : JSON.stringify(rel)} has a set-user-ID, set-group-ID or sticky bit (mode ${mode.toString(8)}), which stops juno-runner from restoring it; remove the bit as root (sudo chmod u-s,g-s,o-t <folder>) and restore again (D-225)`);
+      return;
+    }
     if (!mayChange(self(fd))) {
       refusals.push(`juno-runner cannot read, change and enter ${rel === "" ? "the workspace root" : JSON.stringify(rel)}: give it the guide's access list on the workspace (D-221)`);
       return;
     }
     let names: string[];
     try {
-      names = readdirSync(self(fd));
+      // In byte order, so the first refusal named does not depend on the file system's listing order.
+      names = readdirSync(self(fd)).sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
     } catch (error: unknown) {
       refusals.push(`${rel === "" ? "the workspace root" : JSON.stringify(rel)} cannot be listed (${code(error)})`);
       return;

@@ -130,6 +130,10 @@ if (first.started) {
   // read too, so the write parks as well.
   results.lockRead = await agentDoes([{ op: "mkdir", path: `${PROJECT}/unreadable` }, { op: "chmod", path: `${PROJECT}/unreadable`, mode: "333" }]);
   results.writeUnreadable = await hook("Write", { file_path: `${PROJECT}/unreadable/x.txt`, content: "x" }, "toolu_3");
+  // D-225: a sticky folder of the Claude Code user's own, with a file of its own in it (the kernel then lets the runner
+  // remove only its own files there): the next write below it parks.
+  results.stickyMade = await agentDoes([{ op: "mkdir", path: `${PROJECT}/sticky` }, { op: "write", path: `${PROJECT}/sticky/own.txt`, text: "own\n" }, { op: "chmod", path: `${PROJECT}/sticky`, mode: "1775" }]);
+  results.writeSticky = await hook("Write", { file_path: `${PROJECT}/sticky/x.txt`, content: "x" }, "toolu_4");
   results.unlockRead = await agentDoes([{ op: "chmod", path: `${PROJECT}/unreadable`, mode: "775" }, { op: "rm", path: `${PROJECT}/unreadable` }]);
   // While the service runs, the restore is refused.
   results.restoreWhileServing = await asUser(RUNNER, "", [JUNO, "checkpoint", "restore", "--journal", JOURNAL, "--checkpoints", CHECKPOINTS, "--workspace", WORK, "--principal", "alireza", `session-${SESSION}`, "0".repeat(64)]);
@@ -153,8 +157,12 @@ results.asAgent = await asUser(AGENT, String(HOOK_GROUP), restoreArgs);
 // The folder the runner cannot change: refused, nothing changed.
 results.locked = await asUser(RUNNER, "", restoreArgs);
 results.afterLocked = listing();
-// The Claude Code user gives it back; the restore then brings the whole folder back.
+// The locked folder given back, the sticky one not yet: refused again, before anything changes (D-225).
 results.unlock = await agentDoes([{ op: "chmod", path: `${PROJECT}/locked`, mode: "775" }]);
+results.sticky = await asUser(RUNNER, "", restoreArgs);
+results.afterSticky = listing();
+results.unstick = await agentDoes([{ op: "chmod", path: `${PROJECT}/sticky`, mode: "775" }]);
+// With both given back, the restore brings the whole folder back.
 results.restored = await asUser(RUNNER, "", restoreArgs);
 results.after = listing();
 results.journal = readTrajectory(JOURNAL, `session-${SESSION}`).map((item) => {
