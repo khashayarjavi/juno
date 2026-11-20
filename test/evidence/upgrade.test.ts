@@ -19,8 +19,9 @@ import { runCheckpointCli } from "../../packages/runner/src/restore.js";
 // repository's own history, built exactly as `make build` builds it, and its real `juno hook serve` writes a journal:
 // a session admitted with a reversible workspace (so a checkpoint), a call judged, the service stopped. Then this
 // commit's `juno hook serve` starts on that same journal, with the same grants, checkpoint store, journal key and
-// anchors, as the guide's "Upgrading JUNO to a new commit" keeps them. It must start, carry the old session on, admit a
-// new one, and say plainly why the old checkpoint is not restorable by the host form (it records no folder, D-221).
+// anchors, as the guide's "Upgrading JUNO to a new commit" keeps them. It must start, carry the old session on (its
+// writes no longer reversible, since its checkpoint cannot be restored, D-224), admit a new one, and say plainly why
+// the old checkpoint is not restorable by the host form (it records no folder, D-221).
 
 const run = promisify(execFile);
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
@@ -134,8 +135,12 @@ describe("upgrading an installed JUNO to this commit keeps the journal, grants a
     said.length = 0;
     expect(await serve(runHookServeCli, async () => {
       expect(await runHookAdmitCli(["--control", join(sockets, "admit.sock"), sessionFile(NEW_SESSION)], quiet), said.join("")).toBe(0);
-      // The old session goes on: a call is judged for it, not refused as unknown.
-      expect(await runHookClient(pre(OLD_SESSION, join(work, "project", "b.txt"), "toolu_old_2"), hookSocket)).toMatchObject({ exitCode: 0, stdout: "" });
+      // The old session goes on: a call is judged for it, not refused as unknown. Its checkpoint records no folder, so the
+      // host restore could not undo its writes: they are no longer reversible, and an untrusted target parks (D-224).
+      const old = await runHookClient(pre(OLD_SESSION, join(work, "project", "b.txt"), "toolu_old_2"), hookSocket);
+      expect(JSON.parse(old.stdout)).toMatchObject({ hookSpecificOutput: { permissionDecision: "deny", permissionDecisionReason: expect.stringContaining("integrity_floor") } });
+      // The new session's checkpoint records this folder, so its write inside the workspace proceeds.
+      expect(await runHookClient(pre(NEW_SESSION, join(work, "project", "c.txt"), "toolu_new"), hookSocket)).toMatchObject({ exitCode: 0, stdout: "" });
     }), said.join("")).toBe(0);
     expect(said.join("")).toContain("1 session(s) admitted before this start go on from the journal");
     expect(readTrajectory(journal, `session-${OLD_SESSION}`).length).toBeGreaterThan(before);
@@ -150,6 +155,9 @@ describe("upgrading an installed JUNO to this commit keeps the journal, grants a
     const io = { readFile: () => "", out: (text: string) => out.push(text), err: (text: string) => out.push(text) };
     expect(await runCheckpointCli(["restore", "--journal", journal, "--checkpoints", join(dir, "state", "checkpoints"), "--workspace", work, "--principal", PRINCIPAL, `session-${OLD_SESSION}`, String(checkpoint?.["checkpoint"])], io, undefined, undefined, { uid: () => 4242, ownerOf: () => 4242, filesystem: systemFilesystemIo() })).toBe(1);
     expect(out.join("")).toContain("taken by JUNO before 1.5-field");
+    // The refusal is journalled (D-224, F2).
+    const restores = readTrajectory(journal, `session-${OLD_SESSION}`).map((entry) => readPayload(journal, entry.payload_ref)).flatMap((blob) => (blob.status === "present" ? [JSON.parse(new TextDecoder().decode(blob.bytes)) as Record<string, unknown>] : [])).filter((payload) => payload["type"] === "checkpoint_restore");
+    expect(restores).toEqual([expect.objectContaining({ outcome: "refused", reason: expect.stringContaining("before 1.5-field") })]);
     expect(existsSync(join(work, "project", "after.txt"))).toBe(true);
     // The new session's checkpoint records the folder, and is restorable.
     const listed: string[] = [];

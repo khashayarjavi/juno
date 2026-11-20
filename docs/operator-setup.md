@@ -536,7 +536,7 @@ An empty project gives an empty checkpoint: if `/srv/juno-work/project` held not
    **Check:** it prints `"ok": true` and the folder. If it prints `"ok": false`, read the `reason`; a reason ending `nothing was changed` changed nothing. The most common one, `juno-runner cannot read, change and enter ...`, means a folder in the workspace lost the access list of Part E step 12; run that step's two `setfacl` lines again (admin terminal) and restore again.
 4. **Start the service again:** `systemctl --user start juno-hook.service`. The session goes on, with what it had used.
 
-A checkpoint taken by a JUNO from before this version (commit 6706b5a and earlier) does not record its folder, and the restore refuses it (`does not record the host folder it was taken in`). Sessions admitted after the upgrade are restorable.
+A checkpoint taken by a JUNO from before this version (commit 6706b5a and earlier) does not record its folder, and the restore refuses it (`does not record the host folder it was taken in`). A session admitted before the upgrade goes on, but since its changes cannot be undone, JUNO parks its writes (`integrity_floor`); admit a new session (Part G steps 2 and 5) to write again. Sessions admitted after the upgrade are restorable.
 
 ## Part H — optional: govern an MCP server through JUNO's gateway (mode B)
 
@@ -628,7 +628,7 @@ For a machine where JUNO is already installed (Parts A to G done). The agent giv
    systemctl --user start juno-hook.service
    systemctl --user status juno-hook.service --no-pager
    ```
-   **Check:** `active (running)` and `juno hook: serving /var/lib/juno-hook/hook.sock`; if sessions were admitted before, also a line saying they `go on from the journal`. If it refuses, send the agent `journalctl --user -u juno-hook.service --no-pager | tail -20`; do not delete anything.
+   **Check:** `active (running)` and `juno hook: serving /var/lib/juno-hook/hook.sock`; if sessions were admitted before, also a line saying they `go on from the journal`. After the upgrade from 6706b5a, a session admitted before it can read but its writes park (its checkpoint cannot be restored): admit a new session to write. If it refuses, send the agent `journalctl --user -u juno-hook.service --no-pager | tail -20`; do not delete anything.
    If you use the gateway, start it again with Part H step 4's command.
 
 If the agent's note for the new commit says the example service file changed, also copy it again (Part G step 3's `cp` and `daemon-reload`) before step 8.

@@ -2816,3 +2816,17 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
 - **Tests:** a set-user-ID file, a set-group-ID file, a sticky folder and a set-group-ID folder each refuse the restore with nothing changed and nothing recreated; admission refuses a workspace holding a set-user-ID file; in the container, against the kernel, a folder from which only the runner's read was taken (`chmod 333`) parks the next write below it. Shown failing with the round's code: putting back `W_OK | X_OK` fails the container test.
 - Residual 40 now says what the code does; residual 42 says the access list keeps a restored file changeable by the Claude Code user only when the checkpoint's mode lets the group write (the reviewer's note).
 - Reason: §2.2.2, D-211, D-221; CLAUDE.md §7 step 5; D8.
+
+## D-224 — Review round 2 on PR #60: a rebuilt session's workspace is reversible only while its checkpoint can be restored; every refusal after the checkpoint is found is journalled (autopilot rulings, restrictive)
+- Date: 2026-11-20
+- Status: Accepted (built with tests)
+- Applies to: `packages/mediated/src/session.ts` (`#restore`), `packages/runner/src/restore.ts`, `docs/operator-setup.md`, `docs/evidence/slice-1.5.md` (residual 44); tests: `test/evidence/upgrade.test.ts`, `packages/mediated/test/hook-serve.test.ts`
+- **Round 2** (fresh reviewer, the review prompt verbatim; head 8cffccd): **DO NOT MERGE.** Checks 1 to 4 and 6 PASS; check 5 FAIL:
+  - **F1 (fail-open).** D-221's rule "reversible means restorable" ran only at admission. A session rebuilt from its journal after a restart took its reversible workspaces from its admission request, so a session admitted under 6706b5a (whose checkpoint records no folder, and which the host restore refuses) still had its untrusted writes judged reversible after the upgrade; so did a session whose service restarted with another `--workspace`. The upgrade test asserted that behaviour. A new mechanism within D-221's class, so not a STOP (CLAUDE.md §7 step 5): fixed with the most restrictive option.
+  - **F2.** Two refusals after the checkpoint is found (no folder recorded; another folder) were not journalled, though D-221 and the code's comment said they were.
+- **The fixes:**
+  - F1: a rebuilt session keeps a workspace reversible only when its journal holds that workspace's checkpoint note recording the service's own folder (its view root) and `hostRestoreRefusals` passes on the folder as it now stands; otherwise the workspace is not reversible from then on, and an untrusted target parks `integrity_floor` (§2.2.2, §8.3). The session itself goes on (D-201).
+  - F2: both refusals are journalled (`outcome: "refused"`).
+- **Tests:** the upgrade test now requires the old session's write to park after the upgrade and the new session's to proceed, and the old checkpoint's refusal to be journalled; shown failing when the rebuild takes the request's list again. The command test requires the other-folder refusal to be journalled, and a session restored and rebuilt with its own checkpoint to keep writing.
+- **Guide and evidence:** the upgrade and undo sections say that a session admitted before the upgrade can read but its writes park, so a new session is admitted to write; residual 44 says the same.
+- Reason: §2.2.2, §8.3; D-201, D-221; CLAUDE.md §7 step 5; D8.

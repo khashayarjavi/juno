@@ -3,7 +3,7 @@
 ## Current increment
 **1.5-field — the field report of the first real install (issue [khashayarjavi/juno#59](https://github.com/khashayarjavi/juno/issues/59)), authorised by you on 2026-11-20 (D-220).** Branch `claude/epic-tesla-dsn63d` (this session's only pushable branch). It carries draft PR #58's STATE.md commit (27563ff); its PR supersedes #58. Spec v0.6.1. No objection open.
 
-Status (2026-11-20, this session): **all four items built with tests (D-221, D-222). `make verify: GREEN` on 8ef6e97 (1,472 unit, 127 container); the commits after it change only DECISIONS.md and STATE.md. Draft PR [khashayarjavi/juno#60](https://github.com/khashayarjavi/juno/pull/60) supersedes #58. Review round 1 (head c31be0f): DO NOT MERGE, two new findings, both fixed (D-223): the restore could recreate a set-user-ID program as the runner's (now refused), and the write's check asked less than the restore needs (now the same). Review round 2 next.** Nothing merged yet.
+Status (2026-11-20, this session): **all four items built with tests (D-221, D-222). `make verify: GREEN` on 8ef6e97 (1,472 unit, 127 container); the commits after it change only DECISIONS.md and STATE.md. Draft PR [khashayarjavi/juno#60](https://github.com/khashayarjavi/juno/pull/60) supersedes #58. Review round 1 (head c31be0f): DO NOT MERGE, two new findings, both fixed (D-223): the restore could recreate a set-user-ID program as the runner's (now refused), and the write's check asked less than the restore needs (now the same). Review round 2 (head 8cffccd): DO NOT MERGE, two new findings, both fixed (D-224): after a restart or the upgrade, a session kept its workspace reversible even when its checkpoint could not be restored (now it must be restorable, or its writes park), and two refusals were not journalled (now they are). Review round 3 next.** Nothing merged yet.
 
 ### What 1.5-field changes, in plain words
 1. **You can now undo what Claude did in a hook session (§2.2.2).** `juno checkpoint restore --workspace /srv/juno-work ...`, run as `juno-runner` with the service stopped, puts the session's folder back exactly as it was when the session was admitted: files Claude made are removed, files it changed or deleted come back. It is recorded in the journal under your name. `juno checkpoint list` finds the checkpoint. The guide's new section "Undo what Claude did in a session" gives the steps.
@@ -22,6 +22,7 @@ Status (2026-11-20, this session): **all four items built with tests (D-221, D-2
 - Gateway sessions keep no reversible workspace.
 - Checkpoints taken before this version are refused by the host restore (they do not record their folder).
 - A checkpoint holding a set-user-ID, set-group-ID or sticky bit is refused at admission and at the restore, never recreated (D-223).
+- A session rebuilt after a restart keeps a workspace reversible only if its checkpoint, taken in this service's folder, can be restored now; so after the upgrade, a session admitted under 6706b5a can read but its writes park: admit a new session (D-224).
 
 **Left, in order:** review rounds (up to 5); the merge gate; then STOP and report the merge commit and the upgrade steps; close issue #59.
 

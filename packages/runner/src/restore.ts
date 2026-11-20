@@ -144,11 +144,16 @@ export async function restoreHostCheckpoint(
   const located = locate(journal, taskId, checkpoint, principal);
   if (!located.ok) return located;
   const { root, manifest, dataClass, workspace: takenIn } = located.found;
-  if (takenIn === undefined) return { ok: false, reason: `checkpoint ${checkpoint} does not record the host folder it was taken in (it was taken by JUNO before 1.5-field, or in a container), so this command cannot restore it; nothing was changed` };
-  if (takenIn !== workspace) return { ok: false, reason: `checkpoint ${checkpoint} was taken in ${takenIn}, not in ${workspace}; nothing was changed` };
   const record = (outcome: "restored" | "failed" | "refused", reason?: string): void => {
     journal.append(taskId, "note", dataClass, { type: "checkpoint_restore", checkpoint, root, workspace, principal, outcome, ...(reason === undefined ? {} : { reason }) }, { actor: principal });
   };
+  // D-224 (F2): a refusal once the checkpoint is found is journalled, these two included.
+  const refused = (reason: string): RestoreOutcome => {
+    record("refused", reason);
+    return { ok: false, reason };
+  };
+  if (takenIn === undefined) return refused(`checkpoint ${checkpoint} does not record the host folder it was taken in (it was taken by JUNO before 1.5-field, or in a container), so this command cannot restore it; nothing was changed`);
+  if (takenIn !== workspace) return refused(`checkpoint ${checkpoint} was taken in ${takenIn}, not in ${workspace}; nothing was changed`);
   const hostRoot = workspace + root.slice("/work".length);
   const folding = await caseFoldingRefusals([{ what: "the workspace", path: hostRoot }], host.filesystem);
   if (folding.length > 0) {

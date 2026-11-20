@@ -24,6 +24,7 @@ import {
   SessionLayer,
   type SessionLimits,
   type Workspace,
+  ManifestEntry,
   checkpointId,
   hostRestoreRefusals,
   openWorkspaceRoot,
@@ -398,6 +399,7 @@ export class MediatedSessions {
     let floor: Sensitivity = "public";
     const pending: Session["pending"] = new Map();
     const Pending = z.object({ call_seq: z.int().nullable().default(null), tool_use_id: z.string().nullable().default(null), reads: SensitivitySchema });
+    const checkpointed: Record<string, unknown>[] = [];
     if (request.reversible_workspaces.length > 0 && this.#checkpoints === undefined) throw new MediatedError("the session has reversible workspaces and this service has no checkpoint store (D-136)");
     for (const { entry, payload } of record.entries) {
       // The floor comes from the chained entry itself, never from its payload (D-204).
@@ -417,11 +419,28 @@ export class MediatedSessions {
         pending.set(call.tool_use_id ?? fallback, type === "gateway_call" ? { call_seq: null, reads: call.reads, gateway: true } : { call_seq: call.call_seq, reads: call.reads });
       } else if (entry.kind === "note" && type === "result_missing") pending.clear();
       else if (entry.kind === "note" && type === "state" && body.data["to"] === "failed") task = Task.parse({ ...task, state: "failed", runtime_substate: null });
+      else if (entry.kind === "note" && type === "checkpoint") checkpointed.push(body.data);
     }
+    // D-224 (review round 2 of PR #60, F1): §2.2.2 counts a workspace reversible only while its checkpoint can be
+    // restored. A rebuilt session keeps a workspace reversible only when its journal holds that workspace's checkpoint,
+    // taken in this service's own folder (one taken before 1.5-field records none, or another folder, and the host
+    // restore refuses it), and the runner could restore it as the folder now stands. Otherwise its writes there are
+    // judged irreversible from now on, so an untrusted target parks (integrity_floor, §8.3).
+    const reversible = request.reversible_workspaces.filter((root) => {
+      const note = z.object({ root: z.string(), workspace: z.string(), manifest: z.array(ManifestEntry) }).safeParse(checkpointed.findLast((item) => item["root"] === root));
+      if (!note.success || note.data.workspace !== this.#view.viewRoot) return false;
+      const opened = openWorkspaceRoot(this.#view.viewRoot, root);
+      if (!opened.ok) return false;
+      try {
+        return hostRestoreRefusals(opened.fd, note.data.manifest).length === 0;
+      } finally {
+        closeSync(opened.fd);
+      }
+    });
     const resumed = this.#layer.resume(record.id, hookLimits(request, task.budget), { now: () => this.#clock().getTime() });
     if (resumed === null) throw new MediatedError(`the journal holds no admission of ${record.id}`);
     this.#registries.set(record.id, built);
-    this.#sessions.set(record.id, { task, request, governed: resumed.session, floor, pending, reversible: [...request.reversible_workspaces] });
+    this.#sessions.set(record.id, { task, request, governed: resumed.session, floor, pending, reversible });
   }
 
   /**

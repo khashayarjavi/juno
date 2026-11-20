@@ -288,6 +288,8 @@ describe("juno checkpoint restore for a hook session's host folder (§2.2.2, D-2
     const elsewhere = cliIo();
     expect(await runCheckpointCli(restoreArgs(held, { workspace: join(dir, "elsewhere") }), elsewhere.io, undefined, undefined, runner)).toBe(1);
     expect(elsewhere.text()).toContain(`was taken in ${work}`);
+    // Journalled, once the checkpoint was found (D-224, F2).
+    expect(entries(journal()).filter((entry) => entry["type"] === "checkpoint_restore")).toEqual([expect.objectContaining({ outcome: "refused", reason: expect.stringContaining("was taken in") })]);
     const asRoot = cliIo();
     expect(await runCheckpointCli(restoreArgs(held), asRoot.io, undefined, undefined, { ...runner, uid: () => 0, ownerOf: () => 0 })).toBe(1);
     expect(asRoot.text()).toContain("never as root");
@@ -301,12 +303,18 @@ describe("juno checkpoint restore for a hook session's host folder (§2.2.2, D-2
     expect(existsSync(join(work, "project", "created.txt"))).toBe(false);
     expect(readFileSync(join(work, "project", "notes.txt"), "utf8")).toBe("notes\n");
     const recorded = entries(journal()).filter((entry) => entry["type"] === "checkpoint_restore");
-    expect(recorded).toEqual([expect.objectContaining({ checkpoint: held, outcome: "restored", principal: PRINCIPAL, workspace: work, root: "/work/project" })]);
+    expect(recorded).toEqual([expect.objectContaining({ outcome: "refused" }), expect.objectContaining({ checkpoint: held, outcome: "restored", principal: PRINCIPAL, workspace: work, root: "/work/project" })]);
     expect(readTrajectory(journal(), `session-${SESSION}`).at(-1)?.actor).toBe(PRINCIPAL);
     // The service starts again on the journal the restore wrote to; the session goes on from it (D-201).
     // (The same journal key as the first start: the in-memory anchors were signed with it, as the real key file persists.)
     said = [];
-    expect(await serving(() => Promise.resolve(), { anchoring: testAnchoring({ sink: anchors, journalKey: key }) }), said.join("")).toBe(0);
+    // The rebuilt session's checkpoint records this folder and can be restored, so its workspace stays reversible: an
+    // untrusted write inside it proceeds after the restart (D-224).
+    let after: { exitCode: number; stdout: string } | null = null;
+    expect(await serving(async () => {
+      after = await runHookClient(pre("Write", { file_path: join(work, "project", "later.txt"), content: "x" }), join(sockets, "hook.sock"));
+    }, { anchoring: testAnchoring({ sink: anchors, journalKey: key }) }), said.join("")).toBe(0);
+    expect(after).toMatchObject({ exitCode: 0, stdout: "" });
     expect(said.join("")).toContain("1 session(s) admitted before this start go on from the journal");
   }, 90_000);
 
