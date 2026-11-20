@@ -3,7 +3,22 @@
 ## Current increment
 **1.5-field — the field report of the first real install (issue [khashayarjavi/juno#59](https://github.com/khashayarjavi/juno/issues/59)), authorised by you on 2026-11-20 (D-220); your rulings of 2026-11-20 on PR #60 (D-228).** Branch `claude/gallant-ritchie-rqulim` (this session's only pushable branch, D-229). It carries PR [khashayarjavi/juno#60](https://github.com/khashayarjavi/juno/pull/60)'s sixteen commits unchanged; its draft PR supersedes #60, and review rounds 6 to 10 run there. Spec v0.6.1. No objection open.
 
-Status (2026-11-20, this session): **your structural fix is built with tests (D-228). Draft PR [khashayarjavi/juno#61](https://github.com/khashayarjavi/juno/pull/61) supersedes #60. Rounds 6, 7 and 8 each ended DO NOT MERGE with new findings, each fixed (D-230, D-231, D-232). Round 8 (7539d1a): a folder thousands of levels deep, made after admission, crashed the undo; the walks no longer recurse. `make verify: GREEN` on ae24f1f (1,486 unit, 136 container). Review round 9 next (the limit is round 10).** Nothing merged; main is unchanged at 6706b5a.
+Status (2026-11-20, this session): **STOP after review round 9 on PR [khashayarjavi/juno#61](https://github.com/khashayarjavi/juno/pull/61) — your decision needed (D-233).** Nothing merged; main is unchanged at 6706b5a; your machine is unaffected. `make verify: GREEN` on ae24f1f (1,486 unit, 136 container); CI on d591415 (run 44764328311) was still running at the STOP.
+
+### STOP after review round 9 (D-233)
+- **Why this is a STOP.** Your ruling 2 makes a finding whose mechanism is recorded in DECISIONS.md a STOP. Round 9's mechanism is D-221's own recorded refusal: the undo refuses a workspace of more than 200,000 entries (and one with a mount inside).
+- **The finding, in plain words.** At admission JUNO copies the project folder (at most 2,000 entries). Nothing stops Claude growing it afterwards: one `npm install` can add more than 200,000 files. From then on every undo is refused ("nothing was changed"), but JUNO still lets writes there through as if they could be undone, until the service restarts. A single folder of about 1.5 million names is also more than the sealed container's memory, so the undo is killed and recorded `failed`. A FUSE mount inside the folder, where Ubuntu lets an ordinary user make one, would block the undo the same way.
+- **Your decision, most restrictive first:**
+  1. **Park writes in such a workspace:** once it holds more than the undo can handle, or a mount, its writes park, as for a folder `juno-runner` cannot change. Safe at once, but a session that runs `npm install` there can no longer write there.
+  2. **Remove the limit:** read folders as a stream so any folder the sealed container can walk is undoable; test past 200,000 entries and against its memory limit. The 180-second limit of a sealed run then becomes the bound, so this needs option 1 as the fallback.
+  3. **Record it as a known limit,** with a guide remedy: keep `node_modules` and similar outside the reversible folder, or remove them before an undo.
+  - **My recommendation: 2 with 1 as the fallback.**
+  - Also say how many further review rounds you authorise: rounds 6 to 9 of 10 are used.
+- **Rounds on PR #61, each new finding fixed with tests:**
+  - **Round 6** (d6b643e): a restore cut off part way was journalled "nothing was changed" (now `failed`); a file replaced mid-copy was misnamed a hard link (D-230).
+  - **Round 7** (6221078): a file name that is not valid UTF-8 made every undo refuse; names are now handled as bytes. Also, a sealed container past its time limit is now killed, and the read view keeps its size bound (D-231).
+  - **Round 8** (7539d1a): a folder thousands of levels deep crashed the undo; the walks no longer recurse. Also, a removed project folder is now made again (D-232).
+  - **Round 9** (d591415): the STOP above (D-233).
 
 ### What D-228 changes, in plain words
 1. **JUNO never copies or undoes your project folder with its own privileges any more.** Every copy into a checkpoint, every check that the folder could be restored, and every restore runs in a new, sealed container of `juno-runner`'s own Docker: no network, no capabilities, no new privileges, a read-only image, and **one mount: your project folder** (read-only for the copy). The checkpoint's bytes go in and out through the container's input and output, so not even the checkpoint store is mounted. A link planted in the folder leads nowhere: JUNO's journal, keys and home do not exist inside that container. No sudo, no root, no new privilege for `juno-runner`.
@@ -21,7 +36,7 @@ Status (2026-11-20, this session): **your structural fix is built with tests (D-
 - Checkpoints not taken sealed (PR #60's unmerged commits only) are not restored and not confirmed after a restart.
 - Review rounds 6 to 10 run on the superseding PR, numbered on from #60.
 
-**Left, in order:** review rounds 6 to 10 (D-228 ruling 2); the merge gate; then STOP with the merge commit hash and the upgrade steps; close issue #59.
+**Left, in order:** your decision on D-233; then the fix, further review rounds, the merge gate, the merge commit hash and the upgrade steps; close issue #59.
 
 ### PR #60's review history (rounds 1 to 5; the STOP of D-227, now ruled on)
 - **Round 1** (c31be0f): a restore could recreate a set-user-ID program owned by the runner (D-223).
