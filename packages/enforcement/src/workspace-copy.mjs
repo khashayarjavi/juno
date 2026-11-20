@@ -15,6 +15,12 @@
 // else refuses the checkpoint, so the workspace is not reversible (D-221). A restore writes fixed modes: every file it
 // writes is FILE_MODE and every folder it owns DIR_MODE, whatever the workspace held.
 //
+// How it undoes (operator ruling 2 of 2026-11-20 on D-233, DECISIONS.md D-234): it never walks or deletes what the
+// session made. One rename moves the session's folder as it stands aside, whole, to a name beside it (kept for the
+// operator, never removed by JUNO), and the folder is made again from the checkpoint. So the undo's cost is the
+// checkpoint's (at most MAX_ENTRIES entries and MAX_BYTES bytes), and nothing the folder holds (its size, its depth, a
+// mount, a link, a locked or sticky folder) can stop it; `undoRefusals` judges the only things that can.
+//
 // Even in the container every step is taken relative to an open folder handle and never follows a link (D-221, D-227):
 // each folder is opened O_DIRECTORY | O_NOFOLLOW from the handle above it, every file O_NOFOLLOW, the entry opened
 // must be the one listed, and files are created O_CREAT | O_EXCL | O_NOFOLLOW (never written in place). No shell.
@@ -33,10 +39,6 @@ export const DIR_MODE = 0o770;
 /** The bounds of a checkpoint (as D-136's): a larger workspace is not checkpointed, so not reversible. */
 export const MAX_ENTRIES = 2000;
 export const MAX_BYTES = 8 * 1024 * 1024;
-/** The most entries a restore walks in the folder as it stands; a larger one is refused before anything changes. */
-export const MAX_SCAN = 200_000;
-/** How many folder handles the restorability check keeps open on its way down, besides every WINDOW-th (D-232). */
-const WINDOW = 256;
 
 const DIR_FLAGS = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
 const FILE_FLAGS = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK | constants.O_NOCTTY;
@@ -87,7 +89,7 @@ function folderRefusal(fd, rel, top, mayChange) {
  * Opens the workspace root `root` (a path under /work) below the open folder `baseFd` that stands for /work, one
  * component at a time, never following a link. The caller closes the handle it gets.
  */
-export function openRootAt(baseFd, root, options = {}) {
+export function openRootAt(baseFd, root) {
   if (root !== "/work" && !root.startsWith("/work/")) return { ok: false, reason: `${root} is not a path under /work` };
   const parts = root === "/work" ? [] : root.slice("/work/".length).split("/");
   if (!parts.every(plain)) return { ok: false, reason: `${root} is not a plain path` };
@@ -97,32 +99,18 @@ export function openRootAt(baseFd, root, options = {}) {
   } catch (error) {
     return { ok: false, reason: `the workspace cannot be opened as a folder (${code(error)})` };
   }
-  let made = false;
   for (const part of parts) {
     let next;
     try {
-      // `make` (a restore only): a folder on the way that is gone is made again (mkdir never follows a link).
-      let madeHere = false;
-      if (options.make === true) {
-        try {
-          mkdirSync(at(fd, part), 0o700);
-          madeHere = true;
-          made = true;
-        } catch (error) {
-          if (code(error) !== "EEXIST") throw error;
-        }
-      }
       next = openSync(at(fd, part), DIR_FLAGS);
-      // A folder made again gets the fixed mode at once, so juno-agent keeps its access through the access list.
-      if (madeHere) fchmodSync(next, DIR_MODE);
     } catch (error) {
       closeSync(fd);
-      return { ok: false, missing: code(error) === "ENOENT", made, reason: `${root} is not a folder reached without a symbolic link (${part}: ${code(error)})` };
+      return { ok: false, reason: `${root} is not a folder reached without a symbolic link (${part}: ${code(error)})` };
     }
     closeSync(fd);
     fd = next;
   }
-  return { ok: true, fd, made };
+  return { ok: true, fd };
 }
 
 /** `openRootAt` from a path: the folder `base` stands for /work. */
@@ -252,102 +240,186 @@ export function wanted(manifest) {
   return map;
 }
 
+const rootParts = (root) => {
+  if (typeof root !== "string" || !root.startsWith("/work/")) return null;
+  const parts = root.slice("/work/".length).split("/");
+  return parts.every(plain) ? parts : null;
+};
+
 /**
- * Why the folder at `rootFd`, as it stands, could not be brought back to `manifest`; empty when it can. Reads only.
- * Every folder in it must be one the runner can read, change and enter, on the workspace's file system, with no special
- * bit (in a sticky folder the kernel lets the runner remove only its own files, D-225). Other entries are not judged:
- * the restore removes whatever the checkpoint does not hold, and removing never follows a link.
+ * Why the session's folder `root` could not be undone as it now stands; empty when it can (operator ruling 1 of D-234:
+ * "reversibility is a property of every write"). The undo moves the folder aside whole, with one rename beside it, and
+ * makes it again from the checkpoint (ruling 2), so what the folder holds does not matter: neither its size, nor its
+ * depth, nor a mount, a link or a locked or sticky folder inside it. What matters is the way to it: every folder from
+ * /work down to the one holding it must be a folder (no link), on the workspace's file system, with no special bit,
+ * that the runner can read, change and enter (the rename and the new folder are made in the last of them); and the
+ * folder itself, if it exists, must not be a mount (a mount cannot be renamed). Reads names on the way only: its cost
+ * is the folder's depth below /work, never what it holds.
  */
-export function restoreRefusals(rootFd, manifest, options = {}) {
-  const want = wanted(manifest);
-  if (typeof want === "string") return [want];
+export function undoRefusals(baseFd, root, options = {}) {
+  const parts = rootParts(root);
+  if (parts === null) return [`${String(root)} is not a folder below /work: JUNO undoes a session's folder by moving it aside inside the workspace, so it cannot undo the workspace itself (D-234)`];
   const mayChange = options.mayChange ?? kernelMayChange;
-  const top = fstatSync(rootFd);
-  let seen = 0;
-  // Iterative, never recursive, so no depth of folders the Claude Code user can make stops it (review round 8 on
-  // PR #61, D-232). A frame per folder on the way down; its handle is kept open only for the last WINDOW folders and
-  // every WINDOW-th one, and is opened again when needed, from the nearest open one, by name, never following a link,
-  // and checked to be the same folder (device and inode) as the one first judged.
-  const stack = [];
-  const enter = (fd, name, rel) => {
-    const why = folderRefusal(fd, rel, top, mayChange);
-    if (why !== null) return why;
-    let names;
-    try {
-      names = namesIn(fd);
-    } catch (error) {
-      return `${shown(rel)} cannot be listed (${code(error)})`;
-    }
-    const stats = fstatSync(fd);
-    stack.push({ fd, name, rel, dev: stats.dev, ino: stats.ino, names, index: 0 });
-    const shed = stack.length - 1 - WINDOW;
-    if (shed > 0 && shed % WINDOW !== 0 && stack[shed].fd !== null) {
-      closeSync(stack[shed].fd);
-      stack[shed].fd = null;
-    }
-    return null;
-  };
-  const handleOf = (index) => {
-    if (stack[index].fd !== null) return stack[index].fd;
-    let from = index - 1;
-    while (stack[from].fd === null) from -= 1;
-    for (let level = from + 1; level <= index; level += 1) {
-      const frame = stack[level];
-      const fd = openSync(at(stack[level - 1].fd, frame.name), DIR_FLAGS);
-      const stats = fstatSync(fd);
-      frame.fd = fd;
-      if (stats.dev !== frame.dev || stats.ino !== frame.ino) throw new Refusal(`${shown(frame.rel)} changed while it was judged`);
-    }
-    return stack[index].fd;
-  };
-  let why = enter(rootFd, null, "");
+  const top = fstatSync(baseFd);
+  let fd = baseFd;
+  let rel = "";
   try {
-    while (why === null && stack.length > 0) {
-      const frame = stack[stack.length - 1];
-      if (frame.index >= frame.names.length) {
-        stack.pop();
-        if (frame.fd !== null && frame.fd !== rootFd) closeSync(frame.fd);
-        continue;
-      }
-      const name = frame.names[frame.index];
-      frame.index += 1;
-      seen += 1;
-      if (seen > MAX_SCAN) {
-        why = `the workspace holds more than ${String(MAX_SCAN)} entries; it is refused, never partly restored`;
-        break;
-      }
-      const path = frame.rel === "" ? nameOf(name) : `${frame.rel}/${nameOf(name)}`;
-      const fd = handleOf(stack.length - 1);
-      let stats;
+    for (let index = 0; index < parts.length; index += 1) {
+      const why = folderRefusal(fd, rel, top, mayChange);
+      if (why !== null) return [`${why}; it holds the session's folder, which JUNO moves aside to undo it (D-234)`];
+      const name = parts[index];
+      const path = rel === "" ? name : `${rel}/${name}`;
+      let seen;
       try {
-        stats = lstatSync(at(fd, name));
+        seen = lstatSync(at(fd, name));
       } catch (error) {
-        // A name gone between the listing and its look-up was changed while the folder was judged (still a refusal).
-        why = code(error) === "ENOENT" ? `${JSON.stringify(path)} changed while it was listed (ENOENT)` : `${JSON.stringify(path)} cannot be read (${code(error)})`;
-        break;
+        // Gone: the undo makes it again (D-232).
+        if (code(error) === "ENOENT") return [];
+        return [`${shown(path)} cannot be read (${code(error)})`];
       }
-      if (!stats.isDirectory()) continue;
-      if (stats.dev !== top.dev) {
-        why = `${JSON.stringify(path)} is on another file system (a mount inside the workspace); it is refused, never partly restored`;
-        break;
+      if (index === parts.length - 1) {
+        if (seen.isDirectory() && seen.dev !== top.dev) return [`${shown(path)} is on another file system (a mount on the session's folder), which cannot be moved aside (D-234)`];
+        return [];
       }
-      let child;
+      if (!seen.isDirectory()) return [`${shown(path)}, above the session's folder, is a ${kindOf(seen)}, not a folder reached without a link (D-234)`];
+      let next;
       try {
-        child = openSync(at(fd, name), DIR_FLAGS);
+        next = openSync(at(fd, name), DIR_FLAGS);
       } catch (error) {
-        why = `${JSON.stringify(path)} cannot be opened as a folder (${code(error)})`;
-        break;
+        return [`${shown(path)} changed while it was judged (${code(error)})`];
       }
-      why = enter(child, name, path);
-      if (why !== null) closeSync(child);
+      const held = fstatSync(next);
+      if (fd !== baseFd) closeSync(fd);
+      fd = next;
+      rel = path;
+      if (held.dev !== seen.dev || held.ino !== seen.ino) return [`${shown(path)} changed while it was judged`];
     }
-  } catch (error) {
-    if (!(error instanceof Refusal)) throw error;
-    why = error.message;
   } finally {
-    for (const frame of stack) if (frame.fd !== null && frame.fd !== rootFd) closeSync(frame.fd);
+    if (fd !== baseFd) closeSync(fd);
   }
-  return why === null ? [] : [why];
+  return [];
+}
+
+/** The name the session's folder `name` is moved aside to, in the same folder: kept for the operator, never removed by JUNO. */
+export function asideName(name, now = new Date()) {
+  const stamp = now.toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
+  const suffix = `juno-undone-${stamp}-${randomBytes(4).toString("hex")}`;
+  return Buffer.byteLength(`${name}.${suffix}`) <= 255 ? `${name}.${suffix}` : suffix;
+}
+
+/** Every file's bytes of `manifest` from `content`, each checked against its hash; throws on the first that is missing or wrong. */
+function contentsOf(manifest, content) {
+  const bytes = new Map();
+  for (const entry of manifest) {
+    if (entry.type !== "file" || bytes.has(entry.sha256)) continue;
+    const data = content(entry.sha256);
+    if (!Buffer.isBuffer(data) || createHash("sha256").update(data).digest("hex") !== entry.sha256) throw new Refusal(`the checkpoint's content for ${entry.path} does not match its hash`);
+    bytes.set(entry.sha256, data);
+  }
+  return bytes;
+}
+
+/**
+ * Undoes the session's folder `root` (operator ruling 2 of D-234): every check first (the manifest, every byte against
+ * its hash, `undoRefusals`), then one rename moves the folder as it stands aside, whole, to `asideName` beside it (kept
+ * for the operator, never removed by JUNO), and the folder is made again from the checkpoint: every file JUNO's own with
+ * FILE_MODE, every folder DIR_MODE. Its cost is the checkpoint's, never what the folder held. Answers
+ * `{ refused: [...] }` (nothing was changed), `{ failed, kept }` (something was), or `{ restored: manifest, kept }`;
+ * `kept` is where the old folder now is (a path under /work), or null when there was none.
+ */
+export function undoTo(baseFd, root, manifest, content, options = {}) {
+  const want = wanted(manifest);
+  if (typeof want === "string") return { refused: [want] };
+  let bytes;
+  try {
+    bytes = contentsOf(manifest, content);
+  } catch (error) {
+    return { refused: [error instanceof Error ? error.message : String(error)] };
+  }
+  const refusals = undoRefusals(baseFd, root, options);
+  if (refusals.length > 0) return { refused: refusals };
+  const uid = options.uid ?? process.geteuid();
+  const parts = rootParts(root);
+  const name = parts[parts.length - 1];
+  let fd = baseFd;
+  let made = false;
+  let kept = null;
+  const stop = (reason) => (made || kept !== null ? { failed: kept === null ? reason : `${reason}; the folder as it was is kept, whole, at ${kept}`, kept } : { refused: [reason] });
+  try {
+    // 1. The folders above it: each opened never following a link, or made again when gone.
+    for (const part of parts.slice(0, -1)) {
+      let madeHere = false;
+      try {
+        mkdirSync(at(fd, part), 0o700);
+        madeHere = true;
+        made = true;
+      } catch (error) {
+        if (code(error) !== "EEXIST") return stop(`${part} cannot be made again (${code(error)})`);
+      }
+      let next;
+      try {
+        next = openSync(at(fd, part), DIR_FLAGS);
+        if (madeHere) fchmodSync(next, DIR_MODE);
+      } catch (error) {
+        return stop(`${root} is not a folder reached without a symbolic link (${part}: ${code(error)})`);
+      }
+      if (fd !== baseFd) closeSync(fd);
+      fd = next;
+    }
+    // 2. The folder as it stands goes aside whole: one rename, whatever it holds or is.
+    let exists = true;
+    try {
+      lstatSync(at(fd, name));
+    } catch (error) {
+      if (code(error) !== "ENOENT") return stop(`${root} cannot be read (${code(error)})`);
+      exists = false;
+    }
+    if (exists) {
+      const aside = asideName(name);
+      try {
+        lstatSync(at(fd, aside));
+        return stop(`${aside} already exists beside ${root}`);
+      } catch (error) {
+        if (code(error) !== "ENOENT") return stop(`${aside} cannot be read (${code(error)})`);
+      }
+      try {
+        renameSync(at(fd, name), at(fd, aside));
+      } catch (error) {
+        return stop(`${root} cannot be moved aside (${code(error)})`);
+      }
+      kept = `${root.slice(0, root.length - name.length)}${aside}`;
+    }
+    // 3. Made again, empty, as JUNO's own, then filled from the checkpoint.
+    try {
+      mkdirSync(at(fd, name), 0o700);
+      made = true;
+    } catch (error) {
+      return stop(`${root} could not be made again (${code(error)}): something made it while it was undone`);
+    }
+    let fresh;
+    try {
+      fresh = openSync(at(fd, name), DIR_FLAGS);
+    } catch (error) {
+      return stop(`${root} could not be opened once made again (${code(error)})`);
+    }
+    try {
+      const stats = fstatSync(fresh);
+      if (stats.uid !== uid) return stop(`${root} made again is not JUNO's own folder`);
+      fchmodSync(fresh, DIR_MODE);
+      try {
+        restoreTree(fresh, manifest, (hash) => bytes.get(hash), { uid });
+      } catch (error) {
+        return stop(`the restore stopped part way: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      const after = listTree(fresh, { strict: true, uid, ...(options.mayChange === undefined ? {} : { mayChange: options.mayChange }) });
+      if (!after.ok) return stop(`the folder after the restore is not the checkpoint: ${after.reason}`);
+      return { restored: after.manifest, kept };
+    } finally {
+      closeSync(fresh);
+    }
+  } finally {
+    if (fd !== baseFd) closeSync(fd);
+  }
 }
 
 /**
@@ -355,7 +427,7 @@ export function restoreRefusals(rootFd, manifest, options = {}) {
  * at a time: its files are removed and its folders are moved up into `dirFd` under fresh names, to be removed in turn,
  * so removing a tree of any depth holds two folder handles at most (review round 8 on PR #61, D-232).
  */
-function remove(dirFd, name) {
+export function remove(dirFd, name) {
   const unlinked = (fd, entry) => {
     try {
       unlinkSync(at(fd, entry));
@@ -412,7 +484,8 @@ function keeps(dirFd, name, stats, want, uid) {
 
 /**
  * Brings the folder at `rootFd` back to `manifest`, with each file's bytes from `content` (each checked against its
- * hash before anything changes). Call `restoreRefusals` first; this throws on the first step that fails.
+ * hash before anything changes). `undoTo` runs it on the folder it has just made again, empty (anything another process
+ * puts there meanwhile is removed, never followed); this throws on the first step that fails.
  */
 export function restoreTree(rootFd, manifest, content, options = {}) {
   const want = wanted(manifest);
@@ -493,7 +566,7 @@ export function restoreTree(rootFd, manifest, content, options = {}) {
       }
     }
     // 3. Every folder the runner owns gets DIR_MODE, the deepest first. A folder of another user's keeps its own mode,
-    // which the runner may not change (it passed restoreRefusals, so the runner can read, change and enter it).
+    // which the runner may not change.
     for (const entry of [...manifest].reverse()) {
       if (entry.type !== "directory") continue;
       const fd = folders.get(entry.path);
@@ -535,35 +608,25 @@ export async function main(argv, input) {
         return early("the request is not JSON; nothing was changed");
       }
     } else if (op !== "checkpoint") return answer({ error: `unknown operation ${String(op)}` });
-    let opened = openRootAt(baseFd, root);
-    // A restore of a session root that was removed altogether (an allowed `rm -rf`, say) makes it again, once the
-    // checkpoint is known to be one it can restore; from then on the folder has changed (review round 8, D-232).
-    if (!opened.ok && opened.missing === true && op === "restore") {
-      const valid = wanted(request?.manifest);
-      if (typeof valid === "string") return early(valid);
-      opened = openRootAt(baseFd, root, { make: true });
-      if (!opened.ok) return answer(opened.made === true ? { failed: opened.reason } : { refused: [opened.reason] });
-    }
-    if (!opened.ok) return early(opened.reason);
-    try {
-      if (op === "checkpoint") {
-        // The copy's mount is read-only, where the kernel answers every write test "no": whether the runner could
-        // restore the folder is judged by the `check` run, on a writable mount, which reads no file (D-228).
-        const listed = listTree(opened.fd, { content: true, mayChange: () => true });
-        if (!listed.ok) return answer({ error: listed.reason });
-        return answer({ manifest: listed.manifest, contents: Object.fromEntries([...listed.contents].map(([hash, data]) => [hash, data.toString("base64")])) });
-      }
-      if (op === "check") return answer({ refusals: restoreRefusals(opened.fd, request?.manifest) });
-      const refusals = restoreRefusals(opened.fd, request?.manifest);
-      if (refusals.length > 0) return answer(opened.made === true ? { failed: refusals.join("; ") } : { refused: refusals });
+    // The undo never opens the folder as it stands (D-234): it judges the way to it, moves it aside and makes it again.
+    if (op === "check") return answer({ refusals: [...(typeof wanted(request?.manifest) === "string" ? [wanted(request?.manifest)] : []), ...undoRefusals(baseFd, root)] });
+    if (op === "restore") {
       const contents = request?.contents !== null && typeof request?.contents === "object" ? request.contents : {};
       try {
-        restoreTree(opened.fd, request?.manifest, (hash) => (typeof contents[hash] === "string" ? Buffer.from(contents[hash], "base64") : Buffer.alloc(0)));
+        return answer(undoTo(baseFd, root, request?.manifest, (hash) => (typeof contents[hash] === "string" ? Buffer.from(contents[hash], "base64") : Buffer.alloc(0))));
       } catch (error) {
-        return answer({ failed: `the restore stopped part way: ${error instanceof Error ? error.message : String(error)}` });
+        // Thrown after a check passed: the folder may have changed (D-230).
+        return answer({ failed: `the restore stopped part way: ${error instanceof Error ? error.message : String(error)}`, kept: null });
       }
-      const after = listTree(opened.fd, { strict: true });
-      return answer(after.ok ? { restored: after.manifest } : { failed: `the folder after the restore is not the checkpoint: ${after.reason}` });
+    }
+    const opened = openRootAt(baseFd, root);
+    if (!opened.ok) return early(opened.reason);
+    try {
+      // The copy's mount is read-only, where the kernel answers every write test "no": whether the runner could undo
+      // the folder is judged by the `check` run, on a writable mount, which reads no file (D-228).
+      const listed = listTree(opened.fd, { content: true, mayChange: () => true });
+      if (!listed.ok) return answer({ error: listed.reason });
+      return answer({ manifest: listed.manifest, contents: Object.fromEntries([...listed.contents].map(([hash, data]) => [hash, data.toString("base64")])) });
     } finally {
       closeSync(opened.fd);
     }

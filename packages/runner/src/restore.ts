@@ -39,7 +39,11 @@ const AdmissionNote = z.object({ type: z.literal("admission"), task: z.object({ 
  */
 const CheckpointNote = z.object({ type: z.literal("checkpoint"), root: z.string(), checkpoint: z.string(), manifest: z.array(ManifestEntry), workspace: z.string().optional(), taken_by: z.literal("sealed").optional() });
 
-export type RestoreOutcome = { readonly ok: true; readonly root: string } | { readonly ok: false; readonly reason: string };
+/**
+ * `kept` (the host form only, D-234): the host folder the session's folder as it stood was moved aside to, whole, kept
+ * for the operator and never removed by JUNO; absent when there was none (the folder was gone).
+ */
+export type RestoreOutcome = { readonly ok: true; readonly root: string; readonly kept?: string } | { readonly ok: false; readonly reason: string; readonly kept?: string };
 
 const encoder = new TextEncoder();
 
@@ -135,7 +139,10 @@ async function compared(workspace: Workspace, root: string, manifest: readonly M
  *   - the folder is not on a case-sensitive Linux file system (D-178);
  *   - someone other than root and the runner could replace the workspace's path, or the folder mounted is not the one
  *     JUNO opened;
- *   - the workspace root is not a folder reached without a symbolic link, or the runner could not finish.
+ *   - a folder on the way to the session's folder is not one the runner can read, change and enter without a link, on
+ *     the workspace's file system and with no special bit, or the session's folder is a mount (D-234).
+ * The undo moves the session's folder as it stands aside, whole, with one rename beside it (`kept`, never removed by
+ * JUNO), and makes it again from the checkpoint (operator ruling 2 of D-234): what the folder held does not matter.
  * A refusal after the checkpoint is found, and every restore, is journalled with the operator as its actor: `refused`
  * (nothing changed), `failed` (the result differs from the checkpoint, or a step failed), or `restored`.
  */
@@ -151,8 +158,8 @@ export async function restoreHostCheckpoint(
   const located = locate(journal, taskId, checkpoint, principal);
   if (!located.ok) return located;
   const { root, manifest, dataClass, workspace: takenIn, sealed } = located.found;
-  const record = (outcome: "restored" | "failed" | "refused", reason?: string): void => {
-    journal.append(taskId, "note", dataClass, { type: "checkpoint_restore", checkpoint, root, workspace, principal, outcome, ...(reason === undefined ? {} : { reason }) }, { actor: principal });
+  const record = (outcome: "restored" | "failed" | "refused", reason?: string, kept?: string): void => {
+    journal.append(taskId, "note", dataClass, { type: "checkpoint_restore", checkpoint, root, workspace, principal, outcome, ...(reason === undefined ? {} : { reason }), ...(kept === undefined ? {} : { kept }) }, { actor: principal });
   };
   // D-224 (F2): a refusal once the checkpoint is found is journalled, these included.
   const refused = (reason: string): RestoreOutcome => {
@@ -172,13 +179,17 @@ export async function restoreHostCheckpoint(
   } catch (error: unknown) {
     outcome = { ok: false, changed: true, reason: `the restore stopped part way: ${error instanceof Error ? error.message : String(error)}` };
   }
+  // D-234: the folder as it stood was moved aside, whole, beside it; the journal and the answer say where (a host path).
+  const keptAt = (kept: string | null | undefined): string | undefined => (typeof kept === "string" ? workspace + kept.slice("/work".length) : undefined);
   if (outcome.ok) {
-    record("restored");
-    return { ok: true, root };
+    const kept = keptAt(outcome.kept);
+    record("restored", undefined, kept);
+    return { ok: true, root, ...(kept === undefined ? {} : { kept }) };
   }
   if (!outcome.changed) return refused(outcome.reason.endsWith("nothing was changed") || outcome.reason.endsWith("nothing was read or changed") ? outcome.reason : `${outcome.reason}; nothing was changed`);
-  record("failed", outcome.reason);
-  return { ok: false, reason: outcome.reason };
+  const kept = keptAt(outcome.kept);
+  record("failed", outcome.reason, kept);
+  return { ok: false, reason: outcome.reason, ...(kept === undefined ? {} : { kept }) };
 }
 
 const USAGE =
@@ -199,8 +210,8 @@ export function listCheckpoints(journalRoot: string, taskId: string): { readonly
     const payload = payloadOf(access, entry.payload_ref);
     const note = CheckpointNote.safeParse(payload);
     if (note.success) checkpoints.push({ checkpoint: note.data.checkpoint, root: note.data.root, ...(note.data.workspace === undefined ? {} : { workspace: note.data.workspace }), ...(note.data.taken_by === undefined ? {} : { taken_by: note.data.taken_by }), taken_at: entry.timestamp, entries: note.data.manifest.length });
-    const restore = z.object({ type: z.literal("checkpoint_restore"), checkpoint: z.string(), outcome: z.string(), reason: z.string().optional() }).safeParse(payload);
-    if (restore.success) restores.push({ checkpoint: restore.data.checkpoint, outcome: restore.data.outcome, at: entry.timestamp, ...(restore.data.reason === undefined ? {} : { reason: restore.data.reason }) });
+    const restore = z.object({ type: z.literal("checkpoint_restore"), checkpoint: z.string(), outcome: z.string(), reason: z.string().optional(), kept: z.string().optional() }).safeParse(payload);
+    if (restore.success) restores.push({ checkpoint: restore.data.checkpoint, outcome: restore.data.outcome, at: entry.timestamp, ...(restore.data.reason === undefined ? {} : { reason: restore.data.reason }), ...(restore.data.kept === undefined ? {} : { kept: restore.data.kept }) });
   }
   return { checkpoints, restores };
 }

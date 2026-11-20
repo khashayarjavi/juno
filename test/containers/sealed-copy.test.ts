@@ -3,7 +3,7 @@ import { chmodSync, closeSync, constants, existsSync, lstatSync, mkdirSync, mkdt
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { CheckpointStore, FILE_MODE, type ManifestEntry, type SealedLauncher, SealedWorkspace, dockerSealedLauncher, probeContainerRuntime, runProgram, sealedDockerArgs } from "../../packages/enforcement/src/index.js";
+import { CheckpointStore, DIR_MODE, FILE_MODE, type ManifestEntry, type SealedLauncher, SealedWorkspace, dockerSealedLauncher, probeContainerRuntime, removeEntry, runProgram, sealedDockerArgs } from "../../packages/enforcement/src/index.js";
 
 // Operator ruling of 2026-11-20 on PR #60 (DECISIONS.md D-228), against the real container runtime (the root-run
 // daemon in `make verify`, the runner's rootless one in `make verify-rootless`): every checkpoint copy and every restore
@@ -25,6 +25,15 @@ let launcher: SealedLauncher;
 let rootless: boolean;
 const SECRET = "RUNNER-JOURNAL-KEY-SECRET";
 const sealed = (): SealedWorkspace => new SealedWorkspace(work, launcher);
+/** Where the restore kept the folder as it stood (D-234): beside it, under a name that says so. */
+const KEPT = expect.stringMatching(/^\/work\/project\.juno-undone-\d{8}T\d{6}Z-[0-9a-f]{8}$/);
+const host = (kept: unknown): string => join(work, String(kept).slice("/work/".length));
+/** Removes the kept folders (one may be deeper than node's own recursive removal reaches), as the restore's own removal does. */
+function removeKept(): void {
+  const base = openSync(work, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  for (const name of readdirSync(work)) if (name.includes(".juno-undone-")) removeEntry(base, name);
+  closeSync(base);
+}
 
 beforeAll(async () => {
   rootless = (await probeContainerRuntime()).rootless;
@@ -152,17 +161,29 @@ describe("the sealed copy context can reach nothing of the runner's (D-228)", ()
     expect(existsSync(join(work, "project", "tool"))).toBe(false);
   }, 60_000);
 
-  // proves D-228 against round 3's trap (D-225): a sticky folder set after the checkpoint refuses the sealed restore
-  // before anything changes
-  it("round 3's sticky folder refuses the restore, changing nothing", async () => {
+  // proves D-228 against round 3's trap (D-225), with D-234's undo: a sticky folder made after the checkpoint inside the
+  // session's folder goes aside with it, untouched (its file kept, its bit never recreated), and the folder comes back;
+  // the same trap one folder up (a sticky bit on the folder holding the session's, where the kernel would let the
+  // runner rename only what it owns) refuses the sealed restore before anything changes
+  it("round 3's sticky folder goes aside whole; a sticky folder holding it refuses, changing nothing", async () => {
     const manifest = await checkpoint();
     mkdirSync(join(work, "project", "sticky"));
     writeFileSync(join(work, "project", "sticky", "own.txt"), "own\n");
     chmodSync(join(work, "project", "sticky"), 0o1777);
     writeFileSync(join(work, "project", "notes.txt"), "changed\n");
-    expect(await sealed().restore("/work/project", manifest, (hash) => store.get(hash))).toMatchObject({ ok: false, changed: false, reason: expect.stringContaining('"sticky" has a set-user-ID, set-group-ID or sticky bit') });
-    expect(readFileSync(join(work, "project", "notes.txt"), "utf8")).toBe("changed\n");
-    expect(readFileSync(join(work, "project", "sticky", "own.txt"), "utf8")).toBe("own\n");
+    chmodSync(work, 0o1755);
+    try {
+      expect(await sealed().restore("/work/project", manifest, (hash) => store.get(hash))).toMatchObject({ ok: false, changed: false, reason: expect.stringContaining("the workspace root has a set-user-ID, set-group-ID or sticky bit") });
+      expect(readFileSync(join(work, "project", "notes.txt"), "utf8")).toBe("changed\n");
+    } finally {
+      chmodSync(work, 0o755);
+    }
+    const outcome = await sealed().restore("/work/project", manifest, (hash) => store.get(hash));
+    expect(outcome).toEqual({ ok: true, kept: KEPT });
+    expect(readFileSync(join(work, "project", "notes.txt"), "utf8")).toBe("notes\n");
+    expect(existsSync(join(work, "project", "sticky"))).toBe(false);
+    expect(readFileSync(join(host(outcome.ok ? outcome.kept : ""), "sticky", "own.txt"), "utf8")).toBe("own\n");
+    expect(lstatSync(join(host(outcome.ok ? outcome.kept : ""), "sticky")).mode & 0o7777).toBe(0o1777);
   }, 60_000);
 
   // proves D-228 against round 4's trap (D-226): links planted to send a change elsewhere (a folder swapped for a link
@@ -175,7 +196,7 @@ describe("the sealed copy context can reach nothing of the runner's (D-228)", ()
     rmSync(join(work, "project", "notes.txt"));
     symlinkSync(key, join(work, "project", "notes.txt"));
     const before = readdirSync(state).sort();
-    expect(await sealed().restore("/work/project", manifest, (hash) => store.get(hash))).toEqual({ ok: true });
+    expect(await sealed().restore("/work/project", manifest, (hash) => store.get(hash))).toEqual({ ok: true, kept: KEPT });
     expect(lstatSync(join(work, "project", "docs")).isDirectory()).toBe(true);
     expect(readFileSync(join(work, "project", "docs", "a.md"), "utf8")).toBe("a\n");
     expect(readFileSync(join(work, "project", "notes.txt"), "utf8")).toBe("notes\n");
@@ -195,13 +216,15 @@ describe("the sealed copy context can reach nothing of the runner's (D-228)", ()
     writeFileSync(join(work, "project", "notes.txt"), "changed\n");
     const resume = Buffer.concat([Buffer.from(`${join(work, "project")}/`), Buffer.from([0x52, 0xe9, 0x73, 0x75, 0x6d, 0xe9, 0x2e, 0x74, 0x78, 0x74])]);
     writeFileSync(resume, "unzipped\n");
-    expect(await sealed().restore("/work/project", manifest, (hash) => store.get(hash))).toEqual({ ok: true });
+    expect(await sealed().restore("/work/project", manifest, (hash) => store.get(hash))).toEqual({ ok: true, kept: KEPT });
     expect(readFileSync(join(work, "project", "notes.txt"), "utf8")).toBe("notes\n");
     expect(existsSync(resume)).toBe(false);
   }, 60_000);
 
-  // proves D-232 (review round 8 on PR #61) against the real runtime, the reviewer's reproduction: an 8,000-level folder
-  // made after the checkpoint is judged and removed by the sealed restore, and the changed file comes back
+  // proves D-232 (review round 8 on PR #61) against the real runtime, the reviewer's reproduction, with D-234's undo:
+  // an 8,000-level folder made after the checkpoint (its full path longer than the kernel's path limit, which a
+  // root-run daemon's AppArmor profile refuses to look up: CI run 44765378891) is undone: the folder moves aside whole,
+  // the changed file comes back, and nothing below the folder is ever looked up
   it("restores past a folder thousands of levels deep", async () => {
     const manifest = await checkpoint();
     writeFileSync(join(work, "project", "notes.txt"), "changed\n");
@@ -213,10 +236,35 @@ describe("the sealed copy context can reach nothing of the runner's (D-228)", ()
       fd = next;
     }
     closeSync(fd);
-    expect(await sealed().restore("/work/project", manifest, (hash) => store.get(hash))).toEqual({ ok: true });
+    expect(await sealed().check("/work/project", manifest)).toEqual([]);
+    const outcome = await sealed().restore("/work/project", manifest, (hash) => store.get(hash));
+    expect(outcome).toEqual({ ok: true, kept: KEPT });
     expect(readFileSync(join(work, "project", "notes.txt"), "utf8")).toBe("notes\n");
     expect(existsSync(join(work, "project", "d"))).toBe(false);
+    expect(lstatSync(join(host(outcome.ok ? outcome.kept : ""), "d")).isDirectory()).toBe(true);
+    removeKept();
   }, 120_000);
+
+  // proves operator ruling 2 of D-234 against the real runtime, review round 9's reproduction: a workspace grown to
+  // 200,000 entries after the checkpoint (200 folders of 1,000 files, as an npm install makes) is judged undoable and
+  // undone by the sealed context within its limits (512 MB, 180 s), the folder made again from the checkpoint alone
+  it("judges and undoes a workspace grown to 200,000 entries", async () => {
+    const manifest = await checkpoint();
+    writeFileSync(join(work, "project", "notes.txt"), "changed\n");
+    for (let folder = 0; folder < 200; folder += 1) {
+      const path = join(work, "project", "node_modules", `p${String(folder)}`);
+      mkdirSync(path, { recursive: true });
+      for (let file = 0; file < 1000; file += 1) writeFileSync(join(path, `f${String(file)}.js`), "");
+    }
+    expect(await sealed().check("/work/project", manifest)).toEqual([]);
+    const outcome = await sealed().restore("/work/project", manifest, (hash) => store.get(hash));
+    expect(outcome).toEqual({ ok: true, kept: KEPT });
+    expect(readFileSync(join(work, "project", "notes.txt"), "utf8")).toBe("notes\n");
+    expect(lstatSync(join(work, "project")).mode & 0o7777).toBe(DIR_MODE);
+    expect(existsSync(join(work, "project", "node_modules"))).toBe(false);
+    expect(readdirSync(join(host(outcome.ok ? outcome.kept : ""), "node_modules"))).toHaveLength(200);
+    removeKept();
+  }, 300_000);
 
   // proves D-231: a sealed container that outlives its limit is killed, and the run is answered as one with no answer
   // (so a restore is journalled failed and a checkpoint refused); nothing is left running

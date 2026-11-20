@@ -508,7 +508,8 @@ type JudgedEffect =
  * target that is not a path, or a path with no canonical form, makes it `irreversible`; so does a hard-linked file (D-158),
  * and a path whose canonical form differs from its lexical normalization (D-168).
  */
-function effectOf(entry: RegistryEntry, call: CapabilityCall, canonical: CanonicalPaths, reversible: readonly string[]): JudgedEffect {
+function effectOf(entry: RegistryEntry, call: CapabilityCall, canonical: CanonicalPaths, reversible: readonly string[], unrestorable: Readonly<Record<string, string>> = {}): JudgedEffect {
+  const unrestorableOf = (root: string): string | undefined => (Object.hasOwn(unrestorable, root) ? unrestorable[root] : undefined);
   const { side_effect: effect } = entry.capability;
   if (effect === "read") return { kind: "read" };
   if (effect === "external") return { kind: "external" };
@@ -529,10 +530,17 @@ function effectOf(entry: RegistryEntry, call: CapabilityCall, canonical: Canonic
     if (workspace === undefined) {
       return { kind: "irreversible", not_reversible: `${answer.canonical} lies in no reversible workspace of the task` };
     }
-    // D-221: the operator's restore runs as the user that resolved the path; a folder inside the workspace it could not
-    // change is one the restore could not bring back, so a write below it is not reversible.
-    const blocked = answer.unwritable?.find((folder) => pathWithin(folder, workspace));
-    if (blocked !== undefined) return { kind: "irreversible", not_reversible: `the restore could not change ${blocked}, so a write there could not be undone (D-221)` };
+    // Operator ruling 1 of D-234: reversibility is judged at every write, not at admission alone. The undo moves the
+    // workspace aside whole, with one rename in the folder that holds it, and makes it again from the checkpoint, so it
+    // needs every folder on the way to the workspace to be one the restoring user (the user that resolved the path) can
+    // read, change and enter, on one file system. A write below a folder inside the workspace that the user could not
+    // change stays irreversible too (D-221, kept: restrictive).
+    const blocked = answer.unwritable?.find((folder) => pathWithin(folder, workspace) || pathWithin(workspace, folder));
+    if (blocked !== undefined) return { kind: "irreversible", not_reversible: pathWithin(blocked, workspace) && blocked !== workspace ? `the restore could not change ${blocked}, so a write there could not be undone (D-221)` : `the restore could not move ${workspace} aside: it could not change ${blocked}, so a write there could not be undone (D-234)` };
+    const mounted = answer.mounts?.find((folder) => pathWithin(folder, workspace) || pathWithin(workspace, folder));
+    if (mounted !== undefined) return { kind: "irreversible", not_reversible: `${mounted} is on another file system (a mount), so the restore could not show it can undo a write there (D-234)` };
+    const unrestorable = unrestorableOf(workspace);
+    if (unrestorable !== undefined) return { kind: "irreversible", not_reversible: `${workspace} can no longer be undone: ${unrestorable} (D-234)` };
   }
   return { kind: "reversible_write" };
 }
@@ -769,7 +777,7 @@ export class EnforcementBoundary {
 
     // Step 4, effects (§2.2.2, §2.7.1 "Effects"; D-135): an untrusted target of an effect that cannot be undone must be
     // one the grant enumerates. Not overridable (§8.3): the operator cannot observe where such an effect lands.
-    const judgedEffect = effectOf(entry, parsedCall, canonical, context.reversible ?? []);
+    const judgedEffect = effectOf(entry, parsedCall, canonical, context.reversible ?? [], context.unrestorable ?? {});
     const effects = inScope.map((grant) => ({ grant, refused: effectRefusals(entry, parsedCall, grant, integrityOf, judgedEffect, canonical) }));
     const permitted = effects.filter((candidate) => candidate.refused.length === 0).map((candidate) => candidate.grant);
     if (permitted.length === 0) {

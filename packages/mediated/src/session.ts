@@ -203,6 +203,8 @@ type Session = {
   readonly pending: Map<string, { readonly call_seq: number | null; readonly reads: Sensitivity; readonly gateway?: true }>;
   /** The session's checkpointed workspaces: the only reversible ones (§2.2.2, D-135). */
   reversible: readonly string[];
+  /** Each reversible workspace's checkpoint content (hashes): every write checks the store still holds it (D-234 ruling 1). */
+  undo: Map<string, readonly string[]>;
 };
 
 export type MediatedOptions = {
@@ -404,6 +406,26 @@ export class MediatedSessions {
     }
   }
 
+  /**
+   * Operator ruling 1 of D-234: before every write is judged, each reversible workspace whose checkpoint content the
+   * store no longer holds is one JUNO cannot undo, with the reason; a write there is not reversible. One lstat per
+   * content file of the checkpoint (at most its 2,000 entries), never a read.
+   */
+  #unrestorable(session: Session): Record<string, string> {
+    const found: Record<string, string> = {};
+    for (const root of session.reversible) {
+      const hashes = session.undo.get(root);
+      if (hashes === undefined) {
+        found[root] = "JUNO holds no checkpoint of it";
+        continue;
+      }
+      const missing = this.#checkpoints === undefined ? hashes.length : hashes.filter((hash) => this.#checkpoints?.store.has(hash) !== true).length;
+      if (this.#checkpoints === undefined) found[root] = "this service has no checkpoint store";
+      else if (missing > 0) found[root] = `${String(missing)} of its checkpoint's files are gone from the checkpoint store`;
+    }
+    return found;
+  }
+
   /** A refused admission found in the journal at start: its name map judges an injected command from it, as before the restart (D-152, D-201). */
   #restoreRefused(record: RecoveredRecord): void {
     for (const { payload } of record.entries) {
@@ -469,7 +491,7 @@ export class MediatedSessions {
     const resumed = this.#layer.resume(record.id, hookLimits(request, task.budget), { now: () => this.#clock().getTime() });
     if (resumed === null) throw new MediatedError(`the journal holds no admission of ${record.id}`);
     this.#registries.set(record.id, built);
-    this.#sessions.set(record.id, { task, request, governed: resumed.session, floor, pending, reversible });
+    this.#sessions.set(record.id, { task, request, governed: resumed.session, floor, pending, reversible, undo: new Map(candidates.map(({ root, manifest }) => [root, contentHashes(manifest)])) });
   }
 
   /**
@@ -620,7 +642,7 @@ export class MediatedSessions {
         ...(origin.grantFiles === undefined ? {} : { grant_files: [...origin.grantFiles] }),
       },
     });
-    const session: Session = { task, request, governed, floor: "public", pending: new Map(), reversible };
+    const session: Session = { task, request, governed, floor: "public", pending: new Map(), reversible, undo: new Map(checkpoints.map(({ root, manifest }) => [root, contentHashes(manifest as readonly ManifestEntry[])])) };
     this.#sessions.set(id, session);
     for (const checkpoint of checkpoints) this.#append(id, "note", { sensitivity: "internal", integrity: "derived" }, SESSION_ACTOR, { type: "checkpoint", ...checkpoint });
     // §3.4.1 (D-198): the shared layer records the interval and anchors the admitted session's head before its first
@@ -702,7 +724,7 @@ export class MediatedSessions {
     const reads = await this.#classify(session, TOOLS[input.tool_name]?.reads(judgedValue(mapped.proposal.arguments, mapped.constants)) ?? [unknown(input.tool_name)]);
 
     const constants = mapped.constants;
-    const base: TaskContext = { task: { ...session.task, sensitivity_floor: session.floor }, constants, synthesis: { sensitivity: session.floor }, reversible: session.reversible, readGate: { reads, clearance: session.request.provider_clearance } };
+    const base: TaskContext = { task: { ...session.task, sensitivity_floor: session.floor }, constants, synthesis: { sensitivity: session.floor }, reversible: session.reversible, unrestorable: this.#unrestorable(session), readGate: { reads, clearance: session.request.provider_clearance } };
     const canonical: CanonicalPaths = await this.#resolver.resolve(built.boundary.pathsToResolve(base, mapped.proposal));
     const verdict: Verdict = built.boundary.authorize({ ...base, canonical }, mapped.proposal);
     if (verdict.outcome === "proceed") {
@@ -994,6 +1016,11 @@ type Mapped =
   | { readonly kind: "park"; readonly reason: string; readonly detail: Record<string, unknown>; readonly overridable: boolean };
 
 /** §2.7.1 A4, §4.3, §6.4: a hook session's limits, the same at admission and when it is rebuilt from its journal (D-201). */
+/** The content hashes a checkpoint's manifest names (each file's). */
+function contentHashes(manifest: readonly ManifestEntry[]): readonly string[] {
+  return [...new Set(manifest.flatMap((entry) => (entry.type === "file" ? [entry.sha256] : [])))];
+}
+
 function hookLimits(request: z.output<typeof SessionRequest>, budget: z.infer<typeof Task>["budget"]): SessionLimits {
   return { rejection_limit: request.rejection_limit, ttl: request.ttl, budget, metered: ["turns", "wall_clock_ms"], clock: "from_admission", park_fields: { mode: "hook", answer: "deny" } };
 }

@@ -302,11 +302,14 @@ describe("juno checkpoint restore for a hook session's host folder (§2.2.2, D-2
     // Stopped: restored.
     const done = cliIo();
     expect(await runCheckpointCli(restoreArgs(held), done.io, undefined, undefined, runner), done.text()).toBe(0);
-    expect(JSON.parse(done.text())).toEqual({ ok: true, root: "/work/project" });
+    // D-234: the folder as it stood is kept, whole, beside it; the answer and the journal name where.
+    const kept = (JSON.parse(done.text()) as { kept?: string }).kept ?? "";
+    expect(JSON.parse(done.text())).toEqual({ ok: true, root: "/work/project", kept: expect.stringMatching(new RegExp(`^${work.replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&")}/project\\.juno-undone-\\d{8}T\\d{6}Z-[0-9a-f]{8}$`)) });
+    expect(readFileSync(join(kept, "created.txt"), "utf8")).toBe("made by Claude\n");
     expect(existsSync(join(work, "project", "created.txt"))).toBe(false);
     expect(readFileSync(join(work, "project", "notes.txt"), "utf8")).toBe("notes\n");
     const recorded = entries(journal()).filter((entry) => entry["type"] === "checkpoint_restore");
-    expect(recorded).toEqual([expect.objectContaining({ outcome: "refused" }), expect.objectContaining({ checkpoint: held, outcome: "restored", principal: PRINCIPAL, workspace: work, root: "/work/project" })]);
+    expect(recorded).toEqual([expect.objectContaining({ outcome: "refused" }), expect.objectContaining({ checkpoint: held, outcome: "restored", principal: PRINCIPAL, workspace: work, root: "/work/project", kept })]);
     expect(readTrajectory(journal(), `session-${SESSION}`).at(-1)?.actor).toBe(PRINCIPAL);
     // The service starts again on the journal the restore wrote to; the session goes on from it (D-201).
     // (The same journal key as the first start: the in-memory anchors were signed with it, as the real key file persists.)

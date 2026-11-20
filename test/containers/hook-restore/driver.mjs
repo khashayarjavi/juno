@@ -155,6 +155,13 @@ if (first.started) {
   results.stickyMade = await agentDoes([{ op: "mkdir", path: `${PROJECT}/sticky` }, { op: "write", path: `${PROJECT}/sticky/own.txt`, text: "own\n" }, { op: "chmod", path: `${PROJECT}/sticky`, mode: "1775" }]);
   results.writeSticky = await hook("Write", { file_path: `${PROJECT}/sticky/x.txt`, content: "x" }, "toolu_4");
   results.unlockRead = await agentDoes([{ op: "chmod", path: `${PROJECT}/unreadable`, mode: "775" }, { op: "rm", path: `${PROJECT}/unreadable` }]);
+  // D-234 ruling 1: the undo moves the session's folder aside in the folder that holds it, which the Claude Code user
+  // owns. Once that user takes the runner's access off it (chmod 755: the access list's mask then leaves the runner
+  // read and enter only), the next write anywhere in the session's folder parks; given back, writes proceed again.
+  results.holderLocked = await agentDoes([{ op: "chmod", path: WORK, mode: "755" }]);
+  results.writeHolderLocked = await hook("Write", { file_path: `${PROJECT}/notes.txt`, content: "x" }, "toolu_5");
+  results.holderBack = await agentDoes([{ op: "chmod", path: WORK, mode: "775" }]);
+  results.writeHolderBack = await hook("Write", { file_path: `${PROJECT}/back.txt`, content: "x" }, "toolu_6");
   // While the service runs, the restore is refused.
   results.restoreWhileServing = await asUser(RUNNER, "", [JUNO, "checkpoint", "restore", "--journal", JOURNAL, "--checkpoints", CHECKPOINTS, "--workspace", WORK, "--principal", "alireza", `session-${SESSION}`, "0".repeat(64)], runnerEnv);
   results.stopped = await first.stop();
@@ -174,21 +181,35 @@ const listing = () => {
 results.before = listing();
 results.asRoot = await asRoot(restoreArgs);
 results.asAgent = await asUser(AGENT, String(HOOK_GROUP), restoreArgs, runnerEnv);
-// The folder the runner cannot change: refused, nothing changed.
+// D-234: the folder holding the session's folder, made one the runner cannot change by the Claude Code user that owns
+// it: refused, nothing changed.
+results.lock = await agentDoes([{ op: "chmod", path: WORK, mode: "755" }]);
 results.locked = await asUser(RUNNER, "", restoreArgs, runnerEnv);
 results.afterLocked = listing();
-// The locked folder given back, the sticky one not yet: refused again, before anything changes (D-225).
-results.unlock = await agentDoes([{ op: "chmod", path: `${PROJECT}/locked`, mode: "775" }]);
+// Given back, then made sticky (round 3's trap one folder up, where the kernel would let the runner rename only what
+// it owns): refused again, before anything changes (D-225).
+results.unlock = await agentDoes([{ op: "chmod", path: WORK, mode: "1775" }]);
 results.sticky = await asUser(RUNNER, "", restoreArgs, runnerEnv);
 results.afterSticky = listing();
-results.unstick = await agentDoes([{ op: "chmod", path: `${PROJECT}/sticky`, mode: "775" }]);
-// With both given back, the restore brings the whole folder back.
+results.unstick = await agentDoes([{ op: "chmod", path: WORK, mode: "775" }]);
+// With the folder holding it given back, the restore brings the whole folder back. The locked and the sticky folder the
+// Claude Code user made inside the session's folder are still there: they no longer stop the undo (D-234), and go aside
+// with the rest, untouched.
 results.restored = await asUser(RUNNER, "", restoreArgs, runnerEnv);
 results.after = listing();
+const kept = results.restored.code === 0 ? JSON.parse(results.restored.stdout).kept ?? "" : "";
+results.kept = kept;
+results.keptListing = kept === "" ? [] : readdirSync(kept).sort();
+results.keptSticky = kept === "" ? "" : readFileSync(`${kept}/sticky/own.txt`, "utf8");
+results.keptNotes = kept === "" ? "" : readFileSync(`${kept}/notes.txt`, "utf8");
+// What comes back, with what permissions (operator ruling 4): every folder and file the runner's own, folders 0770 and
+// files 0660; through the guide's access list the Claude Code user can read and change all of it.
+results.restoredModes = [PROJECT, `${PROJECT}/sub`, `${PROJECT}/notes.txt`, `${PROJECT}/sub/keep.txt`].map((path) => { const st = lstatSync(path); return `${String(st.uid)}:${(st.mode & 0o7777).toString(8)}`; });
+results.agentAfter = await agentDoes([{ op: "write", path: `${PROJECT}/notes.txt`, text: "notes\n" }, { op: "mkdir", path: `${PROJECT}/later` }, { op: "rm", path: `${PROJECT}/later` }]);
 results.journal = readTrajectory(JOURNAL, `session-${SESSION}`).map((item) => {
   const blob = readPayload(JOURNAL, item.payload_ref);
   const body = blob.status === "present" ? JSON.parse(new TextDecoder().decode(blob.bytes)) : {};
-  return { kind: item.kind, actor: item.actor, type: body.type ?? null, outcome: body.outcome ?? null, reason: body.reason ?? null };
+  return { kind: item.kind, actor: item.actor, type: body.type ?? null, outcome: body.outcome ?? null, reason: body.reason ?? null, kept: body.kept ?? null };
 });
 // The service starts again on the journal the restore wrote to; the session goes on from it (D-201).
 const second = await serve();

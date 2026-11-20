@@ -5,7 +5,7 @@ import { execFile } from "node:child_process";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CheckpointStore, DIR_MODE, FILE_MODE, HostPathResolver, HostReadView, NOT_READ, SealedWorkspace, listTree, openRoot, restoreRefusals, restoreTree, sameManifest, workspaceRefusals } from "../src/index.js";
+import { CheckpointStore, DIR_MODE, FILE_MODE, HostPathResolver, HostReadView, NOT_READ, SealedWorkspace, listTree, openRoot, removeEntry, restoreTree, undoRefusals, undoTo, workspaceRefusals } from "../src/index.js";
 import type { ManifestEntry, SealedLauncher } from "../src/index.js";
 import { unsealedLauncher } from "./sealed.js";
 
@@ -22,7 +22,6 @@ let dir: string;
 let work: string;
 let store: CheckpointStore;
 const sealed = (): SealedWorkspace => new SealedWorkspace(work, unsealedLauncher);
-const uid = process.geteuid?.() ?? -1;
 
 async function checkpoint(root = "/work/project"): Promise<readonly ManifestEntry[]> {
   const taken = await sealed().checkpoint(root);
@@ -31,23 +30,23 @@ async function checkpoint(root = "/work/project"): Promise<readonly ManifestEntr
   return taken.snapshot.manifest;
 }
 
-/** The restore's own steps, in this process, with the runner's judgement and identity replaceable (as a test needs). */
-function restoreHere(manifest: readonly ManifestEntry[], options: { uid?: number; mayChange?: (folder: string) => boolean } = {}): { refusals: string[]; same: boolean } {
-  const opened = openRoot(work, "/work/project");
-  if (!opened.ok) throw new Error(opened.reason);
+/** The undo's own steps, in this process, with the runner's judgement replaceable (as a test needs). */
+function undoHere(manifest: readonly ManifestEntry[], options: { mayChange?: (folder: string) => boolean } = {}): ReturnType<typeof undoTo> {
+  const base = openSync(work, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
   try {
-    const judge = options.mayChange === undefined ? {} : { mayChange: options.mayChange };
-    const refusals = restoreRefusals(opened.fd, manifest, judge);
-    if (refusals.length === 0) restoreTree(opened.fd, manifest, (hash) => store.get(hash), { uid: options.uid ?? uid });
-    const after = listTree(opened.fd, judge);
-    return { refusals, same: after.ok && sameManifest(after.manifest, manifest) };
+    return undoTo(base, "/work/project", manifest, (hash) => store.get(hash), options.mayChange === undefined ? {} : { mayChange: options.mayChange });
   } finally {
-    closeSync(opened.fd);
+    closeSync(base);
   }
 }
 
+/** Where the restore kept the folder as it stood (D-234): beside it, under a name that says so. */
+const KEPT = expect.stringMatching(/^\/work\/project\.juno-undone-\d{8}T\d{6}Z-[0-9a-f]{8}$/);
+/** The host path of a kept folder (`kept` is a path under /work). */
+const host = (kept: unknown): string => join(work, String(kept).slice("/work/".length));
+
 /** The whole restore, through the sealed program. */
-async function restore(manifest: readonly ManifestEntry[]): Promise<{ ok: boolean; changed?: boolean; reason?: string }> {
+async function restore(manifest: readonly ManifestEntry[]): Promise<{ ok: boolean; changed?: boolean; reason?: string; kept?: string | null }> {
   return sealed().restore("/work/project", manifest, (hash) => store.get(hash));
 }
 
@@ -81,6 +80,12 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // A kept folder may be deeper than node's own recursive removal reaches: removed as the restore's own removal does.
+  if (existsSync(work)) {
+    const base = openSync(work, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    for (const name of readdirSync(work)) if (name.includes(".juno-undone-")) removeEntry(base, name);
+    closeSync(base);
+  }
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -98,7 +103,8 @@ describe("restoring a host-folder checkpoint (§2.2.2, D-221, D-228)", () => {
     chmodSync(join(work, "project", "notes.txt"), 0o755);
     rmSync(join(work, "project", "docs"), { recursive: true });
     symlinkSync("elsewhere", join(work, "project", "link"));
-    expect(await restore(manifest)).toEqual({ ok: true });
+    const outcome = await restore(manifest);
+    expect(outcome).toEqual({ ok: true, kept: KEPT });
     expect(existsSync(join(work, "project", "created.txt"))).toBe(false);
     expect(existsSync(join(work, "project", "new-folder"))).toBe(false);
     expect(existsSync(join(work, "project", "link"))).toBe(false);
@@ -107,6 +113,10 @@ describe("restoring a host-folder checkpoint (§2.2.2, D-221, D-228)", () => {
     expect(read("docs/deep/b.md")).toBe("b\n");
     expect(mode("docs/deep/b.md")).toBe(FILE_MODE);
     expect(mode("docs/deep")).toBe(DIR_MODE);
+    // D-234: nothing the session made is deleted: the folder as it stood is kept, whole, beside it.
+    expect(readFileSync(join(host(outcome.kept), "created.txt"), "utf8")).toBe("new\n");
+    expect(readFileSync(join(host(outcome.kept), "notes.txt"), "utf8")).toBe("changed by Claude\n");
+    expect(lstatSync(join(host(outcome.kept), "link")).isSymbolicLink()).toBe(true);
   });
 
   // proves D-221: a folder the agent swapped for a link to somewhere else is removed as the link it is; nothing outside
@@ -115,7 +125,7 @@ describe("restoring a host-folder checkpoint (§2.2.2, D-221, D-228)", () => {
     const manifest = await checkpoint();
     rmSync(join(work, "project", "docs"), { recursive: true });
     symlinkSync(join(dir, "outside"), join(work, "project", "docs"));
-    expect(await restore(manifest)).toEqual({ ok: true });
+    expect(await restore(manifest)).toEqual({ ok: true, kept: KEPT });
     expect(lstatSync(join(work, "project", "docs")).isDirectory()).toBe(true);
     expect(readFileSync(join(dir, "outside", "secret.txt"), "utf8")).toBe("outside\n");
     expect(existsSync(join(dir, "outside", "a.md"))).toBe(false);
@@ -127,36 +137,47 @@ describe("restoring a host-folder checkpoint (§2.2.2, D-221, D-228)", () => {
     const manifest = await checkpoint();
     rmSync(join(work, "project", "notes.txt"));
     linkSync(join(dir, "outside", "secret.txt"), join(work, "project", "notes.txt"));
-    expect(await restore(manifest)).toEqual({ ok: true });
+    expect(await restore(manifest)).toEqual({ ok: true, kept: KEPT });
     expect(read("notes.txt")).toBe("notes\n");
     expect(readFileSync(join(dir, "outside", "secret.txt"), "utf8")).toBe("outside\n");
   });
 
-  // proves D-221 "it refuses on any mismatch": when the runner could not change a folder, the restore refuses before
-  // changing anything, and the folder is exactly as it was
-  it("refuses, and changes nothing, when the runner could not change a folder", async () => {
+  // proves D-221 "it refuses on any mismatch" with operator ruling 2 of D-234: when the runner could not change the
+  // folder that holds the session's folder (where the undo moves it aside and makes it again), the restore refuses
+  // before changing anything, and the folder is exactly as it was; a folder inside the session's folder that the runner
+  // could not change no longer stops the undo (the restore moves it aside with the rest, untouched)
+  it("refuses, changing nothing, when the runner could not change the folder holding it; a locked folder inside goes aside", async () => {
     const manifest = await checkpoint();
     writeFileSync(join(work, "project", "created.txt"), "new\n");
     writeFileSync(join(work, "project", "notes.txt"), "changed\n");
-    const deep = lstatSync(join(work, "project", "docs", "deep")).ino;
-    const result = restoreHere(manifest, { mayChange: (folder) => lstatSync(`${folder}/.`).ino !== deep });
-    expect(result.refusals).toEqual([expect.stringContaining('juno-runner cannot read, change and enter "docs/deep"')]);
-    expect(result.same).toBe(false);
+    const holding = lstatSync(work).ino;
+    expect(undoHere(manifest, { mayChange: (folder) => lstatSync(`${folder}/.`).ino !== holding })).toEqual({ refused: [expect.stringContaining("juno-runner cannot read, change and enter the workspace root")] });
     expect(read("created.txt")).toBe("new\n");
     expect(read("notes.txt")).toBe("changed\n");
+    expect(readdirSync(work).filter((name) => name.includes(".juno-undone-"))).toEqual([]);
+    const deep = lstatSync(join(work, "project", "docs", "deep")).ino;
+    const undone = undoHere(manifest, { mayChange: (folder) => lstatSync(`${folder}/.`).ino !== deep });
+    expect(undone).toMatchObject({ restored: expect.any(Array), kept: KEPT });
+    expect(read("notes.txt")).toBe("notes\n");
+    expect(existsSync(join(work, "project", "created.txt"))).toBe(false);
+    const kept = "kept" in undone ? host(undone.kept) : "";
+    expect(readFileSync(join(kept, "docs", "deep", "b.md"), "utf8")).toBe("b\n");
+    expect(readFileSync(join(kept, "created.txt"), "utf8")).toBe("new\n");
   });
 
-  // proves D-228 "a restore writes fixed modes": a folder of another user's is kept as it is (its mode is not the
-  // checkpoint's business, and the runner may not change it), while every file is written anew as the runner's own
-  // with the fixed mode; a root whose mode differs no longer matters, since no mode is restored
-  it("keeps a folder another user owns as it is, and writes every file anew with the fixed mode", async () => {
+  // proves D-228 "a restore writes fixed modes" with D-234: the folder as it stood is kept aside with the modes it had
+  // (JUNO changes nothing in it), and the folder made again has the fixed modes only: every folder DIR_MODE, every file
+  // FILE_MODE, whatever modes the session left
+  it("keeps the old folder's modes aside, and makes the folder again with the fixed modes", async () => {
     const manifest = await checkpoint();
     chmodSync(join(work, "project", "docs"), 0o700);
     chmodSync(join(work, "project"), 0o700);
-    // As if another user owned everything here: the restore may not change a mode, and replaces every file.
-    expect(restoreHere(manifest, { uid: 4242 })).toEqual({ refusals: [], same: true });
-    expect(mode("docs")).toBe(0o700);
-    expect(mode("")).toBe(0o700);
+    const outcome = await restore(manifest);
+    expect(outcome).toEqual({ ok: true, kept: KEPT });
+    expect(lstatSync(join(host(outcome.kept), "docs")).mode & 0o7777).toBe(0o700);
+    expect(lstatSync(host(outcome.kept)).mode & 0o7777).toBe(0o700);
+    expect(mode("docs")).toBe(DIR_MODE);
+    expect(mode("")).toBe(DIR_MODE);
     expect(mode("notes.txt")).toBe(FILE_MODE);
     expect(read("docs/a.md")).toBe("a\n");
   });
@@ -204,20 +225,31 @@ describe("restoring a host-folder checkpoint (§2.2.2, D-221, D-228)", () => {
     }
   });
 
-  // proves D-225 (review round 3 of PR #60): a folder that carries a sticky (or set-user-ID, set-group-ID) bit as it
-  // stands refuses the restore before anything changes, and a write below it is reported as one the restore could not undo
-  it("refuses a folder with a sticky bit as it stands, changing nothing, and reports it on a write's path", async () => {
+  // proves D-225 (review round 3 of PR #60) with D-234: a sticky folder the session made inside its folder no longer
+  // stops the undo (the restore moves it aside whole, never removing another user's file from it, and never recreates
+  // the bit), and a write below it is still reported as one the restore could not undo (restrictive, kept); a sticky
+  // bit on the folder that holds the session's folder, where the kernel would let the runner rename only what it owns,
+  // refuses the restore before anything changes and is reported on every write's path
+  it("moves a sticky folder inside aside; a sticky folder holding it refuses, changing nothing; both on a write's path", async () => {
     const manifest = await checkpoint();
     mkdirSync(join(work, "project", "made"));
     writeFileSync(join(work, "project", "made", "a.txt"), "a\n");
     chmodSync(join(work, "project", "made"), 0o1775);
     writeFileSync(join(work, "project", "notes.txt"), "changed\n");
-    expect(await restore(manifest)).toMatchObject({ ok: false, changed: false, reason: expect.stringContaining('"made" has a set-user-ID, set-group-ID or sticky bit (mode 1775)') });
-    expect(read("notes.txt")).toBe("changed\n");
-    expect(read("made/a.txt")).toBe("a\n");
     const resolved = (await new HostPathResolver(work).resolve(["/work/project/made/b.txt", "/work/project/docs/c.txt"]));
     expect(resolved.get("/work/project/made/b.txt")).toMatchObject({ ok: true, unwritable: ["/work/project/made"] });
     expect(resolved.get("/work/project/docs/c.txt")).not.toHaveProperty("unwritable");
+    chmodSync(work, 0o1755);
+    expect(await restore(manifest)).toMatchObject({ ok: false, changed: false, reason: expect.stringContaining("the workspace root has a set-user-ID, set-group-ID or sticky bit (mode 1755)") });
+    expect(read("notes.txt")).toBe("changed\n");
+    expect((await new HostPathResolver(work).resolve(["/work/project/docs/c.txt"])).get("/work/project/docs/c.txt")).toMatchObject({ ok: true, unwritable: ["/work"] });
+    chmodSync(work, 0o755);
+    const outcome = await restore(manifest);
+    expect(outcome).toEqual({ ok: true, kept: KEPT });
+    expect(read("notes.txt")).toBe("notes\n");
+    expect(existsSync(join(work, "project", "made"))).toBe(false);
+    expect(lstatSync(join(host(outcome.kept), "made")).mode & 0o7777).toBe(0o1775);
+    expect(readFileSync(join(host(outcome.kept), "made", "a.txt"), "utf8")).toBe("a\n");
   });
 
   // proves D-221: content is checked against its hash before the first change; a missing or altered blob changes nothing
@@ -353,7 +385,7 @@ describe("JUNO takes only files and folders from a workspace (operator ruling 2 
     writeFileSync(latin1("", resume), "made by an unzip\n");
     mkdirSync(latin1("docs", [0x44, 0xe9, 0x6a, 0xe0]));
     writeFileSync(Buffer.concat([latin1("docs", [0x44, 0xe9, 0x6a, 0xe0]), Buffer.from("/inner.txt")]), "inner\n");
-    expect(await restore(manifest)).toEqual({ ok: true });
+    expect(await restore(manifest)).toEqual({ ok: true, kept: KEPT });
     expect(read("notes.txt")).toBe("notes\n");
     expect(existsSync(latin1("", resume))).toBe(false);
     expect(existsSync(latin1("docs", [0x44, 0xe9, 0x6a, 0xe0]))).toBe(false);
@@ -361,34 +393,80 @@ describe("JUNO takes only files and folders from a workspace (operator ruling 2 
     expect(await sealed().checkpoint("/work/project")).toMatchObject({ ok: false, reason: expect.stringContaining('"docs" holds a name that is not valid UTF-8 (<bytes 52e973756de92e747874>)') });
   });
 
-  // proves D-232 (review round 8 on PR #61): no depth of folders made after the checkpoint stops the undo: the check
-  // and the removal never recurse, so an 8,000-level folder is judged and removed, and the changed file comes back;
-  // and a checkpoint of a tree deeper than its entry bound refuses on that bound, never on the stack
+  // proves D-232 (review round 8 on PR #61) with D-234: no depth of folders made after the checkpoint stops the undo:
+  // the check reads only the way to the session's folder, and the restore moves the folder aside whole, so an
+  // 8,000-level folder (whose full path is longer than the kernel's path limit) is judged and undone, the changed file
+  // comes back, and the deep folder is kept aside untouched; and a checkpoint of a tree deeper than its entry bound
+  // refuses on that bound, never on the stack
   it("restores past a folder thousands of levels deep, and bounds a deep checkpoint by its entries", async () => {
     const manifest = await checkpoint();
     writeFileSync(join(work, "project", "notes.txt"), "changed by Claude\n");
     deepChain(join(work, "project"), 8000);
     expect(await sealed().check("/work/project", manifest)).toEqual([]);
-    expect(await restore(manifest)).toEqual({ ok: true });
+    const outcome = await restore(manifest);
+    expect(outcome).toEqual({ ok: true, kept: KEPT });
     expect(read("notes.txt")).toBe("notes\n");
     expect(existsSync(join(work, "project", "d"))).toBe(false);
+    expect(lstatSync(join(host(outcome.kept), "d")).isDirectory()).toBe(true);
     expect(readdirSync(join(work, "project")).filter((name) => name.startsWith(".juno-removing-"))).toEqual([]);
     deepChain(join(work, "project"), 2500);
     expect(await sealed().checkpoint("/work/project")).toMatchObject({ ok: false, reason: expect.stringContaining("more than 2000 entries") });
-    // The restore removes it again (node's own recursive removal, in this test's clean-up, would not reach the bottom).
-    expect(await restore(manifest)).toEqual({ ok: true });
+    expect(await restore(manifest)).toEqual({ ok: true, kept: KEPT });
     expect(existsSync(join(work, "project", "d"))).toBe(false);
+    expect(readdirSync(work).filter((name) => name.includes(".juno-undone-"))).toHaveLength(2);
   }, 120_000);
 
-  // proves D-232: a session root removed altogether after the checkpoint is made again by the restore, with its files
+  // proves D-232 with D-234: a session root removed altogether after the checkpoint is made again by the restore, with
+  // its files; there was nothing to keep aside
   it("makes a removed session root again", async () => {
     const manifest = await checkpoint();
     rmSync(join(work, "project"), { recursive: true });
-    expect(await restore(manifest)).toEqual({ ok: true });
+    expect(await restore(manifest)).toEqual({ ok: true, kept: null });
     expect(read("notes.txt")).toBe("notes\n");
     expect(read("docs/deep/b.md")).toBe("b\n");
     expect(mode("")).toBe(DIR_MODE);
+    expect(readdirSync(work).filter((name) => name.includes(".juno-undone-"))).toEqual([]);
   });
+
+  // proves operator ruling 2 of D-234: size is irrelevant. A workspace grown to 200,000 entries after the checkpoint
+  // (review round 9's reproduction: 200 folders of 1,000 files) is judged undoable (ruling 1's check, which reads only
+  // the way to the folder) in well under a millisecond's work per write, and undone by one rename and the checkpoint's
+  // own files; ruling 1's measurement is printed for the record (DECISIONS.md D-235)
+  it("judges and undoes a workspace of 200,000 entries, its cost the checkpoint's", async () => {
+    const manifest = await checkpoint();
+    for (let folder = 0; folder < 200; folder += 1) {
+      const path = join(work, "project", "node_modules", `p${String(folder)}`);
+      mkdirSync(path, { recursive: true });
+      for (let file = 0; file < 1000; file += 1) writeFileSync(join(path, `f${String(file)}.js`), "");
+    }
+    const base = openSync(work, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    const times: number[] = [];
+    for (let round = 0; round < 50; round += 1) {
+      const started = process.hrtime.bigint();
+      expect(undoRefusals(base, "/work/project")).toEqual([]);
+      times.push(Number(process.hrtime.bigint() - started) / 1e6);
+    }
+    closeSync(base);
+    times.sort((a, b) => a - b);
+    const median = times[25] ?? Infinity;
+    // The write's whole check as the hook service runs it: the resolver (which reports the folders on the way) and the
+    // checkpoint store's content (one lstat per file).
+    const started = process.hrtime.bigint();
+    const resolved = (await new HostPathResolver(work).resolve(["/work/project/node_modules/p7/new.js"])).get("/work/project/node_modules/p7/new.js");
+    const held = manifest.every((entry) => entry.type !== "file" || store.has(entry.sha256));
+    const write = Number(process.hrtime.bigint() - started) / 1e6;
+    expect(resolved).toEqual({ ok: true, canonical: "/work/project/node_modules/p7/new.js" });
+    expect(held).toBe(true);
+    const undoStarted = process.hrtime.bigint();
+    const outcome = await restore(manifest);
+    const undo = Number(process.hrtime.bigint() - undoStarted) / 1e6;
+    expect(outcome).toEqual({ ok: true, kept: KEPT });
+    expect(read("notes.txt")).toBe("notes\n");
+    expect(existsSync(join(work, "project", "node_modules"))).toBe(false);
+    expect(readdirSync(join(host(outcome.kept), "node_modules"))).toHaveLength(200);
+    process.stdout.write(`D-235 measurement, 200,000 entries: undo check median ${median.toFixed(3)} ms; a write's whole check ${write.toFixed(1)} ms; the undo ${undo.toFixed(1)} ms\n`);
+    expect(median).toBeLessThan(5);
+  }, 300_000);
 
   // proves D-231: the read view keeps a checkpoint's byte bound, counted from the files' sizes without opening them: a
   // larger tree is not listed, so a read of it counts at the highest class

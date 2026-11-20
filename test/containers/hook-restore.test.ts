@@ -42,10 +42,21 @@ type Results = {
   asAgent: Exit;
   locked: Exit;
   afterLocked: string[];
+  holderLocked: { done: boolean }[];
+  writeHolderLocked: Exit;
+  holderBack: { done: boolean }[];
+  writeHolderBack: Exit;
+  lock: { done: boolean }[];
   unlock: { done: boolean }[];
   restored: Exit;
   after: string[];
-  journal: { kind: string; actor: string; type: string | null; outcome: string | null; reason: string | null }[];
+  kept: string;
+  keptListing: string[];
+  keptSticky: string;
+  keptNotes: string;
+  restoredModes: string[];
+  agentAfter: { done: boolean }[];
+  journal: { kind: string; actor: string; type: string | null; outcome: string | null; reason: string | null; kept: string | null }[];
   restarted: boolean;
   restartText: string;
   restartStopped?: Exit;
@@ -100,43 +111,63 @@ describe("restoring a hook session's host folder, end to end against the real ho
     expect(JSON.parse(results.writeUnreadable.stdout)).toMatchObject({ hookSpecificOutput: { permissionDecision: "deny", permissionDecisionReason: expect.stringContaining("integrity_floor") } });
   });
 
+  // proves operator ruling 1 of D-234 against the kernel: reversibility is judged at every write. When the Claude Code
+  // user takes the runner's access off the folder holding the session's folder (where the undo moves it aside), the
+  // next write anywhere in the session's folder parks integrity_floor; given back, the next write proceeds
+  it("parks every write once the folder holding the workspace cannot be changed by the runner", () => {
+    expect(results.holderLocked.every((step) => step.done)).toBe(true);
+    expect(JSON.parse(results.writeHolderLocked.stdout)).toMatchObject({ hookSpecificOutput: { permissionDecision: "deny", permissionDecisionReason: expect.stringContaining("integrity_floor") } });
+    expect(results.holderBack.every((step) => step.done)).toBe(true);
+    expect(results.writeHolderBack).toMatchObject({ code: 0, stdout: "" });
+  });
+
   // proves D-221 "it requires the service stopped": while the service runs, the restore is refused
   it("refuses to restore while the service runs", () => {
     expect(results.restoreWhileServing).toMatchObject({ code: 1, stderr: expect.stringContaining("its service is running") });
     expect(results.stopped.code).toBe(0);
   });
 
-  // proves D-221 "the operator runs it, as juno-runner" and "it refuses on any mismatch": root is refused, the Claude
-  // Code user is refused (it cannot even see the journal), and a folder the runner cannot change refuses the whole
-  // restore before anything changes
-  it("refuses root, the Claude Code user, and a folder it could not change, changing nothing", () => {
+  // proves D-221 "the operator runs it, as juno-runner" and "it refuses on any mismatch", with D-234: root is refused,
+  // the Claude Code user is refused (it cannot even see the journal), and the folder holding the session's folder, when
+  // the runner cannot change it or it carries a sticky bit, refuses the whole restore before anything changes
+  it("refuses root, the Claude Code user, and a folder holding it that it could not change, changing nothing", () => {
     expect(results.list).toMatchObject({ code: 0 });
     expect(JSON.parse(results.list.stdout)).toMatchObject({ checkpoints: [{ root: "/work/project", workspace: "/srv/work" }] });
     expect(results.asRoot).toMatchObject({ code: 1, stderr: expect.stringContaining("never as root") });
     expect(results.asAgent).toMatchObject({ code: 1, stderr: expect.stringContaining("refused, nothing was changed") });
+    expect(results.lock.every((step) => step.done)).toBe(true);
     expect(results.locked.code).toBe(1);
-    expect(JSON.parse(results.locked.stdout)).toMatchObject({ ok: false, reason: expect.stringContaining('juno-runner cannot read, change and enter "locked"') });
+    expect(JSON.parse(results.locked.stdout)).toMatchObject({ ok: false, reason: expect.stringContaining("juno-runner cannot read, change and enter the workspace root") });
     expect(results.afterLocked).toEqual(results.before);
     expect(results.before).not.toEqual(BEFORE);
-    // D-225: a sticky folder as it stands refuses the restore before anything changes (the kernel would stop it part way).
+    // D-225 one folder up: a sticky folder holding it refuses the restore before anything changes (the kernel would let
+    // the runner rename only what it owns).
+    expect(results.unlock.every((step) => step.done)).toBe(true);
     expect(results.sticky.code).toBe(1);
-    expect(JSON.parse(results.sticky.stdout)).toMatchObject({ ok: false, reason: expect.stringContaining('"sticky" has a set-user-ID, set-group-ID or sticky bit') });
+    expect(JSON.parse(results.sticky.stdout)).toMatchObject({ ok: false, reason: expect.stringContaining("the workspace root has a set-user-ID, set-group-ID or sticky bit") });
     expect(results.afterSticky).toEqual(results.before);
   });
 
-  // proves §2.2.2's reversible workspace in hook mode: the restore brings back the checkpoint's full content (the files
-  // made after it removed, the changed file and the deleted one put back) and is journalled with the operator as actor
-  it("restores the folder's full content and records it in the journal", () => {
-    expect(results.unlock.every((step) => step.done)).toBe(true);
+  // proves §2.2.2's reversible workspace in hook mode, with D-234's undo: the restore brings back the checkpoint's full
+  // content (the files made after it gone, the changed file and the deleted one put back), even with a locked and a
+  // sticky folder of the Claude Code user's still inside; the folder as it stood is kept, whole and untouched, beside
+  // it; what comes back is the runner's own with the fixed modes, which the Claude Code user can still change through
+  // the access list; and it is journalled with the operator as actor and where the old folder was kept
+  it("restores the folder's full content, keeps the old one aside, and records it in the journal", () => {
     expect(results.unstick.every((step) => step.done)).toBe(true);
     expect(results.restored.code, results.restored.stderr + results.restored.stdout).toBe(0);
-    expect(JSON.parse(results.restored.stdout)).toEqual({ ok: true, root: "/work/project" });
+    expect(JSON.parse(results.restored.stdout)).toEqual({ ok: true, root: "/work/project", kept: expect.stringMatching(/^\/srv\/work\/project\.juno-undone-\d{8}T\d{6}Z-[0-9a-f]{8}$/) });
     expect(results.after).toEqual(BEFORE);
+    expect(results.keptListing).toEqual(expect.arrayContaining(["locked", "new", "notes.txt", "sticky", "sub"]));
+    expect(results.keptSticky).toBe("own\n");
+    expect(results.keptNotes).toBe("changed by Claude\n");
+    expect(results.restoredModes).toEqual(["1000:770", "1000:770", "1000:660", "1000:660"]);
+    expect(results.agentAfter.every((step) => step.done)).toBe(true);
     const restores = results.journal.filter((entry) => entry.type === "checkpoint_restore");
     expect(restores).toEqual([
       expect.objectContaining({ actor: "alireza", outcome: "refused", reason: expect.stringContaining("nothing was changed") }),
       expect.objectContaining({ actor: "alireza", outcome: "refused", reason: expect.stringContaining("sticky bit") }),
-      expect.objectContaining({ actor: "alireza", outcome: "restored" }),
+      expect.objectContaining({ actor: "alireza", outcome: "restored", kept: results.kept }),
     ]);
     expect(results.journal.findIndex((entry) => entry.type === "checkpoint")).toBeLessThan(results.journal.findIndex((entry) => entry.kind === "capability_call" || entry.type === "authorized"));
   });

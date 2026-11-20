@@ -1,4 +1,4 @@
-import { linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, linkSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -288,6 +288,33 @@ describe("§2.2.2 in hook mode", () => {
   it("lets a Write inside the checkpointed workspace proceed", async () => {
     expect(await call("Write", { file_path: join(work, "project", "out.txt"), content: "written" })).toEqual({ decision: "none" });
     expect(entries().map(payload).some((body) => body["type"] === "checkpoint")).toBe(true);
+  });
+
+  // proves operator ruling 1 of D-234 (§2.2.2 "restoring that checkpoint" must stay possible): reversibility is judged
+  // at every write. A Write proceeds while JUNO can show the undo; once the folder holding the workspace is one the
+  // restore could not change (it moves the workspace aside there: here, sticky), or the checkpoint's content is gone from the store,
+  // the next Write parks integrity_floor with the reason recorded; putting it right lets Writes proceed again
+  it("parks a Write once the workspace can no longer be undone, with the reason", async () => {
+    const recorded = (): string => JSON.stringify(entries().map(payload));
+    expect(await call("Write", { file_path: join(work, "project", "a.txt"), content: "a" })).toEqual({ decision: "none" });
+    // Round 3's trap (D-225), one folder up: a sticky bit on the folder holding the workspace, where the kernel would
+    // let the restore rename only what the runner owns.
+    chmodSync(work, 0o1755);
+    try {
+      expect(await call("Write", { file_path: join(work, "project", "b.txt"), content: "b" })).toMatchObject({ decision: "deny", reason: expect.stringContaining("integrity_floor") });
+      expect(recorded()).toContain(`the restore could not move /work/project aside: it could not change /work`);
+    } finally {
+      chmodSync(work, 0o755);
+    }
+    expect(await call("Write", { file_path: join(work, "project", "c.txt"), content: "c" })).toEqual({ decision: "none" });
+    const store = join(dir, "checkpoints");
+    const blob = readdirSync(store)[0] ?? "";
+    renameSync(join(store, blob), join(dir, "moved-blob"));
+    expect(await call("Write", { file_path: join(work, "project", "d.txt"), content: "d" })).toMatchObject({ decision: "deny", reason: expect.stringContaining("integrity_floor") });
+    expect(parks().at(-1)).toMatchObject({ reason: "integrity_floor", overridable: false });
+    expect(recorded()).toContain("/work/project can no longer be undone: 1 of its checkpoint's files are gone from the checkpoint store");
+    renameSync(join(dir, "moved-blob"), join(store, blob));
+    expect(await call("Write", { file_path: join(work, "project", "e.txt"), content: "e" })).toEqual({ decision: "none" });
   });
 
   // proves D-158 (autopilot ruling) in hook mode: inside the checkpointed workspace, a Write to a file that has a second

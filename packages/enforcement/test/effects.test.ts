@@ -195,8 +195,8 @@ describe("§2.2.2 write: an untrusted target is permitted only inside a reversib
   });
 
   // proves D-221 (§2.2.2 "restoring that checkpoint is an operator action"): a write below a folder of the reversible
-  // workspace that the restore's user could not change is never reversible; a folder outside the workspace, or none, is
-  // the control
+  // workspace that the restore's user could not change is never reversible; none is the control (a folder above the
+  // workspace is no longer one: since D-234 it stops the undo too, next test)
   it("judges a write below a folder the restore could not change as irreversible", () => {
     const input = call("test.write", synthesized("/work/project/safe/sub/out.txt"));
     const base: TaskContext = { task: task(), constants: CONSTANTS, synthesis: { sensitivity: "internal" }, reversible: ["/work/project/safe"] };
@@ -204,8 +204,33 @@ describe("§2.2.2 write: an untrusted target is permitted only inside a reversib
     const verdict = boundary.authorize({ ...base, canonical: at(["/work/project/safe/sub"]) }, input);
     expect(verdict.outcome === "park" ? verdict.detail.reason : verdict.outcome).toBe("integrity_floor");
     expect(effects(verdict)).toMatchObject([{ refused: [{ argument: "to", judged_as: "irreversible", not_reversible: expect.stringContaining("the restore could not change /work/project/safe/sub") }] }]);
-    expect(boundary.authorize({ ...base, canonical: at(["/work/project"]) }, input).outcome).toBe("proceed");
     expect(boundary.authorize({ ...base, canonical: at([]) }, input).outcome).toBe("proceed");
+  });
+
+  // proves operator ruling 1 of D-234 (§2.2.2): the undo moves the workspace aside with one rename in the folder that
+  // holds it, so a folder on the way to the workspace that the restore's user could not change (the folder holding it,
+  // or one above), a folder on another file system on the way or inside, or a workspace whose checkpoint JUNO can no
+  // longer restore, makes a write there irreversible, with the reason; none of them is the control
+  it("judges a write irreversible when the workspace can no longer be undone", () => {
+    const input = call("test.write", synthesized("/work/project/safe/sub/out.txt"));
+    const base: TaskContext = { task: task(), constants: CONSTANTS, synthesis: { sensitivity: "internal" }, reversible: ["/work/project/safe"] };
+    const at = (extra: { unwritable?: readonly string[]; mounts?: readonly string[] }): CanonicalPaths => new Map([["/work/project/safe/sub/out.txt", { ok: true, canonical: "/work/project/safe/sub/out.txt", ...extra }]]);
+    const refusal = (context: TaskContext): unknown => {
+      const verdict = boundary.authorize(context, input);
+      expect(verdict.outcome === "park" ? verdict.detail.reason : verdict.outcome).toBe("integrity_floor");
+      return effects(verdict);
+    };
+    for (const folder of ["/work/project", "/work"]) {
+      expect(refusal({ ...base, canonical: at({ unwritable: [folder] }) })).toMatchObject([{ refused: [{ judged_as: "irreversible", not_reversible: `the restore could not move /work/project/safe aside: it could not change ${folder}, so a write there could not be undone (D-234)` }] }]);
+    }
+    expect(refusal({ ...base, canonical: at({ unwritable: ["/work/project/safe"] }) })).toMatchObject([{ refused: [{ not_reversible: expect.stringContaining("could not move /work/project/safe aside") }] }]);
+    for (const folder of ["/work/project", "/work/project/safe", "/work/project/safe/sub"]) {
+      expect(refusal({ ...base, canonical: at({ mounts: [folder] }) })).toMatchObject([{ refused: [{ not_reversible: `${folder} is on another file system (a mount), so the restore could not show it can undo a write there (D-234)` }] }]);
+    }
+    expect(refusal({ ...base, canonical: at({}), unrestorable: { "/work/project/safe": "2 of its checkpoint's files are gone from the checkpoint store" } })).toMatchObject([{ refused: [{ not_reversible: "/work/project/safe can no longer be undone: 2 of its checkpoint's files are gone from the checkpoint store (D-234)" }] }]);
+    // Controls: nothing in the way, and an unrestorable workspace that is not this one.
+    expect(boundary.authorize({ ...base, canonical: at({}) }, input).outcome).toBe("proceed");
+    expect(boundary.authorize({ ...base, canonical: at({}), unrestorable: { "/work/other": "gone" } }, input).outcome).toBe("proceed");
   });
 
   // proves D-168 (operator ruling 2 of 2026-11-08) for scope decisions: a target whose canonical form differs from its

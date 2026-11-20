@@ -83,6 +83,11 @@ export type TaskContext = {
    */
   readonly reversible?: readonly string[];
   /**
+   * Operator ruling 1 of D-234: reversible workspaces (of `reversible`) whose undo JUNO cannot show as it judges this
+   * call, each with the reason (its checkpoint's content is gone from the store, say). A write there is not reversible.
+   */
+  readonly unrestorable?: Readonly<Record<string, string>>;
+  /**
    * Mediated modes only (§4.3 V6-7, D-150): the class of what the call would read, and the session provider's declared
    * clearance. Judged at step 5, after integrity, scope and effects, so a park that cannot be overridden always wins.
    */

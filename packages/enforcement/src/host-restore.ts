@@ -7,7 +7,7 @@ import { MAX_CHECKPOINT_BYTES, MAX_CHECKPOINT_ENTRIES, type ManifestEntry, type 
 import { WORKLOAD_NODE } from "./canonical.js";
 import { DIR_MODE, FILE_MODE } from "./workspace-copy.mjs";
 
-export { DIR_MODE, FILE_MODE, MAX_SCAN as MAX_RESTORE_SCAN, kernelMayChange, listTree, openRoot, openRootAt, restoreRefusals, restoreTree } from "./workspace-copy.mjs";
+export { DIR_MODE, FILE_MODE, asideName, kernelMayChange, listTree, openRoot, openRootAt, remove as removeEntry, restoreTree, undoRefusals, undoTo } from "./workspace-copy.mjs";
 
 /**
  * Hook workspaces: their checkpoints and their restores (spec §2.2.2, "restoring that checkpoint is an operator action
@@ -159,13 +159,16 @@ const SealedAnswer = z.union([
   z.strictObject({ manifest: z.array(SealedEntrySchema), contents: z.record(z.string(), z.string()) }),
   z.strictObject({ refusals: z.array(z.string()) }),
   z.strictObject({ refused: z.array(z.string()) }),
-  z.strictObject({ failed: z.string() }),
-  z.strictObject({ restored: z.array(SealedEntrySchema) }),
+  z.strictObject({ failed: z.string(), kept: z.string().nullable() }),
+  z.strictObject({ restored: z.array(SealedEntrySchema), kept: z.string().nullable() }),
 ]);
 type SealedAnswer = z.infer<typeof SealedAnswer>;
 
-/** A hook workspace's restore outcome: `changed` says whether the folder may differ from what it was before. */
-export type SealedRestore = { readonly ok: true } | { readonly ok: false; readonly changed: boolean; readonly reason: string };
+/**
+ * A hook workspace's restore outcome: `changed` says whether the folder may differ from what it was before; `kept`,
+ * where the folder as it stood was moved aside, whole (a path under /work; null when there was none), D-234.
+ */
+export type SealedRestore = { readonly ok: true; readonly kept: string | null } | { readonly ok: false; readonly changed: boolean; readonly reason: string; readonly kept?: string | null };
 
 /**
  * A hook session's host workspace, reached only through the sealed context (D-228). `workspace` is the service's
@@ -211,9 +214,9 @@ export class SealedWorkspace {
   }
 
   /**
-   * Takes the checkpoint of `root` (on a read-only mount), then judges that the runner could restore it as the folder
+   * Takes the checkpoint of `root` (on a read-only mount), then judges that the runner could undo it as the folder
    * stands (on a writable mount, reading no file and changing nothing): refused unless it holds only files and folders
-   * and the runner could restore them (D-221, D-228).
+   * and the runner could move it aside and make it again (D-221, D-228, D-234).
    */
   async checkpoint(root: string): Promise<{ ok: true; snapshot: Snapshot } | { ok: false; reason: string; restorable?: false }> {
     const taken = await this.#copy(root);
@@ -237,7 +240,10 @@ export class SealedWorkspace {
     return { ok: true, snapshot: { manifest: answer.manifest, contents, hardLinks: [] } };
   }
 
-  /** Why `manifest` could not be restored to `root` as the folder now stands; empty when it could. Changes nothing. */
+  /**
+   * Why `manifest` could not be restored to `root` as the folder now stands; empty when it could. Changes nothing and
+   * reads no file: the undo moves the folder aside whole (D-234), so only the way to it is judged.
+   */
   async check(root: string, manifest: readonly ManifestEntry[]): Promise<readonly string[]> {
     const answer = await this.#run("check", root, JSON.stringify({ manifest }));
     if ("refusals" in answer) return answer.refusals;
@@ -260,9 +266,9 @@ export class SealedWorkspace {
     if ("notLaunched" in answer) return { ok: false, changed: false, reason: unchanged(answer.notLaunched) };
     if ("refused" in answer) return { ok: false, changed: false, reason: unchanged(answer.refused.join("; ")) };
     if ("error" in answer) return { ok: false, changed: true, reason: `${answer.error} (the folder may be part restored)` };
-    if ("failed" in answer) return { ok: false, changed: true, reason: answer.failed };
+    if ("failed" in answer) return { ok: false, changed: true, reason: answer.failed, kept: answer.kept };
     if (!("restored" in answer)) return { ok: false, changed: true, reason: "the sealed copy context gave no answer" };
-    return sameManifest(answer.restored, manifest) ? { ok: true } : { ok: false, changed: true, reason: "the folder after the restore differs from the checkpoint" };
+    return sameManifest(answer.restored, manifest) ? { ok: true, kept: answer.kept } : { ok: false, changed: true, reason: "the folder after the restore differs from the checkpoint", kept: answer.kept };
   }
 }
 
