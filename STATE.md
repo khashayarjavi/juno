@@ -1,6 +1,19 @@
 # STATE
 
 ## Current increment
+**1.5-field — the field report of the first real install (issue [khashayarjavi/juno#59](https://github.com/khashayarjavi/juno/issues/59)), authorised by you on 2026-11-20 (D-220).** Branch `claude/epic-tesla-dsn63d` (this session's only pushable branch). It carries draft PR #58's STATE.md commit (27563ff); its PR supersedes #58. Spec v0.6.1. No objection open.
+
+Status (2026-11-20, this session): **started.** Nothing merged yet.
+
+**The four items you authorised:**
+1. A restore for the host-folder workspaces of hook and gateway sessions (§2.2.2), tested end to end against the real hook service; or, if it cannot be built, hook-mode writes park and the autopilot STOPS.
+2. `docs/examples/session.example.json`: `reversible_workspaces` with a comment line.
+3. The guide, from the field report, and a section "Upgrading JUNO to a new commit"; CI proves the service starts on its old journal after an upgrade.
+4. The open item "anchoring over HTTPS, for networks that intercept SSH" rewritten to match the VPN test in the issue, or removed.
+
+**Plan for item 1 (decided this session, recorded as D-221 when built):** the restore can be built. Today `/srv/juno-work` belongs to `juno-agent` (0755), so `juno-runner` cannot change anything in it; the guide will give `juno-runner` (and `juno-agent`) a default access list on the folder, so everything Claude Code creates there stays changeable by the runner whatever its umask. The restore never follows a symbolic link, refuses before changing anything when it could not finish, requires the service stopped (the services will hold the journal's lock), compares the result with the checkpoint, and journals what happened.
+
+## Previous increment: 1.5-wsl-fix (complete)
 **1.5-wsl-fix — `make verify-rootless` fails 2 of 118 on your machine (issue [khashayarjavi/juno#56](https://github.com/khashayarjavi/juno/issues/56)), authorised by you on 2026-11-14 (D-219).** Branch `claude/festive-cori-73zvj7` (this session's only pushable branch). It carries PR #55's two STATE.md commits; its PR supersedes #55. Spec v0.6.1. No objection open.
 
 **1.5-wsl-fix is complete and merged.** The autopilot has STOPPED, as your instruction directs.
