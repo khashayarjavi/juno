@@ -40,7 +40,27 @@ mkdirSync("/var/lib/juno-hook");
 chmodSync("/var/lib/juno-hook", 0o2750);
 chownSync("/var/lib/juno-hook", RUNNER, HOOK_GROUP);
 mkdirSync("/opt/fake-docker", { mode: 0o755 });
-writeFileSync("/opt/fake-docker/docker", "#!/usr/local/bin/node\nprocess.stdout.write(JSON.stringify({ CgroupDriver: \"systemd\", CgroupVersion: \"2\", SecurityOptions: [\"name=rootless\"] }));\n", { mode: 0o755 });
+// The test stack's stand-in for the runner's Docker (no container has a Docker socket, D-065). `docker info` reports a
+// rootless runtime that enforces limits. `docker run` stands in for the sealed copy context (D-228): it runs the very
+// program and arguments JUNO passes, as the calling user, with the mount's source in the place of /work, and nothing
+// else. What the container adds (no capability, no network, one mount, nothing of the runner's reachable) is proven
+// against the real runtime by test/containers/sealed-copy.test.ts; this test proves the service and the restore around it.
+writeFileSync("/opt/fake-docker/docker", [
+  "#!/usr/local/bin/node",
+  'const { execFile } = require("node:child_process");',
+  "const args = process.argv.slice(2);",
+  'if (args[0] === "info") { process.stdout.write(JSON.stringify({ CgroupDriver: "systemd", CgroupVersion: "2", SecurityOptions: ["name=rootless"] })); process.exit(0); }',
+  'if (args[0] !== "run") process.exit(125);',
+  'const mount = args[args.indexOf("--mount") + 1] ?? "";',
+  'const source = /(?:^|,)source=([^,]+)/.exec(mount)?.[1];',
+  'const program = args.indexOf("-e");',
+  "const rest = args.slice(args.indexOf(\"--\", program) + 1);",
+  'if (source === undefined || program < 0 || rest[1] !== "/work") process.exit(125);',
+  "rest[1] = source;",
+  'const child = execFile("/usr/local/bin/node", ["--input-type=module", "-e", args[program + 1], "--", ...rest], { maxBuffer: 64 * 1024 * 1024 }, (error, stdout, stderr) => { process.stderr.write(stderr); process.stdout.write(stdout, () => process.exit(error === null ? 0 : typeof error.code === "number" ? error.code : 1)); });',
+  "process.stdin.pipe(child.stdin);",
+  "",
+].join("\n"), { mode: 0o755 });
 const runnerEnv = { ...process.env, PATH: `/opt/fake-docker:${process.env.PATH ?? ""}` };
 
 /** Runs `node <args>` as uid with groups; resolves with its exit. */
@@ -136,7 +156,7 @@ if (first.started) {
   results.writeSticky = await hook("Write", { file_path: `${PROJECT}/sticky/x.txt`, content: "x" }, "toolu_4");
   results.unlockRead = await agentDoes([{ op: "chmod", path: `${PROJECT}/unreadable`, mode: "775" }, { op: "rm", path: `${PROJECT}/unreadable` }]);
   // While the service runs, the restore is refused.
-  results.restoreWhileServing = await asUser(RUNNER, "", [JUNO, "checkpoint", "restore", "--journal", JOURNAL, "--checkpoints", CHECKPOINTS, "--workspace", WORK, "--principal", "alireza", `session-${SESSION}`, "0".repeat(64)]);
+  results.restoreWhileServing = await asUser(RUNNER, "", [JUNO, "checkpoint", "restore", "--journal", JOURNAL, "--checkpoints", CHECKPOINTS, "--workspace", WORK, "--principal", "alireza", `session-${SESSION}`, "0".repeat(64)], runnerEnv);
   results.stopped = await first.stop();
 }
 results.list = await asUser(RUNNER, "", [JUNO, "checkpoint", "list", "--journal", JOURNAL, `session-${SESSION}`]);
@@ -153,17 +173,17 @@ const listing = () => {
 };
 results.before = listing();
 results.asRoot = await asRoot(restoreArgs);
-results.asAgent = await asUser(AGENT, String(HOOK_GROUP), restoreArgs);
+results.asAgent = await asUser(AGENT, String(HOOK_GROUP), restoreArgs, runnerEnv);
 // The folder the runner cannot change: refused, nothing changed.
-results.locked = await asUser(RUNNER, "", restoreArgs);
+results.locked = await asUser(RUNNER, "", restoreArgs, runnerEnv);
 results.afterLocked = listing();
 // The locked folder given back, the sticky one not yet: refused again, before anything changes (D-225).
 results.unlock = await agentDoes([{ op: "chmod", path: `${PROJECT}/locked`, mode: "775" }]);
-results.sticky = await asUser(RUNNER, "", restoreArgs);
+results.sticky = await asUser(RUNNER, "", restoreArgs, runnerEnv);
 results.afterSticky = listing();
 results.unstick = await agentDoes([{ op: "chmod", path: `${PROJECT}/sticky`, mode: "775" }]);
 // With both given back, the restore brings the whole folder back.
-results.restored = await asUser(RUNNER, "", restoreArgs);
+results.restored = await asUser(RUNNER, "", restoreArgs, runnerEnv);
 results.after = listing();
 results.journal = readTrajectory(JOURNAL, `session-${SESSION}`).map((item) => {
   const blob = readPayload(JOURNAL, item.payload_ref);
