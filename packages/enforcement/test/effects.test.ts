@@ -228,6 +228,16 @@ describe("§2.2.2 write: an untrusted target is permitted only inside a reversib
       expect(refusal({ ...base, canonical: at({ mounts: [folder] }) })).toMatchObject([{ refused: [{ not_reversible: `${folder} is on another file system (a mount), so the restore could not show it can undo a write there (D-234)` }] }]);
     }
     expect(refusal({ ...base, canonical: at({}), unrestorable: { "/work/project/safe": "2 of its checkpoint's files are gone from the checkpoint store" } })).toMatchObject([{ refused: [{ not_reversible: "/work/project/safe can no longer be undone: 2 of its checkpoint's files are gone from the checkpoint store (D-234)" }] }]);
+    // D-238: a folder that folds case on the way or inside, or one on the way holding no name to ask the kernel with.
+    const folded = (extra: { folding?: readonly string[]; unjudged?: readonly string[] }): CanonicalPaths => new Map([["/work/project/safe/sub/out.txt", { ok: true, canonical: "/work/project/safe/sub/out.txt", ...extra }]]);
+    for (const folder of ["/work", "/work/project", "/work/project/safe/sub"]) {
+      expect(refusal({ ...base, canonical: folded({ folding: [folder] }) })).toMatchObject([{ refused: [{ not_reversible: `${folder} matches names without regard to case, so the restore could not show it can undo a write there (D-178, D-238)` }] }]);
+    }
+    for (const folder of ["/work", "/work/project"]) {
+      expect(refusal({ ...base, canonical: folded({ unjudged: [folder] }) })).toMatchObject([{ refused: [{ not_reversible: expect.stringContaining(`${folder} holds no name with a letter`) }] }]);
+    }
+    // A folder inside the workspace that cannot be asked does not stop the undo, which makes the workspace again whole.
+    expect(boundary.authorize({ ...base, canonical: folded({ unjudged: ["/work/project/safe/sub"] }) }, input).outcome).toBe("proceed");
     // Controls: nothing in the way, and an unrestorable workspace that is not this one.
     expect(boundary.authorize({ ...base, canonical: at({}) }, input).outcome).toBe("proceed");
     expect(boundary.authorize({ ...base, canonical: at({}), unrestorable: { "/work/other": "gone" } }, input).outcome).toBe("proceed");

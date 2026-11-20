@@ -252,6 +252,21 @@ describe("restoring a host-folder checkpoint (§2.2.2, D-221, D-228)", () => {
     expect(readFileSync(join(host(outcome.kept), "made", "a.txt"), "utf8")).toBe("a\n");
   });
 
+  // proves D-238 (review round 12 on PR #62): the resolver asks the kernel, at every call, whether each folder on the
+  // way folds case (a listed name with its case swapped must not open the same entry). On this case-sensitive file
+  // system nothing folds; a folder holding only names with no letter cannot be asked, and is reported as such, which
+  // the boundary reads as "the undo cannot be shown" when it holds a reversible workspace
+  it("reports, at every call, the folders on the way it cannot ask whether they fold case", async () => {
+    const resolve = async (path: string): Promise<unknown> => (await new HostPathResolver(work).resolve([path])).get(path);
+    expect(await resolve("/work/project/docs/new.txt")).toEqual({ ok: true, canonical: "/work/project/docs/new.txt" });
+    mkdirSync(join(work, "2026", "11"), { recursive: true });
+    rmSync(join(work, "project"), { recursive: true });
+    expect(await resolve("/work/2026/11/new.txt")).toEqual({ ok: true, canonical: "/work/2026/11/new.txt", unjudged: ["/work", "/work/2026"] });
+    // Any name with a letter in a folder is enough to ask with.
+    writeFileSync(join(work, "readme"), "r\n");
+    expect(await resolve("/work/2026/11/new.txt")).toEqual({ ok: true, canonical: "/work/2026/11/new.txt", unjudged: ["/work/2026"] });
+  });
+
   // proves D-221: content is checked against its hash before the first change; a missing or altered blob changes nothing
   it("changes nothing when the checkpoint's content is missing", async () => {
     const manifest = await checkpoint();

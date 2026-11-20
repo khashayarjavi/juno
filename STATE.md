@@ -3,7 +3,7 @@
 ## Current increment
 **1.5-field — the field report of the first real install (issue [khashayarjavi/juno#59](https://github.com/khashayarjavi/juno/issues/59)), authorised by you on 2026-11-20 (D-220); your rulings on PR #60 (D-228) and on D-233 (D-234).** Branch `claude/gallant-turing-8s7bma` (this session's only pushable branch, D-234). It carries PR [khashayarjavi/juno#61](https://github.com/khashayarjavi/juno/pull/61)'s thirty-two commits unchanged; its draft PR supersedes #61, and review rounds 10 to 14 run there. Spec v0.6.1. No objection open.
 
-Status (2026-11-20, this session): **your rulings on D-233 built (D-234, D-235); CI's red test explained and fixed. Draft PR [khashayarjavi/juno#62](https://github.com/khashayarjavi/juno/pull/62): review rounds 10 and 11 each ended DO NOT MERGE with one new finding, fixed as D-236 and D-237. `make verify: GREEN` on the fix (1,491 unit, 138 container). Review round 12 next.**
+Status (2026-11-20, this session): **your rulings on D-233 built (D-234, D-235); CI's red test explained and fixed. Draft PR [khashayarjavi/juno#62](https://github.com/khashayarjavi/juno/pull/62): review rounds 10, 11 and 12 each ended DO NOT MERGE with one new finding, fixed as D-236, D-237 and D-238. `make verify: GREEN` on the fix (1,492 unit, 138 container). Review round 13 next.**
 
 ### Why CI was red on 0b7285d, in plain words (D-235)
 - Only the `verify` job failed; both rootless jobs passed the same test. `verify` uses a root-run Docker, which puts every container under an AppArmor profile. AppArmor refuses to look up a file whose full path is longer than about 4,096 characters: some 2,000 levels of `d/`. The old undo looked up every level of the 8,000-level folder, so it was refused there. This session's machine has no AppArmor, so the test passed here.
@@ -36,7 +36,9 @@ Status (2026-11-20, this session): **your rulings on D-233 built (D-234, D-235);
 
 - **Round 11** (257f83f): DO NOT MERGE. The restore command still ran the case-folding check over the whole project before the undo, so a large `node_modules` or a locked folder inside still refused the undo while writes proceeded (your ruling 3: a fix, not a STOP). Fixed (D-237): the restore checks only the folder holding the project. The service's start and new admissions still check the whole workspace, so the guide now says to remove a large or locked moved-aside folder if a start is refused.
 
-**Left, in order:** review rounds 12 to 14; the merge gate; then STOP and report the merge commit hash and your upgrade steps; close issue #59.
+- **Round 12** (1ab8954): DO NOT MERGE. On a disk made to ignore letter case (an ext4 option), the Claude Code user could set that on `/srv/juno-work` after admission; the undo would then refuse while writes proceeded (your ruling 3: a fix). Fixed (D-238): every write asks the kernel whether each folder on the way ignores letter case, and parks if it does or cannot be asked.
+
+**Left, in order:** review rounds 13 and 14; the merge gate; then STOP and report the merge commit hash and your upgrade steps; close issue #59.
 
 ### STOP after review round 9 (D-233) — ruled on by you (D-234)
 - **Why this is a STOP.** Your ruling 2 makes a finding whose mechanism is recorded in DECISIONS.md a STOP. Round 9's mechanism is D-221's own recorded refusal: the undo refuses a workspace of more than 200,000 entries (and one with a mount inside).

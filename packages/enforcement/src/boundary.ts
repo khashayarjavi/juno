@@ -539,6 +539,14 @@ function effectOf(entry: RegistryEntry, call: CapabilityCall, canonical: Canonic
     if (blocked !== undefined) return { kind: "irreversible", not_reversible: pathWithin(blocked, workspace) && blocked !== workspace ? `the restore could not change ${blocked}, so a write there could not be undone (D-221)` : `the restore could not move ${workspace} aside: it could not change ${blocked}, so a write there could not be undone (D-234)` };
     const mounted = answer.mounts?.find((folder) => pathWithin(folder, workspace) || pathWithin(workspace, folder));
     if (mounted !== undefined) return { kind: "irreversible", not_reversible: `${mounted} is on another file system (a mount), so the restore could not show it can undo a write there (D-234)` };
+    // D-238 (review round 12 on PR #62): the undo makes the workspace again in the folder holding it, where a case-folding
+    // attribute (set once that folder was emptied, after admission) would make the restore refuse. A folder on the way to
+    // the workspace, or inside it, that folds case, or one on the way that holds no name to ask the kernel with, makes a
+    // write there irreversible.
+    const folds = answer.folding?.find((folder) => pathWithin(folder, workspace) || pathWithin(workspace, folder));
+    if (folds !== undefined) return { kind: "irreversible", not_reversible: `${folds} matches names without regard to case, so the restore could not show it can undo a write there (D-178, D-238)` };
+    const unjudged = answer.unjudged?.find((folder) => pathWithin(workspace, folder) && folder !== workspace);
+    if (unjudged !== undefined) return { kind: "irreversible", not_reversible: `${unjudged} holds no name with a letter, so JUNO cannot ask whether it folds case, and the restore could not show it can undo a write in ${workspace} (D-238)` };
     const unrestorable = unrestorableOf(workspace);
     if (unrestorable !== undefined) return { kind: "irreversible", not_reversible: `${workspace} can no longer be undone: ${unrestorable} (D-234)` };
   }
