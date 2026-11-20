@@ -3,7 +3,7 @@
 ## Current increment
 **1.5-field — the field report of the first real install (issue [khashayarjavi/juno#59](https://github.com/khashayarjavi/juno/issues/59)), authorised by you on 2026-11-20 (D-220); your rulings on PR #60 (D-228) and on D-233 (D-234).** Branch `claude/gallant-turing-8s7bma` (this session's only pushable branch, D-234). It carries PR [khashayarjavi/juno#61](https://github.com/khashayarjavi/juno/pull/61)'s thirty-two commits unchanged; its draft PR supersedes #61, and review rounds 10 to 14 run there. Spec v0.6.1. No objection open.
 
-Status (2026-11-20, this session): **your rulings on D-233 built (D-234, D-235); CI's red test explained and fixed. `make verify` and review round 10 next.** Nothing merged; main is unchanged at 6706b5a; your machine is unaffected.
+Status (2026-11-20, this session): **your rulings on D-233 built (D-234, D-235); CI's red test explained and fixed. `make verify: GREEN` on cb40a0a (1,489 unit, 138 container). Draft PR [khashayarjavi/juno#62](https://github.com/khashayarjavi/juno/pull/62) supersedes #61. Review round 10 next.** Nothing merged; main is unchanged at 6706b5a; your machine is unaffected.
 
 ### Why CI was red on 0b7285d, in plain words (D-235)
 - Only the `verify` job failed; both rootless jobs passed the same test. `verify` uses a root-run Docker, which puts every container under an AppArmor profile. AppArmor refuses to look up a file whose full path is longer than about 4,096 characters: some 2,000 levels of `d/`. The old undo looked up every level of the 8,000-level folder, so it was refused there. This session's machine has no AppArmor, so the test passed here.
