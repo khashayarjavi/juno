@@ -3,7 +3,8 @@
     "JUNO hook session file (plan Increment 6, D-196). Copy to /var/lib/juno-runner/session.json, readable by juno-runner only.",
     "Change only: session_id (a new UUID for each Claude Code session: run cat /proc/sys/kernel/random/uuid), sources (what Claude may read, and its class),",
     "grants (the ids of your signed grants) and the grant file paths below, and provider_clearance (the highest class Claude may read).",
-    "Keep this file and the grant files under /var/lib/juno-runner, never under /srv/juno-work."
+    "Keep this file and the grant files under /var/lib/juno-runner, never under /srv/juno-work.",
+    "reversible_workspaces: JUNO copies these folders when it admits the session, and lets Claude create and change files inside them; without them every write is parked. To undo what Claude did there, see the guide's section \"Undo what Claude did in a session\" (juno checkpoint restore, run as juno-runner with the service stopped)."
   ],
   "session": {
     "session_id": "00000000-0000-4000-8000-000000000000",
@@ -17,7 +18,8 @@
     "sources": [
       { "id": "project", "selector": { "kind": "path", "prefix": "/work/project" }, "data_class": { "sensitivity": "internal", "integrity": "untrusted" } }
     ],
-    "name_map": [{ "name": "cat", "program": "/usr/bin/cat", "side_effect": "read" }]
+    "name_map": [{ "name": "cat", "program": "/usr/bin/cat", "side_effect": "read" }],
+    "reversible_workspaces": ["/work/project"]
   },
   "grants": ["/var/lib/juno-runner/grants/grant-operator-first.json"]
 }
