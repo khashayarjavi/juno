@@ -15,7 +15,7 @@ Status (2026-11-20, this session): **STOP after review round 5 on PR [khashayarj
   - **Round 3** (58e270b): a sticky bit set after admission made the restore fail part way (D-225).
   - **Round 4** (386439c): the guide had root run `setfacl`/`chmod` inside the Claude Code user's folder (D-226).
   - **Round 5** (192bc4f): the finding above (D-227).
-- **`make verify`:** GREEN on 192bc4f (1,476 unit, 127 container). For the unreviewed fix, see the line below.
+- **`make verify`:** GREEN on 192bc4f (round 5's head; 1,476 unit, 127 container), and GREEN on db9367e with the unreviewed fix (1,477 unit, 127 container).
 - **Your decision:** authorise further review rounds on PR #60 (how many), or direct otherwise. Issue #59 stays open until the merge.
 
 ### What 1.5-field changes, in plain words
