@@ -1,8 +1,9 @@
 import { chmodSync, closeSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { execFile } from "node:child_process";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CheckpointStore, HostPathResolver, Workspace, execFileScript, hostRestoreRefusals, openWorkspaceRoot, restoreHostTree, sameManifest } from "../src/index.js";
+import { CheckpointStore, HostPathResolver, Workspace, listHostTree, execFileScript, hostRestoreRefusals, openWorkspaceRoot, restoreHostTree, sameManifest } from "../src/index.js";
 import type { ManifestEntry } from "../src/index.js";
 
 // §2.2.2 (v0.6 A1): "A scope is reversible when a checkpoint of its full content is taken before the task's first effect
@@ -191,4 +192,34 @@ describe("restoring a host-folder checkpoint (§2.2.2, D-221)", () => {
     closeSync(opened.fd);
     expect(read("created.txt")).toBe("new\n");
   });
+
+  // proves D-227 (review round 5 of PR #60): a hook session's checkpoint is taken through handles, so a name swapped
+  // for a link to a file of the runner's own while it is listed is never read: the listing fails or holds the Claude
+  // Code user's own bytes, never the runner's
+  it("never reads a file of the runner's through a name swapped for a link while it is listed", async () => {
+    writeFileSync(join(dir, "outside", "journal-key"), "RUNNER-SECRET-KEY");
+    const racer = join(dir, "racer.mjs");
+    writeFileSync(racer, [
+      'import { renameSync, symlinkSync, writeFileSync } from "node:fs";',
+      "const [project, secret, until] = process.argv.slice(2);",
+      "while (Date.now() < Number(until)) {",
+      '  symlinkSync(secret, project + "/.l"); renameSync(project + "/.l", project + "/x");',
+      '  writeFileSync(project + "/.f", "agent"); renameSync(project + "/.f", project + "/x");',
+      "}",
+    ].join("\n"));
+    const until = Date.now() + 3000;
+    const done = new Promise((resolve) => execFile(process.execPath, [racer, join(work, "project"), join(dir, "outside", "journal-key"), String(until)], () => resolve(undefined)));
+    let leaked = 0;
+    let sawFile = 0;
+    while (Date.now() < until - 200) {
+      const listed = listHostTree(work, "/work/project", true);
+      if (!listed.ok) continue;
+      if ([...listed.snapshot.contents.values()].some((bytes) => bytes.toString() === "RUNNER-SECRET-KEY")) leaked += 1;
+      if (listed.snapshot.manifest.some((entry) => entry.path === "x" && entry.type === "file")) sawFile += 1;
+    }
+    await done;
+    expect(leaked).toBe(0);
+    // The race was exercised: some listings held x as the Claude Code user's own file.
+    expect(sawFile).toBeGreaterThan(0);
+  }, 20_000);
 });

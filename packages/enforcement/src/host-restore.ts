@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { type Stats, accessSync, closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmdirSync, symlinkSync, unlinkSync, writeSync } from "node:fs";
-import { MAX_CHECKPOINT_BYTES, type ManifestEntry } from "./checkpoint.js";
+import { MAX_CHECKPOINT_BYTES, MAX_CHECKPOINT_ENTRIES, type ManifestEntry, type Snapshot, Workspace } from "./checkpoint.js";
 
 /**
  * Restoring a host-folder workspace (spec §2.2.2: "restoring that checkpoint is an operator action recorded in the
@@ -323,3 +323,93 @@ export function restoreHostTree(rootFd: number, manifest: readonly ManifestEntry
     for (const [path, fd] of folders) if (path !== "") closeSync(fd);
   }
 }
+
+/**
+ * Lists a host folder the Claude Code user can write, for a hook session's checkpoint and for the comparison after a
+ * restore (D-227, review round 5 of PR #60). `SNAPSHOT_SCRIPT` works by path; in the workload that is harmless, but on
+ * the host a name swapped for a link between its check and its read would make the runner read a file of its own (its
+ * journal key) into the checkpoint, and a restore would then write it back where the Claude Code user can read it.
+ * Here every folder is opened `O_DIRECTORY | O_NOFOLLOW` from the handle above, every file `O_NOFOLLOW`, and the entry
+ * opened must be the one listed (same device and inode, same type), its type, mode and link count taken from the open
+ * handle; anything else fails the listing, so the checkpoint, the admission or the restore is refused.
+ */
+export class HostWorkspace extends Workspace {
+  readonly #workspace: string;
+
+  /** `workspace`: the service's host folder, standing for `/work`. */
+  constructor(workspace: string) {
+    super(() => Promise.reject(new Error("the host workspace runs no script")), "/work", workspace as never);
+    this.#workspace = workspace;
+  }
+
+  override list(root: string, content: boolean): Promise<{ ok: true; snapshot: Snapshot } | { ok: false; reason: string }> {
+    return Promise.resolve(listHostTree(this.#workspace, root, content));
+  }
+
+  override restore(): Promise<{ ok: false; reason: string }> {
+    return Promise.resolve({ ok: false, reason: "a host workspace is restored by juno checkpoint restore --workspace (D-221)" });
+  }
+}
+
+/** The listing `SNAPSHOT_SCRIPT` would give, taken through handles that never follow a link (D-227). */
+export function listHostTree(workspace: string, root: string, content: boolean): { ok: true; snapshot: Snapshot } | { ok: false; reason: string } {
+  const opened = openWorkspaceRoot(workspace, root);
+  if (!opened.ok) return { ok: false, reason: opened.reason };
+  const manifest: ManifestEntry[] = [];
+  const contents = new Map<string, Buffer>();
+  const hardLinks: string[] = [];
+  let bytes = 0;
+  const fail = (reason: string): never => {
+    throw new ListingError(reason);
+  };
+  const walk = (fd: number, rel: string): void => {
+    const names = readdirSync(self(fd)).sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
+    for (const name of names) {
+      const path = rel === "" ? name : `${rel}/${name}`;
+      if (manifest.length >= MAX_CHECKPOINT_ENTRIES) fail(`the workspace has more than ${String(MAX_CHECKPOINT_ENTRIES)} entries`);
+      const seen = lstatSync(at(fd, name));
+      if (seen.isSymbolicLink()) {
+        manifest.push({ path, type: "symlink", mode: seen.mode & 0o7777, target: readlinkSync(at(fd, name)) });
+        continue;
+      }
+      if (!seen.isDirectory() && !seen.isFile()) fail(`the workspace holds an entry that is not a file, directory or symlink: ${path}`);
+      let child: number;
+      try {
+        child = openSync(at(fd, name), seen.isDirectory() ? DIR_FLAGS : constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      } catch (error: unknown) {
+        return fail(`${path} changed while it was listed (${code(error)})`);
+      }
+      try {
+        const held = fstatSync(child);
+        if (held.dev !== seen.dev || held.ino !== seen.ino || kindOf(held) !== kindOf(seen)) fail(`${path} changed while it was listed`);
+        if (held.isDirectory()) {
+          manifest.push({ path, type: "directory", mode: held.mode & 0o7777 });
+          walk(child, path);
+        } else {
+          if (held.size + bytes > MAX_CHECKPOINT_BYTES) fail(`the workspace holds more than ${String(MAX_CHECKPOINT_BYTES)} bytes`);
+          const data = readFileSync(child);
+          bytes += data.length;
+          if (bytes > MAX_CHECKPOINT_BYTES) fail(`the workspace holds more than ${String(MAX_CHECKPOINT_BYTES)} bytes`);
+          const sha256 = createHash("sha256").update(data).digest("hex");
+          if (content) contents.set(sha256, data);
+          if (held.nlink > 1) hardLinks.push(path);
+          manifest.push({ path, type: "file", mode: held.mode & 0o7777, sha256 });
+        }
+      } finally {
+        closeSync(child);
+      }
+    }
+  };
+  try {
+    const top = fstatSync(opened.fd);
+    manifest.push({ path: "", type: "directory", mode: top.mode & 0o7777 });
+    walk(opened.fd, "");
+  } catch (error: unknown) {
+    return { ok: false, reason: error instanceof ListingError ? error.message : `cannot list the workspace: ${code(error)}` };
+  } finally {
+    closeSync(opened.fd);
+  }
+  return { ok: true, snapshot: { manifest, contents, hardLinks } };
+}
+
+class ListingError extends Error {}

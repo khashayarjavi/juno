@@ -8,6 +8,7 @@ import {
   GrantStore,
   type HostIo,
   HostPathResolver,
+  HostWorkspace,
   SessionLayer,
   StartupRefused,
   type StartupSpec,
@@ -139,7 +140,8 @@ export async function runHookServeCli(args: readonly string[], io: HookServeIo):
       resolver: new HostPathResolver(workspace),
       view,
       filesystem: io.filesystem,
-      checkpoints: { workspace: view, store: new CheckpointStore(checkpoints) },
+      // D-227: the checkpoint is taken through handles that never follow a link, not by the path-based script.
+      checkpoints: { workspace: new HostWorkspace(workspace), store: new CheckpointStore(checkpoints) },
       ...(gateway === undefined ? {} : { gateway: { server: gateway } }),
     });
   } catch (error: unknown) {

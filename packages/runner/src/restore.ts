@@ -3,11 +3,11 @@ import { z } from "zod";
 import { type AbsolutePath, type DataClass, DataClass as DataClassSchema } from "../../contracts/src/index.js";
 import {
   CheckpointStore as Store,
+  HostWorkspace,
   type CheckpointStore,
   ManifestEntry,
   Workspace,
   checkpointId,
-  execFileScript,
   hostRestoreRefusals,
   openWorkspaceRoot,
   restoreHostTree,
@@ -184,7 +184,7 @@ export async function restoreHostCheckpoint(
   } finally {
     closeSync(opened.fd);
   }
-  if (outcome.ok) outcome = await compared(new Workspace(execFileScript(process.execPath, []), "/work", workspace), root, manifest);
+  if (outcome.ok) outcome = await compared(new HostWorkspace(workspace), root, manifest);
   record(outcome.ok ? "restored" : "failed", outcome.ok ? undefined : outcome.reason);
   return outcome;
 }

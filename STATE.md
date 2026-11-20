@@ -3,7 +3,20 @@
 ## Current increment
 **1.5-field — the field report of the first real install (issue [khashayarjavi/juno#59](https://github.com/khashayarjavi/juno/issues/59)), authorised by you on 2026-11-20 (D-220).** Branch `claude/epic-tesla-dsn63d` (this session's only pushable branch). It carries draft PR #58's STATE.md commit (27563ff); its PR supersedes #58. Spec v0.6.1. No objection open.
 
-Status (2026-11-20, this session): **all four items built with tests (D-221, D-222). `make verify: GREEN` on 8ef6e97 (1,472 unit, 127 container); the commits after it change only DECISIONS.md and STATE.md. Draft PR [khashayarjavi/juno#60](https://github.com/khashayarjavi/juno/pull/60) supersedes #58. Review round 1 (head c31be0f): DO NOT MERGE, two new findings, both fixed (D-223): the restore could recreate a set-user-ID program as the runner's (now refused), and the write's check asked less than the restore needs (now the same). Review round 2 (head 8cffccd): DO NOT MERGE, two new findings, both fixed (D-224): after a restart or the upgrade, a session kept its workspace reversible even when its checkpoint could not be restored (now it must be restorable, or its writes park), and two refusals were not journalled (now they are). Review round 3 (head 58e270b): DO NOT MERGE, one new finding, fixed (D-225): a sticky bit set on a folder after admission let a restore start and fail part way; such a folder now refuses the restore before anything changes and parks writes below it. Review round 4 (head 386439c; `make verify` GREEN there, 1,475 unit, 127 container): DO NOT MERGE, one new finding, fixed (D-226): the guide's remedies ran `sudo setfacl -R` and `sudo chmod` as root inside the Claude Code user's folder, where a planted link could send them to JUNO's own files; they now run as `juno-agent`. Review round 5, the last authorised, next.** Nothing merged yet.
+Status (2026-11-20, this session): **STOP after review round 5 on PR [khashayarjavi/juno#60](https://github.com/khashayarjavi/juno/pull/60) — your decision needed (D-227).** Nothing merged. Main is unchanged at 6706b5a; your machine is unaffected.
+
+### STOP after review round 5 (D-227)
+- **Why this is a STOP.** Round 5 was the last round your instruction authorised, and it ended DO NOT MERGE (CLAUDE.md §7).
+- **The finding, in plain words.** When JUNO copied a hook session's folder at admission, it read each file by name. A program of the Claude Code user could swap a file for a link at the right moment, so the copy picked up one of `juno-runner`'s private files (for example its journal key). The new "undo" would then have written that file back into the folder, where the Claude Code user can read it.
+- **What I did anyway, so a further round can start at once. Not reviewed.** The copy is now taken through folder handles that never follow a link: an entry that changes while it is read makes the copy fail, so the admission is refused. A test races exactly this for three seconds and never sees the secret; the old way leaked it 5 times in the same test.
+- **Review history of PR #60** (each finding new, each fixed with tests):
+  - **Round 1** (c31be0f): a restore could recreate a set-user-ID program owned by the runner (D-223). Also, the write check asked less than the restore needs.
+  - **Round 2** (8cffccd): after a restart, a session's writes stayed "undoable" even when its checkpoint could not be restored (D-224). Also, two refusals went unjournalled.
+  - **Round 3** (58e270b): a sticky bit set after admission made the restore fail part way (D-225).
+  - **Round 4** (386439c): the guide had root run `setfacl`/`chmod` inside the Claude Code user's folder (D-226).
+  - **Round 5** (192bc4f): the finding above (D-227).
+- **`make verify`:** GREEN on 192bc4f (1,476 unit, 127 container). For the unreviewed fix, see the line below.
+- **Your decision:** authorise further review rounds on PR #60 (how many), or direct otherwise. Issue #59 stays open until the merge.
 
 ### What 1.5-field changes, in plain words
 1. **You can now undo what Claude did in a hook session (§2.2.2).** `juno checkpoint restore --workspace /srv/juno-work ...`, run as `juno-runner` with the service stopped, puts the session's folder back exactly as it was when the session was admitted: files Claude made are removed, files it changed or deleted come back. It is recorded in the journal under your name. `juno checkpoint list` finds the checkpoint. The guide's new section "Undo what Claude did in a session" gives the steps.
@@ -24,7 +37,7 @@ Status (2026-11-20, this session): **all four items built with tests (D-221, D-2
 - A checkpoint holding a set-user-ID, set-group-ID or sticky bit is refused at admission and at the restore, never recreated (D-223).
 - A session rebuilt after a restart keeps a workspace reversible only if its checkpoint, taken in this service's folder, can be restored now; so after the upgrade, a session admitted under 6706b5a can read but its writes park: admit a new session (D-224).
 
-**Left, in order:** review rounds (up to 5); the merge gate; then STOP and report the merge commit and the upgrade steps; close issue #59.
+**Left, in order:** your decision on further review rounds (D-227); then review, the merge gate, the merge commit and the upgrade steps; close issue #59.
 
 ## Previous increment: 1.5-wsl-fix (complete)
 **1.5-wsl-fix — `make verify-rootless` fails 2 of 118 on your machine (issue [khashayarjavi/juno#56](https://github.com/khashayarjavi/juno/issues/56)), authorised by you on 2026-11-14 (D-219).** Branch `claude/festive-cori-73zvj7` (this session's only pushable branch). It carries PR #55's two STATE.md commits; its PR supersedes #55. Spec v0.6.1. No objection open.
