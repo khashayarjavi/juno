@@ -405,7 +405,8 @@ export function undoTo(baseFd, root, manifest, content, options = {}) {
     try {
       const stats = fstatSync(fresh);
       if (stats.uid !== uid) return stop(`${root} made again is not JUNO's own folder`);
-      fchmodSync(fresh, DIR_MODE);
+      // Its mode stays 0700 (so, through the access list's mask, no one else's) while it is filled; `restoreTree` gives
+      // it DIR_MODE last, with every other folder (review round 10's note, D-236).
       try {
         restoreTree(fresh, manifest, (hash) => bytes.get(hash), { uid });
       } catch (error) {

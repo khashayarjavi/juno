@@ -557,7 +557,7 @@ An empty project gives an empty checkpoint: if `/srv/juno-work/project` held not
    ```
    sudo -u juno-agent rm -rf <kept>
    ```
-   **Check:** `ls /srv/juno-work` no longer lists it. Until you remove it, it stays inside `/srv/juno-work`, where a later session can read it under its own grants.
+   **Check:** `ls /srv/juno-work` no longer lists it. Until you remove it, it stays inside `/srv/juno-work`, where a later session can read it under its own grants; JUNO counts every read of it (or of `/srv/juno-work` as a whole) at the highest class that session's file declares, so its contents are never read as less sensitive than they were (D-236). Do not rename it: under another name it is classed like any other file there.
 
 A checkpoint taken by a JUNO from before this version (commit 6706b5a and earlier) does not record its folder, and the restore refuses it (`does not record the host folder it was taken in`); one not taken in the sealed container is refused too (`was not taken in the sealed copy context`). A session admitted before the upgrade goes on, but since its changes cannot be undone, JUNO parks its writes (`integrity_floor`); admit a new session (Part G steps 2 and 5) to write again. Sessions admitted after the upgrade are restorable.
 
