@@ -7,7 +7,9 @@
 // reversible workspace, the real hook client's calls as the Claude Code user, that user's own changes to the folder,
 // and the real `juno checkpoint restore` and `juno checkpoint list`, as root, as the Claude Code user and as the
 // runner; then the service started again on the same journal. Prints one JSON object. No shell anywhere.
-import { execFile, execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
+import { setInterval, clearInterval } from "node:timers";
+import { promisify } from "node:util";
 import { generateKeyPairSync } from "node:crypto";
 import { appendFileSync, chmodSync, chownSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { Buffer } from "node:buffer";
@@ -57,10 +59,11 @@ const runnerDoes = async (ops) => JSON.parse((await asUser(RUNNER, "", ["/r/act.
 // version 2: owner, the two named users, group, mask, other).
 const entry = (tag, perm, id) => { const b = Buffer.alloc(8); b.writeUInt16LE(tag, 0); b.writeUInt16LE(perm, 2); b.writeUInt32LE(id >>> 0, 4); return b; };
 const acl = (owner, group, other) => Buffer.concat([Buffer.from([2, 0, 0, 0]), entry(0x01, owner, -1), entry(0x02, 7, RUNNER), entry(0x02, 7, AGENT), entry(0x04, group, -1), entry(0x10, 7, -1), entry(0x20, other, -1)]);
-const setxattr = (path, name, value) => execFileSync("/usr/bin/perl", ["-e", "my ($p, $n, $h, $nr) = @ARGV; my $v = pack(\"H*\", $h); exit(syscall($nr, $p, $n, $v, length($v), 0) == 0 ? 0 : 1)", path, name, value.toString("hex"), process.arch === "arm64" ? "5" : "188"]);
-const accessList = (path) => {
-  setxattr(path, "system.posix_acl_access", acl(7, 5, 5));
-  if (lstatSync(path).isDirectory()) setxattr(path, "system.posix_acl_default", acl(7, 5, 5));
+const run = promisify(execFile);
+const setxattr = (path, name, value) => run("/usr/bin/perl", ["-e", "my ($p, $n, $h, $nr) = @ARGV; my $v = pack(\"H*\", $h); exit(syscall($nr, $p, $n, $v, length($v), 0) == 0 ? 0 : 1)", path, name, value.toString("hex"), process.arch === "arm64" ? "5" : "188"]);
+const accessList = async (path) => {
+  await setxattr(path, "system.posix_acl_access", acl(7, 5, 5));
+  if (lstatSync(path).isDirectory()) await setxattr(path, "system.posix_acl_default", acl(7, 5, 5));
 };
 
 // The workspace, on a tmpfs (case-sensitive, D-178): the project as the operator left it before the session.
@@ -68,7 +71,7 @@ mkdirSync(`${PROJECT}/sub`, { recursive: true, mode: 0o755 });
 writeFileSync(`${PROJECT}/notes.txt`, "notes\n", { mode: 0o644 });
 writeFileSync(`${PROJECT}/sub/keep.txt`, "keep\n", { mode: 0o644 });
 for (const path of [WORK, PROJECT, `${PROJECT}/sub`, `${PROJECT}/notes.txt`, `${PROJECT}/sub/keep.txt`]) {
-  accessList(path);
+  await accessList(path);
   chownSync(path, AGENT, AGENT);
 }
 

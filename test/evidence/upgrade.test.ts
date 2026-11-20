@@ -1,8 +1,9 @@
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { MemoryAnchorSink, testAnchoring, testJournalKey } from "../../packages/enforcement/test/anchoring.js";
 import { ordinaryHost } from "../../packages/enforcement/test/layer.js";
@@ -21,6 +22,7 @@ import { runCheckpointCli } from "../../packages/runner/src/restore.js";
 // anchors, as the guide's "Upgrading JUNO to a new commit" keeps them. It must start, carry the old session on, admit a
 // new one, and say plainly why the old checkpoint is not restorable by the host form (it records no folder, D-221).
 
+const run = promisify(execFile);
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 /** The commit on the operator's machine, from issue #59. CI fetches the whole history for it (verify.yml). */
 const INSTALLED = "6706b5a30a9d6aca96d046a31de85a741a9804ef";
@@ -68,16 +70,16 @@ const sessionFile = (id: string): string => {
   return path;
 };
 
-beforeAll(() => {
+beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), "juno-upgrade-"));
   // The installed commit, from history, built as `make build` builds it (its dependencies are this commit's: the
   // lockfile is unchanged since, which the first test asserts).
   old = join(dir, "installed");
   mkdirSync(old);
-  execFileSync("git", ["-C", ROOT, "archive", "--format=tar", "-o", join(dir, "installed.tar"), INSTALLED]);
-  execFileSync("tar", ["-xf", join(dir, "installed.tar"), "-C", old]);
+  await run("git", ["-C", ROOT, "archive", "--format=tar", "-o", join(dir, "installed.tar"), INSTALLED]);
+  await run("tar", ["-xf", join(dir, "installed.tar"), "-C", old]);
   symlinkSync(join(ROOT, "node_modules"), join(old, "node_modules"));
-  execFileSync(process.execPath, [join(ROOT, "node_modules", "typescript", "bin", "tsc"), "-p", "tsconfig.build.json"], { cwd: old });
+  await run(process.execPath, [join(ROOT, "node_modules", "typescript", "bin", "tsc"), "-p", "tsconfig.build.json"], { cwd: old });
   cpSync(join(old, "packages", "mediated", "definitions"), join(old, "dist", "mediated", "definitions"), { recursive: true });
   cpSync(join(old, "packages", "registry", "definitions"), join(old, "dist", "registry", "definitions"), { recursive: true });
   // The machine: workspace, runner state, the operator's public key and root's pin.
@@ -104,8 +106,9 @@ afterAll(() => {
 describe("upgrading an installed JUNO to this commit keeps the journal, grants and checkpoints (D-222)", () => {
   // proves D-222's premise: the installed commit's dependencies are this commit's, so the guide's upgrade reinstalls
   // nothing it did not install before, and this test builds the installed commit as the machine built it
-  it("has the installed commit's lockfile", () => {
-    const installed = execFileSync("git", ["-C", ROOT, "show", `${INSTALLED}:package-lock.json`], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  it("has the installed commit's lockfile", async () => {
+    const object = [INSTALLED, "package-lock.json"].join(":");
+    const { stdout: installed } = await run("git", ["-C", ROOT, "show", object], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
     expect(installed).toBe(readFileSync(join(ROOT, "package-lock.json"), "utf8"));
   });
 
