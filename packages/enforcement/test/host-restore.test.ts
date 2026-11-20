@@ -261,10 +261,18 @@ describe("restoring a host-folder checkpoint (§2.2.2, D-221, D-228)", () => {
     expect(await resolve("/work/project/docs/new.txt")).toEqual({ ok: true, canonical: "/work/project/docs/new.txt" });
     mkdirSync(join(work, "2026", "11"), { recursive: true });
     rmSync(join(work, "project"), { recursive: true });
-    expect(await resolve("/work/2026/11/new.txt")).toEqual({ ok: true, canonical: "/work/2026/11/new.txt", unjudged: ["/work", "/work/2026"] });
-    // Any name with a letter in a folder is enough to ask with.
+    expect(await resolve("/work/2026/11/new.txt")).toEqual({ ok: true, canonical: "/work/2026/11/new.txt", unjudged: ["/work", "/work/2026", "/work/2026/11"] });
+    // Any name with a letter in a folder is enough to ask with; the deepest folder, here empty, is asked too (D-239).
     writeFileSync(join(work, "readme"), "r\n");
+    expect(await resolve("/work/2026/11/new.txt")).toEqual({ ok: true, canonical: "/work/2026/11/new.txt", unjudged: ["/work/2026", "/work/2026/11"] });
+    writeFileSync(join(work, "2026", "11", "notes"), "n\n");
     expect(await resolve("/work/2026/11/new.txt")).toEqual({ ok: true, canonical: "/work/2026/11/new.txt", unjudged: ["/work/2026"] });
+    // D-239 (review round 13 on PR #62, the reviewer's reproduction): with the session's folder moved away, the folder
+    // that would hold it is the deepest that exists, and it is still asked: here it holds no name with a letter.
+    rmSync(join(work, "readme"));
+    rmSync(join(work, "2026"), { recursive: true });
+    mkdirSync(join(work, "11"));
+    expect(await resolve("/work/2026/x.txt")).toEqual({ ok: true, canonical: "/work/2026/x.txt", unjudged: ["/work"] });
   });
 
   // proves D-221: content is checked against its hash before the first change; a missing or altered blob changes nothing

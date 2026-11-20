@@ -114,6 +114,22 @@ const results = paths.map((path) => {
         }
         parent = parent + "/" + name;
       }
+      // D-239 (review round 13): the deepest existing folder is asked too, so the folder holding a part that does not
+      // exist yet (a session's folder moved away, say) is never left unasked. An empty one cannot be asked: unjudged.
+      let deepest = null;
+      try { deepest = fs.lstatSync(parent); } catch { deepest = null; }
+      if (deepest !== null && deepest.isDirectory()) {
+        let listed = null;
+        try { listed = fs.readdirSync(parent); } catch { listed = null; }
+        const names = new Set(listed ?? []);
+        const probe = (listed ?? []).find((entry) => { const other = swap(entry); return other !== null && !names.has(other); });
+        if (probe === undefined) unjudged.push(outside(parent));
+        else {
+          let same = false;
+          try { const a = fs.lstatSync(parent + "/" + probe); const b = fs.lstatSync(parent + "/" + swap(probe)); same = a.dev === b.dev && a.ino === b.ino; } catch { same = false; }
+          if (same) folding.push(outside(parent));
+        }
+      }
     }
     const rest = parts.slice(keep);
     if (rest.some((part) => part === ".." || part === "")) return { path, error: "the missing remainder holds .. or an empty component" };

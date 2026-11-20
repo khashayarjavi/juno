@@ -236,6 +236,9 @@ describe("§2.2.2 write: an untrusted target is permitted only inside a reversib
     for (const folder of ["/work", "/work/project"]) {
       expect(refusal({ ...base, canonical: folded({ unjudged: [folder] }) })).toMatchObject([{ refused: [{ not_reversible: expect.stringContaining(`${folder} holds no name with a letter`) }] }]);
     }
+    // D-239: the workspace moved away, so the folder holding it is the deepest that exists, and it folds: irreversible.
+    const away = new Map([["/work/project/safe/sub/out.txt", { ok: true as const, canonical: "/work/project/safe/sub/out.txt", folding: ["/work/project"] }]]);
+    expect(refusal({ ...base, canonical: away })).toMatchObject([{ refused: [{ not_reversible: expect.stringContaining("/work/project matches names without regard to case") }] }]);
     // A folder inside the workspace that cannot be asked does not stop the undo, which makes the workspace again whole.
     expect(boundary.authorize({ ...base, canonical: folded({ unjudged: ["/work/project/safe/sub"] }) }, input).outcome).toBe("proceed");
     // Controls: nothing in the way, and an unrestorable workspace that is not this one.
