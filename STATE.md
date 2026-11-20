@@ -1,11 +1,39 @@
 # STATE
 
 ## Current increment
-**1.5-field — the field report of the first real install (issue [khashayarjavi/juno#59](https://github.com/khashayarjavi/juno/issues/59)), authorised by you on 2026-11-20 (D-220); your rulings of 2026-11-20 on PR #60 (D-228).** Branch `claude/gallant-ritchie-rqulim` (this session's only pushable branch, D-229). It carries PR [khashayarjavi/juno#60](https://github.com/khashayarjavi/juno/pull/60)'s sixteen commits unchanged; its draft PR supersedes #60, and review rounds 6 to 10 run there. Spec v0.6.1. No objection open.
+**1.5-field — the field report of the first real install (issue [khashayarjavi/juno#59](https://github.com/khashayarjavi/juno/issues/59)), authorised by you on 2026-11-20 (D-220); your rulings on PR #60 (D-228) and on D-233 (D-234).** Branch `claude/gallant-turing-8s7bma` (this session's only pushable branch, D-234). It carries PR [khashayarjavi/juno#61](https://github.com/khashayarjavi/juno/pull/61)'s thirty-two commits unchanged; its draft PR supersedes #61, and review rounds 10 to 14 run there. Spec v0.6.1. No objection open.
 
-Status (2026-11-20, this session): **STOP after review round 9 on PR [khashayarjavi/juno#61](https://github.com/khashayarjavi/juno/pull/61) — your decision needed (D-233).** Nothing merged; main is unchanged at 6706b5a; your machine is unaffected. `make verify: GREEN` on ae24f1f (1,486 unit, 136 container); CI on d591415 (run 44764328311) was still running at the STOP.
+Status (2026-11-20, this session): **your rulings on D-233 built (D-234, D-235); CI's red test explained and fixed. `make verify` and review round 10 next.** Nothing merged; main is unchanged at 6706b5a; your machine is unaffected.
 
-### STOP after review round 9 (D-233)
+### Why CI was red on 0b7285d, in plain words (D-235)
+- Only the `verify` job failed; both rootless jobs passed the same test. `verify` uses a root-run Docker, which puts every container under an AppArmor profile. AppArmor refuses to look up a file whose full path is longer than about 4,096 characters: some 2,000 levels of `d/`. The old undo looked up every level of the 8,000-level folder, so it was refused there. This session's machine has no AppArmor, so the test passed here.
+- **No walk could have reached the bottom under that profile.** Your ruling 2 removes the walk altogether, so the test passes without being changed in what it plants; it now also checks that the deep folder is kept aside.
+
+### What D-235 changes, in plain words
+1. **An undo moves the folder aside and makes it again (your ruling 2).** One rename moves `/srv/juno-work/project`, whatever it holds, to `/srv/juno-work/project.juno-undone-<UTC time>-<8 hex>`. JUNO then makes `/srv/juno-work/project` again from the checkpoint alone.
+   - **Kept:** the moved-aside folder is never deleted or changed by JUNO. The restore prints it as `kept`, and the journal records it.
+   - **Cost:** only the checkpoint's (at most 2,000 entries and 8 MB, which admission still enforces). Size, depth, a mount inside, a folder Claude locked or made sticky inside: none of them matters any more.
+   - **The rename needs no new privilege and no weaker seal.** It happens inside the one mount the sealed container already has, because a session's folder is always inside `/srv/juno-work`. So the streamed walk was not needed.
+2. **Every write checks that the folder can still be undone (your ruling 1).** The undo needs:
+   - `juno-runner` able to change `/srv/juno-work` and every folder on the way to the project;
+   - none of those folders sticky, set-user-ID or set-group-ID, and all on one file system;
+   - the project folder itself not a mount;
+   - the checkpoint's files still in the store.
+
+   If any of that fails, the write is judged irreversible and parks (`integrity_floor`, which nobody can override), with the reason in the journal.
+   - **Measured on 200,000 entries:** the check of the folders takes 0.014 ms; a write's whole check, including the path resolver every call already ran, takes 34 to 39 ms. Neither depends on the folder's size. The undo itself took 44 to 52 ms.
+   - **One exception, from the spec's text:** §2.2.2's table lets an irreversible write proceed when your grant names that exact path. In hook mode no grant of yours does, but you may tighten this.
+3. **The guide** ("Undo what Claude did in a session") says what comes back and with what permissions: the runner's own files, `rw-rw----`, and folders `rwxrwx---`, which `juno-agent` can still change through the access list. It also says where the old folder is kept and how to remove it yourself (new step 5), and that writes park when the folder cannot be undone (ruling 4).
+4. **Tests.** The tests that expected the old walk's refusals now expect the stronger behaviour: a locked or sticky folder *inside* no longer blocks the undo and is kept aside untouched. The same traps on the folder *holding* the project still refuse, with nothing changed. D-235 lists each changed expectation. New tests:
+   - 200,000 entries, in this process and against the real container runtime;
+   - writes park once the holding folder is locked or sticky, or a checkpoint file is gone, and proceed again once that is put right;
+   - against the kernel: what comes back is the runner's own with the fixed modes, and `juno-agent` can still change it.
+
+**Autopilot rulings this session:** D-234 (rounds 10 to 14 run on the superseding PR, numbered on from #61); D-235 (move-aside rather than the streamed walk; a folder locked or sticky inside the project still parks writes below it, kept as the more restrictive reading; an unrestorable workspace's write follows §2.2.2's irreversible row).
+
+**Left, in order:** `make verify` GREEN and CI green on this branch; open the draft PR superseding #61; review rounds 10 to 14; the merge gate; then STOP and report the merge commit hash and your upgrade steps; close issue #59.
+
+### STOP after review round 9 (D-233) — ruled on by you (D-234)
 - **Why this is a STOP.** Your ruling 2 makes a finding whose mechanism is recorded in DECISIONS.md a STOP. Round 9's mechanism is D-221's own recorded refusal: the undo refuses a workspace of more than 200,000 entries (and one with a mount inside).
 - **The finding, in plain words.** At admission JUNO copies the project folder (at most 2,000 entries). Nothing stops Claude growing it afterwards: one `npm install` can add more than 200,000 files. From then on every undo is refused ("nothing was changed"), but JUNO still lets writes there through as if they could be undone, until the service restarts. A single folder of about 1.5 million names is also more than the sealed container's memory, so the undo is killed and recorded `failed`. A FUSE mount inside the folder, where Ubuntu lets an ordinary user make one, would block the undo the same way.
 - **Your decision, most restrictive first:**
