@@ -64,7 +64,7 @@ Status (2026-11-20, this session): **STOP after review round 9 on PR [khashayarj
 - A checkpoint holding a set-user-ID, set-group-ID or sticky bit is refused at admission and at the restore, never recreated (D-223).
 - A session rebuilt after a restart keeps a workspace reversible only if its checkpoint, taken in this service's folder, can be restored now; so after the upgrade, a session admitted under 6706b5a can read but its writes park: admit a new session (D-224).
 
-**Left, in order:** your decision on further review rounds (D-227); then review, the merge gate, the merge commit and the upgrade steps; close issue #59.
+~~**Left, in order:** your decision on further review rounds (D-227)…~~ Superseded: you ruled (D-228); what is left is at the top of this file.
 
 ## Previous increment: 1.5-wsl-fix (complete)
 **1.5-wsl-fix — `make verify-rootless` fails 2 of 118 on your machine (issue [khashayarjavi/juno#56](https://github.com/khashayarjavi/juno/issues/56)), authorised by you on 2026-11-14 (D-219).** Branch `claude/festive-cori-73zvj7` (this session's only pushable branch). It carries PR #55's two STATE.md commits; its PR supersedes #55. Spec v0.6.1. No objection open.
