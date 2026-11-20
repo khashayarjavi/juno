@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -199,6 +199,24 @@ describe("the sealed copy context can reach nothing of the runner's (D-228)", ()
     expect(readFileSync(join(work, "project", "notes.txt"), "utf8")).toBe("notes\n");
     expect(existsSync(resume)).toBe(false);
   }, 60_000);
+
+  // proves D-232 (review round 8 on PR #61) against the real runtime, the reviewer's reproduction: an 8,000-level folder
+  // made after the checkpoint is judged and removed by the sealed restore, and the changed file comes back
+  it("restores past a folder thousands of levels deep", async () => {
+    const manifest = await checkpoint();
+    writeFileSync(join(work, "project", "notes.txt"), "changed\n");
+    let fd = openSync(join(work, "project"), constants.O_RDONLY | constants.O_DIRECTORY);
+    for (let level = 0; level < 8000; level += 1) {
+      mkdirSync(`/proc/self/fd/${String(fd)}/d`);
+      const next = openSync(`/proc/self/fd/${String(fd)}/d`, constants.O_RDONLY | constants.O_DIRECTORY);
+      closeSync(fd);
+      fd = next;
+    }
+    closeSync(fd);
+    expect(await sealed().restore("/work/project", manifest, (hash) => store.get(hash))).toEqual({ ok: true });
+    expect(readFileSync(join(work, "project", "notes.txt"), "utf8")).toBe("notes\n");
+    expect(existsSync(join(work, "project", "d"))).toBe(false);
+  }, 120_000);
 
   // proves D-231: a sealed container that outlives its limit is killed, and the run is answered as one with no answer
   // (so a restore is journalled failed and a checkpoint refused); nothing is left running

@@ -1,4 +1,4 @@
-import { chmodSync, closeSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { execFile } from "node:child_process";
@@ -49,6 +49,19 @@ function restoreHere(manifest: readonly ManifestEntry[], options: { uid?: number
 /** The whole restore, through the sealed program. */
 async function restore(manifest: readonly ManifestEntry[]): Promise<{ ok: boolean; changed?: boolean; reason?: string }> {
   return sealed().restore("/work/project", manifest, (hash) => store.get(hash));
+}
+
+/** Makes `d/d/…/d`, `depth` levels below `folder`, through folder handles (a path that long could not be named). */
+function deepChain(folder: string, depth: number): void {
+  let fd = openSync(folder, constants.O_RDONLY | constants.O_DIRECTORY);
+  for (let level = 0; level < depth; level += 1) {
+    mkdirSync(`/proc/self/fd/${String(fd)}/d`);
+    const next = openSync(`/proc/self/fd/${String(fd)}/d`, constants.O_RDONLY | constants.O_DIRECTORY);
+    closeSync(fd);
+    fd = next;
+  }
+  writeFileSync(`/proc/self/fd/${String(fd)}/bottom.txt`, "deep\n");
+  closeSync(fd);
 }
 
 const read = (path: string): string => readFileSync(join(work, "project", path), "utf8");
@@ -346,6 +359,35 @@ describe("JUNO takes only files and folders from a workspace (operator ruling 2 
     expect(existsSync(latin1("docs", [0x44, 0xe9, 0x6a, 0xe0]))).toBe(false);
     writeFileSync(latin1("docs", resume), "x");
     expect(await sealed().checkpoint("/work/project")).toMatchObject({ ok: false, reason: expect.stringContaining('"docs" holds a name that is not valid UTF-8 (<bytes 52e973756de92e747874>)') });
+  });
+
+  // proves D-232 (review round 8 on PR #61): no depth of folders made after the checkpoint stops the undo: the check
+  // and the removal never recurse, so an 8,000-level folder is judged and removed, and the changed file comes back;
+  // and a checkpoint of a tree deeper than its entry bound refuses on that bound, never on the stack
+  it("restores past a folder thousands of levels deep, and bounds a deep checkpoint by its entries", async () => {
+    const manifest = await checkpoint();
+    writeFileSync(join(work, "project", "notes.txt"), "changed by Claude\n");
+    deepChain(join(work, "project"), 8000);
+    expect(await sealed().check("/work/project", manifest)).toEqual([]);
+    expect(await restore(manifest)).toEqual({ ok: true });
+    expect(read("notes.txt")).toBe("notes\n");
+    expect(existsSync(join(work, "project", "d"))).toBe(false);
+    expect(readdirSync(join(work, "project")).filter((name) => name.startsWith(".juno-removing-"))).toEqual([]);
+    deepChain(join(work, "project"), 2500);
+    expect(await sealed().checkpoint("/work/project")).toMatchObject({ ok: false, reason: expect.stringContaining("more than 2000 entries") });
+    // The restore removes it again (node's own recursive removal, in this test's clean-up, would not reach the bottom).
+    expect(await restore(manifest)).toEqual({ ok: true });
+    expect(existsSync(join(work, "project", "d"))).toBe(false);
+  }, 120_000);
+
+  // proves D-232: a session root removed altogether after the checkpoint is made again by the restore, with its files
+  it("makes a removed session root again", async () => {
+    const manifest = await checkpoint();
+    rmSync(join(work, "project"), { recursive: true });
+    expect(await restore(manifest)).toEqual({ ok: true });
+    expect(read("notes.txt")).toBe("notes\n");
+    expect(read("docs/deep/b.md")).toBe("b\n");
+    expect(mode("")).toBe(DIR_MODE);
   });
 
   // proves D-231: the read view keeps a checkpoint's byte bound, counted from the files' sizes without opening them: a

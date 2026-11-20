@@ -11,6 +11,7 @@ import {
   checkpointId,
   dockerSealedLauncher,
   probeContainerRuntime,
+  runtimeRefusal,
   sameManifest,
   workloadWorkspace,
 } from "../../enforcement/src/index.js";
@@ -225,7 +226,13 @@ const SYSTEM_HOST: HostRestoreIo = {
     }
   },
   filesystem: systemFilesystemIo(),
-  launcher: async () => dockerSealedLauncher({ rootless: (await probeContainerRuntime()).rootless }),
+  // D-131 as `hook serve` applies it: a runtime that would ignore the sealed container's limits is refused (D-232).
+  launcher: async () => {
+    const runtime = await probeContainerRuntime();
+    const why = runtimeRefusal(runtime);
+    if (why !== null) throw new Error(`refused, nothing was changed: ${why}`);
+    return dockerSealedLauncher({ rootless: runtime.rootless });
+  },
 };
 
 /**

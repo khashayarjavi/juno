@@ -22,8 +22,8 @@
 // It imports only node's own modules, so its text runs as it is: `node --input-type=module -e <text>` plus SEALED_MAIN.
 
 import { Buffer } from "node:buffer";
-import { createHash } from "node:crypto";
-import { accessSync, closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, rmdirSync, unlinkSync, writeSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import { accessSync, closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmdirSync, unlinkSync, writeSync } from "node:fs";
 import process from "node:process";
 
 /** The mode every file a restore writes gets: read and write for the runner and, through the access list's mask, for juno-agent. */
@@ -35,6 +35,8 @@ export const MAX_ENTRIES = 2000;
 export const MAX_BYTES = 8 * 1024 * 1024;
 /** The most entries a restore walks in the folder as it stands; a larger one is refused before anything changes. */
 export const MAX_SCAN = 200_000;
+/** How many folder handles the restorability check keeps open on its way down, besides every WINDOW-th (D-232). */
+const WINDOW = 256;
 
 const DIR_FLAGS = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
 const FILE_FLAGS = constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK | constants.O_NOCTTY;
@@ -85,7 +87,7 @@ function folderRefusal(fd, rel, top, mayChange) {
  * Opens the workspace root `root` (a path under /work) below the open folder `baseFd` that stands for /work, one
  * component at a time, never following a link. The caller closes the handle it gets.
  */
-export function openRootAt(baseFd, root) {
+export function openRootAt(baseFd, root, options = {}) {
   if (root !== "/work" && !root.startsWith("/work/")) return { ok: false, reason: `${root} is not a path under /work` };
   const parts = root === "/work" ? [] : root.slice("/work/".length).split("/");
   if (!parts.every(plain)) return { ok: false, reason: `${root} is not a plain path` };
@@ -95,18 +97,32 @@ export function openRootAt(baseFd, root) {
   } catch (error) {
     return { ok: false, reason: `the workspace cannot be opened as a folder (${code(error)})` };
   }
+  let made = false;
   for (const part of parts) {
     let next;
     try {
+      // `make` (a restore only): a folder on the way that is gone is made again (mkdir never follows a link).
+      let madeHere = false;
+      if (options.make === true) {
+        try {
+          mkdirSync(at(fd, part), 0o700);
+          madeHere = true;
+          made = true;
+        } catch (error) {
+          if (code(error) !== "EEXIST") throw error;
+        }
+      }
       next = openSync(at(fd, part), DIR_FLAGS);
+      // A folder made again gets the fixed mode at once, so juno-agent keeps its access through the access list.
+      if (madeHere) fchmodSync(next, DIR_MODE);
     } catch (error) {
       closeSync(fd);
-      return { ok: false, reason: `${root} is not a folder reached without a symbolic link (${part}: ${code(error)})` };
+      return { ok: false, missing: code(error) === "ENOENT", made, reason: `${root} is not a folder reached without a symbolic link (${part}: ${code(error)})` };
     }
     closeSync(fd);
     fd = next;
   }
-  return { ok: true, fd };
+  return { ok: true, fd, made };
 }
 
 /** `openRootAt` from a path: the folder `base` stands for /work. */
@@ -246,77 +262,127 @@ export function restoreRefusals(rootFd, manifest, options = {}) {
   const want = wanted(manifest);
   if (typeof want === "string") return [want];
   const mayChange = options.mayChange ?? kernelMayChange;
-  const refusals = [];
   const top = fstatSync(rootFd);
   let seen = 0;
-  const walk = (fd, rel) => {
+  // Iterative, never recursive, so no depth of folders the Claude Code user can make stops it (review round 8 on
+  // PR #61, D-232). A frame per folder on the way down; its handle is kept open only for the last WINDOW folders and
+  // every WINDOW-th one, and is opened again when needed, from the nearest open one, by name, never following a link,
+  // and checked to be the same folder (device and inode) as the one first judged.
+  const stack = [];
+  const enter = (fd, name, rel) => {
     const why = folderRefusal(fd, rel, top, mayChange);
-    if (why !== null) {
-      refusals.push(why);
-      return;
-    }
+    if (why !== null) return why;
     let names;
     try {
       names = namesIn(fd);
     } catch (error) {
-      refusals.push(`${shown(rel)} cannot be listed (${code(error)})`);
-      return;
+      return `${shown(rel)} cannot be listed (${code(error)})`;
     }
-    for (const name of names) {
+    const stats = fstatSync(fd);
+    stack.push({ fd, name, rel, dev: stats.dev, ino: stats.ino, names, index: 0 });
+    const shed = stack.length - 1 - WINDOW;
+    if (shed > 0 && shed % WINDOW !== 0 && stack[shed].fd !== null) {
+      closeSync(stack[shed].fd);
+      stack[shed].fd = null;
+    }
+    return null;
+  };
+  const handleOf = (index) => {
+    if (stack[index].fd !== null) return stack[index].fd;
+    let from = index - 1;
+    while (stack[from].fd === null) from -= 1;
+    for (let level = from + 1; level <= index; level += 1) {
+      const frame = stack[level];
+      const fd = openSync(at(stack[level - 1].fd, frame.name), DIR_FLAGS);
+      const stats = fstatSync(fd);
+      frame.fd = fd;
+      if (stats.dev !== frame.dev || stats.ino !== frame.ino) throw new Refusal(`${shown(frame.rel)} changed while it was judged`);
+    }
+    return stack[index].fd;
+  };
+  let why = enter(rootFd, null, "");
+  try {
+    while (why === null && stack.length > 0) {
+      const frame = stack[stack.length - 1];
+      if (frame.index >= frame.names.length) {
+        stack.pop();
+        if (frame.fd !== null && frame.fd !== rootFd) closeSync(frame.fd);
+        continue;
+      }
+      const name = frame.names[frame.index];
+      frame.index += 1;
       seen += 1;
       if (seen > MAX_SCAN) {
-        refusals.push(`the workspace holds more than ${String(MAX_SCAN)} entries; it is refused, never partly restored`);
-        return;
+        why = `the workspace holds more than ${String(MAX_SCAN)} entries; it is refused, never partly restored`;
+        break;
       }
-      const path = rel === "" ? nameOf(name) : `${rel}/${nameOf(name)}`;
+      const path = frame.rel === "" ? nameOf(name) : `${frame.rel}/${nameOf(name)}`;
+      const fd = handleOf(stack.length - 1);
       let stats;
       try {
         stats = lstatSync(at(fd, name));
       } catch (error) {
         // A name gone between the listing and its look-up was changed while the folder was judged (still a refusal).
-        refusals.push(code(error) === "ENOENT" ? `${JSON.stringify(path)} changed while it was listed (ENOENT)` : `${JSON.stringify(path)} cannot be read (${code(error)})`);
-        return;
+        why = code(error) === "ENOENT" ? `${JSON.stringify(path)} changed while it was listed (ENOENT)` : `${JSON.stringify(path)} cannot be read (${code(error)})`;
+        break;
       }
       if (!stats.isDirectory()) continue;
       if (stats.dev !== top.dev) {
-        refusals.push(`${JSON.stringify(path)} is on another file system (a mount inside the workspace); it is refused, never partly restored`);
-        return;
+        why = `${JSON.stringify(path)} is on another file system (a mount inside the workspace); it is refused, never partly restored`;
+        break;
       }
       let child;
       try {
         child = openSync(at(fd, name), DIR_FLAGS);
       } catch (error) {
-        refusals.push(`${JSON.stringify(path)} cannot be opened as a folder (${code(error)})`);
-        return;
+        why = `${JSON.stringify(path)} cannot be opened as a folder (${code(error)})`;
+        break;
       }
-      try {
-        walk(child, path);
-      } finally {
-        closeSync(child);
-      }
-      if (refusals.length > 0) return;
+      why = enter(child, name, path);
+      if (why !== null) closeSync(child);
     }
-  };
-  walk(rootFd, "");
-  return refusals;
+  } catch (error) {
+    if (!(error instanceof Refusal)) throw error;
+    why = error.message;
+  } finally {
+    for (const frame of stack) if (frame.fd !== null && frame.fd !== rootFd) closeSync(frame.fd);
+  }
+  return why === null ? [] : [why];
 }
 
-/** Removes the entry `name` of the folder `dirFd`, whatever it is, never following a link. */
+/**
+ * Removes the entry `name` of the folder `dirFd`, whatever it is, never following a link. A folder is emptied one level
+ * at a time: its files are removed and its folders are moved up into `dirFd` under fresh names, to be removed in turn,
+ * so removing a tree of any depth holds two folder handles at most (review round 8 on PR #61, D-232).
+ */
 function remove(dirFd, name) {
-  try {
-    unlinkSync(at(dirFd, name));
-    return;
-  } catch (error) {
-    if (code(error) === "ENOENT") return;
-    if (code(error) !== "EISDIR" && code(error) !== "EPERM") throw error;
+  const unlinked = (fd, entry) => {
+    try {
+      unlinkSync(at(fd, entry));
+      return true;
+    } catch (error) {
+      if (code(error) === "ENOENT") return true;
+      if (code(error) !== "EISDIR" && code(error) !== "EPERM") throw error;
+      return false;
+    }
+  };
+  const queue = [name];
+  while (queue.length > 0) {
+    const current = queue.pop();
+    if (unlinked(dirFd, current)) continue;
+    const fd = openSync(at(dirFd, current), DIR_FLAGS);
+    try {
+      for (const inner of namesIn(fd)) {
+        if (unlinked(fd, inner)) continue;
+        const hoisted = `.juno-removing-${randomBytes(12).toString("hex")}`;
+        renameSync(at(fd, inner), at(dirFd, hoisted));
+        queue.push(hoisted);
+      }
+    } finally {
+      closeSync(fd);
+    }
+    rmdirSync(at(dirFd, current));
   }
-  const fd = openSync(at(dirFd, name), DIR_FLAGS);
-  try {
-    for (const inner of namesIn(fd)) remove(fd, inner);
-  } finally {
-    closeSync(fd);
-  }
-  rmdirSync(at(dirFd, name));
 }
 
 function sameBytes(dirFd, name, sha256) {
@@ -461,7 +527,23 @@ export async function main(argv, input) {
   try {
     const identity = fstatSync(baseFd, { bigint: true });
     if (String(identity.dev) !== dev || String(identity.ino) !== ino) return early("the folder mounted for the workspace is not the one JUNO opened (it was replaced); nothing was read or changed");
-    const opened = openRootAt(baseFd, root);
+    let request = null;
+    if (op === "check" || op === "restore") {
+      try {
+        request = JSON.parse(await input());
+      } catch {
+        return early("the request is not JSON; nothing was changed");
+      }
+    } else if (op !== "checkpoint") return answer({ error: `unknown operation ${String(op)}` });
+    let opened = openRootAt(baseFd, root);
+    // A restore of a session root that was removed altogether (an allowed `rm -rf`, say) makes it again, once the
+    // checkpoint is known to be one it can restore; from then on the folder has changed (review round 8, D-232).
+    if (!opened.ok && opened.missing === true && op === "restore") {
+      const valid = wanted(request?.manifest);
+      if (typeof valid === "string") return early(valid);
+      opened = openRootAt(baseFd, root, { make: true });
+      if (!opened.ok) return answer(opened.made === true ? { failed: opened.reason } : { refused: [opened.reason] });
+    }
     if (!opened.ok) return early(opened.reason);
     try {
       if (op === "checkpoint") {
@@ -471,19 +553,12 @@ export async function main(argv, input) {
         if (!listed.ok) return answer({ error: listed.reason });
         return answer({ manifest: listed.manifest, contents: Object.fromEntries([...listed.contents].map(([hash, data]) => [hash, data.toString("base64")])) });
       }
-      let request;
+      if (op === "check") return answer({ refusals: restoreRefusals(opened.fd, request?.manifest) });
+      const refusals = restoreRefusals(opened.fd, request?.manifest);
+      if (refusals.length > 0) return answer(opened.made === true ? { failed: refusals.join("; ") } : { refused: refusals });
+      const contents = request?.contents !== null && typeof request?.contents === "object" ? request.contents : {};
       try {
-        request = JSON.parse(await input());
-      } catch {
-        return early("the request is not JSON; nothing was changed");
-      }
-      if (op === "check") return answer({ refusals: restoreRefusals(opened.fd, request.manifest) });
-      if (op !== "restore") return answer({ error: `unknown operation ${String(op)}` });
-      const refusals = restoreRefusals(opened.fd, request.manifest);
-      if (refusals.length > 0) return answer({ refused: refusals });
-      const contents = request.contents !== null && typeof request.contents === "object" ? request.contents : {};
-      try {
-        restoreTree(opened.fd, request.manifest, (hash) => (typeof contents[hash] === "string" ? Buffer.from(contents[hash], "base64") : Buffer.alloc(0)));
+        restoreTree(opened.fd, request?.manifest, (hash) => (typeof contents[hash] === "string" ? Buffer.from(contents[hash], "base64") : Buffer.alloc(0)));
       } catch (error) {
         return answer({ failed: `the restore stopped part way: ${error instanceof Error ? error.message : String(error)}` });
       }
