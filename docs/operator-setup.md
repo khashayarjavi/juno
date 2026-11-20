@@ -298,12 +298,12 @@ Part E comes before Part D because Part D's push key is made inside WSL.
     sudo install -d -o juno-runner -g juno-hook -m 2750 /var/lib/juno-hook
     sudo install -d -o juno-agent -g juno-agent -m 0755 /srv/juno-work
     sudo install -d -o juno-runner -g juno-runner -m 0700 /var/lib/juno-runner/checkpoints
-    sudo setfacl -R -m u:juno-runner:rwX,u:juno-agent:rwX /srv/juno-work
-    sudo setfacl -R -d -m u:juno-runner:rwx,u:juno-agent:rwx /srv/juno-work
+    sudo -u juno-agent setfacl -m u:juno-runner:rwx,u:juno-agent:rwx /srv/juno-work
+    sudo -u juno-agent setfacl -d -m u:juno-runner:rwx,u:juno-agent:rwx /srv/juno-work
     ls -ld /opt/juno /opt/juno/dist/mediated/src /opt/juno/dist/mediated/definitions /var/lib/juno-runner /var/lib/juno-hook /srv/juno-work
     getfacl -p /srv/juno-work
     ```
-    The two `setfacl` lines give `juno-runner` the right to change everything in the workspace, now and everything created there later, whatever program creates it. That is what lets you undo a session's changes (`juno checkpoint restore`, run as `juno-runner`; see "Undo what Claude did in a session"). JUNO refuses to admit a session with a reversible workspace that `juno-runner` could not restore (D-221).
+    The two `setfacl` lines give `juno-runner` the right to change everything in the workspace, now and everything created there later, whatever program creates it. They run **as `juno-agent`** (`sudo -u juno-agent`), never as root: the workspace is `juno-agent`'s, and a root command there could be sent through a link `juno-agent` planted to change files elsewhere, even JUNO's own (D-226). The same holds for every command this guide gives over `/srv/juno-work`. That is what lets you undo a session's changes (`juno checkpoint restore`, run as `juno-runner`; see "Undo what Claude did in a session"). JUNO refuses to admit a session with a reversible workspace that `juno-runner` could not restore (D-221).
     `make build` (not `tsc` alone) also copies the capability definitions the hook service needs beside the built code (D-197), and leaves everything it builds writable by root alone (D-219). Then:
     ```
     find /opt/juno /opt/node22 ! -type l -perm /022 -print
@@ -533,7 +533,13 @@ An empty project gives an empty checkpoint: if `/srv/juno-work/project` held not
    ```
    /opt/node22/bin/node /opt/juno/dist/runner/src/juno.js checkpoint restore --journal /var/lib/juno-runner/journal --checkpoints /var/lib/juno-runner/checkpoints --workspace /srv/juno-work --principal <principal> <task id> <checkpoint>
    ```
-   **Check:** it prints `"ok": true` and the folder. If it prints `"ok": false`, read the `reason`; a reason ending `nothing was changed` changed nothing. The most common one, `juno-runner cannot read, change and enter ...`, means a folder in the workspace lost the access list of Part E step 12; run that step's two `setfacl` lines again (admin terminal) and restore again. A reason naming `a set-user-ID, set-group-ID or sticky bit` means a folder in the workspace carries one: remove it in the admin terminal with `sudo chmod u-s,g-s,o-t <that folder>` and restore again.
+   **Check:** it prints `"ok": true` and the folder. If it prints `"ok": false`, read the `reason`; a reason ending `nothing was changed` changed nothing. The most common one, `juno-runner cannot read, change and enter "<folder>"`, means that folder lost the access list of Part E step 12. A reason naming `a set-user-ID, set-group-ID or sticky bit` means that folder carries one. Either way, fix that one folder **as `juno-agent`, never with plain `sudo`** (a root command there could be sent through a link to change files elsewhere, D-226). Admin terminal, with `<folder>` the full path, `/srv/juno-work/` followed by the `root` part after `/work/` and the folder the reason names (for example `/srv/juno-work/project/locked`):
+   ```
+   sudo -u juno-agent chmod u-s,g-s,o-t <folder>
+   sudo -u juno-agent setfacl -m u:juno-runner:rwx,u:juno-agent:rwx <folder>
+   sudo -u juno-agent setfacl -d -m u:juno-runner:rwx,u:juno-agent:rwx <folder>
+   ```
+   Then restore again; if it names another folder, fix that one the same way. If a line prints `Operation not permitted`, send the agent the restore's reason and that line.
 4. **Start the service again:** `systemctl --user start juno-hook.service`. The session goes on, with what it had used.
 
 A checkpoint taken by a JUNO from before this version (commit 6706b5a and earlier) does not record its folder, and the restore refuses it (`does not record the host folder it was taken in`). A session admitted before the upgrade goes on, but since its changes cannot be undone, JUNO parks its writes (`integrity_floor`); admit a new session (Part G steps 2 and 5) to write again. Sessions admitted after the upgrade are restorable.
@@ -617,11 +623,11 @@ For a machine where JUNO is already installed (Parts A to G done). The agent giv
 6. **Once, for the upgrade from 6706b5a (or earlier) only: the workspace's access list.** Admin terminal:
    ```
    sudo apt install -y acl
-   sudo setfacl -R -m u:juno-runner:rwX,u:juno-agent:rwX /srv/juno-work
-   sudo setfacl -R -d -m u:juno-runner:rwx,u:juno-agent:rwx /srv/juno-work
+   sudo -u juno-agent setfacl -R -m u:juno-runner:rwX,u:juno-agent:rwX /srv/juno-work
+   sudo -u juno-agent setfacl -R -d -m u:juno-runner:rwx,u:juno-agent:rwx /srv/juno-work
    getfacl -p /srv/juno-work
    ```
-   **Check:** as in Part E step 12. Without it, a session with `reversible_workspaces` is refused at admission (`could not be restored by the runner`).
+   The two `setfacl` lines run as `juno-agent`, never as root, for Part E step 12's reason (D-226): everything in the workspace is `juno-agent`'s, so they need nothing more. **Check:** as in Part E step 12, and neither `setfacl` line printed anything. If one prints `Operation not permitted`, send the agent the line. Without it, a session with `reversible_workspaces` is refused at admission (`could not be restored by the runner`).
 7. **Check the separation**, admin terminal: Part G step 4's `hook check`. **Check:** as there.
 8. **Start JUNO again.** Runner terminal:
    ```

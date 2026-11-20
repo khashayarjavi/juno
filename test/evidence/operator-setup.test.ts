@@ -287,7 +287,8 @@ describe("the guide after the field report of the first real install (issue #59;
     expect(guide).toContain("Set-ItemProperty $key.PSPath -Name DefaultUid -Value ([int]$uid)");
     expect(guide).toContain("findmnt -t drvfs,9p,virtiofs");
     expect(guide).not.toContain("`ls /mnt/c` prints `No such file or directory`;");
-    expect(guide).toContain("sudo setfacl -R -d -m u:juno-runner:rwx,u:juno-agent:rwx /srv/juno-work");
+    expect(guide).toContain("sudo -u juno-agent setfacl -d -m u:juno-runner:rwx,u:juno-agent:rwx /srv/juno-work");
+    expect(guide).toContain("sudo -u juno-agent setfacl -R -d -m u:juno-runner:rwx,u:juno-agent:rwx /srv/juno-work");
     expect(guide).toContain("run `claude auth login`");
     expect(guide).toContain("**Never copy Claude Code's credentials file");
     expect(guide).toContain("**One admitted session is one Claude Code run.**");
@@ -298,6 +299,16 @@ describe("the guide after the field report of the first real install (issue #59;
       expect(upgrade, line).toContain(line);
     }
     expect(upgrade).not.toMatch(/rm -rf \/var\/lib\/juno-runner|rm -rf \/etc\/juno/);
+  });
+
+  // proves D-226 (review round 4 of PR #60): no step runs a root command that changes anything under the workspace,
+  // which the Claude Code user controls and could send through a link; every such step runs as juno-agent
+  it("never has root change anything under the workspace", () => {
+    const changing = /^\s*sudo\s+(?!-u juno-agent\b)(?:env\s+\S+\s+)?(setfacl|chmod|chown|chgrp|rm|mv|cp|tee|install|mkdir|touch|ln)\b/;
+    const offending = guide.split("\n").filter((line) => changing.test(line) && /\/srv\/juno-work|<folder>/.test(line) && !/install -d -o juno-agent -g juno-agent -m 0755 \/srv\/juno-work$/.test(line.trim()));
+    expect(offending).toEqual([]);
+    expect(guide).toContain("sudo -u juno-agent chmod u-s,g-s,o-t <folder>");
+    expect(guide).not.toContain("with `sudo chmod u-s,g-s,o-t");
   });
 
   // proves item 2 of 1.5-field: the example session file names a reversible workspace, with a comment saying what it does
