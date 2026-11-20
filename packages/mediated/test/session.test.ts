@@ -317,6 +317,31 @@ describe("§2.2.2 in hook mode", () => {
     expect(await call("Write", { file_path: join(work, "project", "e.txt"), content: "e" })).toEqual({ decision: "none" });
   });
 
+  // proves D-240 (review round 14 on PR #62; D-234 ruling 1): before every write JUNO runs the restore's own check on the
+  // folder holding the workspace, reading its case-folding attribute itself (never inferring it from a name a session
+  // chose). Once that folder carries the attribute, the next Write parks with the reason; without it, Writes proceed.
+  // (This machine cannot mount a case-folding file system, so the attribute is reported by the file-system reader.)
+  it("parks a Write once the folder holding the workspace has the case-folding attribute", async () => {
+    let folds = false;
+    const system = systemFilesystemIo();
+    const reader = { ...system, attributes: async (dirs: readonly string[]) => (folds && dirs.includes(work) ? { ok: true as const, flags: dirs.map((folder) => (folder === work ? "----F----" : "---------")) } : system.attributes(dirs)) };
+    const store = new CheckpointStore(join(dir, "checkpoints"));
+    const other = new MediatedSessions({ layer, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), view: new HostReadView(work), filesystem: reader, clock: () => now, checkpoints: { workspace: new SealedWorkspace(work, unsealedLauncher), store } });
+    expect(await other.admit(request({ session_id: "fold-1", reversible_workspaces: ["/work/project"] }))).toMatchObject({ admitted: true });
+    const write = async (name: string): Promise<unknown> => {
+      const asked = { ...(pre("Write", { file_path: join(work, "project", name), content: "x" }) as Record<string, unknown>), session_id: "fold-1", tool_use_id: `toolu_${name}` };
+      const decision = await other.preToolUse(asked);
+      if ((decision as HookDecision).decision !== "deny") expect(await other.postToolUse(post(asked))).toEqual({ recorded: true });
+      return decision;
+    };
+    expect(await write("a.txt")).toEqual({ decision: "none" });
+    folds = true;
+    expect(await write("b.txt")).toMatchObject({ decision: "deny", reason: expect.stringContaining("integrity_floor") });
+    expect(JSON.stringify(readTrajectory(journal.root, "session-fold-1").map(payload))).toContain("has the case-folding attribute (chattr +F)");
+    folds = false;
+    expect(await write("c.txt")).toEqual({ decision: "none" });
+  });
+
   // proves D-158 (autopilot ruling) in hook mode: inside the checkpointed workspace, a Write to a file that has a second
   // name outside it is irreversible (a restore would not undo it there) and parks integrity_floor; an ordinary file proceeds
   it("parks a Write to a hard-linked file inside the checkpointed workspace", async () => {

@@ -1,3 +1,4 @@
+import { dirname } from "node:path";
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
@@ -411,9 +412,17 @@ export class MediatedSessions {
    * store no longer holds is one JUNO cannot undo, with the reason; a write there is not reversible. One lstat per
    * content file of the checkpoint (at most its 2,000 entries), never a read.
    */
-  #unrestorable(session: Session): Record<string, string> {
+  async #unrestorable(session: Session): Promise<Record<string, string>> {
     const found: Record<string, string> = {};
     for (const root of session.reversible) {
+      // D-240 (review round 14 on PR #62): the very check the restore refuses with (D-237), on the folder holding the
+      // session's folder: its file system and its case-folding attribute (read with lsattr), never inferred from a name.
+      const holding = this.#view.viewRoot + dirname(root).slice("/work".length);
+      const folding = await caseFoldingRefusals([{ what: "the folder holding the session's folder", path: holding }], this.#filesystem, { tree: false });
+      if (folding.length > 0) {
+        found[root] = folding.join("; ");
+        continue;
+      }
       const hashes = session.undo.get(root);
       if (hashes === undefined) {
         found[root] = "JUNO holds no checkpoint of it";
@@ -724,7 +733,7 @@ export class MediatedSessions {
     const reads = await this.#classify(session, TOOLS[input.tool_name]?.reads(judgedValue(mapped.proposal.arguments, mapped.constants)) ?? [unknown(input.tool_name)]);
 
     const constants = mapped.constants;
-    const base: TaskContext = { task: { ...session.task, sensitivity_floor: session.floor }, constants, synthesis: { sensitivity: session.floor }, reversible: session.reversible, unrestorable: this.#unrestorable(session), readGate: { reads, clearance: session.request.provider_clearance } };
+    const base: TaskContext = { task: { ...session.task, sensitivity_floor: session.floor }, constants, synthesis: { sensitivity: session.floor }, reversible: session.reversible, unrestorable: await this.#unrestorable(session), readGate: { reads, clearance: session.request.provider_clearance } };
     const canonical: CanonicalPaths = await this.#resolver.resolve(built.boundary.pathsToResolve(base, mapped.proposal));
     const verdict: Verdict = built.boundary.authorize({ ...base, canonical }, mapped.proposal);
     if (verdict.outcome === "proceed") {

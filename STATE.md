@@ -3,7 +3,16 @@
 ## Current increment
 **1.5-field — the field report of the first real install (issue [khashayarjavi/juno#59](https://github.com/khashayarjavi/juno/issues/59)), authorised by you on 2026-11-20 (D-220); your rulings on PR #60 (D-228) and on D-233 (D-234).** Branch `claude/gallant-turing-8s7bma` (this session's only pushable branch, D-234). It carries PR [khashayarjavi/juno#61](https://github.com/khashayarjavi/juno/pull/61)'s thirty-two commits unchanged; its draft PR supersedes #61, and review rounds 10 to 14 run there. Spec v0.6.1. No objection open.
 
-Status (2026-11-20, this session): **your rulings on D-233 built (D-234, D-235); CI's red test explained and fixed. Draft PR [khashayarjavi/juno#62](https://github.com/khashayarjavi/juno/pull/62): review rounds 10 to 13 each ended DO NOT MERGE with one finding, fixed as D-236 to D-239. `make verify: GREEN` on the fix (1,492 unit, 138 container). Review round 14 (the last you authorised) next.**
+Status (2026-11-20, this session): **STOP after review round 14 on PR [khashayarjavi/juno#62](https://github.com/khashayarjavi/juno/pull/62) — your decision needed (D-240).** The last round you authorised ended DO NOT MERGE. Its finding is fixed and `make verify` is GREEN on the fix (1,493 unit, 138 container), but the fix is not reviewed, so nothing was merged. main is unchanged at 6706b5a; your machine is unaffected.
+
+### STOP after review round 14 (D-240)
+- **Why this is a STOP.** Your ruling 5 authorised rounds 10 to 14. Round 14 ended DO NOT MERGE, and a fix nobody reviews cannot pass the merge gate.
+- **Round 14's finding, in plain words.** It needs a disk made to ignore letter case, an ext4 option the guide's setup does not use. On such a disk, the Claude Code user could empty `/srv/juno-work`, switch it to ignore case, and leave one oddly named file in it (a Turkish dotless `ı`, or a name that is not valid text). JUNO's check before each write then wrongly concluded the folder was case-sensitive, so writes proceeded while the undo would refuse.
+- **What I built anyway, not reviewed:** before every write, JUNO now runs the undo's own check on the folder holding the project, reading its case setting directly (`lsattr`) instead of inferring it from a file name. So the check before a write and the undo can no longer disagree on that folder.
+- **Your decision, recommended first:**
+  1. **Authorise one or more further review rounds on PR #62.**
+  2. **Accept this as a recorded limit** (it needs the special disk option and the Claude Code user emptying the workspace), and merge on the next MERGE.
+  3. Direct otherwise.
 
 ### Why CI was red on 0b7285d, in plain words (D-235)
 - Only the `verify` job failed; both rootless jobs passed the same test. `verify` uses a root-run Docker, which puts every container under an AppArmor profile. AppArmor refuses to look up a file whose full path is longer than about 4,096 characters: some 2,000 levels of `d/`. The old undo looked up every level of the 8,000-level folder, so it was refused there. This session's machine has no AppArmor, so the test passed here.
@@ -40,7 +49,9 @@ Status (2026-11-20, this session): **your rulings on D-233 built (D-234, D-235);
 
 - **Round 13** (4e84b49): DO NOT MERGE. Round 12's fix missed one case: with the project folder moved away, the folder holding it was not asked. This repeats round 12's mechanism, which the standing rule would make a STOP, but your ruling 3 names this exact form as a fix (D-239 says so). Fixed (D-239): the last existing folder on the path is asked too.
 
-**Left, in order:** review round 14; the merge gate; then STOP and report the merge commit hash and your upgrade steps; close issue #59.
+- **Round 14** (08ad3c4): DO NOT MERGE; the STOP above (D-240).
+
+**Left, in order:** your decision on D-240; then further review rounds if you authorise them; the merge gate; then STOP and report the merge commit hash and your upgrade steps; close issue #59.
 
 ### STOP after review round 9 (D-233) — ruled on by you (D-234)
 - **Why this is a STOP.** Your ruling 2 makes a finding whose mechanism is recorded in DECISIONS.md a STOP. Round 9's mechanism is D-221's own recorded refusal: the undo refuses a workspace of more than 200,000 entries (and one with a mount inside).
