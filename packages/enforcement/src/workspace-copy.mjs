@@ -170,6 +170,8 @@ export function listTree(rootFd, options = {}) {
           walk(child, path);
           continue;
         }
+        // A file with no name left was replaced while it was held (review round 6 on PR #61): changed, not a hard link.
+        if (held.nlink === 0) fail(`${JSON.stringify(path)} changed while it was listed`);
         if (held.nlink !== 1) fail(`${JSON.stringify(path)} has ${String(held.nlink)} names (a hard link): JUNO takes a file from a workspace only when it has one name there and nowhere else; copy it so it has one (D-157, D-228)`);
         if (options.strict === true && (held.uid !== uid || (held.mode & 0o7777) !== FILE_MODE)) fail(`${JSON.stringify(path)} is not the runner's own file with mode ${octal(FILE_MODE)}`);
         if (held.size + bytes > MAX_BYTES) fail(`the workspace holds more than ${String(MAX_BYTES)} bytes`);
@@ -433,17 +435,20 @@ export function restoreTree(rootFd, manifest, content, options = {}) {
 export async function main(argv, input) {
   const [op, base, root, dev, ino] = argv;
   const answer = (value) => process.stdout.write(JSON.stringify(value));
+  // What is said before anything could have changed. For a restore that is `refused`: the one answer JUNO reads as
+  // "nothing was changed"; any other end of a restore run (an error later, no answer at all) counts as changed (D-230).
+  const early = (reason) => answer(op === "restore" ? { refused: [reason] } : { error: reason });
   let baseFd;
   try {
     baseFd = openSync(base, DIR_FLAGS);
   } catch (error) {
-    return answer({ error: `the workspace cannot be opened as a folder (${code(error)}); nothing was read or changed` });
+    return early(`the workspace cannot be opened as a folder (${code(error)}); nothing was read or changed`);
   }
   try {
     const identity = fstatSync(baseFd, { bigint: true });
-    if (String(identity.dev) !== dev || String(identity.ino) !== ino) return answer({ error: "the folder mounted for the workspace is not the one JUNO opened (it was replaced); nothing was read or changed" });
+    if (String(identity.dev) !== dev || String(identity.ino) !== ino) return early("the folder mounted for the workspace is not the one JUNO opened (it was replaced); nothing was read or changed");
     const opened = openRootAt(baseFd, root);
-    if (!opened.ok) return answer({ error: opened.reason });
+    if (!opened.ok) return early(opened.reason);
     try {
       if (op === "checkpoint") {
         // The copy's mount is read-only, where the kernel answers every write test "no": whether the runner could
@@ -456,7 +461,7 @@ export async function main(argv, input) {
       try {
         request = JSON.parse(await input());
       } catch {
-        return answer({ error: "the request is not JSON; nothing was changed" });
+        return early("the request is not JSON; nothing was changed");
       }
       if (op === "check") return answer({ refusals: restoreRefusals(opened.fd, request.manifest) });
       if (op !== "restore") return answer({ error: `unknown operation ${String(op)}` });

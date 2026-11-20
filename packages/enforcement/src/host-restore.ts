@@ -157,14 +157,15 @@ export class SealedWorkspace {
     this.#launch = launch;
   }
 
-  async #run(op: SealedRequest["op"], root: string, input: string | null): Promise<SealedAnswer> {
+  /** The program's answer; `{ notLaunched }` when JUNO refused before starting the sealed context, so nothing could change. */
+  async #run(op: SealedRequest["op"], root: string, input: string | null): Promise<SealedAnswer | { notLaunched: string }> {
     const refusals = workspaceRefusals(this.workspace);
-    if (refusals.length > 0) return { error: `${refusals.join("; ")}; nothing was read or changed` };
+    if (refusals.length > 0) return { notLaunched: `${refusals.join("; ")}; nothing was read or changed` };
     let fd: number;
     try {
       fd = openSync(this.workspace, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
     } catch (error: unknown) {
-      return { error: `the workspace ${this.workspace} cannot be opened as a folder (${error instanceof Error && "code" in error ? String(error.code) : "error"}); nothing was read or changed` };
+      return { notLaunched: `the workspace ${this.workspace} cannot be opened as a folder (${error instanceof Error && "code" in error ? String(error.code) : "error"}); nothing was read or changed` };
     }
     // The handle stays open while the sealed program runs, so the identity it compares names this very folder.
     try {
@@ -200,6 +201,7 @@ export class SealedWorkspace {
 
   async #copy(root: string): Promise<{ ok: true; snapshot: Snapshot } | { ok: false; reason: string }> {
     const answer = await this.#run("checkpoint", root, null);
+    if ("notLaunched" in answer) return { ok: false, reason: answer.notLaunched };
     if ("error" in answer) return { ok: false, reason: answer.error };
     if (!("manifest" in answer)) return { ok: false, reason: "the sealed copy context gave no checkpoint" };
     const contents = new Map<string, Buffer>();
@@ -216,7 +218,7 @@ export class SealedWorkspace {
   async check(root: string, manifest: readonly ManifestEntry[]): Promise<readonly string[]> {
     const answer = await this.#run("check", root, JSON.stringify({ manifest }));
     if ("refusals" in answer) return answer.refusals;
-    return ["error" in answer ? answer.error : "the sealed copy context gave no answer"];
+    return ["notLaunched" in answer ? answer.notLaunched : "error" in answer ? answer.error : "the sealed copy context gave no answer"];
   }
 
   /** Writes `manifest` back to `root`, with each file's bytes from `content`, then compares the folder with it. */
@@ -228,8 +230,13 @@ export class SealedWorkspace {
       return { ok: false, changed: false, reason: `${error instanceof Error ? error.message : String(error)}; nothing was changed` };
     }
     const answer = await this.#run("restore", root, JSON.stringify({ manifest, contents }));
-    if ("refused" in answer) return { ok: false, changed: false, reason: `${answer.refused.join("; ")}; nothing was changed` };
-    if ("error" in answer) return { ok: false, changed: false, reason: answer.error };
+    const unchanged = (reason: string): string => (/nothing was (read or )?changed$/.test(reason) ? reason : `${reason}; nothing was changed`);
+    // D-230 (review round 6 on PR #61): only a refusal before the sealed context started, or the program's own
+    // `refused` (said before its first change), means nothing was changed. Any other end of a restore run (the program's
+    // later error, a run killed part way with no answer, an answer JUNO cannot read) may have changed the folder: failed.
+    if ("notLaunched" in answer) return { ok: false, changed: false, reason: unchanged(answer.notLaunched) };
+    if ("refused" in answer) return { ok: false, changed: false, reason: unchanged(answer.refused.join("; ")) };
+    if ("error" in answer) return { ok: false, changed: true, reason: `${answer.error} (the folder may be part restored)` };
     if ("failed" in answer) return { ok: false, changed: true, reason: answer.failed };
     if (!("restored" in answer)) return { ok: false, changed: true, reason: "the sealed copy context gave no answer" };
     return sameManifest(answer.restored, manifest) ? { ok: true } : { ok: false, changed: true, reason: "the folder after the restore differs from the checkpoint" };

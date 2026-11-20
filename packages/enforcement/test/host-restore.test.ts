@@ -308,6 +308,26 @@ describe("JUNO takes only files and folders from a workspace (operator ruling 2 
     expect(existsSync(join(dir, "decoy", "project", "notes.txt"))).toBe(false);
   });
 
+  // proves D-230 (review round 6 on PR #61): a restore run that ends without its program's own answer (killed part way,
+  // as an out-of-memory kill or a dying daemon would) is never reported as "nothing was changed": it may have changed
+  // the folder, so it is a failure, which the restore command journals as `failed`
+  it("never reports a restore cut off part way as one that changed nothing", async () => {
+    const manifest = await checkpoint();
+    writeFileSync(join(work, "project", "created.txt"), "new\n");
+    const cutOff: SealedLauncher = async (request) => {
+      const result = await unsealedLauncher(request);
+      // The program ran and changed the folder; its answer never arrived.
+      return { exitCode: 137, stdout: result.stdout.slice(0, 7), stderr: "" };
+    };
+    const outcome = await new SealedWorkspace(work, cutOff).restore("/work/project", manifest, (hash) => store.get(hash));
+    expect(outcome).toMatchObject({ ok: false, changed: true });
+    expect(outcome.ok ? "" : outcome.reason).not.toContain("nothing was changed");
+    const silent: SealedLauncher = () => Promise.resolve({ exitCode: 137, stdout: "", stderr: "" });
+    expect(await new SealedWorkspace(work, silent).restore("/work/project", manifest, (hash) => store.get(hash))).toMatchObject({ ok: false, changed: true });
+    // Refusals before the context starts, and the program's own refusals before any change, still say so.
+    expect(await new SealedWorkspace(join(dir, "missing"), unsealedLauncher).restore("/work/project", manifest, (hash) => store.get(hash))).toMatchObject({ ok: false, changed: false });
+  });
+
   // proves D-228: the read view lists names, kinds and link targets for classifying a read, and never opens a file
   it("the read view never reads a file's bytes", async () => {
     symlinkSync("notes.txt", join(work, "project", "link"));
