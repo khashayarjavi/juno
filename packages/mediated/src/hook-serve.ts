@@ -121,12 +121,12 @@ export async function runHookServeCli(args: readonly string[], io: HookServeIo):
   // THE shared start-up check, before anything is opened; the two checks above open nothing either (D-193, D-194).
   let layer: SessionLayer;
   try {
-    layer = await SessionLayer.open(hookStartupSpec({ socket, control, journal, anchor, workspace, checkpoints, protect, anchoring }), { host: io.host, anchoring: io.anchoring ?? ((root, pin) => gitAnchoring(anchoring, root, pin)) });
+    layer = await SessionLayer.open(hookStartupSpec({ socket, control, journal, anchor, workspace, checkpoints, protect, anchoring }), { host: io.host, lockJournal: true, anchoring: io.anchoring ?? ((root, pin) => gitAnchoring(anchoring, root, pin)) });
   } catch (error: unknown) {
     return refused(io, "serve", error instanceof StartupRefused ? error.refusals : [error instanceof Error ? error.message : String(error)]);
   }
   const trust = layer.anchor;
-  if (trust === null) return refused(io, "serve", ["no verified trust anchor (D-194)"]);
+  if (trust === null) { layer.releaseLock(); return refused(io, "serve", ["no verified trust anchor (D-194)"]); }
   const grants = new GrantStore(trust);
   const view = new Workspace(execFileScript(process.execPath, []), "/work", workspace);
   const gateway = options.get("--gateway");
@@ -143,7 +143,7 @@ export async function runHookServeCli(args: readonly string[], io: HookServeIo):
       ...(gateway === undefined ? {} : { gateway: { server: gateway } }),
     });
   } catch (error: unknown) {
-    return refused(io, "serve", [error instanceof Error ? error.message : String(error)]);
+    { layer.releaseLock(); return refused(io, "serve", [error instanceof Error ? error.message : String(error)]); }
   }
   // 0660: the runner and the socket folder's group, through which the Claude Code user's hook connects (D-173).
   const hook = new HookService(sessions, { socketMode: 0o660 });
@@ -153,7 +153,7 @@ export async function runHookServeCli(args: readonly string[], io: HookServeIo):
     await admission.listen(control);
   } catch (error: unknown) {
     await Promise.all([hook.close(), admission.close()]);
-    return refused(io, "serve", [error instanceof Error ? error.message : String(error)]);
+    { layer.releaseLock(); return refused(io, "serve", [error instanceof Error ? error.message : String(error)]); }
   }
   // §3.4.1 (D-198): every record is anchored at most one interval after it is written, and once more when the service stops.
   layer.startAnchoring();

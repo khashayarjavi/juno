@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync } from "node:fs";
+import { closeSync, readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import {
@@ -25,6 +25,8 @@ import {
   type SessionLimits,
   type Workspace,
   checkpointId,
+  hostRestoreRefusals,
+  openWorkspaceRoot,
   GrantStore,
   type PathResolver,
   type TaskContext,
@@ -537,13 +539,21 @@ export class MediatedSessions {
     });
     // §2.2.2: each reversible workspace is checkpointed now, before the session's first effect; one that cannot be is refused.
     const reversible: string[] = [];
-    const checkpoints: { root: string; checkpoint: string; manifest: unknown }[] = [];
+    const checkpoints: { root: string; checkpoint: string; manifest: unknown; workspace: string }[] = [];
     for (const root of request.reversible_workspaces) {
       const resolved = (await this.#resolver.resolve([root])).get(root);
       const taken = resolved?.ok === true && resolved.canonical === root && this.#checkpoints !== undefined ? await this.#checkpoints.workspace.list(root, true) : null;
       if (taken === null || !taken.ok) return { admitted: false, failures: [`reversible workspace ${root} could not be checkpointed${taken === null ? "" : `: ${taken.reason}`}`] };
+      // D-221: §2.2.2 counts the workspace reversible only if restoring the checkpoint is possible: the operator's restore
+      // runs as the runner, so the runner (this service) must be able to change every folder in it. One it could not
+      // restore is refused now, before any effect, never discovered at the restore.
+      const opened = openWorkspaceRoot(this.#view.viewRoot, root);
+      const unrestorable = opened.ok ? hostRestoreRefusals(opened.fd, taken.snapshot.manifest) : [opened.reason];
+      if (opened.ok) closeSync(opened.fd);
+      if (unrestorable.length > 0) return { admitted: false, failures: unrestorable.map((why) => `reversible workspace ${root} could not be restored by the runner, so it is not reversible (§2.2.2, D-221): ${why}`) };
       for (const bytes of taken.snapshot.contents.values()) this.#checkpoints?.store.put(bytes);
-      checkpoints.push({ root, checkpoint: checkpointId(root, taken.snapshot.manifest), manifest: taken.snapshot.manifest });
+      // `workspace`: the host folder the checkpoint was taken in, which `juno checkpoint restore --workspace` must match (D-221).
+      checkpoints.push({ root, checkpoint: checkpointId(root, taken.snapshot.manifest), manifest: taken.snapshot.manifest, workspace: this.#view.viewRoot });
       reversible.push(root);
     }
     this.#registries.set(id, built);
