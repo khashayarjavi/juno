@@ -262,7 +262,8 @@ export function restoreRefusals(rootFd, manifest, options = {}) {
       try {
         stats = lstatSync(at(fd, name));
       } catch (error) {
-        refusals.push(`${JSON.stringify(path)} cannot be read (${code(error)})`);
+        // A name gone between the listing and its look-up was changed while the folder was judged (still a refusal).
+        refusals.push(code(error) === "ENOENT" ? `${JSON.stringify(path)} changed while it was listed (ENOENT)` : `${JSON.stringify(path)} cannot be read (${code(error)})`);
         return;
       }
       if (!stats.isDirectory()) continue;
