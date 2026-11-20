@@ -6,7 +6,8 @@ import { join, relative } from "node:path";
 import fc from "fast-check";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { type Sensitivity, maxSensitivity, pathWithin, sensitivityRank } from "../../contracts/src/index.js";
-import { CheckpointStore, GrantStore, HostPathResolver, Workspace, execFileScript } from "../../enforcement/src/index.js";
+import { CheckpointStore, GrantStore, HostPathResolver, HostReadView, SealedWorkspace } from "../../enforcement/src/index.js";
+import { unsealedLauncher } from "../../enforcement/test/sealed.js";
 import { readPayload, readTrajectory } from "../../journal/src/index.js";
 import { openTestLayer } from "../../enforcement/test/layer.js";
 import type { SessionLayer } from "../../enforcement/src/index.js";
@@ -92,7 +93,7 @@ beforeAll(async () => {
       revoked_at: null,
     }),
   );
-  const view = new Workspace(execFileScript(process.execPath, []), "/work", work);
+  const view = new HostReadView(work);
   sessions = new MediatedSessions({
     layer,
     grants,
@@ -101,7 +102,7 @@ beforeAll(async () => {
     view,
     filesystem: systemFilesystemIo(),
     clock: () => T0,
-    checkpoints: { workspace: view, store: new CheckpointStore(join(state, "checkpoints")) },
+    checkpoints: { workspace: new SealedWorkspace(work, unsealedLauncher), store: new CheckpointStore(join(state, "checkpoints")) },
   });
 });
 
@@ -262,7 +263,7 @@ const CALLS: Readonly<Record<string, (built: ReturnType<typeof build>) => readon
   WebFetch: (b) => [{ url: `file://${b.host}`, prompt: "summarise" }],
 };
 
-type Tally = { proceeded: Map<string, number>; keptBelowHighest: number; keptThroughShortcut: number; compared: number; opened: number };
+type Tally = { proceeded: Map<string, number>; keptBelowHighest: number; keptThroughShortcut: number; compared: number; opened: number; unreversible: number };
 
 async function check(s: Scenario, tally: Tally): Promise<void> {
   const built = build(s);
@@ -282,7 +283,7 @@ async function compareAt(built: { readonly runRoot: string; readonly host: strin
     if (kernel !== null) tally.opened += 1;
     // JUNO's classification of the path itself, by the one classification function (D-162).
     const asWork = toWork(built.host);
-    const view = new Workspace(execFileScript(process.execPath, []), "/work", work);
+    const view = new HostReadView(work);
     const classified = asWork === null ? HIGHEST : await classifyRead([{ kind: "tree", path: asWork }], { sources: SOURCES, resolver: new HostPathResolver(work), view });
     if (kernel !== null) {
       expect(rank(classified), `classifyRead(${built.host}) = ${classified}, the kernel opens ${kernel}`).toBeGreaterThanOrEqual(rank(kernel));
@@ -310,7 +311,15 @@ async function compareAt(built: { readonly runRoot: string; readonly host: strin
         name_map: NAME_MAP,
         reversible_workspaces: [...reversible],
       };
-      const admitted = await sessions.admit(request);
+      let admitted = await sessions.admit(request);
+      // D-228 (operator ruling 2 of 2026-11-20): JUNO takes only files and folders from a workspace, so a run folder
+      // holding a generated link or hard link is refused as a reversible workspace, before any effect, and for no other
+      // reason. The reads are then compared in a session without it, where writes park.
+      if (!admitted.admitted && reversible.length > 0) {
+        expect(admitted.failures, JSON.stringify(admitted)).toEqual([expect.stringMatching(/could not be checkpointed: .*(is a symbolic link|names \(a hard link\)).*D-228/)]);
+        tally.unreversible += 1;
+        admitted = await sessions.admit({ ...request, reversible_workspaces: [] });
+      }
       expect(admitted, JSON.stringify(admitted)).toMatchObject({ admitted: true });
       for (const [tool, calls] of Object.entries(CALLS)) {
         for (const input of calls(built)) {
@@ -363,7 +372,7 @@ describe("D-167: the kernel is the oracle for every tool in the table (§4.3 V6-
     }
   });
 
-  const tally: Tally = { proceeded: new Map(), keptBelowHighest: 0, keptThroughShortcut: 0, compared: 0, opened: 0 };
+  const tally: Tally = { proceeded: new Map(), keptBelowHighest: 0, keptThroughShortcut: 0, compared: 0, opened: 0, unreversible: 0 };
 
   // proves D-167: for generated trees and paths, JUNO never classifies, lets run below the clearance, or records a read
   // below the class of what the kernel opens
@@ -386,6 +395,8 @@ describe("D-167: the kernel is the oracle for every tool in the table (§4.3 V6-
     expect(tally.keptThroughShortcut).toBeGreaterThan(0);
     process.stdout.write(`kernel oracle: ${String(tally.compared)} paths, ${String(tally.opened)} opened, ${String(tally.keptBelowHighest)} kept below the highest, ${String(tally.keptThroughShortcut)} of them through a shortcut\n`);
     for (const tool of ["Read", "Glob", "Write", "Edit", "Bash"]) expect(tally.proceeded.get(tool) ?? 0, tool).toBeGreaterThan(0);
+    // D-228: some generated run folders held a link, so their reversible workspace was refused (and only for that).
+    expect(tally.unreversible).toBeGreaterThan(0);
   });
 
   // proves D-174 on a fixed layout, against the kernel: a node_modules/.bin layout inside `project` (file links into a
@@ -393,7 +404,7 @@ describe("D-167: the kernel is the oracle for every tool in the table (§4.3 V6-
   // `project` into `project/secrets`, from `project/secrets` into `project`, from `other/pub` into `project`, from
   // `project` into `other/pub`, and into unregistered and outside places, are never below what the kernel opens
   it("never judges a node_modules/.bin layout or a cross-source shortcut below what the kernel opens", async () => {
-    const fixed: Tally = { proceeded: new Map(), keptBelowHighest: 0, keptThroughShortcut: 0, compared: 0, opened: 0 };
+    const fixed: Tally = { proceeded: new Map(), keptBelowHighest: 0, keptThroughShortcut: 0, compared: 0, opened: 0, unreversible: 0 };
     const root = join(work, "project", "fixed-layout");
     const nm = join(root, "node_modules");
     mkdirSync(join(nm, ".bin"), { recursive: true });
@@ -422,7 +433,7 @@ describe("D-167: the kernel is the oracle for every tool in the table (§4.3 V6-
       const crossing = [join(cross, "to-secrets"), join(cross, "to-key"), `${join(cross, "to-sub")}/../key.txt`, join(cross, "to-pub"), join(cross, "to-unregistered"), join(cross, "to-outside"), cross, back, fromPub, join(fromPub, "guide.txt")];
       for (const host of [...same, ...crossing]) await compareAt(at(host), [], fixed);
       // The same-source shortcuts kept `internal`: positive controls that the refinement is live, not the safe default.
-      const view = new Workspace(execFileScript(process.execPath, []), "/work", work);
+      const view = new HostReadView(work);
       for (const host of same) {
         const asWork = toWork(host) ?? "";
         expect(await classifyRead([{ kind: "tree", path: asWork }], { sources: SOURCES, resolver: new HostPathResolver(work), view }), host).toBe("internal");
@@ -486,7 +497,7 @@ describe("D-178: a case-folded folder, against the kernel where it can fold case
       };
       const probe = await caseFoldingRefusals([{ what: "the workspace", path: work }], lookups);
       expect(probe).toEqual([expect.stringContaining("matches names without regard to case")]);
-      const refusing = new MediatedSessions({ layer, grants: new GrantStore(TEST_ANCHOR), paths: new PathMap([work]), resolver: new HostPathResolver(work), view: new Workspace(execFileScript(process.execPath, []), "/work", work), filesystem: folds(join(project, "secrets")), clock: () => T0 });
+      const refusing = new MediatedSessions({ layer, grants: new GrantStore(TEST_ANCHOR), paths: new PathMap([work]), resolver: new HostPathResolver(work), view: new HostReadView(work), filesystem: folds(join(project, "secrets")), clock: () => T0 });
       const admitted = await refusing.admit({ session_id: "casefold-described", principal: PRINCIPAL, attendance: "gated", ttl: 60_000, grants: [], budget: { tool_calls: 1, wall_clock_ms: 60_000 }, unmetered_accepted: true, provider_clearance: "secret", sources: SOURCES, name_map: NAME_MAP });
       expect(admitted).toMatchObject({ admitted: false, failures: expect.arrayContaining([expect.stringContaining("case-folding attribute")]) as unknown });
       return;
@@ -508,7 +519,7 @@ describe("D-178: a case-folded folder, against the kernel where it can fold case
       // D-178: the check and admission refuse this workspace.
       const io = systemFilesystemIo();
       expect((await caseFoldingRefusals([{ what: "the workspace", path: cfWork }], io)).join(" ")).toMatch(/case-folding attribute|without regard to case/);
-      const folded = new MediatedSessions({ layer: await openTestLayer("hook", { journal: join(state, "journal-casefold"), workspaces: [cfWork] }), grants: new GrantStore(TEST_ANCHOR), paths: new PathMap([cfWork]), resolver: new HostPathResolver(cfWork), view: new Workspace(execFileScript(process.execPath, []), "/work", cfWork), filesystem: io, clock: () => T0 });
+      const folded = new MediatedSessions({ layer: await openTestLayer("hook", { journal: join(state, "journal-casefold"), workspaces: [cfWork] }), grants: new GrantStore(TEST_ANCHOR), paths: new PathMap([cfWork]), resolver: new HostPathResolver(cfWork), view: new HostReadView(cfWork), filesystem: io, clock: () => T0 });
       const admitted = await folded.admit({ session_id: "casefold-real", principal: PRINCIPAL, attendance: "gated", ttl: 60_000, grants: [], budget: { tool_calls: 1, wall_clock_ms: 60_000 }, unmetered_accepted: true, provider_clearance: "secret", sources: SOURCES, name_map: NAME_MAP });
       expect(admitted).toMatchObject({ admitted: false });
       // D-182, past admission: every case spelling of every place, classified by JUNO, against what the kernel opens.
@@ -531,7 +542,7 @@ describe("D-178: a case-folded folder, against the kernel where it can fold case
         if (root.isDirectory()) for (const name of readdirSync(host)) reads = maxSensitivity(reads, kernelClass(join(host, name)) ?? "public");
         return reads;
       };
-      const view = new Workspace(execFileScript(process.execPath, []), "/work", cfWork);
+      const view = new HostReadView(cfWork);
       // Places below `project`, the folding folder; `project` itself is spelled exactly, as its parent does not fold.
       const places = ["secrets/key.txt", "secrets", "secrets/sub/deep.txt", "notes.txt", "docs/guide.txt", "docs", "secrets/sub/../key.txt"];
       let opened = 0;

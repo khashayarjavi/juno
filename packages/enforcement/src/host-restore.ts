@@ -1,415 +1,340 @@
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { type Stats, accessSync, closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmdirSync, symlinkSync, unlinkSync, writeSync } from "node:fs";
-import { MAX_CHECKPOINT_BYTES, MAX_CHECKPOINT_ENTRIES, type ManifestEntry, type Snapshot, Workspace } from "./checkpoint.js";
+import { type Stats, closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync } from "node:fs";
+import { dirname } from "node:path";
+import { z } from "zod";
+import { MAX_CHECKPOINT_ENTRIES, type ManifestEntry, type Snapshot, Workspace, sameManifest } from "./checkpoint.js";
+import { WORKLOAD_NODE } from "./canonical.js";
+import { DIR_MODE, FILE_MODE } from "./workspace-copy.mjs";
+
+export { DIR_MODE, FILE_MODE, MAX_SCAN as MAX_RESTORE_SCAN, kernelMayChange, listTree, openRoot, openRootAt, restoreRefusals, restoreTree } from "./workspace-copy.mjs";
 
 /**
- * Restoring a host-folder workspace (spec §2.2.2: "restoring that checkpoint is an operator action recorded in the
- * journal"; DECISIONS.md D-221). Hook mode checkpoints the operator's host folder at admission (D-136); this writes such
- * a checkpoint back, on the host, as the runner.
+ * Hook workspaces: their checkpoints and their restores (spec §2.2.2, "restoring that checkpoint is an operator action
+ * recorded in the journal"; DECISIONS.md D-221, D-228).
  *
- * The folder is one the Claude Code user also writes, so every step is taken relative to an open directory handle and
- * never follows a symbolic link: each folder is opened with `O_DIRECTORY | O_NOFOLLOW` from the handle of the folder
- * above it (`/proc/self/fd/<fd>/<name>` resolves from the open directory, not from the path, as D-137's writer does),
- * and every name is created, removed or opened there, never as a path. A folder swapped for a link while the restore
- * runs is removed as the link it is; nothing outside the workspace is ever written.
+ * The workspace is a folder the Claude Code user controls. Rounds 1, 3, 4 and 5 of PR #60's review (D-223, D-225,
+ * D-226, D-227) were one class: JUNO, with the runner's privileges, operating on that folder. The operator's ruling of
+ * 2026-11-20 closes the class (D-228): every checkpoint copy, every judgement of whether a checkpoint could be restored,
+ * and every restore runs in a context that can reach nothing the Claude Code user cannot reach:
  *
- *   1. `hostRestoreRefusals` walks the folder as it stands and changes nothing. It refuses, before anything is touched,
- *      whenever the restore could not finish: a folder the runner cannot read, write and enter (the guide's access list
- *      gives it all three, D-221), a folder on another file system, a root whose mode differs and that the runner does
- *      not own, more than `MAX_RESTORE_SCAN` entries.
- *   2. `restoreHostTree` removes every entry the checkpoint lacks or whose type differs; keeps a file only when it is
- *      the checkpoint's bytes and mode with one link, a link only with the checkpoint's target; recreates the rest
- *      (a file is never written in place: it is created anew with `O_CREAT | O_EXCL | O_NOFOLLOW`, so a hard link to a
- *      file elsewhere is never written through, D-158); and sets every mode, folders last.
- * The caller then lists the workspace again and compares it with the manifest; only an identical listing is `restored`.
+ *   - a fresh container (`dockerSealedLauncher`), on the runner's own rootless runtime: as the runner's host identity
+ *     (container root, which rootless Docker maps to the runner) with every capability dropped and no new privileges;
+ *     no network; a read-only image (the workload image, whose files are JUNO's public code); no IPC; no logs kept;
+ *     the D-025 limits; and exactly one mount, the workspace: read-only for the copy, writable for the restore and for
+ *     the judgement of whether the runner could restore (the kernel's write test needs a writable mount; that run
+ *     reads no file and changes nothing);
+ *   - the checkpoint's bytes cross on standard input and output, so neither the checkpoint store nor the journal, the
+ *     journal key, the runner's home or anything else of the runner's is in the container at all;
+ *   - the program it runs is `workspace-copy.mjs`, which takes only files and folders, fixed modes, and steps through
+ *     folder handles that never follow a link (item 2).
+ * A link planted in the workspace resolves inside that container, where the runner's state does not exist.
+ *
+ * On the host, JUNO only opens the workspace folder itself (never following a link) to learn its identity, which the
+ * sealed program compares with the folder it was given before reading or changing anything, and refuses a workspace
+ * whose path someone other than root and the runner could replace (`workspaceRefusals`). The read view (`HostReadView`)
+ * lists names and kinds without ever opening a file. No root, no sudo, no new privilege for the runner.
  */
 
-/** The most entries the restore walks in the folder as it stands; a larger one is refused before anything changes. */
-export const MAX_RESTORE_SCAN = 200_000;
+/** The image the sealed context runs: the workload image `make containers` builds (distroless node; D-013). */
+export const SEALED_IMAGE = "juno-workload:local";
 
-const DIR_FLAGS = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
-const at = (fd: number, name: string): string => `/proc/self/fd/${String(fd)}/${name}`;
-const self = (fd: number): string => `/proc/self/fd/${String(fd)}`;
-const code = (error: unknown): string => (error instanceof Error && "code" in error && typeof error.code === "string" ? error.code : "error");
+/** One run of the sealed program: the operation, the service's host folder, the workspace root, and its identity. */
+export type SealedRequest = {
+  readonly op: "checkpoint" | "check" | "restore";
+  /** The service's `--workspace`, a real path, standing for /work. */
+  readonly workspace: string;
+  readonly root: string;
+  /** What JUNO's own handle on `workspace` reads (decimal strings). */
+  readonly dev: string;
+  readonly ino: string;
+  readonly input: string | null;
+};
+/** Runs the sealed program for a request; the production launcher is `dockerSealedLauncher`. */
+export type SealedLauncher = (request: SealedRequest) => Promise<{ readonly exitCode: number | null; readonly stdout: string; readonly stderr: string }>;
 
-type Kind = ManifestEntry["type"] | "other";
-const kindOf = (stats: Stats): Kind => (stats.isDirectory() ? "directory" : stats.isSymbolicLink() ? "symlink" : stats.isFile() ? "file" : "other");
+const PROGRAM_URL = new URL("./workspace-copy.mjs", import.meta.url);
 
-/** A name of one component: never empty, `.`, `..`, or holding a slash or a NUL. */
-const plainName = (name: string): boolean => name !== "" && name !== "." && name !== ".." && !name.includes("/") && !name.includes("\0");
-
-function split(path: string): string[] {
-  return path === "" ? [] : path.split("/");
+/** The sealed program's text, as `node --input-type=module -e` runs it. */
+export function sealedProgram(): string {
+  return `${readFileSync(PROGRAM_URL, "utf8")}\nawait main(process.argv.slice(1), readStdin);\n`;
 }
 
-/** The manifest by path, refusing one whose paths are not plain, are repeated, or name a parent that is not a folder. */
-function wanted(manifest: readonly ManifestEntry[]): Map<string, ManifestEntry> | string {
-  const map = new Map<string, ManifestEntry>();
-  for (const entry of manifest) {
-    if (map.has(entry.path)) return `the checkpoint names ${JSON.stringify(entry.path)} twice`;
-    if (!split(entry.path).every(plainName)) return `the checkpoint names a path that is not plain: ${JSON.stringify(entry.path)}`;
-    // D-223 (review round 1 of PR #60, F1): the runner recreates what it restores as its own, so a set-user-ID,
-    // set-group-ID or sticky bit kept from the checkpoint would hand the Claude Code user a program that runs as the
-    // runner. Any such bit refuses the checkpoint, at admission and at the restore; it is never stripped silently.
-    if (entry.type !== "symlink" && (entry.mode & 0o7000) !== 0) return `${entry.path === "" ? "the workspace root" : JSON.stringify(entry.path)} has a set-user-ID, set-group-ID or sticky bit (mode ${entry.mode.toString(8)}), which the runner will never recreate as its own; remove the bit (chmod u-s,g-s,o-t) and admit the session again (D-223)`;
-    if (entry.path !== "") {
-      const parent = entry.path.includes("/") ? entry.path.slice(0, entry.path.lastIndexOf("/")) : "";
-      if (map.get(parent)?.type !== "directory") return `the checkpoint names ${JSON.stringify(entry.path)} before a folder above it`;
-    }
-    map.set(entry.path, entry);
-  }
-  if (map.get("")?.type !== "directory") return "the checkpoint's root is not a folder";
-  return map;
+/** The workspace path in the one form a mount option may carry: absolute, with no character the option syntax would read. */
+const SAFE_PATH = /^\/[A-Za-z0-9._@+/-]+$/;
+
+/**
+ * The `docker run` arguments of the sealed context for `request` (D-228). `rootless`: the runtime maps container root
+ * to the runner (Docker's rootless mode), so the program runs as 0:0 there; on a root-run daemon it runs as the
+ * runner's own uid and gid. `program`: the text node evaluates (the sealed program; tests probe with their own).
+ */
+export function sealedDockerArgs(request: SealedRequest, options: { readonly rootless: boolean; readonly image?: string; readonly uid?: number; readonly gid?: number }, program: string = sealedProgram()): string[] {
+  if (!SAFE_PATH.test(request.workspace)) throw new Error(`the workspace ${request.workspace} holds a character a mount cannot carry`);
+  const user = options.rootless ? "0:0" : `${String(options.uid ?? process.getuid?.() ?? -1)}:${String(options.gid ?? process.getgid?.() ?? -1)}`;
+  return [
+    "run", "--rm", "-i", "--pull", "never",
+    "--network", "none", "--ipc", "none", "--log-driver", "none",
+    "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--read-only",
+    "--user", user,
+    "--cpus", "1", "--memory", "512m", "--memory-swap", "512m", "--pids-limit", "64",
+    "--mount", ["type=bind", `source=${request.workspace}`, "target=/work", ...(request.op === "checkpoint" ? ["readonly"] : [])].join(","),
+    "--entrypoint", WORKLOAD_NODE,
+    options.image ?? SEALED_IMAGE,
+    "--input-type=module", "-e", program, "--",
+    request.op, "/work", request.root, request.dev, request.ino,
+  ];
+}
+
+/** Runs `file` with `args` by execFile (no shell), `input` on standard input. */
+export function runProgram(file: string, args: readonly string[], input: string | null, timeoutMs = 180_000): Promise<{ exitCode: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = execFile(file, [...args], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, timeout: timeoutMs, shell: false }, (error, stdout, stderr) => {
+      if (error === null) resolve({ exitCode: 0, stdout, stderr });
+      else if (typeof error.code === "number") resolve({ exitCode: error.code, stdout, stderr });
+      else if (error.killed === true) resolve({ exitCode: null, stdout, stderr: `${stderr}\n(timed out)` });
+      else reject(error);
+    });
+    child.stdin?.end(input ?? undefined);
+  });
+}
+
+/** The sealed context on the runner's own container runtime (D-228). */
+export function dockerSealedLauncher(options: { readonly rootless: boolean; readonly image?: string; readonly docker?: string }): SealedLauncher {
+  return (request) => runProgram(options.docker ?? "docker", sealedDockerArgs(request, options), request.input);
 }
 
 /**
- * Opens the workspace root `root` (a path under `/work`) below the service's host folder `workspace`, one component at a
- * time and never following a link. `workspace` itself must be its own canonical form.
+ * Why `workspace` cannot be handed to the sealed context: it must be an absolute real path (no link on the way) that
+ * only root and the runner could replace: every folder above it owned by one of them, and writable by no one else
+ * unless sticky (where no one may replace another's entry). Reads only.
  */
-export function openWorkspaceRoot(workspace: string, root: string): { ok: true; fd: number } | { ok: false; reason: string } {
-  if (root !== "/work" && !root.startsWith("/work/")) return { ok: false, reason: `${root} is not a path under /work` };
+export function workspaceRefusals(workspace: string, uid: number = process.geteuid?.() ?? -1): string[] {
+  if (!SAFE_PATH.test(workspace)) return [`the workspace ${workspace} must be an absolute path of letters, digits and . _ @ + - only`];
   let real: string;
   try {
     real = realpathSync.native(workspace);
   } catch (error: unknown) {
-    return { ok: false, reason: `the workspace ${workspace} cannot be resolved (${code(error)})` };
+    return [`the workspace ${workspace} cannot be resolved (${error instanceof Error && "code" in error ? String(error.code) : "error"})`];
   }
-  if (real !== workspace) return { ok: false, reason: `the workspace ${workspace} is reached through a symbolic link (it resolves to ${real}); give its real path` };
-  const parts = split(root.slice("/work".length).replace(/^\//, ""));
-  if (!parts.every(plainName)) return { ok: false, reason: `${root} is not a plain path` };
-  let fd: number;
-  try {
-    fd = openSync(workspace, DIR_FLAGS);
-  } catch (error: unknown) {
-    return { ok: false, reason: `the workspace ${workspace} cannot be opened as a folder (${code(error)})` };
-  }
-  for (const part of parts) {
-    let next: number;
-    try {
-      next = openSync(at(fd, part), DIR_FLAGS);
-    } catch (error: unknown) {
-      closeSync(fd);
-      return { ok: false, reason: `${root} is not a folder reached without a symbolic link (${part}: ${code(error)})` };
-    }
-    closeSync(fd);
-    fd = next;
-  }
-  return { ok: true, fd };
-}
-
-function sameBytes(dirFd: number, name: string, sha256: string): boolean {
-  let fd: number;
-  try {
-    fd = openSync(at(dirFd, name), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-  } catch {
-    return false;
-  }
-  try {
-    const stats = fstatSync(fd);
-    // A file larger than any checkpoint can hold is not the checkpoint's, and is never read whole.
-    if (!stats.isFile() || stats.size > MAX_CHECKPOINT_BYTES) return false;
-    return createHash("sha256").update(readFileSync(fd)).digest("hex") === sha256;
-  } catch {
-    return false;
-  } finally {
-    closeSync(fd);
-  }
-}
-
-/** Whether an existing entry can stay as it is: the checkpoint's own file, link or folder. */
-function keeps(dirFd: number, name: string, stats: Stats, want: ManifestEntry | undefined, uid: number): boolean {
-  if (want === undefined || kindOf(stats) !== want.type) return false;
-  if (want.type === "directory") return (stats.mode & 0o7777) === want.mode || stats.uid === uid;
-  if (want.type === "symlink") {
-    try {
-      return readlinkSync(at(dirFd, name)) === want.target;
-    } catch {
-      return false;
-    }
-  }
-  return stats.nlink === 1 && (stats.mode & 0o7777) === want.mode && sameBytes(dirFd, name, want.sha256);
-}
-
-/**
- * Why the folder at `rootFd`, as it stands, could not be brought back to `manifest` by the runner; empty when it can.
- * Reads only; changes nothing.
- */
-export function hostRestoreRefusals(rootFd: number, manifest: readonly ManifestEntry[], uid: number = process.geteuid?.() ?? -1, mayChange: (folder: string) => boolean = kernelMayChange): string[] {
-  const want = wanted(manifest);
-  if (typeof want === "string") return [want];
+  if (real !== workspace) return [`the workspace ${workspace} is reached through a symbolic link (it resolves to ${real}); give its real path`];
   const refusals: string[] = [];
-  const top = fstatSync(rootFd);
-  const rootWant = want.get("");
-  if (rootWant !== undefined && (top.mode & 0o7777) !== rootWant.mode && top.uid !== uid) refusals.push(`the workspace root's mode is ${(top.mode & 0o7777).toString(8)}, not the checkpoint's ${rootWant.mode.toString(8)}, and only its owner can change it`);
-  let seen = 0;
-  const walk = (fd: number, rel: string): void => {
-    if (refusals.length > 0) return;
-    // D-225 (review round 3 of PR #60): a folder carrying a set-user-ID, set-group-ID or sticky bit as it stands is
-    // refused, before anything changes: in a sticky folder the kernel lets the runner remove only its own files, so the
-    // restore could not finish; the other two bits are refused with it (restrictive).
-    const mode = fstatSync(fd).mode & 0o7777;
-    if ((mode & 0o7000) !== 0) {
-      refusals.push(`${rel === "" ? "the workspace root" : JSON.stringify(rel)} has a set-user-ID, set-group-ID or sticky bit (mode ${mode.toString(8)}), which stops juno-runner from restoring it; remove the bit as root (sudo chmod u-s,g-s,o-t <folder>) and restore again (D-225)`);
-      return;
-    }
-    if (!mayChange(self(fd))) {
-      refusals.push(`juno-runner cannot read, change and enter ${rel === "" ? "the workspace root" : JSON.stringify(rel)}: give it the guide's access list on the workspace (D-221)`);
-      return;
-    }
-    let names: string[];
-    try {
-      // In byte order, so the first refusal named does not depend on the file system's listing order.
-      names = readdirSync(self(fd)).sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
-    } catch (error: unknown) {
-      refusals.push(`${rel === "" ? "the workspace root" : JSON.stringify(rel)} cannot be listed (${code(error)})`);
-      return;
-    }
-    for (const name of names) {
-      seen += 1;
-      if (seen > MAX_RESTORE_SCAN) {
-        refusals.push(`the workspace holds more than ${String(MAX_RESTORE_SCAN)} entries; it is refused, never partly restored`);
-        return;
-      }
-      const path = rel === "" ? name : `${rel}/${name}`;
-      let stats: Stats;
-      try {
-        stats = lstatSync(at(fd, name));
-      } catch (error: unknown) {
-        refusals.push(`${JSON.stringify(path)} cannot be read (${code(error)})`);
-        return;
-      }
-      if (!stats.isDirectory()) continue;
-      if (stats.dev !== top.dev) {
-        refusals.push(`${JSON.stringify(path)} is on another file system (a mount inside the workspace); it is refused, never partly restored`);
-        return;
-      }
-      let child: number;
-      try {
-        child = openSync(at(fd, name), DIR_FLAGS);
-      } catch (error: unknown) {
-        refusals.push(`${JSON.stringify(path)} cannot be opened as a folder (${code(error)})`);
-        return;
-      }
-      try {
-        walk(child, path);
-      } finally {
-        closeSync(child);
-      }
-      if (refusals.length > 0) return;
-    }
-  };
-  walk(rootFd, "");
+  for (let folder = dirname(workspace); ; folder = dirname(folder)) {
+    const stats = lstatSync(folder);
+    if (stats.uid !== 0 && stats.uid !== uid) refusals.push(`${folder}, above the workspace, belongs to uid ${String(stats.uid)}, who could put another folder in the workspace's place (D-228)`);
+    else if ((stats.mode & 0o022) !== 0 && (stats.mode & 0o1000) === 0) refusals.push(`${folder}, above the workspace, is writable by group or others without the sticky bit, so they could put another folder in the workspace's place (D-228)`);
+    if (folder === "/") break;
+  }
   return refusals;
 }
 
-/** The kernel's own answer (access(2), access lists included): may this process read, change and enter the folder? */
-export function kernelMayChange(folder: string): boolean {
-  try {
-    accessSync(folder, constants.R_OK | constants.W_OK | constants.X_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}
+const SealedEntrySchema = z.discriminatedUnion("type", [
+  z.strictObject({ path: z.string(), type: z.literal("directory"), mode: z.literal(DIR_MODE) }),
+  z.strictObject({ path: z.string(), type: z.literal("file"), mode: z.literal(FILE_MODE), sha256: z.string().regex(/^[0-9a-f]{64}$/) }),
+]);
+const SealedAnswer = z.union([
+  z.strictObject({ error: z.string() }),
+  z.strictObject({ manifest: z.array(SealedEntrySchema), contents: z.record(z.string(), z.string()) }),
+  z.strictObject({ refusals: z.array(z.string()) }),
+  z.strictObject({ refused: z.array(z.string()) }),
+  z.strictObject({ failed: z.string() }),
+  z.strictObject({ restored: z.array(SealedEntrySchema) }),
+]);
+type SealedAnswer = z.infer<typeof SealedAnswer>;
 
-/** Removes the entry `name` of the folder `dirFd`, whatever it is, never following a link. */
-function remove(dirFd: number, name: string): void {
-  try {
-    unlinkSync(at(dirFd, name));
-    return;
-  } catch (error: unknown) {
-    if (code(error) === "ENOENT") return;
-    if (code(error) !== "EISDIR" && code(error) !== "EPERM") throw error;
-  }
-  const fd = openSync(at(dirFd, name), DIR_FLAGS);
-  try {
-    for (const inner of readdirSync(self(fd))) remove(fd, inner);
-  } finally {
-    closeSync(fd);
-  }
-  rmdirSync(at(dirFd, name));
-}
+/** A hook workspace's restore outcome: `changed` says whether the folder may differ from what it was before. */
+export type SealedRestore = { readonly ok: true } | { readonly ok: false; readonly changed: boolean; readonly reason: string };
 
 /**
- * Brings the folder at `rootFd` back to `manifest`, with each file's bytes from `content` (checked against its hash
- * before anything is changed). Call `hostRestoreRefusals` first; this throws on the first step that fails.
+ * A hook session's host workspace, reached only through the sealed context (D-228). `workspace` is the service's
+ * `--workspace`; every root is a path under /work.
  */
-export function restoreHostTree(rootFd: number, manifest: readonly ManifestEntry[], content: (hash: string) => Buffer, uid: number = process.geteuid?.() ?? -1): void {
-  const want = wanted(manifest);
-  if (typeof want === "string") throw new Error(want);
-  // Every file's bytes, each checked, before the first change (the store checks each read against its name).
-  const bytes = new Map<string, Buffer>();
-  for (const entry of manifest) {
-    if (entry.type !== "file" || bytes.has(entry.sha256)) continue;
-    const data = content(entry.sha256);
-    if (createHash("sha256").update(data).digest("hex") !== entry.sha256) throw new Error(`the checkpoint's content for ${entry.path} does not match its hash`);
-    bytes.set(entry.sha256, data);
+export class SealedWorkspace {
+  readonly workspace: string;
+  readonly #launch: SealedLauncher;
+
+  constructor(workspace: string, launch: SealedLauncher) {
+    this.workspace = workspace;
+    this.#launch = launch;
   }
-  // 1. Remove what the checkpoint lacks, or holds as another type, or (for a file or link) holds otherwise.
-  const prune = (fd: number, rel: string): void => {
-    for (const name of readdirSync(self(fd))) {
-      const path = rel === "" ? name : `${rel}/${name}`;
-      let stats: Stats;
-      try {
-        stats = lstatSync(at(fd, name));
-      } catch (error: unknown) {
-        if (code(error) === "ENOENT") continue;
-        throw error;
-      }
-      const entry = want.get(path);
-      if (!keeps(fd, name, stats, entry, uid)) {
-        remove(fd, name);
-        continue;
-      }
-      if (entry?.type !== "directory") continue;
-      let child: number;
-      try {
-        child = openSync(at(fd, name), DIR_FLAGS);
-      } catch {
-        // Swapped for something else since it was read: removed as what it now is.
-        remove(fd, name);
-        continue;
-      }
-      try {
-        prune(child, path);
-      } finally {
-        closeSync(child);
-      }
+
+  async #run(op: SealedRequest["op"], root: string, input: string | null): Promise<SealedAnswer> {
+    const refusals = workspaceRefusals(this.workspace);
+    if (refusals.length > 0) return { error: `${refusals.join("; ")}; nothing was read or changed` };
+    let fd: number;
+    try {
+      fd = openSync(this.workspace, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    } catch (error: unknown) {
+      return { error: `the workspace ${this.workspace} cannot be opened as a folder (${error instanceof Error && "code" in error ? String(error.code) : "error"}); nothing was read or changed` };
     }
-  };
-  // 2. Create what is missing, in manifest order (every folder before what it holds).
-  const folders = new Map<string, number>([["", rootFd]]);
-  try {
-    prune(rootFd, "");
-    for (const entry of manifest) {
-      if (entry.path === "") continue;
-      const slash = entry.path.lastIndexOf("/");
-      const parent = folders.get(slash < 0 ? "" : entry.path.slice(0, slash));
-      const name = slash < 0 ? entry.path : entry.path.slice(slash + 1);
-      if (parent === undefined) throw new Error(`the folder above ${entry.path} was not restored`);
-      let exists = true;
-      try {
-        lstatSync(at(parent, name));
-      } catch (error: unknown) {
-        if (code(error) !== "ENOENT") throw error;
-        exists = false;
-      }
-      if (entry.type === "directory") {
-        if (!exists) mkdirSync(at(parent, name), 0o700);
-        folders.set(entry.path, openSync(at(parent, name), DIR_FLAGS));
-      } else if (exists) {
-        continue;
-      } else if (entry.type === "symlink") {
-        symlinkSync(entry.target, at(parent, name));
-      } else {
-        const data = bytes.get(entry.sha256);
-        if (data === undefined) throw new Error(`no content for ${entry.path}`);
-        const fd = openSync(at(parent, name), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    // The handle stays open while the sealed program runs, so the identity it compares names this very folder.
+    try {
+      const identity = fstatSync(fd, { bigint: true });
+      const result = await this.#launch({ op, workspace: this.workspace, root, dev: String(identity.dev), ino: String(identity.ino), input });
+      const parsed = SealedAnswer.safeParse((() => {
         try {
-          for (let offset = 0; offset < data.length; ) offset += writeSync(fd, data, offset, data.length - offset);
-          fchmodSync(fd, entry.mode & 0o777);
-        } finally {
-          closeSync(fd);
+          return JSON.parse(result.stdout) as unknown;
+        } catch {
+          return null;
         }
-      }
+      })());
+      if (!parsed.success) return { error: `the sealed copy context did not answer (exit ${String(result.exitCode)}${result.stderr.trim() === "" ? "" : `: ${result.stderr.trim().slice(0, 500)}`})` };
+      return parsed.data;
+    } catch (error: unknown) {
+      return { error: `the sealed copy context did not run: ${error instanceof Error ? error.message : String(error)}` };
+    } finally {
+      closeSync(fd);
     }
-    // 3. Every folder's mode, the deepest first, so a folder that may not be written is set after what it holds.
-    for (const entry of [...manifest].reverse()) {
-      if (entry.type !== "directory") continue;
-      const fd = folders.get(entry.path);
-      if (fd !== undefined && (fstatSync(fd).mode & 0o7777) !== entry.mode) fchmodSync(fd, entry.mode & 0o777);
+  }
+
+  /**
+   * Takes the checkpoint of `root` (on a read-only mount), then judges that the runner could restore it as the folder
+   * stands (on a writable mount, reading no file and changing nothing): refused unless it holds only files and folders
+   * and the runner could restore them (D-221, D-228).
+   */
+  async checkpoint(root: string): Promise<{ ok: true; snapshot: Snapshot } | { ok: false; reason: string; restorable?: false }> {
+    const taken = await this.#copy(root);
+    if (!taken.ok) return taken;
+    const refusals = await this.check(root, taken.snapshot.manifest);
+    return refusals.length === 0 ? taken : { ok: false, reason: refusals.join("; "), restorable: false };
+  }
+
+  async #copy(root: string): Promise<{ ok: true; snapshot: Snapshot } | { ok: false; reason: string }> {
+    const answer = await this.#run("checkpoint", root, null);
+    if ("error" in answer) return { ok: false, reason: answer.error };
+    if (!("manifest" in answer)) return { ok: false, reason: "the sealed copy context gave no checkpoint" };
+    const contents = new Map<string, Buffer>();
+    for (const [hash, encoded] of Object.entries(answer.contents)) {
+      const bytes = Buffer.from(encoded, "base64");
+      if (createHash("sha256").update(bytes).digest("hex") !== hash) return { ok: false, reason: "a file's content does not match its hash" };
+      contents.set(hash, bytes);
     }
-  } finally {
-    for (const [path, fd] of folders) if (path !== "") closeSync(fd);
+    for (const entry of answer.manifest) if (entry.type === "file" && !contents.has(entry.sha256)) return { ok: false, reason: `no content for ${entry.path}` };
+    return { ok: true, snapshot: { manifest: answer.manifest, contents, hardLinks: [] } };
+  }
+
+  /** Why `manifest` could not be restored to `root` as the folder now stands; empty when it could. Changes nothing. */
+  async check(root: string, manifest: readonly ManifestEntry[]): Promise<readonly string[]> {
+    const answer = await this.#run("check", root, JSON.stringify({ manifest }));
+    if ("refusals" in answer) return answer.refusals;
+    return ["error" in answer ? answer.error : "the sealed copy context gave no answer"];
+  }
+
+  /** Writes `manifest` back to `root`, with each file's bytes from `content`, then compares the folder with it. */
+  async restore(root: string, manifest: readonly ManifestEntry[], content: (hash: string) => Buffer): Promise<SealedRestore> {
+    const contents: Record<string, string> = {};
+    try {
+      for (const entry of manifest) if (entry.type === "file") contents[entry.sha256] = content(entry.sha256).toString("base64");
+    } catch (error: unknown) {
+      return { ok: false, changed: false, reason: `${error instanceof Error ? error.message : String(error)}; nothing was changed` };
+    }
+    const answer = await this.#run("restore", root, JSON.stringify({ manifest, contents }));
+    if ("refused" in answer) return { ok: false, changed: false, reason: `${answer.refused.join("; ")}; nothing was changed` };
+    if ("error" in answer) return { ok: false, changed: false, reason: answer.error };
+    if ("failed" in answer) return { ok: false, changed: true, reason: answer.failed };
+    if (!("restored" in answer)) return { ok: false, changed: true, reason: "the sealed copy context gave no answer" };
+    return sameManifest(answer.restored, manifest) ? { ok: true } : { ok: false, changed: true, reason: "the folder after the restore differs from the checkpoint" };
   }
 }
 
 /**
- * Lists a host folder the Claude Code user can write, for a hook session's checkpoint and for the comparison after a
- * restore (D-227, review round 5 of PR #60). `SNAPSHOT_SCRIPT` works by path; in the workload that is harmless, but on
- * the host a name swapped for a link between its check and its read would make the runner read a file of its own (its
- * journal key) into the checkpoint, and a restore would then write it back where the Claude Code user can read it.
- * Here every folder is opened `O_DIRECTORY | O_NOFOLLOW` from the handle above, every file `O_NOFOLLOW`, and the entry
- * opened must be the one listed (same device and inode, same type), its type, mode and link count taken from the open
- * handle; anything else fails the listing, so the checkpoint, the admission or the restore is refused.
+ * The hook and gateway services' read view of the host folder (D-136, D-156, D-228): what a tree holds, for classifying
+ * a read, listed through folder handles that never follow a link. It never opens a file: a file's bytes are never read,
+ * so a file entry's `sha256` is the placeholder `NOT_READ` and a listing with content is refused.
  */
-export class HostWorkspace extends Workspace {
+export const NOT_READ = "0".repeat(64);
+
+export class HostReadView extends Workspace {
   readonly #workspace: string;
 
   /** `workspace`: the service's host folder, standing for `/work`. */
   constructor(workspace: string) {
-    super(() => Promise.reject(new Error("the host workspace runs no script")), "/work", workspace as never);
+    super(() => Promise.reject(new Error("the read view runs no script")), "/work", workspace as never);
     this.#workspace = workspace;
   }
 
   override list(root: string, content: boolean): Promise<{ ok: true; snapshot: Snapshot } | { ok: false; reason: string }> {
-    return Promise.resolve(listHostTree(this.#workspace, root, content));
+    if (content) return Promise.resolve({ ok: false, reason: "the read view never reads a file's bytes (D-228)" });
+    return Promise.resolve(listNames(this.#workspace, root));
   }
 
   override restore(): Promise<{ ok: false; reason: string }> {
-    return Promise.resolve({ ok: false, reason: "a host workspace is restored by juno checkpoint restore --workspace (D-221)" });
+    return Promise.resolve({ ok: false, reason: "a host workspace is restored by juno checkpoint restore --workspace, in the sealed context (D-228)" });
   }
 }
 
-/** The listing `SNAPSHOT_SCRIPT` would give, taken through handles that never follow a link (D-227). */
-export function listHostTree(workspace: string, root: string, content: boolean): { ok: true; snapshot: Snapshot } | { ok: false; reason: string } {
-  const opened = openWorkspaceRoot(workspace, root);
-  if (!opened.ok) return { ok: false, reason: opened.reason };
-  const manifest: ManifestEntry[] = [];
-  const contents = new Map<string, Buffer>();
-  const hardLinks: string[] = [];
-  let bytes = 0;
-  const fail = (reason: string): never => {
-    throw new ListingError(reason);
-  };
-  const walk = (fd: number, rel: string): void => {
-    const names = readdirSync(self(fd)).sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
-    for (const name of names) {
-      const path = rel === "" ? name : `${rel}/${name}`;
-      if (manifest.length >= MAX_CHECKPOINT_ENTRIES) fail(`the workspace has more than ${String(MAX_CHECKPOINT_ENTRIES)} entries`);
-      const seen = lstatSync(at(fd, name));
-      if (seen.isSymbolicLink()) {
-        manifest.push({ path, type: "symlink", mode: seen.mode & 0o7777, target: readlinkSync(at(fd, name)) });
-        continue;
-      }
-      if (!seen.isDirectory() && !seen.isFile()) fail(`the workspace holds an entry that is not a file, directory or symlink: ${path}`);
-      let child: number;
-      try {
-        child = openSync(at(fd, name), seen.isDirectory() ? DIR_FLAGS : constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-      } catch (error: unknown) {
-        return fail(`${path} changed while it was listed (${code(error)})`);
-      }
-      try {
-        const held = fstatSync(child);
-        if (held.dev !== seen.dev || held.ino !== seen.ino || kindOf(held) !== kindOf(seen)) fail(`${path} changed while it was listed`);
-        if (held.isDirectory()) {
-          manifest.push({ path, type: "directory", mode: held.mode & 0o7777 });
-          walk(child, path);
-        } else {
-          if (held.size + bytes > MAX_CHECKPOINT_BYTES) fail(`the workspace holds more than ${String(MAX_CHECKPOINT_BYTES)} bytes`);
-          const data = readFileSync(child);
-          bytes += data.length;
-          if (bytes > MAX_CHECKPOINT_BYTES) fail(`the workspace holds more than ${String(MAX_CHECKPOINT_BYTES)} bytes`);
-          const sha256 = createHash("sha256").update(data).digest("hex");
-          if (content) contents.set(sha256, data);
-          if (held.nlink > 1) hardLinks.push(path);
-          manifest.push({ path, type: "file", mode: held.mode & 0o7777, sha256 });
-        }
-      } finally {
-        closeSync(child);
-      }
-    }
-  };
+const DIR_FLAGS = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
+const at = (fd: number, name: string): string => `/proc/self/fd/${String(fd)}/${name}`;
+const errorCode = (error: unknown): string => (error instanceof Error && "code" in error && typeof error.code === "string" ? error.code : "error");
+
+/** Names, kinds, modes and link targets under `root`, never opening a file and never following a link; reasons as SNAPSHOT_SCRIPT's. */
+function listNames(workspace: string, root: string): { ok: true; snapshot: Snapshot } | { ok: false; reason: string } {
+  if (root !== "/work" && !root.startsWith("/work/")) return { ok: false, reason: "the workspace root is outside the view" };
+  const parts = root === "/work" ? [] : root.slice("/work/".length).split("/");
+  if (parts.some((part) => part === "" || part === "." || part === "..")) return { ok: false, reason: "the workspace root is not a plain path" };
+  let fd: number;
   try {
-    const top = fstatSync(opened.fd);
-    manifest.push({ path: "", type: "directory", mode: top.mode & 0o7777 });
-    walk(opened.fd, "");
+    fd = openSync(workspace, DIR_FLAGS);
   } catch (error: unknown) {
-    return { ok: false, reason: error instanceof ListingError ? error.message : `cannot list the workspace: ${code(error)}` };
-  } finally {
-    closeSync(opened.fd);
+    return { ok: false, reason: `cannot read the workspace root: ${errorCode(error)}` };
   }
-  return { ok: true, snapshot: { manifest, contents, hardLinks } };
+  try {
+    for (const [index, part] of parts.entries()) {
+      let kind: Stats;
+      try {
+        kind = lstatSync(at(fd, part));
+      } catch (error: unknown) {
+        return { ok: false, reason: `cannot read the workspace root: ${errorCode(error)}` };
+      }
+      if (!kind.isDirectory()) return { ok: false, reason: index === parts.length - 1 ? "the workspace root is not a directory (a symlink is refused)" : `cannot read the workspace root: ${kind.isSymbolicLink() ? "ELOOP" : "ENOTDIR"}` };
+      let next: number;
+      try {
+        next = openSync(at(fd, part), DIR_FLAGS);
+      } catch (error: unknown) {
+        return { ok: false, reason: `cannot read the workspace root: ${errorCode(error)}` };
+      }
+      closeSync(fd);
+      fd = next;
+    }
+    const top = fstatSync(fd);
+    const manifest: ManifestEntry[] = [{ path: "", type: "directory", mode: top.mode & 0o7777 }];
+    const hardLinks: string[] = [];
+    const walk = (dirFd: number, rel: string): string | null => {
+      const names = readdirSync(`/proc/self/fd/${String(dirFd)}`).sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
+      for (const name of names) {
+        const path = rel === "" ? name : `${rel}/${name}`;
+        if (manifest.length >= MAX_CHECKPOINT_ENTRIES) return `the workspace has more than ${String(MAX_CHECKPOINT_ENTRIES)} entries`;
+        const seen = lstatSync(at(dirFd, name));
+        const mode = seen.mode & 0o7777;
+        if (seen.isSymbolicLink()) manifest.push({ path, type: "symlink", mode, target: readlinkSync(at(dirFd, name)) });
+        else if (seen.isFile()) {
+          if (seen.nlink > 1) hardLinks.push(path);
+          manifest.push({ path, type: "file", mode, sha256: NOT_READ });
+        } else if (seen.isDirectory()) {
+          manifest.push({ path, type: "directory", mode });
+          let child: number;
+          try {
+            child = openSync(at(dirFd, name), DIR_FLAGS);
+          } catch (error: unknown) {
+            return `cannot list the workspace: ${errorCode(error)}`;
+          }
+          try {
+            const inner = walk(child, path);
+            if (inner !== null) return inner;
+          } finally {
+            closeSync(child);
+          }
+        } else return `the workspace holds an entry that is not a file, directory or symlink: ${path}`;
+      }
+      return null;
+    };
+    let failed: string | null;
+    try {
+      failed = walk(fd, "");
+    } catch (error: unknown) {
+      failed = `cannot list the workspace: ${errorCode(error)}`;
+    }
+    return failed === null ? { ok: true, snapshot: { manifest, contents: new Map(), hardLinks } } : { ok: false, reason: failed };
+  } finally {
+    closeSync(fd);
+  }
 }
-
-class ListingError extends Error {}

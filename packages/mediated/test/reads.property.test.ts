@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import fc from "fast-check";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { CheckpointStore, GrantStore, HostPathResolver, Workspace, execFileScript } from "../../enforcement/src/index.js";
+import { CheckpointStore, GrantStore, HostPathResolver, HostReadView, SealedWorkspace } from "../../enforcement/src/index.js";
+import { unsealedLauncher } from "../../enforcement/test/sealed.js";
 import { readPayload, readTrajectory } from "../../journal/src/index.js";
 import { openTestLayer } from "../../enforcement/test/layer.js";
 import type { SessionLayer } from "../../enforcement/src/index.js";
@@ -104,7 +105,7 @@ beforeAll(async () => {
     grants,
     paths: new PathMap([work]),
     resolver: new HostPathResolver(work),
-    view: new Workspace(execFileScript(process.execPath, []), "/work", work),
+    view: new HostReadView(work),
     filesystem: systemFilesystemIo(),
     clock: () => T0,
   });
@@ -318,10 +319,10 @@ describe("D-162 positive controls: a read a declared source matches keeps its cl
       grants,
       paths: new PathMap([work]),
       resolver: new HostPathResolver(work),
-      view: new Workspace(execFileScript(process.execPath, []), "/work", work),
+      view: new HostReadView(work),
       filesystem: systemFilesystemIo(),
       clock: () => T0,
-      checkpoints: { workspace: new Workspace(execFileScript(process.execPath, []), "/work", work), store: new CheckpointStore(join(dir, "checkpoints")) },
+      checkpoints: { workspace: new SealedWorkspace(work, unsealedLauncher), store: new CheckpointStore(join(dir, "checkpoints")) },
     });
     expect(await checkpointed.admit(request(id, "internal", "grant-all", { reversible_workspaces: ["/work/project/rw"] }))).toMatchObject({ admitted: true });
     const cases: [string, Record<string, unknown>][] = [
@@ -379,7 +380,7 @@ describe("D-162 positive controls: a read a declared source matches keeps its cl
 });
 
 describe("D-162 and D-164: classifyRead on URLs, without a session", () => {
-  const unused = { resolver: { resolve: () => Promise.reject(new Error("no path is resolved for a URL")) }, view: {} as Workspace };
+  const unused = { resolver: { resolve: () => Promise.reject(new Error("no path is resolved for a URL")) }, view: {} as HostReadView };
   const declared = (selector: DeclaredSource["selector"]): DeclaredSource[] => [...SOURCES, { id: "web", selector, data_class: { sensitivity: "public", integrity: "untrusted" } }];
 
   // proves §1.5: a URL no source positively matches is the highest declared class

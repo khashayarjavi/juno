@@ -7,12 +7,11 @@ import {
   GrantStore,
   type HostIo,
   HostPathResolver,
+  HostReadView,
   SessionLayer,
   StartupRefused,
   type StartupSpec,
-  Workspace,
   anchoringState,
-  execFileScript,
   gitAnchoring,
   parseAnchorInterval,
   systemHostIo,
@@ -150,7 +149,8 @@ export async function runGatewayCli(args: readonly string[], io: GatewayCliIo): 
     layer,
     grants: store,
     resolver: new HostPathResolver(workspace),
-    view: new Workspace(execFileScript(process.execPath, []), "/work", workspace),
+    // D-228: names and kinds only; the read view never opens a file in the workspace.
+    view: new HostReadView(workspace),
     filesystem: io.filesystem,
     upstream: (refusedRequest) => new StdioUpstream(upstream.program, upstream.argv, { env: { ...upstream.env }, refused: refusedRequest }),
   });

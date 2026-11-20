@@ -13,6 +13,7 @@ import { systemFilesystemIo } from "../../packages/mediated/src/filesystem.js";
 import { runHookClient } from "../../packages/mediated/src/hook-client.js";
 import { type HookServeIo, runHookAdmitCli, runHookServeCli } from "../../packages/mediated/src/hook-serve.js";
 import { runCheckpointCli } from "../../packages/runner/src/restore.js";
+import { unsealedLauncher } from "../../packages/enforcement/test/sealed.js";
 
 // Operator's increment 1.5-field, item 3 (DECISIONS.md D-222): "Prove in CI that the service starts on its old journal
 // after an upgrade." The commit installed on the operator's machine (6706b5a, the merge of PR #57) is taken from this
@@ -51,6 +52,8 @@ function serve(cli: ServeCli, drive: () => Promise<void>): Promise<number> {
     host: ordinaryHost(),
     filesystem: systemFilesystemIo(),
     runtime: () => Promise.resolve({ cgroupDriver: "systemd", cgroupVersion: "2", rootless: true }),
+    // D-228: the sealed program without its container (the installed commit has no such field and ignores it).
+    sealed: unsealedLauncher,
     // The journal key and the anchors persist across the upgrade, as the key file and juno-anchors do.
     anchoring: testAnchoring({ sink: anchors, journalKey: key }),
     ready: () => {
@@ -153,7 +156,7 @@ describe("upgrading an installed JUNO to this commit keeps the journal, grants a
     writeFileSync(join(work, "project", "after.txt"), "kept\n");
     const out: string[] = [];
     const io = { readFile: () => "", out: (text: string) => out.push(text), err: (text: string) => out.push(text) };
-    expect(await runCheckpointCli(["restore", "--journal", journal, "--checkpoints", join(dir, "state", "checkpoints"), "--workspace", work, "--principal", PRINCIPAL, `session-${OLD_SESSION}`, String(checkpoint?.["checkpoint"])], io, undefined, undefined, { uid: () => 4242, ownerOf: () => 4242, filesystem: systemFilesystemIo() })).toBe(1);
+    expect(await runCheckpointCli(["restore", "--journal", journal, "--checkpoints", join(dir, "state", "checkpoints"), "--workspace", work, "--principal", PRINCIPAL, `session-${OLD_SESSION}`, String(checkpoint?.["checkpoint"])], io, undefined, undefined, { uid: () => 4242, ownerOf: () => 4242, filesystem: systemFilesystemIo(), launcher: () => Promise.resolve(unsealedLauncher) })).toBe(1);
     expect(out.join("")).toContain("taken by JUNO before 1.5-field");
     // The refusal is journalled (D-224, F2).
     const restores = readTrajectory(journal, `session-${OLD_SESSION}`).map((entry) => readPayload(journal, entry.payload_ref)).flatMap((blob) => (blob.status === "present" ? [JSON.parse(new TextDecoder().decode(blob.bytes)) as Record<string, unknown>] : [])).filter((payload) => payload["type"] === "checkpoint_restore");
@@ -162,6 +165,6 @@ describe("upgrading an installed JUNO to this commit keeps the journal, grants a
     // The new session's checkpoint records the folder, and is restorable.
     const listed: string[] = [];
     expect(await runCheckpointCli(["list", "--journal", journal, `session-${NEW_SESSION}`], { readFile: () => "", out: (text) => listed.push(text), err: (text) => listed.push(text) })).toBe(0);
-    expect(JSON.parse(listed.join(""))).toMatchObject({ checkpoints: [{ root: "/work/project", workspace: work }] });
+    expect(JSON.parse(listed.join(""))).toMatchObject({ checkpoints: [{ root: "/work/project", workspace: work, taken_by: "sealed" }] });
   }, 120_000);
 });

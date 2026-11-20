@@ -1,16 +1,16 @@
-import { closeSync, statSync } from "node:fs";
+import { statSync } from "node:fs";
 import { z } from "zod";
 import { type AbsolutePath, type DataClass, DataClass as DataClassSchema } from "../../contracts/src/index.js";
 import {
   CheckpointStore as Store,
-  HostWorkspace,
   type CheckpointStore,
   ManifestEntry,
+  type SealedLauncher,
+  SealedWorkspace,
   Workspace,
   checkpointId,
-  hostRestoreRefusals,
-  openWorkspaceRoot,
-  restoreHostTree,
+  dockerSealedLauncher,
+  probeContainerRuntime,
   sameManifest,
   workloadWorkspace,
 } from "../../enforcement/src/index.js";
@@ -31,8 +31,12 @@ import { acquireRunnerLock } from "./lock.js";
  */
 
 const AdmissionNote = z.object({ type: z.literal("admission"), task: z.object({ principal: z.string() }) });
-/** `workspace`: the host folder a hook session's checkpoint was taken in (D-221); absent from container checkpoints and from hook checkpoints taken before 1.5-field. */
-const CheckpointNote = z.object({ type: z.literal("checkpoint"), root: z.string(), checkpoint: z.string(), manifest: z.array(ManifestEntry), workspace: z.string().optional() });
+/**
+ * `workspace`: the host folder a hook session's checkpoint was taken in (D-221); absent from container checkpoints and
+ * from hook checkpoints taken before 1.5-field. `taken_by: "sealed"`: taken in the sealed context (D-228); absent from
+ * every hook checkpoint taken before it.
+ */
+const CheckpointNote = z.object({ type: z.literal("checkpoint"), root: z.string(), checkpoint: z.string(), manifest: z.array(ManifestEntry), workspace: z.string().optional(), taken_by: z.literal("sealed").optional() });
 
 export type RestoreOutcome = { readonly ok: true; readonly root: string } | { readonly ok: false; readonly reason: string };
 
@@ -62,7 +66,7 @@ function payloadOf(journal: JournalAccess, ref: string): unknown {
   return JSON.parse(new TextDecoder().decode(blob.bytes));
 }
 
-type Located = { readonly root: string; readonly manifest: ManifestEntry[]; readonly dataClass: z.infer<typeof DataClassSchema>; readonly workspace: string | undefined };
+type Located = { readonly root: string; readonly manifest: ManifestEntry[]; readonly dataClass: z.infer<typeof DataClassSchema>; readonly workspace: string | undefined; readonly sealed: boolean };
 
 /**
  * The checkpoint `checkpoint` of task `taskId`, read from the task's own verified trajectory, if `principal` is the
@@ -79,7 +83,7 @@ function locate(journal: JournalAccess, taskId: string, checkpoint: string, prin
   for (const entry of entries) {
     if (entry.kind !== "note") continue;
     const note = CheckpointNote.safeParse(payloadOf(journal, entry.payload_ref));
-    if (note.success && note.data.checkpoint === checkpoint) found = { root: note.data.root, manifest: note.data.manifest, dataClass: entry.data_class, workspace: note.data.workspace };
+    if (note.success && note.data.checkpoint === checkpoint) found = { root: note.data.root, manifest: note.data.manifest, dataClass: entry.data_class, workspace: note.data.workspace, sealed: note.data.taken_by === "sealed" };
   }
   if (found === null) return { ok: false, reason: `task ${taskId} has no checkpoint ${checkpoint}` };
   // The id is the manifest's hash, so a manifest that does not match it is not this checkpoint.
@@ -121,13 +125,16 @@ async function compared(workspace: Workspace, root: string, manifest: readonly M
 }
 
 /**
- * Restores a hook session's checkpoint of a host folder (§2.2.2; DECISIONS.md D-221), as the runner, while no service
- * writes the journal (the caller holds the journal's lock). Refuses, and changes nothing, when:
+ * Restores a hook session's checkpoint of a host folder (§2.2.2; DECISIONS.md D-221, D-228), while no service writes
+ * the journal (the caller holds the journal's lock). Everything that reads or changes the folder runs in the sealed
+ * context (`SealedWorkspace`): a fresh container that can reach the workspace and nothing else of the runner's; the
+ * checkpoint's bytes are handed to it on standard input. Refuses, and changes nothing, when:
  *   - the checkpoint does not record the host folder it was taken in, or records another than `workspace` (the service's
- *     `--workspace`, given as its real path);
+ *     `--workspace`, given as its real path), or was not taken in the sealed context;
  *   - the folder is not on a case-sensitive Linux file system (D-178);
- *   - the workspace root is not a folder reached without a symbolic link;
- *   - the runner could not finish (`hostRestoreRefusals`).
+ *   - someone other than root and the runner could replace the workspace's path, or the folder mounted is not the one
+ *     JUNO opened;
+ *   - the workspace root is not a folder reached without a symbolic link, or the runner could not finish.
  * A refusal after the checkpoint is found, and every restore, is journalled with the operator as its actor: `refused`
  * (nothing changed), `failed` (the result differs from the checkpoint, or a step failed), or `restored`.
  */
@@ -138,55 +145,39 @@ export async function restoreHostCheckpoint(
   taskId: string,
   checkpoint: string,
   principal: string,
-  host: { readonly filesystem: FilesystemIo; readonly uid?: number },
+  host: { readonly filesystem: FilesystemIo; readonly launcher: SealedLauncher },
 ): Promise<RestoreOutcome> {
-  const uid = host.uid ?? process.geteuid?.() ?? -1;
   const located = locate(journal, taskId, checkpoint, principal);
   if (!located.ok) return located;
-  const { root, manifest, dataClass, workspace: takenIn } = located.found;
+  const { root, manifest, dataClass, workspace: takenIn, sealed } = located.found;
   const record = (outcome: "restored" | "failed" | "refused", reason?: string): void => {
     journal.append(taskId, "note", dataClass, { type: "checkpoint_restore", checkpoint, root, workspace, principal, outcome, ...(reason === undefined ? {} : { reason }) }, { actor: principal });
   };
-  // D-224 (F2): a refusal once the checkpoint is found is journalled, these two included.
+  // D-224 (F2): a refusal once the checkpoint is found is journalled, these included.
   const refused = (reason: string): RestoreOutcome => {
     record("refused", reason);
     return { ok: false, reason };
   };
   if (takenIn === undefined) return refused(`checkpoint ${checkpoint} does not record the host folder it was taken in (it was taken by JUNO before 1.5-field, or in a container), so this command cannot restore it; nothing was changed`);
   if (takenIn !== workspace) return refused(`checkpoint ${checkpoint} was taken in ${takenIn}, not in ${workspace}; nothing was changed`);
+  // D-228: only a checkpoint the sealed context took holds nothing but files and folders with the fixed modes.
+  if (!sealed) return refused(`checkpoint ${checkpoint} was not taken in the sealed copy context (it was taken before D-228), so this command will not restore it; nothing was changed`);
   const hostRoot = workspace + root.slice("/work".length);
   const folding = await caseFoldingRefusals([{ what: "the workspace", path: hostRoot }], host.filesystem);
-  if (folding.length > 0) {
-    const reason = `${folding.join("; ")}; nothing was changed`;
-    record("refused", reason);
-    return { ok: false, reason };
-  }
-  const opened = openWorkspaceRoot(workspace, root);
-  if (!opened.ok) {
-    const reason = `${opened.reason}; nothing was changed`;
-    record("refused", reason);
-    return { ok: false, reason };
-  }
-  let outcome: RestoreOutcome;
+  if (folding.length > 0) return refused(`${folding.join("; ")}; nothing was changed`);
+  let outcome: Awaited<ReturnType<SealedWorkspace["restore"]>>;
   try {
-    const refusals = hostRestoreRefusals(opened.fd, manifest, uid);
-    if (refusals.length > 0) {
-      const reason = `${refusals.join("; ")}; nothing was changed`;
-      record("refused", reason);
-      return { ok: false, reason };
-    }
-    try {
-      restoreHostTree(opened.fd, manifest, (hash) => store.get(hash), uid);
-      outcome = { ok: true, root };
-    } catch (error: unknown) {
-      outcome = { ok: false, reason: `the restore stopped part way: ${error instanceof Error ? error.message : String(error)}` };
-    }
-  } finally {
-    closeSync(opened.fd);
+    outcome = await new SealedWorkspace(workspace, host.launcher).restore(root, manifest, (hash) => store.get(hash));
+  } catch (error: unknown) {
+    outcome = { ok: false, changed: true, reason: `the restore stopped part way: ${error instanceof Error ? error.message : String(error)}` };
   }
-  if (outcome.ok) outcome = await compared(new HostWorkspace(workspace), root, manifest);
-  record(outcome.ok ? "restored" : "failed", outcome.ok ? undefined : outcome.reason);
-  return outcome;
+  if (outcome.ok) {
+    record("restored");
+    return { ok: true, root };
+  }
+  if (!outcome.changed) return refused(outcome.reason.endsWith("nothing was changed") || outcome.reason.endsWith("nothing was read or changed") ? outcome.reason : `${outcome.reason}; nothing was changed`);
+  record("failed", outcome.reason);
+  return { ok: false, reason: outcome.reason };
 }
 
 const USAGE =
@@ -206,7 +197,7 @@ export function listCheckpoints(journalRoot: string, taskId: string): { readonly
     if (entry.kind !== "note") continue;
     const payload = payloadOf(access, entry.payload_ref);
     const note = CheckpointNote.safeParse(payload);
-    if (note.success) checkpoints.push({ checkpoint: note.data.checkpoint, root: note.data.root, ...(note.data.workspace === undefined ? {} : { workspace: note.data.workspace }), taken_at: entry.timestamp, entries: note.data.manifest.length });
+    if (note.success) checkpoints.push({ checkpoint: note.data.checkpoint, root: note.data.root, ...(note.data.workspace === undefined ? {} : { workspace: note.data.workspace }), ...(note.data.taken_by === undefined ? {} : { taken_by: note.data.taken_by }), taken_at: entry.timestamp, entries: note.data.manifest.length });
     const restore = z.object({ type: z.literal("checkpoint_restore"), checkpoint: z.string(), outcome: z.string(), reason: z.string().optional() }).safeParse(payload);
     if (restore.success) restores.push({ checkpoint: restore.data.checkpoint, outcome: restore.data.outcome, at: entry.timestamp, ...(restore.data.reason === undefined ? {} : { reason: restore.data.reason }) });
   }
@@ -220,6 +211,8 @@ export type HostRestoreIo = {
   /** The owner of a folder, or null when it is not a folder that exists. */
   readonly ownerOf: (path: string) => number | null;
   readonly filesystem: FilesystemIo;
+  /** The sealed copy context (D-228); in real use a fresh container on the runner's own runtime. */
+  readonly launcher: () => Promise<SealedLauncher>;
 };
 const SYSTEM_HOST: HostRestoreIo = {
   uid: () => process.geteuid?.() ?? -1,
@@ -232,6 +225,7 @@ const SYSTEM_HOST: HostRestoreIo = {
     }
   },
   filesystem: systemFilesystemIo(),
+  launcher: async () => dockerSealedLauncher({ rootless: (await probeContainerRuntime()).rootless }),
 };
 
 /**
@@ -319,7 +313,7 @@ export async function runCheckpointCli(
       return 1;
     }
     const outcome = hostForm
-      ? await restoreHostCheckpoint(operatorJournal(journal), storeAt(storeDir), value("--workspace") ?? "", taskId, checkpoint, value("--principal") ?? "", { filesystem: host.filesystem })
+      ? await restoreHostCheckpoint(operatorJournal(journal), storeAt(storeDir), value("--workspace") ?? "", taskId, checkpoint, value("--principal") ?? "", { filesystem: host.filesystem, launcher: await host.launcher() })
       : await restoreCheckpoint(operatorJournal(journal), { workspace: open({ composeFile: (value("--compose") ?? "") as AbsolutePath, project: value("--project") ?? "", service: "workload" }), store: storeAt(storeDir) }, taskId, checkpoint, value("--principal") ?? "");
     io.out(`${JSON.stringify(outcome, null, 2)}\n`);
     return outcome.ok ? 0 : 1;

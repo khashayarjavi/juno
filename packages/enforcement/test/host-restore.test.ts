@@ -1,44 +1,58 @@
-import { chmodSync, closeSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { execFile } from "node:child_process";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CheckpointStore, HostPathResolver, Workspace, listHostTree, execFileScript, hostRestoreRefusals, openWorkspaceRoot, restoreHostTree, sameManifest } from "../src/index.js";
-import type { ManifestEntry } from "../src/index.js";
+import { CheckpointStore, DIR_MODE, FILE_MODE, HostPathResolver, HostReadView, NOT_READ, SealedWorkspace, listTree, openRoot, restoreRefusals, restoreTree, sameManifest, workspaceRefusals } from "../src/index.js";
+import type { ManifestEntry, SealedLauncher } from "../src/index.js";
+import { unsealedLauncher } from "./sealed.js";
 
 // §2.2.2 (v0.6 A1): "A scope is reversible when a checkpoint of its full content is taken before the task's first effect
 // on it and restoring that checkpoint is an operator action recorded in the journal." D-221: the restore of a hook
-// session's host folder. Here the restore itself, on this machine's real file system: it brings back the checkpoint's
-// full content (removing what was created after it, putting back what was changed or deleted), never follows a link,
-// never writes through a hard link, and refuses before changing anything when it could not finish.
+// session's host folder; D-228 (operator ruling of 2026-11-20): every copy and every restore runs in the sealed context,
+// takes only files and folders, and writes fixed modes. Here the sealed program itself, on this machine's real file
+// system (run without the container: the seal is proven by test/containers/sealed-copy.test.ts): it brings back the
+// checkpoint's full content, never follows a link, never writes through a hard link, and refuses before changing
+// anything when it could not finish.
 
+const run = promisify(execFile);
 let dir: string;
 let work: string;
 let store: CheckpointStore;
-const view = (): Workspace => new Workspace(execFileScript(process.execPath, []), "/work", work);
+const sealed = (): SealedWorkspace => new SealedWorkspace(work, unsealedLauncher);
 const uid = process.geteuid?.() ?? -1;
 
 async function checkpoint(root = "/work/project"): Promise<readonly ManifestEntry[]> {
-  const taken = await view().list(root, true);
+  const taken = await sealed().checkpoint(root);
   if (!taken.ok) throw new Error(taken.reason);
   for (const bytes of taken.snapshot.contents.values()) store.put(bytes);
   return taken.snapshot.manifest;
 }
 
-async function restore(manifest: readonly ManifestEntry[], options: { uid?: number; mayChange?: (folder: string) => boolean } = {}): Promise<{ refusals: string[]; same: boolean }> {
-  const opened = openWorkspaceRoot(work, "/work/project");
+/** The restore's own steps, in this process, with the runner's judgement and identity replaceable (as a test needs). */
+function restoreHere(manifest: readonly ManifestEntry[], options: { uid?: number; mayChange?: (folder: string) => boolean } = {}): { refusals: string[]; same: boolean } {
+  const opened = openRoot(work, "/work/project");
   if (!opened.ok) throw new Error(opened.reason);
   try {
-    const refusals = hostRestoreRefusals(opened.fd, manifest, options.uid ?? uid, options.mayChange);
-    if (refusals.length === 0) restoreHostTree(opened.fd, manifest, (hash) => store.get(hash), options.uid ?? uid);
-    const after = await view().list("/work/project", false);
-    return { refusals, same: after.ok && sameManifest(after.snapshot.manifest, manifest) };
+    const judge = options.mayChange === undefined ? {} : { mayChange: options.mayChange };
+    const refusals = restoreRefusals(opened.fd, manifest, judge);
+    if (refusals.length === 0) restoreTree(opened.fd, manifest, (hash) => store.get(hash), { uid: options.uid ?? uid });
+    const after = listTree(opened.fd, judge);
+    return { refusals, same: after.ok && sameManifest(after.manifest, manifest) };
   } finally {
     closeSync(opened.fd);
   }
 }
 
+/** The whole restore, through the sealed program. */
+async function restore(manifest: readonly ManifestEntry[]): Promise<{ ok: boolean; changed?: boolean; reason?: string }> {
+  return sealed().restore("/work/project", manifest, (hash) => store.get(hash));
+}
+
 const read = (path: string): string => readFileSync(join(work, "project", path), "utf8");
+const mode = (path: string): number => lstatSync(join(work, "project", path)).mode & 0o7777;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "juno-host-restore-"));
@@ -49,7 +63,6 @@ beforeEach(() => {
   writeFileSync(join(work, "project", "docs", "a.md"), "a\n");
   writeFileSync(join(work, "project", "docs", "deep", "b.md"), "b\n");
   chmodSync(join(work, "project", "docs", "deep", "b.md"), 0o640);
-  symlinkSync("notes.txt", join(work, "project", "link"));
   mkdirSync(join(dir, "outside"));
   writeFileSync(join(dir, "outside", "secret.txt"), "outside\n");
 });
@@ -58,29 +71,29 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-describe("restoring a host-folder checkpoint (§2.2.2, D-221)", () => {
-  // proves §2.2.2: the workspace's full content comes back: files created after the checkpoint are removed, changed
-  // files get their bytes and modes back, deleted files and folders are put back, links get their targets back
-  it("brings the folder back to the checkpoint's full content", async () => {
+describe("restoring a host-folder checkpoint (§2.2.2, D-221, D-228)", () => {
+  // proves §2.2.2: the workspace's full content comes back: files created after the checkpoint are removed (a link
+  // among them), changed files get their bytes back, deleted files and folders are put back; and D-228: every file is
+  // written with the fixed mode and every folder the runner owns gets the fixed mode, whatever the checkpoint saw
+  it("brings the folder back to the checkpoint's full content, with the fixed modes", async () => {
     const manifest = await checkpoint();
-    const notesMode = lstatSync(join(work, "project", "notes.txt")).mode & 0o7777;
+    expect(manifest.every((entry) => entry.mode === (entry.type === "file" ? FILE_MODE : DIR_MODE))).toBe(true);
     writeFileSync(join(work, "project", "created.txt"), "new\n");
     mkdirSync(join(work, "project", "new-folder", "inner"), { recursive: true });
     writeFileSync(join(work, "project", "new-folder", "inner", "x"), "x");
     writeFileSync(join(work, "project", "notes.txt"), "changed by Claude\n");
-    chmodSync(join(work, "project", "notes.txt"), 0o600);
+    chmodSync(join(work, "project", "notes.txt"), 0o755);
     rmSync(join(work, "project", "docs"), { recursive: true });
-    rmSync(join(work, "project", "link"));
     symlinkSync("elsewhere", join(work, "project", "link"));
-    const result = await restore(manifest);
-    expect(result).toEqual({ refusals: [], same: true });
+    expect(await restore(manifest)).toEqual({ ok: true });
     expect(existsSync(join(work, "project", "created.txt"))).toBe(false);
     expect(existsSync(join(work, "project", "new-folder"))).toBe(false);
+    expect(existsSync(join(work, "project", "link"))).toBe(false);
     expect(read("notes.txt")).toBe("notes\n");
-    expect(lstatSync(join(work, "project", "notes.txt")).mode & 0o7777).toBe(notesMode);
+    expect(mode("notes.txt")).toBe(FILE_MODE);
     expect(read("docs/deep/b.md")).toBe("b\n");
-    expect(lstatSync(join(work, "project", "docs", "deep", "b.md")).mode & 0o777).toBe(0o640);
-    expect(readlinkSync(join(work, "project", "link"))).toBe("notes.txt");
+    expect(mode("docs/deep/b.md")).toBe(FILE_MODE);
+    expect(mode("docs/deep")).toBe(DIR_MODE);
   });
 
   // proves D-221: a folder the agent swapped for a link to somewhere else is removed as the link it is; nothing outside
@@ -89,7 +102,7 @@ describe("restoring a host-folder checkpoint (§2.2.2, D-221)", () => {
     const manifest = await checkpoint();
     rmSync(join(work, "project", "docs"), { recursive: true });
     symlinkSync(join(dir, "outside"), join(work, "project", "docs"));
-    expect(await restore(manifest)).toEqual({ refusals: [], same: true });
+    expect(await restore(manifest)).toEqual({ ok: true });
     expect(lstatSync(join(work, "project", "docs")).isDirectory()).toBe(true);
     expect(readFileSync(join(dir, "outside", "secret.txt"), "utf8")).toBe("outside\n");
     expect(existsSync(join(dir, "outside", "a.md"))).toBe(false);
@@ -101,7 +114,7 @@ describe("restoring a host-folder checkpoint (§2.2.2, D-221)", () => {
     const manifest = await checkpoint();
     rmSync(join(work, "project", "notes.txt"));
     linkSync(join(dir, "outside", "secret.txt"), join(work, "project", "notes.txt"));
-    expect(await restore(manifest)).toEqual({ refusals: [], same: true });
+    expect(await restore(manifest)).toEqual({ ok: true });
     expect(read("notes.txt")).toBe("notes\n");
     expect(readFileSync(join(dir, "outside", "secret.txt"), "utf8")).toBe("outside\n");
   });
@@ -112,51 +125,64 @@ describe("restoring a host-folder checkpoint (§2.2.2, D-221)", () => {
     const manifest = await checkpoint();
     writeFileSync(join(work, "project", "created.txt"), "new\n");
     writeFileSync(join(work, "project", "notes.txt"), "changed\n");
-    const deep = join(work, "project", "docs", "deep");
-    const result = await restore(manifest, { mayChange: (folder) => readlinkSync(folder) !== deep });
+    const deep = lstatSync(join(work, "project", "docs", "deep")).ino;
+    const result = restoreHere(manifest, { mayChange: (folder) => lstatSync(`${folder}/.`).ino !== deep });
     expect(result.refusals).toEqual([expect.stringContaining('juno-runner cannot read, change and enter "docs/deep"')]);
     expect(result.same).toBe(false);
     expect(read("created.txt")).toBe("new\n");
     expect(read("notes.txt")).toBe("changed\n");
   });
 
-  // proves D-221: a folder whose mode differs and that the runner does not own is removed and made again with the
-  // checkpoint's mode; the workspace root, which cannot be made again, is refused instead
-  it("replaces a folder another user owns whose mode differs, and refuses such a root", async () => {
+  // proves D-228 "a restore writes fixed modes": a folder of another user's is kept as it is (its mode is not the
+  // checkpoint's business, and the runner may not change it), while every file is written anew as the runner's own
+  // with the fixed mode; a root whose mode differs no longer matters, since no mode is restored
+  it("keeps a folder another user owns as it is, and writes every file anew with the fixed mode", async () => {
     const manifest = await checkpoint();
     chmodSync(join(work, "project", "docs"), 0o700);
-    // As if another user owned everything here: the restore may not change a mode, only replace the folder.
-    expect(await restore(manifest, { uid: 4242 })).toEqual({ refusals: [], same: true });
     chmodSync(join(work, "project"), 0o700);
-    const refused = await restore(manifest, { uid: 4242 });
-    expect(refused.refusals).toEqual([expect.stringContaining("only its owner can change it")]);
+    // As if another user owned everything here: the restore may not change a mode, and replaces every file.
+    expect(restoreHere(manifest, { uid: 4242 })).toEqual({ refusals: [], same: true });
+    expect(mode("docs")).toBe(0o700);
+    expect(mode("")).toBe(0o700);
+    expect(mode("notes.txt")).toBe(FILE_MODE);
+    expect(read("docs/a.md")).toBe("a\n");
   });
 
-  // proves D-221: the workspace root is opened one component at a time, never through a link, and the service's folder
-  // must be given as its real path
-  it("refuses a workspace root reached through a link", () => {
+  // proves D-221, D-228: the workspace root is opened one component at a time, never through a link, and the service's
+  // folder must be given as its real path, below folders only root and the runner could replace
+  it("refuses a workspace root reached through a link, and a workspace another user could replace", () => {
     rmSync(join(work, "project"), { recursive: true });
     symlinkSync(join(dir, "outside"), join(work, "project"));
-    expect(openWorkspaceRoot(work, "/work/project")).toMatchObject({ ok: false, reason: expect.stringContaining("without a symbolic link") });
+    expect(openRoot(work, "/work/project")).toMatchObject({ ok: false, reason: expect.stringContaining("without a symbolic link") });
     symlinkSync(work, join(dir, "work-link"));
-    expect(openWorkspaceRoot(join(dir, "work-link"), "/work")).toMatchObject({ ok: false, reason: expect.stringContaining("through a symbolic link") });
+    expect(workspaceRefusals(join(dir, "work-link"))).toEqual([expect.stringContaining("through a symbolic link")]);
+    expect(workspaceRefusals(work)).toEqual([]);
+    chmodSync(dir, 0o777);
+    expect(workspaceRefusals(work)).toEqual([expect.stringContaining("writable by group or others without the sticky bit")]);
+    chmodSync(dir, 0o1777);
+    expect(workspaceRefusals(work)).toEqual([]);
+    chmodSync(dir, 0o700);
+    expect(workspaceRefusals(join(dir, "work with space"))).toEqual([expect.stringContaining("letters, digits")]);
   });
 
-  // proves D-223 (review round 1 of PR #60, F1): a checkpoint holding a set-user-ID, set-group-ID or sticky bit is
-  // refused before anything changes, and the restore never leaves a runner-owned file or folder with such a bit
+  // proves D-223 (review round 1 of PR #60, F1) with D-228: a set-user-ID, set-group-ID or sticky bit refuses the
+  // checkpoint itself, and a manifest carrying one (as a checkpoint taken before D-228 could) is refused before anything
+  // changes; the restore never leaves a runner-owned file or folder with such a bit
   it("refuses a checkpoint with a set-user-ID, set-group-ID or sticky bit, and never recreates one", async () => {
-    for (const [path, mode, folder] of [["notes.txt", 0o4755, false], ["notes.txt", 0o2755, false], ["docs", 0o1777, true], ["docs", 0o2775, true]] as const) {
-      chmodSync(join(work, "project", path), mode);
-      const manifest = await checkpoint();
+    const plainManifest = await checkpoint();
+    for (const [path, bits, folder] of [["notes.txt", 0o4755, false], ["notes.txt", 0o2755, false], ["docs", 0o1777, true], ["docs", 0o2775, true]] as const) {
+      chmodSync(join(work, "project", path), bits);
+      const taken = await sealed().checkpoint("/work/project");
+      expect(taken, `${path} ${bits.toString(8)}`).toMatchObject({ ok: false, reason: expect.stringContaining("set-user-ID, set-group-ID or sticky bit") });
       chmodSync(join(work, "project", path), folder ? 0o755 : 0o644);
+      const forged = plainManifest.map((entry) => (entry.path === path ? { ...entry, mode: bits } : entry));
       writeFileSync(join(work, "project", "created.txt"), "new\n");
       rmSync(join(work, "project", "notes.txt"));
-      const result = await restore(manifest);
-      expect(result.refusals, `${path} ${mode.toString(8)}`).toEqual([expect.stringContaining("set-user-ID, set-group-ID or sticky bit")]);
+      expect(await restore(forged)).toMatchObject({ ok: false, changed: false, reason: expect.stringContaining("set-user-ID, set-group-ID or sticky bit") });
       expect(read("created.txt")).toBe("new\n");
-      const opened = openWorkspaceRoot(work, "/work/project");
+      const opened = openRoot(work, "/work/project");
       if (!opened.ok) throw new Error(opened.reason);
-      expect(() => restoreHostTree(opened.fd, manifest, (hash) => store.get(hash))).toThrow(/sticky bit/);
+      expect(() => restoreTree(opened.fd, forged, (hash) => store.get(hash))).toThrow(/sticky bit/);
       closeSync(opened.fd);
       expect(existsSync(join(work, "project", "notes.txt"))).toBe(false);
       writeFileSync(join(work, "project", "notes.txt"), "notes\n");
@@ -173,8 +199,7 @@ describe("restoring a host-folder checkpoint (§2.2.2, D-221)", () => {
     writeFileSync(join(work, "project", "made", "a.txt"), "a\n");
     chmodSync(join(work, "project", "made"), 0o1775);
     writeFileSync(join(work, "project", "notes.txt"), "changed\n");
-    const result = await restore(manifest);
-    expect(result.refusals).toEqual([expect.stringContaining('"made" has a set-user-ID, set-group-ID or sticky bit (mode 1775)')]);
+    expect(await restore(manifest)).toMatchObject({ ok: false, changed: false, reason: expect.stringContaining('"made" has a set-user-ID, set-group-ID or sticky bit (mode 1775)') });
     expect(read("notes.txt")).toBe("changed\n");
     expect(read("made/a.txt")).toBe("a\n");
     const resolved = (await new HostPathResolver(work).resolve(["/work/project/made/b.txt", "/work/project/docs/c.txt"]));
@@ -186,16 +211,18 @@ describe("restoring a host-folder checkpoint (§2.2.2, D-221)", () => {
   it("changes nothing when the checkpoint's content is missing", async () => {
     const manifest = await checkpoint();
     writeFileSync(join(work, "project", "created.txt"), "new\n");
-    const opened = openWorkspaceRoot(work, "/work/project");
+    const opened = openRoot(work, "/work/project");
     if (!opened.ok) throw new Error(opened.reason);
-    expect(() => restoreHostTree(opened.fd, manifest, () => Buffer.from("not the bytes"))).toThrow(/does not match its hash/);
+    expect(() => restoreTree(opened.fd, manifest, () => Buffer.from("not the bytes"))).toThrow(/does not match its hash/);
     closeSync(opened.fd);
+    expect(read("created.txt")).toBe("new\n");
+    const empty = new CheckpointStore(join(dir, "empty-store"));
+    expect(await sealed().restore("/work/project", manifest, (hash) => empty.get(hash))).toMatchObject({ ok: false, changed: false });
     expect(read("created.txt")).toBe("new\n");
   });
 
-  // proves D-227 (review round 5 of PR #60): a hook session's checkpoint is taken through handles, so a name swapped
-  // for a link to a file of the runner's own while it is listed is never read: the listing fails or holds the Claude
-  // Code user's own bytes, never the runner's
+  // proves D-227 (review round 5 of PR #60) with D-228: a name swapped for a link to a file of the runner's own while it
+  // is listed is never read: the listing fails or holds the Claude Code user's own bytes, never the runner's
   it("never reads a file of the runner's through a name swapped for a link while it is listed", async () => {
     writeFileSync(join(dir, "outside", "journal-key"), "RUNNER-SECRET-KEY");
     const racer = join(dir, "racer.mjs");
@@ -212,14 +239,87 @@ describe("restoring a host-folder checkpoint (§2.2.2, D-221)", () => {
     let leaked = 0;
     let sawFile = 0;
     while (Date.now() < until - 200) {
-      const listed = listHostTree(work, "/work/project", true);
+      const opened = openRoot(work, "/work/project");
+      if (!opened.ok) continue;
+      const listed = listTree(opened.fd, { content: true });
+      closeSync(opened.fd);
       if (!listed.ok) continue;
-      if ([...listed.snapshot.contents.values()].some((bytes) => bytes.toString() === "RUNNER-SECRET-KEY")) leaked += 1;
-      if (listed.snapshot.manifest.some((entry) => entry.path === "x" && entry.type === "file")) sawFile += 1;
+      if ([...listed.contents.values()].some((bytes) => bytes.toString() === "RUNNER-SECRET-KEY")) leaked += 1;
+      if (listed.manifest.some((entry) => entry.path === "x" && entry.type === "file")) sawFile += 1;
     }
     await done;
     expect(leaked).toBe(0);
     // The race was exercised: some listings held x as the Claude Code user's own file.
     expect(sawFile).toBeGreaterThan(0);
   }, 20_000);
+});
+
+describe("JUNO takes only files and folders from a workspace (operator ruling 2 of 2026-11-20, D-228)", () => {
+  // proves D-228 item 2: a symbolic link, a FIFO, a socket or a second name (hard link) anywhere in the workspace refuses
+  // the checkpoint, so the workspace is not reversible
+  it("refuses a checkpoint of a workspace holding a link, a FIFO, a socket or a hard link", async () => {
+    const entry = join(work, "project", "docs", "entry");
+    const plant: [string, () => Promise<() => void>][] = [
+      ["symbolic link", () => { symlinkSync("notes.txt", entry); return Promise.resolve(() => rmSync(entry)); }],
+      ["FIFO", async () => { await run("mkfifo", [entry]); return () => rmSync(entry); }],
+      // The server stays open while the checkpoint runs: node removes its socket file when it closes.
+      ["socket", () => new Promise((resolve) => { const server = createServer(); server.listen(entry, () => resolve(() => server.close())); })],
+      ["names (a hard link)", () => { linkSync(join(work, "project", "notes.txt"), entry); return Promise.resolve(() => rmSync(entry)); }],
+    ];
+    for (const [what, make] of plant) {
+      const cleanUp = await make();
+      expect(await sealed().checkpoint("/work/project"), what).toMatchObject({ ok: false, reason: expect.stringContaining(what) });
+      cleanUp();
+    }
+    expect((await sealed().checkpoint("/work/project")).ok).toBe(true);
+  });
+
+  // proves D-228: a manifest that is not one the sealed context wrote (a link entry, a mode other than the fixed ones)
+  // is refused before anything changes
+  it("refuses to restore a manifest that is not the sealed form", async () => {
+    const manifest = await checkpoint();
+    writeFileSync(join(work, "project", "created.txt"), "new\n");
+    for (const forged of [[...manifest, { path: "l", type: "symlink", mode: 0o777, target: "/etc" }], manifest.map((entry) => (entry.type === "file" ? { ...entry, mode: 0o644 } : entry))] as ManifestEntry[][]) {
+      expect(await restore(forged)).toMatchObject({ ok: false, changed: false });
+      expect(read("created.txt")).toBe("new\n");
+    }
+  });
+
+  // proves D-228: the sealed program reads or changes nothing when the folder it is given is not the one JUNO opened
+  // (another folder put in the workspace's place before the mount)
+  it("refuses a folder put in the workspace's place, reading and changing nothing", async () => {
+    const manifest = await checkpoint();
+    mkdirSync(join(dir, "decoy", "project"), { recursive: true });
+    writeFileSync(join(dir, "decoy", "project", "keep.txt"), "decoy\n");
+    const swapping: SealedLauncher = async (request) => {
+      renameSync(work, join(dir, "real"));
+      renameSync(join(dir, "decoy"), work);
+      try {
+        return await unsealedLauncher(request);
+      } finally {
+        renameSync(work, join(dir, "decoy"));
+        renameSync(join(dir, "real"), work);
+      }
+    };
+    const swapped = new SealedWorkspace(work, swapping);
+    expect(await swapped.checkpoint("/work/project")).toMatchObject({ ok: false, reason: expect.stringContaining("not the one JUNO opened") });
+    expect(await swapped.restore("/work/project", manifest, (hash) => store.get(hash))).toMatchObject({ ok: false, changed: false, reason: expect.stringContaining("not the one JUNO opened") });
+    expect(readFileSync(join(dir, "decoy", "project", "keep.txt"), "utf8")).toBe("decoy\n");
+    expect(existsSync(join(dir, "decoy", "project", "notes.txt"))).toBe(false);
+  });
+
+  // proves D-228: the read view lists names, kinds and link targets for classifying a read, and never opens a file
+  it("the read view never reads a file's bytes", async () => {
+    symlinkSync("notes.txt", join(work, "project", "link"));
+    chmodSync(join(work, "project", "notes.txt"), 0o000);
+    const view = new HostReadView(work);
+    expect(await view.list("/work/project", true)).toMatchObject({ ok: false, reason: expect.stringContaining("never reads") });
+    const listed = await view.list("/work/project", false);
+    if (!listed.ok) throw new Error(listed.reason);
+    expect(listed.snapshot.manifest).toContainEqual({ path: "link", type: "symlink", mode: expect.any(Number), target: "notes.txt" });
+    expect(listed.snapshot.manifest).toContainEqual({ path: "notes.txt", type: "file", mode: 0, sha256: NOT_READ });
+    expect(listed.snapshot.contents.size).toBe(0);
+    expect(await view.list("/work/project/notes.txt", false)).toMatchObject({ ok: false, reason: "the workspace root is not a directory (a symlink is refused)" });
+    expect(await view.list("/work/project/missing", false)).toMatchObject({ ok: false, reason: "cannot read the workspace root: ENOENT" });
+  });
 });

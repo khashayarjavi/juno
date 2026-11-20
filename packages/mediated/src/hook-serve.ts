@@ -8,13 +8,14 @@ import {
   GrantStore,
   type HostIo,
   HostPathResolver,
-  HostWorkspace,
+  HostReadView,
+  type SealedLauncher,
+  SealedWorkspace,
   SessionLayer,
   StartupRefused,
   type StartupSpec,
-  Workspace,
   anchoringState,
-  execFileScript,
+  dockerSealedLauncher,
   gitAnchoring,
   parseAnchorInterval,
   probeContainerRuntime,
@@ -53,6 +54,11 @@ export type HookServeIo = {
   readonly runtime: () => Promise<ContainerRuntime>;
   /** Resolves when the service should stop (SIGINT or SIGTERM in real use). */
   readonly stopped: () => Promise<void>;
+  /**
+   * Tests only: runs the sealed copy program in place of the container (D-228). Unset in real use, where every
+   * checkpoint and every restorability check of the workspace runs in a fresh sealed container on `runtime`'s daemon.
+   */
+  readonly sealed?: SealedLauncher;
   /** Tests only: the anchoring to use in place of the journal key and clone the flags name (the flags are still judged). */
   readonly anchoring?: Anchoring;
   /** Called once the service listens; tests use it to drive it. */
@@ -109,9 +115,12 @@ export async function runHookServeCli(args: readonly string[], io: HookServeIo):
   }
   const anchoring: AnchoringConfig = { journalKeyDir, anchorClone, intervalMs, pin: options.get("--anchor-pin") ?? DEFAULT_ANCHOR_PIN };
   // D-131 (plan Increment 6): a runtime that would ignore the workloads' limits stops the service from starting.
+  let rootless: boolean;
   try {
-    const why = runtimeRefusal(await io.runtime());
+    const runtime = await io.runtime();
+    const why = runtimeRefusal(runtime);
     if (why !== null) return refused(io, "serve", [why]);
+    rootless = runtime.rootless;
   } catch (error: unknown) {
     return refused(io, "serve", [`the container runtime could not be checked: ${error instanceof Error ? error.message : String(error)} (D-131)`]);
   }
@@ -129,7 +138,9 @@ export async function runHookServeCli(args: readonly string[], io: HookServeIo):
   const trust = layer.anchor;
   if (trust === null) { layer.releaseLock(); return refused(io, "serve", ["no verified trust anchor (D-194)"]); }
   const grants = new GrantStore(trust);
-  const view = new Workspace(execFileScript(process.execPath, []), "/work", workspace);
+  // D-228: the read view lists names and kinds only, never opening a file; every checkpoint and every judgement of
+  // whether one could be restored runs in the sealed context, which reaches the workspace and nothing else.
+  const view = new HostReadView(workspace);
   const gateway = options.get("--gateway");
   let sessions: MediatedSessions;
   try {
@@ -140,13 +151,15 @@ export async function runHookServeCli(args: readonly string[], io: HookServeIo):
       resolver: new HostPathResolver(workspace),
       view,
       filesystem: io.filesystem,
-      // D-227: the checkpoint is taken through handles that never follow a link, not by the path-based script.
-      checkpoints: { workspace: new HostWorkspace(workspace), store: new CheckpointStore(checkpoints) },
+      checkpoints: { workspace: new SealedWorkspace(workspace, io.sealed ?? dockerSealedLauncher({ rootless })), store: new CheckpointStore(checkpoints) },
       ...(gateway === undefined ? {} : { gateway: { server: gateway } }),
     });
   } catch (error: unknown) {
     { layer.releaseLock(); return refused(io, "serve", [error instanceof Error ? error.message : String(error)]); }
   }
+  // D-224, D-228: a session admitted before this start keeps a reversible workspace only once the sealed context confirms
+  // its checkpoint can still be restored; until then (and if not), its writes there park.
+  for (const note of await sessions.confirmReversible()) io.err(`juno hook: ${note}\n`);
   // 0660: the runner and the socket folder's group, through which the Claude Code user's hook connects (D-173).
   const hook = new HookService(sessions, { socketMode: 0o660 });
   const admission = new HookAdmissionService(sessions, grants);

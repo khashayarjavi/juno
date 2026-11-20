@@ -9,6 +9,7 @@ import { TEST_ANCHOR, signed } from "../../enforcement/test/test-keys.js";
 import { readPayload, readTrajectory } from "../../journal/src/index.js";
 import { systemFilesystemIo } from "../src/filesystem.js";
 import { runHookClient } from "../src/hook-client.js";
+import { unsealedLauncher } from "../../enforcement/test/sealed.js";
 import { type HookServeIo, runHookAdmitCli, runHookServeCli } from "../src/hook-serve.js";
 import { HookSessionFile } from "../src/hook-session-file.js";
 
@@ -56,6 +57,8 @@ async function serving(drive: (layer: SessionLayer) => Promise<void>, overrides:
     host: ordinaryHost(),
     filesystem: systemFilesystemIo(),
     runtime: () => Promise.resolve({ cgroupDriver: "systemd", cgroupVersion: "2", rootless: true }),
+    // D-228: the sealed program, run without its container here (the seal is proven by test/containers/sealed-copy.test.ts).
+    sealed: unsealedLauncher,
     // §3.4.1 (D-198): every service anchors; here to an in-memory destination (the flags are still judged).
     anchoring: testAnchoring({ sink: anchors }),
     ready: ({ layer }) => {
@@ -250,7 +253,7 @@ describe("juno checkpoint restore for a hook session's host folder (§2.2.2, D-2
     return { text: () => said.join(""), io: { readFile: () => "", out: (text) => said.push(text), err: (text) => said.push(text) } };
   };
   // The user running the command owns the journal and the checkpoint store (the runner); never root (D-221).
-  const runner = { uid: () => 4242, ownerOf: () => 4242, filesystem: systemFilesystemIo() };
+  const runner = { uid: () => 4242, ownerOf: () => 4242, filesystem: systemFilesystemIo(), launcher: () => Promise.resolve(unsealedLauncher) };
   const journal = (): string => join(dir, "state", "journal");
   const restoreArgs = (checkpoint: string, overrides: { principal?: string; workspace?: string } = {}): string[] => ["restore", "--journal", journal(), "--checkpoints", join(dir, "state", "checkpoints"), "--workspace", overrides.workspace ?? work, "--principal", overrides.principal ?? PRINCIPAL, `session-${SESSION}`, checkpoint];
 
@@ -327,7 +330,8 @@ describe("juno checkpoint restore for a hook session's host folder (§2.2.2, D-2
       expect(await runHookAdmitCli(["--control", join(sockets, "admit.sock"), join(dir, "state", "session.json")], quiet)).toBe(1);
       expect(layer.sessions()).toEqual([]);
     })).toBe(0);
-    expect(said.join("")).toMatch(/could not be restored by the runner[^\n]*"tool" has a set-user-ID/);
+    // D-228: the sealed copy itself refuses the bit, so the checkpoint is never taken.
+    expect(said.join("")).toMatch(/could not be checkpointed: "tool" has a set-user-ID/);
   });
 
   // proves D-221: a checkpoint that does not record the host folder it was taken in (one taken before 1.5-field) is
