@@ -104,6 +104,9 @@ describe("the canonical form of a path (§2.7.1 C4, D-113)", () => {
     expect(await canonical("relative/x")).toBeNull();
     expect(readResolverOutput(["/work/a"], "not json").get("/work/a")).toMatchObject({ ok: false });
     expect(readResolverOutput(["/work/a", "/work/b"], JSON.stringify([{ path: "/work/a", canonical: "/work/a" }])).get("/work/b")).toMatchObject({ ok: false });
+    // D-221: the folders the resolving user could not change are carried through; anything else in them is unreadable.
+    expect(readResolverOutput(["/work/a/x"], JSON.stringify([{ path: "/work/a/x", canonical: "/work/a/x", unwritable: ["/work/a"] }])).get("/work/a/x")).toEqual({ ok: true, canonical: "/work/a/x", unwritable: ["/work/a"] });
+    expect(readResolverOutput(["/work/a/x"], JSON.stringify([{ path: "/work/a/x", canonical: "/work/a/x", unwritable: "/work/a" }])).get("/work/a/x")).toMatchObject({ ok: false });
   });
 });
 

@@ -23,8 +23,13 @@ import { parseAtBoundary } from "../../contracts/src/index.js";
  * `redirected`: the canonical form (what the kernel resolves) differs from the raw path's lexical normalization in any
  * way (operator ruling 2 of 2026-11-08, D-168). Clearance and scope decisions read it at the safe default: the highest
  * declared class for a read (mode C's classifier), and never reversible for a write (step 4, as D-158).
+ * `unwritable`: the existing folders on the canonical path (from the view's root down to the folder the path would be
+ * written in) that the resolving user could not change and enter (D-221). A restore runs as that user, so a write
+ * below one of them inside a reversible workspace could not be undone: never reversible.
  */
-export type CanonicalPath = { readonly ok: true; readonly canonical: string; readonly hardLinked?: true; readonly redirected?: true } | { readonly ok: false; readonly reason: string };
+export type CanonicalPath =
+  | { readonly ok: true; readonly canonical: string; readonly hardLinked?: true; readonly redirected?: true; readonly unwritable?: readonly string[] }
+  | { readonly ok: false; readonly reason: string };
 
 /**
  * A raw absolute path's lexical normalization (operator ruling 2 of 2026-11-08, DECISIONS.md D-168): empty and `.`
@@ -102,17 +107,32 @@ const results = paths.map((path) => {
     }
     const tail = rest.filter((part) => part !== ".");
     const canonical = tail.length === 0 ? canonicalAncestor : (canonicalAncestor === "/" ? "" : canonicalAncestor) + "/" + tail.join("/");
-    if (rest.length > 0) return { path, canonical };
+    // D-221: the existing folders on the way, from the view's root down to the one the path would be written in, that
+    // this process (the user a restore runs as) could not change and enter. A restore must change them to undo a write.
+    const unwritable = [];
+    {
+      const names = real.slice(to.length).split("/").filter((part) => part !== "");
+      let folder = to;
+      const judge = (host) => { try { fs.accessSync(host, fs.constants.W_OK | fs.constants.X_OK); } catch { unwritable.push(outside(host)); } };
+      for (let index = 0; index <= names.length; index += 1) {
+        if (index > 0) folder = folder + "/" + names[index - 1];
+        let kind; try { kind = fs.lstatSync(folder); } catch { break; }
+        if (!kind.isDirectory()) break;
+        judge(folder);
+      }
+    }
+    const extra = unwritable.length > 0 ? { unwritable } : {};
+    if (rest.length > 0) return { path, canonical, ...extra };
     // D-157: a regular file with more than one link is the same file under another name, so its class is not its path's.
     let stat; try { stat = fs.statSync(real); } catch (error) { return { path, error: "cannot be resolved: " + (error && error.code ? error.code : "error") }; }
-    return stat.isFile() && stat.nlink > 1 ? { path, canonical, hard_linked: true } : { path, canonical };
+    return stat.isFile() && stat.nlink > 1 ? { path, canonical, hard_linked: true, ...extra } : { path, canonical, ...extra };
   }
   return { path, error: "no ancestor exists" };
 });
 process.stdout.write(JSON.stringify(results));
 `;
 
-const ResolverOutput = z.array(z.union([z.strictObject({ path: z.string(), canonical: z.string(), hard_linked: z.literal(true).optional() }), z.strictObject({ path: z.string(), error: z.string() })]));
+const ResolverOutput = z.array(z.union([z.strictObject({ path: z.string(), canonical: z.string(), hard_linked: z.literal(true).optional(), unwritable: z.array(z.string()).optional() }), z.strictObject({ path: z.string(), error: z.string() })]));
 
 /** Reads the resolver's output for `paths`. Anything unreadable, or a path it did not answer, is unresolved (fail-closed). */
 export function readResolverOutput(paths: readonly string[], stdout: string): CanonicalPaths {
@@ -130,7 +150,7 @@ export function readResolverOutput(paths: readonly string[], stdout: string): Ca
     }
     // D-168: whether the kernel's answer differs from the path as written, normalized as text.
     const redirected = item.canonical !== lexicalNormal(item.path);
-    answered.set(item.path, { ok: true, canonical: item.canonical, ...(item.hard_linked === true ? { hardLinked: true as const } : {}), ...(redirected ? { redirected: true as const } : {}) });
+    answered.set(item.path, { ok: true, canonical: item.canonical, ...(item.hard_linked === true ? { hardLinked: true as const } : {}), ...(redirected ? { redirected: true as const } : {}), ...(item.unwritable === undefined ? {} : { unwritable: item.unwritable }) });
   }
   return new Map(paths.map((path) => [path, answered.get(path) ?? { ok: false, reason: "the resolver did not answer" }]));
 }

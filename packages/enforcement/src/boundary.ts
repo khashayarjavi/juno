@@ -525,9 +525,14 @@ function effectOf(entry: RegistryEntry, call: CapabilityCall, canonical: Canonic
     // D-168 (operator ruling 2 of 2026-11-08): a target the kernel resolves elsewhere than its text says (a symlink in any
     // component, `..` after one) is judged at the safe default: a write through it is never reversible.
     if (answer.redirected === true) return { kind: "irreversible", not_reversible: `${raw} resolves to ${answer.canonical}, not where its text says` };
-    if (!reversible.some((root) => pathWithin(answer.canonical, root))) {
+    const workspace = reversible.find((root) => pathWithin(answer.canonical, root));
+    if (workspace === undefined) {
       return { kind: "irreversible", not_reversible: `${answer.canonical} lies in no reversible workspace of the task` };
     }
+    // D-221: the operator's restore runs as the user that resolved the path; a folder inside the workspace it could not
+    // change is one the restore could not bring back, so a write below it is not reversible.
+    const blocked = answer.unwritable?.find((folder) => pathWithin(folder, workspace));
+    if (blocked !== undefined) return { kind: "irreversible", not_reversible: `the restore could not change ${blocked}, so a write there could not be undone (D-221)` };
   }
   return { kind: "reversible_write" };
 }
