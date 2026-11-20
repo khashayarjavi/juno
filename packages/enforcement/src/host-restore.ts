@@ -48,6 +48,10 @@ function wanted(manifest: readonly ManifestEntry[]): Map<string, ManifestEntry> 
   for (const entry of manifest) {
     if (map.has(entry.path)) return `the checkpoint names ${JSON.stringify(entry.path)} twice`;
     if (!split(entry.path).every(plainName)) return `the checkpoint names a path that is not plain: ${JSON.stringify(entry.path)}`;
+    // D-223 (review round 1 of PR #60, F1): the runner recreates what it restores as its own, so a set-user-ID,
+    // set-group-ID or sticky bit kept from the checkpoint would hand the Claude Code user a program that runs as the
+    // runner. Any such bit refuses the checkpoint, at admission and at the restore; it is never stripped silently.
+    if (entry.type !== "symlink" && (entry.mode & 0o7000) !== 0) return `${entry.path === "" ? "the workspace root" : JSON.stringify(entry.path)} has a set-user-ID, set-group-ID or sticky bit (mode ${entry.mode.toString(8)}), which the runner will never recreate as its own; remove the bit (chmod u-s,g-s,o-t) and admit the session again (D-223)`;
     if (entry.path !== "") {
       const parent = entry.path.includes("/") ? entry.path.slice(0, entry.path.lastIndexOf("/")) : "";
       if (map.get(parent)?.type !== "directory") return `the checkpoint names ${JSON.stringify(entry.path)} before a folder above it`;
@@ -294,7 +298,7 @@ export function restoreHostTree(rootFd: number, manifest: readonly ManifestEntry
         const fd = openSync(at(parent, name), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
         try {
           for (let offset = 0; offset < data.length; ) offset += writeSync(fd, data, offset, data.length - offset);
-          fchmodSync(fd, entry.mode);
+          fchmodSync(fd, entry.mode & 0o777);
         } finally {
           closeSync(fd);
         }
@@ -304,7 +308,7 @@ export function restoreHostTree(rootFd: number, manifest: readonly ManifestEntry
     for (const entry of [...manifest].reverse()) {
       if (entry.type !== "directory") continue;
       const fd = folders.get(entry.path);
-      if (fd !== undefined && (fstatSync(fd).mode & 0o7777) !== entry.mode) fchmodSync(fd, entry.mode);
+      if (fd !== undefined && (fstatSync(fd).mode & 0o7777) !== entry.mode) fchmodSync(fd, entry.mode & 0o777);
     }
   } finally {
     for (const [path, fd] of folders) if (path !== "") closeSync(fd);

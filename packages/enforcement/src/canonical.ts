@@ -24,7 +24,7 @@ import { parseAtBoundary } from "../../contracts/src/index.js";
  * way (operator ruling 2 of 2026-11-08, D-168). Clearance and scope decisions read it at the safe default: the highest
  * declared class for a read (mode C's classifier), and never reversible for a write (step 4, as D-158).
  * `unwritable`: the existing folders on the canonical path (from the view's root down to the folder the path would be
- * written in) that the resolving user could not change and enter (D-221). A restore runs as that user, so a write
+ * written in) that the resolving user could not read, change and enter (D-221, D-223). A restore runs as that user, so a write
  * below one of them inside a reversible workspace could not be undone: never reversible.
  */
 export type CanonicalPath =
@@ -108,12 +108,13 @@ const results = paths.map((path) => {
     const tail = rest.filter((part) => part !== ".");
     const canonical = tail.length === 0 ? canonicalAncestor : (canonicalAncestor === "/" ? "" : canonicalAncestor) + "/" + tail.join("/");
     // D-221: the existing folders on the way, from the view's root down to the one the path would be written in, that
-    // this process (the user a restore runs as) could not change and enter. A restore must change them to undo a write.
+    // this process (the user a restore runs as) could not read, change and enter. A restore must do all three to undo a write.
     const unwritable = [];
     {
       const names = real.slice(to.length).split("/").filter((part) => part !== "");
       let folder = to;
-      const judge = (host) => { try { fs.accessSync(host, fs.constants.W_OK | fs.constants.X_OK); } catch { unwritable.push(outside(host)); } };
+      // The restore's own test (kernelMayChange, D-221, D-223): read, change and enter.
+      const judge = (host) => { try { fs.accessSync(host, fs.constants.R_OK | fs.constants.W_OK | fs.constants.X_OK); } catch { unwritable.push(outside(host)); } };
       for (let index = 0; index <= names.length; index += 1) {
         if (index > 0) folder = folder + "/" + names[index - 1];
         let kind; try { kind = fs.lstatSync(folder); } catch { break; }

@@ -126,6 +126,11 @@ if (first.started) {
   // because the restore could not undo it (D-221).
   results.lockOut = await agentDoes([{ op: "mkdir", path: `${PROJECT}/locked` }, { op: "chmod", path: `${PROJECT}/locked`, mode: "755" }]);
   results.writeLocked = await hook("Write", { file_path: `${PROJECT}/locked/x.txt`, content: "x" }, "toolu_2");
+  // D-223 (F2): only the runner's read is taken off (mode 333: the mask leaves it write and enter); the restore needs
+  // read too, so the write parks as well.
+  results.lockRead = await agentDoes([{ op: "mkdir", path: `${PROJECT}/unreadable` }, { op: "chmod", path: `${PROJECT}/unreadable`, mode: "333" }]);
+  results.writeUnreadable = await hook("Write", { file_path: `${PROJECT}/unreadable/x.txt`, content: "x" }, "toolu_3");
+  results.unlockRead = await agentDoes([{ op: "chmod", path: `${PROJECT}/unreadable`, mode: "775" }, { op: "rm", path: `${PROJECT}/unreadable` }]);
   // While the service runs, the restore is refused.
   results.restoreWhileServing = await asUser(RUNNER, "", [JUNO, "checkpoint", "restore", "--journal", JOURNAL, "--checkpoints", CHECKPOINTS, "--workspace", WORK, "--principal", "alireza", `session-${SESSION}`, "0".repeat(64)]);
   results.stopped = await first.stop();

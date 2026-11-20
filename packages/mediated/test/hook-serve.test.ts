@@ -310,6 +310,18 @@ describe("juno checkpoint restore for a hook session's host folder (§2.2.2, D-2
     expect(said.join("")).toContain("1 session(s) admitted before this start go on from the journal");
   }, 90_000);
 
+  // proves D-223 (F1): a reversible workspace holding a set-user-ID file is refused at admission, before any effect
+  it("refuses to admit a reversible workspace holding a set-user-ID file", async () => {
+    writeFileSync(join(dir, "state", "session.json"), JSON.stringify(sessionFile({ reversible_workspaces: ["/work/project"] })), { mode: 0o600 });
+    writeFileSync(join(work, "project", "tool"), "#!/bin/sh\n", { mode: 0o755 });
+    chmodSync(join(work, "project", "tool"), 0o4755);
+    expect(await serving(async (layer) => {
+      expect(await runHookAdmitCli(["--control", join(sockets, "admit.sock"), join(dir, "state", "session.json")], quiet)).toBe(1);
+      expect(layer.sessions()).toEqual([]);
+    })).toBe(0);
+    expect(said.join("")).toMatch(/could not be restored by the runner[^\n]*"tool" has a set-user-ID/);
+  });
+
   // proves D-221: a checkpoint that does not record the host folder it was taken in (one taken before 1.5-field) is
   // refused by the host form, and nothing is changed
   it("refuses a checkpoint that does not record its host folder", async () => {

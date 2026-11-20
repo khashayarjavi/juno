@@ -26,6 +26,9 @@ type Results = {
   newFolderMode: string;
   lockOut: { done: boolean }[];
   writeLocked: Exit;
+  lockRead: { done: boolean }[];
+  writeUnreadable: Exit;
+  unlockRead: { done: boolean }[];
   restoreWhileServing: Exit;
   stopped: Exit;
   list: Exit;
@@ -83,6 +86,10 @@ describe("restoring a hook session's host folder, end to end against the real ho
   it("parks a write the restore could not undo", () => {
     expect(results.lockOut.every((step) => step.done)).toBe(true);
     expect(JSON.parse(results.writeLocked.stdout)).toMatchObject({ hookSpecificOutput: { permissionDecision: "deny", permissionDecisionReason: expect.stringContaining("integrity_floor") } });
+    // D-223 (F2): a folder the runner may change and enter but not read parks too: the restore needs all three.
+    expect(results.lockRead.every((step) => step.done)).toBe(true);
+    expect(results.unlockRead.every((step) => step.done)).toBe(true);
+    expect(JSON.parse(results.writeUnreadable.stdout)).toMatchObject({ hookSpecificOutput: { permissionDecision: "deny", permissionDecisionReason: expect.stringContaining("integrity_floor") } });
   });
 
   // proves D-221 "it requires the service stopped": while the service runs, the restore is refused

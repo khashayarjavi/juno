@@ -141,6 +141,29 @@ describe("restoring a host-folder checkpoint (§2.2.2, D-221)", () => {
     expect(openWorkspaceRoot(join(dir, "work-link"), "/work")).toMatchObject({ ok: false, reason: expect.stringContaining("through a symbolic link") });
   });
 
+  // proves D-223 (review round 1 of PR #60, F1): a checkpoint holding a set-user-ID, set-group-ID or sticky bit is
+  // refused before anything changes, and the restore never leaves a runner-owned file or folder with such a bit
+  it("refuses a checkpoint with a set-user-ID, set-group-ID or sticky bit, and never recreates one", async () => {
+    for (const [path, mode, folder] of [["notes.txt", 0o4755, false], ["notes.txt", 0o2755, false], ["docs", 0o1777, true], ["docs", 0o2775, true]] as const) {
+      chmodSync(join(work, "project", path), mode);
+      const manifest = await checkpoint();
+      chmodSync(join(work, "project", path), folder ? 0o755 : 0o644);
+      writeFileSync(join(work, "project", "created.txt"), "new\n");
+      rmSync(join(work, "project", "notes.txt"));
+      const result = await restore(manifest);
+      expect(result.refusals, `${path} ${mode.toString(8)}`).toEqual([expect.stringContaining("set-user-ID, set-group-ID or sticky bit")]);
+      expect(read("created.txt")).toBe("new\n");
+      const opened = openWorkspaceRoot(work, "/work/project");
+      if (!opened.ok) throw new Error(opened.reason);
+      expect(() => restoreHostTree(opened.fd, manifest, (hash) => store.get(hash))).toThrow(/sticky bit/);
+      closeSync(opened.fd);
+      expect(existsSync(join(work, "project", "notes.txt"))).toBe(false);
+      writeFileSync(join(work, "project", "notes.txt"), "notes\n");
+      chmodSync(join(work, "project", "notes.txt"), 0o644);
+      rmSync(join(work, "project", "created.txt"));
+    }
+  });
+
   // proves D-221: content is checked against its hash before the first change; a missing or altered blob changes nothing
   it("changes nothing when the checkpoint's content is missing", async () => {
     const manifest = await checkpoint();
