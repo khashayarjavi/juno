@@ -18,7 +18,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      # The whole history: test/evidence/upgrade.test.ts builds the commit installed on the operator's machine from it,
+      # to prove the service starts on its old journal after an upgrade (DECISIONS.md D-222).
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v5
         with:
