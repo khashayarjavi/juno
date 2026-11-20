@@ -3,7 +3,7 @@
 ## Current increment
 **1.5-field — the field report of the first real install (issue [khashayarjavi/juno#59](https://github.com/khashayarjavi/juno/issues/59)), authorised by you on 2026-11-20 (D-220).** Branch `claude/epic-tesla-dsn63d` (this session's only pushable branch). It carries draft PR #58's STATE.md commit (27563ff); its PR supersedes #58. Spec v0.6.1. No objection open.
 
-Status (2026-11-20, this session): **all four items built with tests (D-221, D-222). `make verify` being run on the final head; review rounds next.** Nothing merged yet.
+Status (2026-11-20, this session): **all four items built with tests (D-221, D-222). `make verify: GREEN` on 8ef6e97 (1,472 unit, 127 container); the commits after it change only DECISIONS.md and STATE.md. Draft PR [khashayarjavi/juno#60](https://github.com/khashayarjavi/juno/pull/60) supersedes #58. Review round 1 next.** Nothing merged yet.
 
 ### What 1.5-field changes, in plain words
 1. **You can now undo what Claude did in a hook session (§2.2.2).** `juno checkpoint restore --workspace /srv/juno-work ...`, run as `juno-runner` with the service stopped, puts the session's folder back exactly as it was when the session was admitted: files Claude made are removed, files it changed or deleted come back. It is recorded in the journal under your name. `juno checkpoint list` finds the checkpoint. The guide's new section "Undo what Claude did in a session" gives the steps.
@@ -22,7 +22,7 @@ Status (2026-11-20, this session): **all four items built with tests (D-221, D-2
 - Gateway sessions keep no reversible workspace.
 - Checkpoints taken before this version are refused by the host restore (they do not record their folder).
 
-**Left, in order:** `make verify` GREEN on the final head; review rounds (up to 5); the merge gate; then STOP and report the merge commit and the upgrade steps; close issue #59.
+**Left, in order:** review rounds (up to 5); the merge gate; then STOP and report the merge commit and the upgrade steps; close issue #59.
 
 ## Previous increment: 1.5-wsl-fix (complete)
 **1.5-wsl-fix — `make verify-rootless` fails 2 of 118 on your machine (issue [khashayarjavi/juno#56](https://github.com/khashayarjavi/juno/issues/56)), authorised by you on 2026-11-14 (D-219).** Branch `claude/festive-cori-73zvj7` (this session's only pushable branch). It carries PR #55's two STATE.md commits; its PR supersedes #55. Spec v0.6.1. No objection open.
