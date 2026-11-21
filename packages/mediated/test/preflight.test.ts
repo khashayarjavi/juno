@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { sshFingerprint } from "../../enforcement/src/anchor-pin.js";
 import { HOOK_EVENTS, MANAGED_SETTINGS, hookEntry } from "../src/install.js";
 import type { FilesystemIo } from "../src/filesystem.js";
+import { type SuperblockIo } from "../src/superblock.js";
 import { type FileFacts, type PreflightInput, type PreflightIo, account, holds, hookPreflight, runHookCheckCli } from "../src/preflight.js";
 
 // D-173 (operator ruling 1 of 2026-11-08, second set): `juno hook check` refuses unless the Claude Code user is an
@@ -220,10 +221,17 @@ describe("juno hook check (D-173): the Claude Code user is separated from the ru
       attributes: (dirs) => Promise.resolve({ ok: true, flags: dirs.map(() => flags) }),
     });
     const base = ["--agent-user", "juno-agent", "--runner-user", "juno-runner", "--socket", SOCKET, "--client", CLIENT, "--node", NODE, "--anchor", "/etc/juno/operator.pub", ...INPUT.state.flatMap((path) => ["--state", path])];
-    const run = async (args: readonly string[], fs: FilesystemIo) => {
+    // D-242: the superblock of the ext4 holding the workspace (device 0:20 above), with or without casefold (0x20000).
+    const sbIo = (casefold = false): SuperblockIo => {
+      const bytes = new Uint8Array(1024);
+      new DataView(bytes.buffer).setUint16(0x38, 0xef53, true);
+      new DataView(bytes.buffer).setUint32(0x60, casefold ? 0x202c2 : 0x2c2, true);
+      return { mountinfo: () => "20 1 0:20 / / rw - ext4 src rw", realpath: (path) => path, deviceOf: () => ({ major: 0, minor: 20 }), deviceName: () => "sdc", readSuperblock: () => ({ ok: true, bytes, blockDevice: { major: 0, minor: 20 } }) };
+    };
+    const run = async (args: readonly string[], fs: FilesystemIo, sb: SuperblockIo = sbIo()) => {
       const out: string[] = [];
       const err: string[] = [];
-      const code = await runHookCheckCli(args, (text) => out.push(text), (text) => err.push(text), io(good()), fs);
+      const code = await runHookCheckCli(args, (text) => out.push(text), (text) => err.push(text), io(good()), fs, sb);
       return { code, out: out.join(""), err: err.join("") };
     };
     expect(await run(base, fsIo("ext4"))).toMatchObject({ code: 2, err: expect.stringContaining("--workspace <path>") });
@@ -231,5 +239,26 @@ describe("juno hook check (D-173): the Claude Code user is separated from the ru
     const windows = await run([...base, "--workspace", "/srv/juno-work"], fsIo("drvfs"));
     expect(windows).toMatchObject({ code: 1, err: expect.stringContaining("how WSL mounts a Windows folder") });
     expect(await run([...base, "--workspace", "/srv/juno-work", "--source", "/srv/juno-work/project"], fsIo("ext4", "-----F"))).toMatchObject({ code: 1, err: expect.stringContaining("case-folding attribute") });
+  });
+
+  // proves D-241 ruling 1 (D-242): the check refuses, in plain words, an ext4 whose superblock has the casefold feature,
+  // and says on success that case folding is switched off for the whole file system
+  it("refuses a workspace on an ext4 with the casefold feature on, read from its superblock (D-242)", async () => {
+    const fsIo: FilesystemIo = { mountinfo: () => "20 1 0:20 / / rw - ext4 src rw", realpath: (path) => path, list: () => [], identity: () => null, attributes: (dirs) => Promise.resolve({ ok: true, flags: dirs.map(() => "--------------e-------") }) };
+    const sbIo = (casefold: boolean): SuperblockIo => {
+      const bytes = new Uint8Array(1024);
+      new DataView(bytes.buffer).setUint16(0x38, 0xef53, true);
+      new DataView(bytes.buffer).setUint32(0x60, casefold ? 0x202c2 : 0x2c2, true);
+      return { mountinfo: () => "20 1 0:20 / / rw - ext4 src rw", realpath: (path) => path, deviceOf: () => ({ major: 0, minor: 20 }), deviceName: () => "sdc", readSuperblock: () => ({ ok: true, bytes, blockDevice: { major: 0, minor: 20 } }) };
+    };
+    const args = ["--agent-user", "juno-agent", "--runner-user", "juno-runner", "--socket", SOCKET, "--client", CLIENT, "--node", NODE, "--anchor", "/etc/juno/operator.pub", ...INPUT.state.flatMap((path) => ["--state", path]), "--workspace", "/srv/juno-work"];
+    const said = async (sb: SuperblockIo) => {
+      const text: string[] = [];
+      const code = await runHookCheckCli(args, (line) => text.push(line), (line) => text.push(line), io(good()), fsIo, sb);
+      return { code, text: text.join("") };
+    };
+    expect(await said(sbIo(false))).toMatchObject({ code: 0, text: expect.stringContaining("Case folding is switched off for its whole file system") });
+    expect(await said(sbIo(true))).toMatchObject({ code: 1, text: expect.stringMatching(/refused:[\s\S]*the workspace \/srv\/juno-work is on an ext4 file system \(\/dev\/sdc, mounted at \/\) with ext4's case-folding feature switched on/) });
+    expect(await said({ ...sbIo(false), readSuperblock: () => ({ ok: false, error: "EACCES: permission denied, open '/dev/sdc'" }) })).toMatchObject({ code: 1, text: expect.stringContaining("run juno hook check as root, with sudo") });
   });
 });

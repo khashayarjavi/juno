@@ -278,6 +278,18 @@ describe("the guide after the field report of the first real install (issue #59;
     expect(guide).not.toContain("babeld");
   });
 
+  // proves D-241 ruling 1 (D-242): Part E step 12's Check reads the workspace disk's features from its superblock with
+  // dumpe2fs, as root, and stops on casefold; Part G step 4's check names what the real check prints on success
+  it("has you read the casefold feature from the superblock, and juno hook check confirm it", () => {
+    const step = part("12. **A root-owned copy of JUNO", "13. **Put your public key");
+    expect(step).toContain("findmnt -no SOURCE --target /srv/juno-work");
+    expect(step).toContain(`sudo dumpe2fs -h "$(findmnt -no SOURCE --target /srv/juno-work)" | grep '^Filesystem features'`);
+    expect(step).toContain("the word `casefold` is **not** in it");
+    const check = part("4. **Check the separation** (D-173).", "5. **Admit the session.**");
+    expect(check).toContain("`Case folding is switched off for its whole file system`");
+    expect(check).toContain("It must run with `sudo`");
+  });
+
   // proves D-222's guide findings: the disk under WSL, landscape-client, the default user, the drive check, the access
   // list, Claude Code's own sign-in, one run per session, the standing need for GitHub, and the upgrade section
   it("says what the field report found", () => {

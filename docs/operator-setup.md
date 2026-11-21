@@ -310,7 +310,12 @@ Part E comes before Part D because Part D's push key is made inside WSL.
     find /opt/juno /opt/node22 ! -type l -perm /022 -print
     ```
     **Check:** it prints nothing. Anything it prints is a file or folder that someone other than root could change; stop and send the agent the lines. (`juno hook check` in Part G would refuse it too.)
-    **Check**, in the listing: `/opt/juno`, its `dist/mediated/src` and `dist/mediated/definitions` start `drwxr-xr-x` and name `root root`; `/var/lib/juno-runner` is `drwx------ juno-runner juno-runner`; `/var/lib/juno-hook` is `drwxr-s--- juno-runner juno-hook`; `/srv/juno-work` is `drwxrwxr-x+ juno-agent juno-agent` (the `+` is the access list). `getfacl` prints, among its lines, `user:juno-runner:rwx`, `user:juno-agent:rwx`, `default:user:juno-runner:rwx` and `default:user:juno-agent:rwx`. Then `stat -f -c %T /srv/juno-work` prints `ext2/ext3` (that is how `stat` names ext4) and `lsattr -d /srv/juno-work` prints a line with no `F` before the path.
+    **Check**, in the listing: `/opt/juno`, its `dist/mediated/src` and `dist/mediated/definitions` start `drwxr-xr-x` and name `root root`; `/var/lib/juno-runner` is `drwx------ juno-runner juno-runner`; `/var/lib/juno-hook` is `drwxr-s--- juno-runner juno-hook`; `/srv/juno-work` is `drwxrwxr-x+ juno-agent juno-agent` (the `+` is the access list). `getfacl` prints, among its lines, `user:juno-runner:rwx`, `user:juno-agent:rwx`, `default:user:juno-runner:rwx` and `default:user:juno-agent:rwx`. Then `stat -f -c %T /srv/juno-work` prints `ext2/ext3` (that is how `stat` names ext4) and `lsattr -d /srv/juno-work` prints a line with no `F` before the path. Then, admin terminal:
+    ```
+    findmnt -no SOURCE --target /srv/juno-work
+    sudo dumpe2fs -h "$(findmnt -no SOURCE --target /srv/juno-work)" | grep '^Filesystem features'
+    ```
+    **Check:** the first line names a disk under `/dev/` (for example `/dev/sdc`). The second prints one line starting `Filesystem features:`, and the word `casefold` is **not** in it. If `casefold` is there, or the second line prints nothing, stop and send the agent both lines: on such a disk a folder can be made to ignore letter case, and `juno hook check` refuses it (D-242). Only root can switch that feature on, so once this check passes the Claude Code user cannot change it.
     **Never use a Windows folder** (anything under `/mnt/`, or a folder mounted from Windows) as the workspace or a source: JUNO refuses it (D-178).
 13. **Put your public key (Part B) where JUNO reads it.** It is public; this copies it byte for byte from Windows into WSL. **PowerShell** (normal):
     ```
@@ -465,7 +470,7 @@ A `sources` list with folders and the web looks like this:
    ```
    sudo /opt/node22/bin/node /opt/juno/dist/runner/src/juno.js hook check --agent-user juno-agent --runner-user juno-runner --socket /var/lib/juno-hook/hook.sock --client /opt/juno/dist/mediated/src/juno-hook.js --node /opt/node22/bin/node --state /var/lib/juno-runner --workspace /srv/juno-work --anchor /etc/juno/operator.pub
    ```
-   **Check:** it prints `separated from the runner`, `case-sensitive Linux file system`, and `The anchor repository and its host key are pinned in root's own file`. If it refuses with a line about `the anchor pin`, redo Part D step 7 and send the agent the refusal line if it stays.
+   **Check:** it prints `separated from the runner`, `case-sensitive Linux file system`, `Case folding is switched off for its whole file system`, and `The anchor repository and its host key are pinned in root's own file`. It must run with `sudo`: it reads the disk's superblock, which only root can (if it refuses with `cannot read the superblock`, you ran it without `sudo`). Run it again after any change root makes to the disk. If it refuses with a line about `the anchor pin`, redo Part D step 7 and send the agent the refusal line if it stays.
 5. **Admit the session.** Runner terminal:
    ```
    /opt/node22/bin/node /opt/juno/dist/runner/src/juno.js hook admit --control /var/lib/juno-runner/admit.sock /var/lib/juno-runner/session.json
@@ -645,7 +650,7 @@ For a machine where JUNO is already installed (Parts A to G done). The agent giv
    getfacl -p /srv/juno-work
    ```
    The two `setfacl` lines run as `juno-agent`, never as root, for Part E step 12's reason (D-226): everything in the workspace is `juno-agent`'s, so they need nothing more. **Check:** as in Part E step 12, and neither `setfacl` line printed anything. If one prints `Operation not permitted`, send the agent the line. Without it, a session with `reversible_workspaces` is refused at admission (`could not be restored by the runner`).
-7. **Check the separation**, admin terminal: Part G step 4's `hook check`. **Check:** as there.
+7. **Check the separation**, admin terminal: first Part E step 12's two lines that read the disk's features (`findmnt …` and `sudo dumpe2fs …`; new for the upgrade from 6706b5a), then Part G step 4's `hook check`. **Check:** as there for each: `casefold` is not in the features line, and the check prints `Case folding is switched off for its whole file system`.
 8. **Start JUNO again.** Runner terminal:
    ```
    systemctl --user start juno-hook.service
