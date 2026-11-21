@@ -1,9 +1,19 @@
 # STATE
 
 ## Current increment
-**1.5-field — the field report of the first real install (issue [khashayarjavi/juno#59](https://github.com/khashayarjavi/juno/issues/59)), authorised by you on 2026-11-20 (D-220); your rulings on PR #60 (D-228), on D-233 (D-234) and on D-240 (D-241).** Branch `claude/optimistic-clarke-xblrwn` (this session's only pushable branch, D-241). It carries PR [khashayarjavi/juno#62](https://github.com/khashayarjavi/juno/pull/62)'s forty commits unchanged; its draft PR supersedes #62, and review rounds 15 to 17 run there. Spec v0.6.1. No objection open.
+**1.5-field is complete and merged** as `bef25fea19e419f1a6166ca70cd497ff93e0f3eb` (your rulings of 2026-11-21, D-241). The autopilot has STOPPED, as ruling 3 directs: nothing further is started. Issue [khashayarjavi/juno#59](https://github.com/khashayarjavi/juno/issues/59) is closed with the summary. Spec v0.6.1. No objection open.
 
-Status (2026-11-21, this session): **your ruling 1 on D-240 built (D-242). `make verify: GREEN` on 99d68c7 (1,502 unit, 141 container). Draft PR [khashayarjavi/juno#63](https://github.com/khashayarjavi/juno/pull/63) supersedes #62. Review round 15 next.** main is unchanged at 6706b5a; your machine is unaffected.
+**For the guide's "Upgrading JUNO to a new commit", the commit hash is `bef25fea19e419f1a6166ca70cd497ff93e0f3eb`.**
+
+### Merge this session (2026-11-21)
+- **PR [khashayarjavi/juno#63](https://github.com/khashayarjavi/juno/pull/63) (1.5-field, supersedes #60, #61 and #62): merged** as bef25fea19e419f1a6166ca70cd497ff93e0f3eb, pinned to head f267072f0221f79ea717e1dc3fa7914045137d48.
+  - **Review round 15** (fresh reviewer, the review prompt verbatim): **MERGE** on f267072. All six checks PASS; no new mechanism. Two notes, not blocking:
+    - tmpfs's `casefold` option is read from mountinfo (D-178's claim, not re-checked); the verified install's ext4 does not depend on it, so it is a residual under D-241 ruling 2.
+    - A doc comment in `packages/mediated/src/session.ts` sits above `contentHashes` instead of `hookLimits` (cosmetic, not fixed: the head was not moved after the review).
+  - **CI on f267072:** run 44868556493: `verify`, `verify-rootless` and `verify-rootless-operator` green.
+  - **CI on main for bef25fe:** run 44869401818: all three green.
+  - **Locally:** `make verify: GREEN` on 99d68c7 (1,502 unit, 141 container); f267072 adds only STATE.md.
+  - Rounds 16 and 17 were not needed. PRs #60, #61 and #62 are left open and untouched; #63 carried their commits.
 
 ### Your rulings of 2026-11-21 on D-240 (D-241)
 1. `juno hook check` (as root) and Part E step 12's Check confirm that the file system holding `/srv/juno-work` has ext4's casefold feature switched off entirely, read from the superblock, and refuse otherwise in plain words. D-240's per-write check stays as a second layer. Tested against a real file system made with casefold on, in a container.
@@ -18,7 +28,7 @@ Status (2026-11-21, this session): **your ruling 1 on D-240 built (D-242). `make
 4. **Autopilot rulings:** a tmpfs is judged from its mount options (its superblock exists only in memory; D-178 already refuses its `casefold` option). A btrfs workspace is now refused by `juno hook check`, since no superblock read here can confirm it; your install is ext4.
 5. **Tests:** in a sealed container, the runner image's own `mkfs.ext4` makes a real ext4 with casefold, one without, and one that root switches to casefold later with `tune2fs`. `dumpe2fs` and JUNO's reader agree on each, and the refusal is checked word for word. The one stand-in is which disk holds the workspace: this machine's kernel cannot mount a case-folding ext4, and a sealed container cannot mount anything.
 
-**Left, in order:** review rounds 15 to 17 on PR #63; the merge gate; then STOP and report the merge commit hash and your upgrade steps; close issue #59.
+**Left:** nothing in 1.5-field. Your next step is the guide's "Upgrading JUNO to a new commit", with the hash above.
 
 ### STOP after review round 14 (D-240)
 - **Why this is a STOP.** Your ruling 5 authorised rounds 10 to 14. Round 14 ended DO NOT MERGE, and a fix nobody reviews cannot pass the merge gate.
