@@ -3077,3 +3077,15 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   2. **Rule that the case-folding residual is accepted** and record it: it needs an ext4 made with the casefold feature, which the guide's setup does not make, and the Claude Code user emptying `/srv/juno-work`. Then merge on the next MERGE.
   3. Direct otherwise.
 - Reason: CLAUDE.md §7 (STOP: the authorised rounds used up); D-234 rulings 1, 3 and 5; D-205's precedent.
+
+## D-241 — Operator rulings of 2026-11-21 on D-240 (case folding made impossible on a verified install; the residual rule; review rounds 15 to 17)
+- Date: 2026-11-21
+- Status: Accepted (operator's rulings); built as D-242
+- Applies to: this increment; ruling 2 to every later review round of it
+- **The operator's rulings, verbatim in substance:**
+  1. **Make case folding impossible on a verified install, instead of detecting it per name:** `juno hook check` (run as root) and the guide's Part E step 12 Check confirm that the file system holding `/srv/juno-work` has the ext4 casefold feature switched off entirely (read from the superblock, for example `dumpe2fs -h`), and refuse otherwise, in plain words. The Claude Code user cannot switch it on (that needs root). Keep D-240's per-write check as a second layer. Test the refusal against a real file system made with casefold on, in a container.
+  2. **Residual rule (as D-211):** a review finding that needs a condition the verified install excludes, and that `juno hook check` (as root) checks for, such as a casefold-capable workspace file system, root changing JUNO's files, or a non-native file system, is recorded as a residual in the evidence document, not a STOP and not DO NOT MERGE.
+  3. **Review rounds 15 to 17 on PR #62 are authorised**, under the rules as they stand plus ruling 2. On MERGE: merge through the gate (CI green on the head, read by the agent), then STOP and report the merge commit hash and the operator's exact upgrade steps, and close issue #59 with the summary.
+  4. **If round 17 still ends DO NOT MERGE, STOP** and give the operator the finding in one plain paragraph, with whether it needs anything beyond the Claude Code user's own powers on a verified install.
+- **Branch and pull request (autopilot ruling, as D-234):** this session can push only to `claude/optimistic-clarke-xblrwn`, not to PR #62's `claude/gallant-turing-8s7bma`. The branch carries PR #62's forty commits unchanged and adds D-241 onward; its draft PR supersedes #62, which is left open and untouched. **The authorised rounds 15 to 17 "on PR #62" are run on the superseding PR**, numbered on from #62's fourteen; the rule for a repeated mechanism counts every round of #60, #61, #62 and the new PR.
+- Reason: the operator's rulings; CLAUDE.md §7 step 1.
