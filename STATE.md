@@ -1,9 +1,24 @@
 # STATE
 
 ## Current increment
-**1.5-field — the field report of the first real install (issue [khashayarjavi/juno#59](https://github.com/khashayarjavi/juno/issues/59)), authorised by you on 2026-11-20 (D-220); your rulings on PR #60 (D-228) and on D-233 (D-234).** Branch `claude/gallant-turing-8s7bma` (this session's only pushable branch, D-234). It carries PR [khashayarjavi/juno#61](https://github.com/khashayarjavi/juno/pull/61)'s thirty-two commits unchanged; its draft PR supersedes #61, and review rounds 10 to 14 run there. Spec v0.6.1. No objection open.
+**1.5-field — the field report of the first real install (issue [khashayarjavi/juno#59](https://github.com/khashayarjavi/juno/issues/59)), authorised by you on 2026-11-20 (D-220); your rulings on PR #60 (D-228), on D-233 (D-234) and on D-240 (D-241).** Branch `claude/optimistic-clarke-xblrwn` (this session's only pushable branch, D-241). It carries PR [khashayarjavi/juno#62](https://github.com/khashayarjavi/juno/pull/62)'s forty commits unchanged; its draft PR supersedes #62, and review rounds 15 to 17 run there. Spec v0.6.1. No objection open.
 
-Status (2026-11-20, this session): **STOP after review round 14 on PR [khashayarjavi/juno#62](https://github.com/khashayarjavi/juno/pull/62) — your decision needed (D-240).** The last round you authorised ended DO NOT MERGE. Its finding is fixed and `make verify` is GREEN on the fix (1,493 unit, 138 container), but the fix is not reviewed, so nothing was merged. main is unchanged at 6706b5a; your machine is unaffected.
+Status (2026-11-21, this session): **your ruling 1 on D-240 built (D-242); `make verify` running; then review rounds 15 to 17.** main is unchanged at 6706b5a; your machine is unaffected.
+
+### Your rulings of 2026-11-21 on D-240 (D-241)
+1. `juno hook check` (as root) and Part E step 12's Check confirm that the file system holding `/srv/juno-work` has ext4's casefold feature switched off entirely, read from the superblock, and refuse otherwise in plain words. D-240's per-write check stays as a second layer. Tested against a real file system made with casefold on, in a container.
+2. Residual rule: a finding that needs a condition the verified install excludes and `juno hook check` checks for (a casefold-capable file system, root changing JUNO's files, a non-native file system) is a residual, not a STOP and not DO NOT MERGE.
+3. Review rounds 15 to 17 authorised. On MERGE: the gate, then STOP with the merge commit hash and your upgrade steps, and close issue #59.
+4. If round 17 still ends DO NOT MERGE: STOP, with the finding in one plain paragraph.
+
+### What D-242 changes, in plain words
+1. **`juno hook check` reads the disk itself.** For the workspace (and every source, and every mount inside them) it finds the disk that holds it and reads the disk's superblock, the record at its start that says how the file system was made. If that record says case folding is switched on, or JUNO cannot read it, the check refuses and says why. Only root can switch case folding on, so once the check passes, the Claude Code user cannot make any folder there ignore letter case.
+2. **It must run as root** (the guide's command already starts with `sudo`). Without `sudo` it refuses with `cannot read the superblock`.
+3. **The guide:** Part E step 12 adds two lines (`findmnt` and `sudo dumpe2fs -h …`); the features line must not contain `casefold`. Part G step 4's check now also prints `Case folding is switched off for its whole file system`. The upgrade's step 7 runs both.
+4. **Autopilot rulings:** a tmpfs is judged from its mount options (its superblock exists only in memory; D-178 already refuses its `casefold` option). A btrfs workspace is now refused by `juno hook check`, since no superblock read here can confirm it; your install is ext4.
+5. **Tests:** in a sealed container, the runner image's own `mkfs.ext4` makes a real ext4 with casefold, one without, and one that root switches to casefold later with `tune2fs`. `dumpe2fs` and JUNO's reader agree on each, and the refusal is checked word for word. The one stand-in is which disk holds the workspace: this machine's kernel cannot mount a case-folding ext4, and a sealed container cannot mount anything.
+
+**Left, in order:** `make verify` green; open the superseding PR; review rounds 15 to 17; the merge gate; then STOP and report the merge commit hash and your upgrade steps; close issue #59.
 
 ### STOP after review round 14 (D-240)
 - **Why this is a STOP.** Your ruling 5 authorised rounds 10 to 14. Round 14 ended DO NOT MERGE, and a fix nobody reviews cannot pass the merge gate.
