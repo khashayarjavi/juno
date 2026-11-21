@@ -5,6 +5,7 @@
 // This kernel cannot mount an ext4 that folds case (no CONFIG_UNICODE), and a sealed container may not mount at all, so
 // the one stand-in is which block device holds the workspace: the file system's bytes are the image's. No shell.
 import { execFile } from "node:child_process";
+import process from "node:process";
 import { promisify } from "node:util";
 
 const run = promisify(execFile);
