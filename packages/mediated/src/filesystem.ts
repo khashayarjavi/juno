@@ -98,7 +98,13 @@ function swapped(name: string): string | null {
  * The refusals for these paths (workspace roots and registered sources, as host paths); empty when every one lies on a
  * case-sensitive file system with no case-folding directory in its tree (D-178). `what` names each path's role.
  */
-export async function caseFoldingRefusals(paths: readonly { readonly what: string; readonly path: string }[], io: FilesystemIo): Promise<string[]> {
+/**
+ * `options.tree: false` (D-237): judges each path's own folder only (its file system, its attribute, its lookups), never
+ * what lies below it and never the mounts inside it: for the undo, which makes one new folder in that folder and never
+ * looks inside the folder it moves aside.
+ */
+export async function caseFoldingRefusals(paths: readonly { readonly what: string; readonly path: string }[], io: FilesystemIo, options: { readonly tree?: boolean } = {}): Promise<string[]> {
+  const tree = options.tree !== false;
   const refusals: string[] = [];
   const text = io.mountinfo();
   const mounts = text === null ? null : parseMountinfo(text);
@@ -127,7 +133,7 @@ export async function caseFoldingRefusals(paths: readonly { readonly what: strin
     }
     const own = typeRefusal(what, path, mount);
     if (own !== null) refusals.push(own);
-    for (const inner of mounts) {
+    for (const inner of tree ? mounts : []) {
       if (inner.mountPoint !== real && within(inner.mountPoint, real)) {
         const nested = typeRefusal(`a mount inside ${what}`, inner.mountPoint, inner);
         if (nested !== null) refusals.push(nested);
@@ -165,7 +171,7 @@ export async function caseFoldingRefusals(paths: readonly { readonly what: strin
           break;
         }
       }
-      for (const entry of entries) if (entry.directory) pending.push(join(dir, entry.name));
+      if (tree) for (const entry of entries) if (entry.directory) pending.push(join(dir, entry.name));
     }
     if (failed !== null) {
       refusals.push(failed);

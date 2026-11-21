@@ -23,8 +23,16 @@ import { parseAtBoundary } from "../../contracts/src/index.js";
  * `redirected`: the canonical form (what the kernel resolves) differs from the raw path's lexical normalization in any
  * way (operator ruling 2 of 2026-11-08, D-168). Clearance and scope decisions read it at the safe default: the highest
  * declared class for a read (mode C's classifier), and never reversible for a write (step 4, as D-158).
+ * `unwritable`: the existing folders on the canonical path (from the view's root down to the folder the path would be
+ * written in) that the resolving user could not read, change and enter (D-221, D-223). A restore runs as that user, so a write
+ * below one of them inside a reversible workspace, or in a workspace one of them holds, could not be undone: never
+ * reversible (D-234). `mounts`: the existing folders on the same way that lie on another file system than the view's root.
+ * `folding` and `unjudged` (D-238): the folders listed on the way (from the view's root down to the one holding the
+ * path's last existing part) that the kernel shows to fold case, and those holding no name to ask it with.
  */
-export type CanonicalPath = { readonly ok: true; readonly canonical: string; readonly hardLinked?: true; readonly redirected?: true } | { readonly ok: false; readonly reason: string };
+export type CanonicalPath =
+  | { readonly ok: true; readonly canonical: string; readonly hardLinked?: true; readonly redirected?: true; readonly unwritable?: readonly string[]; readonly mounts?: readonly string[]; readonly folding?: readonly string[]; readonly unjudged?: readonly string[] }
+  | { readonly ok: false; readonly reason: string };
 
 /**
  * A raw absolute path's lexical normalization (operator ruling 2 of 2026-11-08, DECISIONS.md D-168): empty and `.`
@@ -84,13 +92,43 @@ const results = paths.map((path) => {
     if (canonicalAncestor === null) return { path, error: "resolves outside the resolver's view" };
     // D-182: every name the kernel matched below the view's root must be listed, byte for byte, in its folder. On a
     // folder that folds case (or Unicode form), realpath keeps the name as written while the kernel opens another entry.
+    // D-238: each folder listed on the way is also asked whether it folds case, by the kernel's own answer (D-178 check
+    // 3): a listed name with its letter case swapped, not itself listed, must not open the same entry. A folder that
+    // folds is reported in "folding"; one holding no name to ask with (no letter whose case can be swapped) in "unjudged".
+    const folding = [];
+    const unjudged = [];
     {
+      const swap = (text) => { let out = ""; for (const ch of text) { const up = ch.toUpperCase(); out += up === ch ? ch.toLowerCase() : up; } return out === text ? null : out; };
       let parent = to;
       for (const name of real.slice(to.length).split("/").filter((part) => part !== "")) {
         let listed;
         try { listed = fs.readdirSync(parent); } catch (error) { return { path, error: "cannot be resolved: " + (error && error.code ? error.code : "error") }; }
         if (!listed.includes(name)) return { path, error: "the kernel matched " + JSON.stringify(name) + " to an entry listed under another name: the folder folds case (D-182)" };
+        const names = new Set(listed);
+        const probe = [name, ...listed].find((entry) => { const other = swap(entry); return other !== null && !names.has(other); });
+        if (probe === undefined) unjudged.push(outside(parent));
+        else {
+          let same = false;
+          try { const a = fs.lstatSync(parent + "/" + probe); const b = fs.lstatSync(parent + "/" + swap(probe)); same = a.dev === b.dev && a.ino === b.ino; } catch { same = false; }
+          if (same) folding.push(outside(parent));
+        }
         parent = parent + "/" + name;
+      }
+      // D-239 (review round 13): the deepest existing folder is asked too, so the folder holding a part that does not
+      // exist yet (a session's folder moved away, say) is never left unasked. An empty one cannot be asked: unjudged.
+      let deepest = null;
+      try { deepest = fs.lstatSync(parent); } catch { deepest = null; }
+      if (deepest !== null && deepest.isDirectory()) {
+        let listed = null;
+        try { listed = fs.readdirSync(parent); } catch { listed = null; }
+        const names = new Set(listed ?? []);
+        const probe = (listed ?? []).find((entry) => { const other = swap(entry); return other !== null && !names.has(other); });
+        if (probe === undefined) unjudged.push(outside(parent));
+        else {
+          let same = false;
+          try { const a = fs.lstatSync(parent + "/" + probe); const b = fs.lstatSync(parent + "/" + swap(probe)); same = a.dev === b.dev && a.ino === b.ino; } catch { same = false; }
+          if (same) folding.push(outside(parent));
+        }
       }
     }
     const rest = parts.slice(keep);
@@ -102,17 +140,41 @@ const results = paths.map((path) => {
     }
     const tail = rest.filter((part) => part !== ".");
     const canonical = tail.length === 0 ? canonicalAncestor : (canonicalAncestor === "/" ? "" : canonicalAncestor) + "/" + tail.join("/");
-    if (rest.length > 0) return { path, canonical };
+    // D-221: the existing folders on the way, from the view's root down to the one the path would be written in, that
+    // this process (the user a restore runs as) could not read, change and enter. A restore must do all three to undo a write.
+    const unwritable = [];
+    const mounts = [];
+    {
+      const names = real.slice(to.length).split("/").filter((part) => part !== "");
+      let folder = to;
+      // The restore's own test (kernelMayChange, D-221, D-223): read, change and enter.
+      // A folder with a set-user-ID, set-group-ID or sticky bit counts too: in a sticky folder the restore may remove only
+      // its own files (D-225).
+      const judge = (host, mode) => { try { if ((mode & 0o7000) !== 0) throw new Error("special bit"); fs.accessSync(host, fs.constants.R_OK | fs.constants.W_OK | fs.constants.X_OK); } catch { unwritable.push(outside(host)); } };
+      // D-234: a folder on the way on another file system than the view's root (a mount) is reported too: the undo
+      // moves a session's folder aside with one rename, which a mount on the way or at the folder itself would stop.
+      let rootDev = null;
+      for (let index = 0; index <= names.length; index += 1) {
+        if (index > 0) folder = folder + "/" + names[index - 1];
+        let kind; try { kind = fs.lstatSync(folder); } catch { break; }
+        if (!kind.isDirectory()) break;
+        if (rootDev === null) rootDev = kind.dev;
+        else if (kind.dev !== rootDev) mounts.push(outside(folder));
+        judge(folder, kind.mode);
+      }
+    }
+    const extra = { ...(unwritable.length > 0 ? { unwritable } : {}), ...(mounts.length > 0 ? { mounts } : {}), ...(folding.length > 0 ? { folding } : {}), ...(unjudged.length > 0 ? { unjudged } : {}) };
+    if (rest.length > 0) return { path, canonical, ...extra };
     // D-157: a regular file with more than one link is the same file under another name, so its class is not its path's.
     let stat; try { stat = fs.statSync(real); } catch (error) { return { path, error: "cannot be resolved: " + (error && error.code ? error.code : "error") }; }
-    return stat.isFile() && stat.nlink > 1 ? { path, canonical, hard_linked: true } : { path, canonical };
+    return stat.isFile() && stat.nlink > 1 ? { path, canonical, hard_linked: true, ...extra } : { path, canonical, ...extra };
   }
   return { path, error: "no ancestor exists" };
 });
 process.stdout.write(JSON.stringify(results));
 `;
 
-const ResolverOutput = z.array(z.union([z.strictObject({ path: z.string(), canonical: z.string(), hard_linked: z.literal(true).optional() }), z.strictObject({ path: z.string(), error: z.string() })]));
+const ResolverOutput = z.array(z.union([z.strictObject({ path: z.string(), canonical: z.string(), hard_linked: z.literal(true).optional(), unwritable: z.array(z.string()).optional(), mounts: z.array(z.string()).optional(), folding: z.array(z.string()).optional(), unjudged: z.array(z.string()).optional() }), z.strictObject({ path: z.string(), error: z.string() })]));
 
 /** Reads the resolver's output for `paths`. Anything unreadable, or a path it did not answer, is unresolved (fail-closed). */
 export function readResolverOutput(paths: readonly string[], stdout: string): CanonicalPaths {
@@ -130,7 +192,7 @@ export function readResolverOutput(paths: readonly string[], stdout: string): Ca
     }
     // D-168: whether the kernel's answer differs from the path as written, normalized as text.
     const redirected = item.canonical !== lexicalNormal(item.path);
-    answered.set(item.path, { ok: true, canonical: item.canonical, ...(item.hard_linked === true ? { hardLinked: true as const } : {}), ...(redirected ? { redirected: true as const } : {}) });
+    answered.set(item.path, { ok: true, canonical: item.canonical, ...(item.hard_linked === true ? { hardLinked: true as const } : {}), ...(redirected ? { redirected: true as const } : {}), ...(item.unwritable === undefined ? {} : { unwritable: item.unwritable }), ...(item.mounts === undefined ? {} : { mounts: item.mounts }), ...(item.folding === undefined ? {} : { folding: item.folding }), ...(item.unjudged === undefined ? {} : { unjudged: item.unjudged }) });
   }
   return new Map(paths.map((path) => [path, answered.get(path) ?? { ok: false, reason: "the resolver did not answer" }]));
 }

@@ -37,6 +37,8 @@ test-watch:
 
 # The capability definitions the built code loads at run time (the hook sessions' tool table, the program list, shell.run)
 # go beside it, where `dist/<package>/src/*.js` finds them as the sources do (DECISIONS.md D-197).
+# The sealed workspace copy (`workspace-copy.mjs`, plain JavaScript so its text runs unchanged in the sealed container,
+# DECISIONS.md D-228) goes beside the code that reads it.
 # `juno-anchor-ssh.js` is run by git itself as GIT_SSH, so it is made executable (DECISIONS.md D-208).
 # The last step makes everything built writable by its owner only, whatever the umask of whoever runs make: Ubuntu's
 # login shell gives 0002, and `juno hook check` rightly refuses a hook client its group could change (DECISIONS.md D-219).
@@ -45,6 +47,7 @@ build:
 	npx tsc -p tsconfig.build.json
 	cp -R packages/mediated/definitions dist/mediated/definitions
 	cp -R packages/registry/definitions dist/registry/definitions
+	cp packages/enforcement/src/workspace-copy.mjs dist/enforcement/src/workspace-copy.mjs
 	chmod 0755 dist/journal/src/juno-anchor-ssh.js
 	chmod -R go-w dist
 

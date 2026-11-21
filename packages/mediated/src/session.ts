@@ -1,3 +1,4 @@
+import { dirname } from "node:path";
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
@@ -24,6 +25,8 @@ import {
   SessionLayer,
   type SessionLimits,
   type Workspace,
+  ManifestEntry,
+  type SealedWorkspace,
   checkpointId,
   GrantStore,
   type PathResolver,
@@ -200,7 +203,9 @@ type Session = {
   /** Calls authorized and not yet reported by PostToolUse: tool_use_id → call_seq and the sensitivity of what it reads. */
   readonly pending: Map<string, { readonly call_seq: number | null; readonly reads: Sensitivity; readonly gateway?: true }>;
   /** The session's checkpointed workspaces: the only reversible ones (§2.2.2, D-135). */
-  readonly reversible: readonly string[];
+  reversible: readonly string[];
+  /** Each reversible workspace's checkpoint content (hashes): every write checks the store still holds it (D-234 ruling 1). */
+  undo: Map<string, readonly string[]>;
 };
 
 export type MediatedOptions = {
@@ -221,8 +226,11 @@ export type MediatedOptions = {
    */
   readonly view: Workspace;
   readonly clock?: () => Date;
-  /** Where the host workspace is checkpointed (the same scripts, run on the host) and the store for its content (D-136). */
-  readonly checkpoints?: { readonly workspace: Workspace; readonly store: CheckpointStore };
+  /**
+   * Where the host workspace is checkpointed and the store for its content (D-136): only through the sealed copy context
+   * (D-228), never by this process reading the folder itself.
+   */
+  readonly checkpoints?: { readonly workspace: SealedWorkspace; readonly store: CheckpointStore };
   /**
    * How admission reads the file systems under the workspace roots and the registered sources (D-178): every admission
    * refuses one that is not a case-sensitive Linux file system or that holds a case-folding folder. Required, so no
@@ -308,6 +316,8 @@ export class MediatedSessions {
   readonly #unrestored = new Map<string, string>();
   /** Grant files a rebuilt session's admission named that could not be read again at start; those grants are absent. */
   readonly #grantWarnings: string[] = [];
+  /** A rebuilt session's workspaces that stay reversible only once the sealed context confirms their checkpoints can still be restored (D-224, D-228). */
+  readonly #unconfirmed = new Map<string, { readonly root: string; readonly manifest: readonly ManifestEntry[] }[]>();
 
   constructor(options: MediatedOptions) {
     if (options.gateway !== undefined && !GATEWAY_NAME.test(options.gateway.server)) throw new MediatedError(`the gateway's server name ${JSON.stringify(options.gateway.server)} must be letters, digits and hyphens only (D-190)`);
@@ -317,7 +327,8 @@ export class MediatedSessions {
     for (const root of options.paths.roots) this.#layer.requireWorkspace("the workspace root", root);
     this.#layer.requireWorkspace("the read view's root", options.view.viewRoot);
     if (options.checkpoints !== undefined) {
-      this.#layer.requireWorkspace("the checkpointed workspace", options.checkpoints.workspace.viewRoot);
+      this.#layer.requireWorkspace("the checkpointed workspace", options.checkpoints.workspace.workspace);
+      if (options.checkpoints.workspace.workspace !== options.view.viewRoot) throw new MediatedError("the checkpointed workspace must be the read view's folder");
       this.#layer.requireState("the checkpoint store", options.checkpoints.store.root);
     }
     this.#layer.requireGrants(options.grants);
@@ -340,6 +351,33 @@ export class MediatedSessions {
         }
       }
     }
+  }
+
+  /**
+   * D-224 with D-228: asks the sealed context, for every rebuilt session's checkpointed workspace, whether the runner
+   * could still restore it; only a confirmed one becomes reversible again. The service calls it once, before it serves.
+   * Never throws: a workspace that cannot be confirmed stays irreversible.
+   */
+  async confirmReversible(): Promise<readonly string[]> {
+    const notes: string[] = [];
+    for (const [id, candidates] of this.#unconfirmed) {
+      const session = this.#sessions.get(id);
+      if (session === undefined || this.#checkpoints === undefined) continue;
+      const confirmed: string[] = [];
+      for (const { root, manifest } of candidates) {
+        let refusals: readonly string[];
+        try {
+          refusals = await this.#checkpoints.workspace.check(root, manifest);
+        } catch (error: unknown) {
+          refusals = [error instanceof Error ? error.message : String(error)];
+        }
+        if (refusals.length === 0) confirmed.push(root);
+        else notes.push(`${id}: ${root} is no longer reversible, so writes there park: ${refusals.join("; ")}`);
+      }
+      session.reversible = confirmed;
+    }
+    this.#unconfirmed.clear();
+    return notes;
   }
 
   /** The sessions rebuilt from the journal when this service started, and the ones that could not be (D-201). */
@@ -369,6 +407,34 @@ export class MediatedSessions {
     }
   }
 
+  /**
+   * Operator ruling 1 of D-234: before every write is judged, each reversible workspace whose checkpoint content the
+   * store no longer holds is one JUNO cannot undo, with the reason; a write there is not reversible. One lstat per
+   * content file of the checkpoint (at most its 2,000 entries), never a read.
+   */
+  async #unrestorable(session: Session): Promise<Record<string, string>> {
+    const found: Record<string, string> = {};
+    for (const root of session.reversible) {
+      // D-240 (review round 14 on PR #62): the very check the restore refuses with (D-237), on the folder holding the
+      // session's folder: its file system and its case-folding attribute (read with lsattr), never inferred from a name.
+      const holding = this.#view.viewRoot + dirname(root).slice("/work".length);
+      const folding = await caseFoldingRefusals([{ what: "the folder holding the session's folder", path: holding }], this.#filesystem, { tree: false });
+      if (folding.length > 0) {
+        found[root] = folding.join("; ");
+        continue;
+      }
+      const hashes = session.undo.get(root);
+      if (hashes === undefined) {
+        found[root] = "JUNO holds no checkpoint of it";
+        continue;
+      }
+      const missing = this.#checkpoints === undefined ? hashes.length : hashes.filter((hash) => this.#checkpoints?.store.has(hash) !== true).length;
+      if (this.#checkpoints === undefined) found[root] = "this service has no checkpoint store";
+      else if (missing > 0) found[root] = `${String(missing)} of its checkpoint's files are gone from the checkpoint store`;
+    }
+    return found;
+  }
+
   /** A refused admission found in the journal at start: its name map judges an injected command from it, as before the restart (D-152, D-201). */
   #restoreRefused(record: RecoveredRecord): void {
     for (const { payload } of record.entries) {
@@ -396,6 +462,7 @@ export class MediatedSessions {
     let floor: Sensitivity = "public";
     const pending: Session["pending"] = new Map();
     const Pending = z.object({ call_seq: z.int().nullable().default(null), tool_use_id: z.string().nullable().default(null), reads: SensitivitySchema });
+    const checkpointed: Record<string, unknown>[] = [];
     if (request.reversible_workspaces.length > 0 && this.#checkpoints === undefined) throw new MediatedError("the session has reversible workspaces and this service has no checkpoint store (D-136)");
     for (const { entry, payload } of record.entries) {
       // The floor comes from the chained entry itself, never from its payload (D-204).
@@ -415,11 +482,25 @@ export class MediatedSessions {
         pending.set(call.tool_use_id ?? fallback, type === "gateway_call" ? { call_seq: null, reads: call.reads, gateway: true } : { call_seq: call.call_seq, reads: call.reads });
       } else if (entry.kind === "note" && type === "result_missing") pending.clear();
       else if (entry.kind === "note" && type === "state" && body.data["to"] === "failed") task = Task.parse({ ...task, state: "failed", runtime_substate: null });
+      else if (entry.kind === "note" && type === "checkpoint") checkpointed.push(body.data);
     }
+    // D-224 (review round 2 of PR #60, F1): §2.2.2 counts a workspace reversible only while its checkpoint can be
+    // restored. A rebuilt session keeps a workspace reversible only when its journal holds that workspace's checkpoint,
+    // taken in this service's own folder by the sealed context (one taken before 1.5-field records no folder, one taken
+    // before D-228 is not marked sealed, and the host restore refuses both), and the sealed context confirms the runner
+    // could restore it as the folder now stands. Until `confirmReversible` has confirmed it, the session has no
+    // reversible workspace: its writes are judged irreversible, so an untrusted target parks (integrity_floor, §8.3).
+    const candidates: { root: string; manifest: readonly ManifestEntry[] }[] = [];
+    for (const root of request.reversible_workspaces) {
+      const note = z.object({ root: z.string(), workspace: z.string(), manifest: z.array(ManifestEntry), taken_by: z.literal("sealed") }).safeParse(checkpointed.findLast((item) => item["root"] === root));
+      if (note.success && note.data.workspace === this.#view.viewRoot) candidates.push({ root, manifest: note.data.manifest });
+    }
+    if (candidates.length > 0) this.#unconfirmed.set(record.id, candidates);
+    const reversible: string[] = [];
     const resumed = this.#layer.resume(record.id, hookLimits(request, task.budget), { now: () => this.#clock().getTime() });
     if (resumed === null) throw new MediatedError(`the journal holds no admission of ${record.id}`);
     this.#registries.set(record.id, built);
-    this.#sessions.set(record.id, { task, request, governed: resumed.session, floor, pending, reversible: [...request.reversible_workspaces] });
+    this.#sessions.set(record.id, { task, request, governed: resumed.session, floor, pending, reversible, undo: new Map(candidates.map(({ root, manifest }) => [root, contentHashes(manifest)])) });
   }
 
   /**
@@ -537,13 +618,19 @@ export class MediatedSessions {
     });
     // §2.2.2: each reversible workspace is checkpointed now, before the session's first effect; one that cannot be is refused.
     const reversible: string[] = [];
-    const checkpoints: { root: string; checkpoint: string; manifest: unknown }[] = [];
+    const checkpoints: { root: string; checkpoint: string; manifest: unknown; workspace: string; taken_by: "sealed" }[] = [];
     for (const root of request.reversible_workspaces) {
       const resolved = (await this.#resolver.resolve([root])).get(root);
-      const taken = resolved?.ok === true && resolved.canonical === root && this.#checkpoints !== undefined ? await this.#checkpoints.workspace.list(root, true) : null;
+      // D-228: the sealed context takes the checkpoint, then judges that the runner could restore it (D-221: §2.2.2
+      // counts the workspace reversible only if restoring the checkpoint is possible); one that holds anything but files
+      // and folders, or that the runner could not restore, is refused now, before any effect.
+      const taken = resolved?.ok === true && resolved.canonical === root && this.#checkpoints !== undefined ? await this.#checkpoints.workspace.checkpoint(root) : null;
+      if (taken !== null && !taken.ok && taken.restorable === false) return { admitted: false, failures: [`reversible workspace ${root} could not be restored by the runner, so it is not reversible (§2.2.2, D-221): ${taken.reason}`] };
       if (taken === null || !taken.ok) return { admitted: false, failures: [`reversible workspace ${root} could not be checkpointed${taken === null ? "" : `: ${taken.reason}`}`] };
       for (const bytes of taken.snapshot.contents.values()) this.#checkpoints?.store.put(bytes);
-      checkpoints.push({ root, checkpoint: checkpointId(root, taken.snapshot.manifest), manifest: taken.snapshot.manifest });
+      // `workspace`: the host folder the checkpoint was taken in, which `juno checkpoint restore --workspace` must match
+      // (D-221); `taken_by`: the sealed context took it (D-228).
+      checkpoints.push({ root, checkpoint: checkpointId(root, taken.snapshot.manifest), manifest: taken.snapshot.manifest, workspace: this.#view.viewRoot, taken_by: "sealed" });
       reversible.push(root);
     }
     this.#registries.set(id, built);
@@ -564,7 +651,7 @@ export class MediatedSessions {
         ...(origin.grantFiles === undefined ? {} : { grant_files: [...origin.grantFiles] }),
       },
     });
-    const session: Session = { task, request, governed, floor: "public", pending: new Map(), reversible };
+    const session: Session = { task, request, governed, floor: "public", pending: new Map(), reversible, undo: new Map(checkpoints.map(({ root, manifest }) => [root, contentHashes(manifest as readonly ManifestEntry[])])) };
     this.#sessions.set(id, session);
     for (const checkpoint of checkpoints) this.#append(id, "note", { sensitivity: "internal", integrity: "derived" }, SESSION_ACTOR, { type: "checkpoint", ...checkpoint });
     // §3.4.1 (D-198): the shared layer records the interval and anchors the admitted session's head before its first
@@ -646,7 +733,7 @@ export class MediatedSessions {
     const reads = await this.#classify(session, TOOLS[input.tool_name]?.reads(judgedValue(mapped.proposal.arguments, mapped.constants)) ?? [unknown(input.tool_name)]);
 
     const constants = mapped.constants;
-    const base: TaskContext = { task: { ...session.task, sensitivity_floor: session.floor }, constants, synthesis: { sensitivity: session.floor }, reversible: session.reversible, readGate: { reads, clearance: session.request.provider_clearance } };
+    const base: TaskContext = { task: { ...session.task, sensitivity_floor: session.floor }, constants, synthesis: { sensitivity: session.floor }, reversible: session.reversible, unrestorable: await this.#unrestorable(session), readGate: { reads, clearance: session.request.provider_clearance } };
     const canonical: CanonicalPaths = await this.#resolver.resolve(built.boundary.pathsToResolve(base, mapped.proposal));
     const verdict: Verdict = built.boundary.authorize({ ...base, canonical }, mapped.proposal);
     if (verdict.outcome === "proceed") {
@@ -938,6 +1025,11 @@ type Mapped =
   | { readonly kind: "park"; readonly reason: string; readonly detail: Record<string, unknown>; readonly overridable: boolean };
 
 /** §2.7.1 A4, §4.3, §6.4: a hook session's limits, the same at admission and when it is rebuilt from its journal (D-201). */
+/** The content hashes a checkpoint's manifest names (each file's). */
+function contentHashes(manifest: readonly ManifestEntry[]): readonly string[] {
+  return [...new Set(manifest.flatMap((entry) => (entry.type === "file" ? [entry.sha256] : [])))];
+}
+
 function hookLimits(request: z.output<typeof SessionRequest>, budget: z.infer<typeof Task>["budget"]): SessionLimits {
   return { rejection_limit: request.rejection_limit, ttl: request.ttl, budget, metered: ["turns", "wall_clock_ms"], clock: "from_admission", park_fields: { mode: "hook", answer: "deny" } };
 }

@@ -1,17 +1,18 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { SessionLayer } from "../../enforcement/src/index.js";
-import { MemoryAnchorSink, testAnchoring } from "../../enforcement/test/anchoring.js";
+import { MemoryAnchorSink, testAnchoring, testJournalKey } from "../../enforcement/test/anchoring.js";
 import { ordinaryHost } from "../../enforcement/test/layer.js";
 import { TEST_ANCHOR, signed } from "../../enforcement/test/test-keys.js";
 import { readPayload, readTrajectory } from "../../journal/src/index.js";
-import { systemFilesystemIo } from "../src/filesystem.js";
+import { caseFoldingRefusals, systemFilesystemIo } from "../src/filesystem.js";
 import { runHookClient } from "../src/hook-client.js";
+import { unsealedLauncher } from "../../enforcement/test/sealed.js";
 import { type HookServeIo, runHookAdmitCli, runHookServeCli } from "../src/hook-serve.js";
 import { HookSessionFile } from "../src/hook-session-file.js";
-import { readFileSync } from "node:fs";
+
 import { fileURLToPath } from "node:url";
 
 // Plan Increment 6, operator ruling D-180 (DECISIONS.md D-196): `juno hook serve` starts JUNO's hook service on the
@@ -56,6 +57,8 @@ async function serving(drive: (layer: SessionLayer) => Promise<void>, overrides:
     host: ordinaryHost(),
     filesystem: systemFilesystemIo(),
     runtime: () => Promise.resolve({ cgroupDriver: "systemd", cgroupVersion: "2", rootless: true }),
+    // D-228: the sealed program, run without its container here (the seal is proven by test/containers/sealed-copy.test.ts).
+    sealed: unsealedLauncher,
     // §3.4.1 (D-198): every service anchors; here to an in-memory destination (the flags are still judged).
     anchoring: testAnchoring({ sink: anchors }),
     ready: ({ layer }) => {
@@ -242,4 +245,189 @@ describe("juno hook serve and juno hook admit (plan Increment 6, D-180, D-196)",
     });
     expect(code).toBe(0);
   }, 60_000);
+});
+
+describe("juno checkpoint restore for a hook session's host folder (§2.2.2, D-221)", () => {
+  const cliIo = (): { text: () => string; io: { readFile: () => string; out: (text: string) => void; err: (text: string) => void } } => {
+    const said: string[] = [];
+    return { text: () => said.join(""), io: { readFile: () => "", out: (text) => said.push(text), err: (text) => said.push(text) } };
+  };
+  // The user running the command owns the journal and the checkpoint store (the runner); never root (D-221).
+  const runner = { uid: () => 4242, ownerOf: () => 4242, filesystem: systemFilesystemIo(), launcher: () => Promise.resolve(unsealedLauncher) };
+  const journal = (): string => join(dir, "state", "journal");
+  const restoreArgs = (checkpoint: string, overrides: { principal?: string; workspace?: string } = {}): string[] => ["restore", "--journal", journal(), "--checkpoints", join(dir, "state", "checkpoints"), "--workspace", overrides.workspace ?? work, "--principal", overrides.principal ?? PRINCIPAL, `session-${SESSION}`, checkpoint];
+
+  // proves §2.2.2 "restoring that checkpoint is an operator action recorded in the journal" for hook mode, through the
+  // real service and the operator's command: refused while the service runs; once it is stopped, the folder's full
+  // content comes back (created files removed, changed and deleted ones put back), the restore is journalled with the
+  // operator as actor, and the service starts again on that journal with the session going on
+  it("restores the session's folder only once the service is stopped, journals it, and the service starts again", async () => {
+    writeFileSync(join(dir, "state", "session.json"), JSON.stringify(sessionFile({ reversible_workspaces: ["/work/project"] })), { mode: 0o600 });
+    const { runCheckpointCli } = await import("../../runner/src/restore.js");
+    let held = "";
+    const key = testJournalKey();
+    const code = await serving(async () => {
+      expect(await runHookAdmitCli(["--control", join(sockets, "admit.sock"), join(dir, "state", "session.json")], quiet), said.join("")).toBe(0);
+      // What Claude Code did in the folder (the hook judged each call; Claude Code itself writes).
+      writeFileSync(join(work, "project", "created.txt"), "made by Claude\n");
+      writeFileSync(join(work, "project", "notes.txt"), "changed by Claude\n");
+      // While the service runs, the restore is refused and changes nothing.
+      const listed = cliIo();
+      expect(await runCheckpointCli(["list", "--journal", journal(), `session-${SESSION}`], listed.io)).toBe(0);
+      const checkpoint = (JSON.parse(listed.text()) as { checkpoints: { checkpoint: string; workspace: string }[] }).checkpoints[0];
+      expect(checkpoint?.workspace).toBe(work);
+      held = checkpoint?.checkpoint ?? "";
+      const running = cliIo();
+      expect(await runCheckpointCli(restoreArgs(held), running.io, undefined, undefined, runner)).toBe(1);
+      expect(running.text()).toContain("its service is running");
+      expect(readFileSync(join(work, "project", "notes.txt"), "utf8")).toBe("changed by Claude\n");
+    }, { anchoring: testAnchoring({ sink: anchors, journalKey: key }) });
+    expect(code).toBe(0);
+    rmSync(join(work, "project", "notes.txt"));
+    // Mismatches are refused and change nothing: another principal, another folder, root.
+    const other = cliIo();
+    expect(await runCheckpointCli(restoreArgs(held, { principal: "someone-else" }), other.io, undefined, undefined, runner)).toBe(1);
+    mkdirSync(join(dir, "elsewhere", "project"), { recursive: true });
+    const elsewhere = cliIo();
+    expect(await runCheckpointCli(restoreArgs(held, { workspace: join(dir, "elsewhere") }), elsewhere.io, undefined, undefined, runner)).toBe(1);
+    expect(elsewhere.text()).toContain(`was taken in ${work}`);
+    // Journalled, once the checkpoint was found (D-224, F2).
+    expect(entries(journal()).filter((entry) => entry["type"] === "checkpoint_restore")).toEqual([expect.objectContaining({ outcome: "refused", reason: expect.stringContaining("was taken in") })]);
+    const asRoot = cliIo();
+    expect(await runCheckpointCli(restoreArgs(held), asRoot.io, undefined, undefined, { ...runner, uid: () => 0, ownerOf: () => 0 })).toBe(1);
+    expect(asRoot.text()).toContain("never as root");
+    const notOwner = cliIo();
+    expect(await runCheckpointCli(restoreArgs(held), notOwner.io, undefined, undefined, { ...runner, ownerOf: () => 1 })).toBe(1);
+    expect(existsSync(join(work, "project", "created.txt"))).toBe(true);
+    // Stopped: restored.
+    const done = cliIo();
+    expect(await runCheckpointCli(restoreArgs(held), done.io, undefined, undefined, runner), done.text()).toBe(0);
+    // D-234: the folder as it stood is kept, whole, beside it; the answer and the journal name where.
+    const kept = (JSON.parse(done.text()) as { kept?: string }).kept ?? "";
+    expect(JSON.parse(done.text())).toEqual({ ok: true, root: "/work/project", kept: expect.stringMatching(new RegExp(`^${work.replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&")}/project\\.juno-undone-\\d{8}T\\d{6}Z-[0-9a-f]{8}$`)) });
+    expect(readFileSync(join(kept, "created.txt"), "utf8")).toBe("made by Claude\n");
+    expect(existsSync(join(work, "project", "created.txt"))).toBe(false);
+    expect(readFileSync(join(work, "project", "notes.txt"), "utf8")).toBe("notes\n");
+    const recorded = entries(journal()).filter((entry) => entry["type"] === "checkpoint_restore");
+    expect(recorded).toEqual([expect.objectContaining({ outcome: "refused" }), expect.objectContaining({ checkpoint: held, outcome: "restored", principal: PRINCIPAL, workspace: work, root: "/work/project", kept })]);
+    expect(readTrajectory(journal(), `session-${SESSION}`).at(-1)?.actor).toBe(PRINCIPAL);
+    // The service starts again on the journal the restore wrote to; the session goes on from it (D-201).
+    // (The same journal key as the first start: the in-memory anchors were signed with it, as the real key file persists.)
+    said = [];
+    // The rebuilt session's checkpoint records this folder and can be restored, so its workspace stays reversible: an
+    // untrusted write inside it proceeds after the restart (D-224).
+    let after: { exitCode: number; stdout: string } | null = null;
+    expect(await serving(async () => {
+      after = await runHookClient(pre("Write", { file_path: join(work, "project", "later.txt"), content: "x" }), join(sockets, "hook.sock"));
+    }, { anchoring: testAnchoring({ sink: anchors, journalKey: key }) }), said.join("")).toBe(0);
+    expect(after).toMatchObject({ exitCode: 0, stdout: "" });
+    expect(said.join("")).toContain("1 session(s) admitted before this start go on from the journal");
+  }, 90_000);
+
+  // proves D-223 (F1): a reversible workspace holding a set-user-ID file is refused at admission, before any effect
+  it("refuses to admit a reversible workspace holding a set-user-ID file", async () => {
+    writeFileSync(join(dir, "state", "session.json"), JSON.stringify(sessionFile({ reversible_workspaces: ["/work/project"] })), { mode: 0o600 });
+    writeFileSync(join(work, "project", "tool"), "#!/bin/sh\n", { mode: 0o755 });
+    chmodSync(join(work, "project", "tool"), 0o4755);
+    expect(await serving(async (layer) => {
+      expect(await runHookAdmitCli(["--control", join(sockets, "admit.sock"), join(dir, "state", "session.json")], quiet)).toBe(1);
+      expect(layer.sessions()).toEqual([]);
+    })).toBe(0);
+    // D-228: the sealed copy itself refuses the bit, so the checkpoint is never taken.
+    expect(said.join("")).toMatch(/could not be checkpointed: "tool" has a set-user-ID/);
+  });
+
+  // proves D-237 (review round 11 on PR #62) with D-234 rulings 1 and 2, through the operator's real command: what the
+  // session's folder holds cannot stop the undo, which only judges the way to it and the folder holding it. With more
+  // than 50,000 folders in it, a chain 2,500 levels deep, a folder whose name holds a line break, and a folder the
+  // runner cannot list, `juno checkpoint restore --workspace` restores it and keeps the old folder aside; the service's
+  // own start-up check still judges the whole workspace (D-178, fail-closed) and refuses until the kept folder is gone
+  it("undoes through the real command whatever the folder holds", async () => {
+    writeFileSync(join(dir, "state", "session.json"), JSON.stringify(sessionFile({ reversible_workspaces: ["/work/project"] })), { mode: 0o600 });
+    const { runCheckpointCli } = await import("../../runner/src/restore.js");
+    const { removeEntry } = await import("../../enforcement/src/index.js");
+    const key = testJournalKey();
+    let held = "";
+    expect(await serving(async () => {
+      expect(await runHookAdmitCli(["--control", join(sockets, "admit.sock"), join(dir, "state", "session.json")], quiet), said.join("")).toBe(0);
+      const listed = cliIo();
+      expect(await runCheckpointCli(["list", "--journal", journal(), `session-${SESSION}`], listed.io)).toBe(0);
+      held = (JSON.parse(listed.text()) as { checkpoints: { checkpoint: string }[] }).checkpoints[0]?.checkpoint ?? "";
+    }, { anchoring: testAnchoring({ sink: anchors, journalKey: key }) })).toBe(0);
+    writeFileSync(join(work, "project", "notes.txt"), "changed by Claude\n");
+    for (let folder = 0; folder < 251; folder += 1) for (let inner = 0; inner < 200; inner += 1) mkdirSync(join(work, "project", "node_modules", `p${String(folder)}`, `d${String(inner)}`), { recursive: true });
+    let fd = openSync(join(work, "project"), constants.O_RDONLY | constants.O_DIRECTORY);
+    for (let level = 0; level < 2500; level += 1) {
+      mkdirSync(`/proc/self/fd/${String(fd)}/d`);
+      const next = openSync(`/proc/self/fd/${String(fd)}/d`, constants.O_RDONLY | constants.O_DIRECTORY);
+      closeSync(fd);
+      fd = next;
+    }
+    closeSync(fd);
+    mkdirSync(join(work, "project", "a\nb"));
+    mkdirSync(join(work, "project", "locked"));
+    const system = systemFilesystemIo();
+    // The runner's view of a folder the Claude Code user locked (chmod 700): it cannot list it. (This process is root,
+    // which the kernel lets list anything, so the runner's view is given.)
+    const blind = { ...runner, filesystem: { ...system, list: (folder: string) => (folder.endsWith("/locked") ? null : system.list(folder)) } };
+    const before = await caseFoldingRefusals([{ what: "the workspace", path: join(work, "project") }], blind.filesystem);
+    expect(before.join("; ")).toMatch(/more than 50000 folders|cannot list|line break/);
+    const done = cliIo();
+    expect(await runCheckpointCli(restoreArgs(held), done.io, undefined, undefined, blind), done.text()).toBe(0);
+    const kept = (JSON.parse(done.text()) as { kept?: string }).kept ?? "";
+    expect(readFileSync(join(work, "project", "notes.txt"), "utf8")).toBe("notes\n");
+    expect(existsSync(join(work, "project", "node_modules"))).toBe(false);
+    expect(existsSync(join(kept, "node_modules", "p250", "d199"))).toBe(true);
+    expect(existsSync(join(kept, "a\nb"))).toBe(true);
+    expect(entries(journal()).filter((entry) => entry["type"] === "checkpoint_restore")).toEqual([expect.objectContaining({ outcome: "restored", kept })]);
+    // The start-up check judges the whole workspace, the kept folder included, and refuses (fail-closed, D-178) until
+    // the operator removes it, as the guide's undo step 5 says; then the service starts and the session goes on.
+    said = [];
+    expect(await serving(() => Promise.resolve(), { anchoring: testAnchoring({ sink: anchors, journalKey: key }) })).not.toBe(0);
+    expect(said.join("")).toContain("holds more than 50000 folders");
+    const base = openSync(work, constants.O_RDONLY | constants.O_DIRECTORY);
+    removeEntry(base, kept.slice(work.length + 1));
+    closeSync(base);
+    said = [];
+    expect(await serving(() => Promise.resolve(), { anchoring: testAnchoring({ sink: anchors, journalKey: key }) }), said.join("")).toBe(0);
+    expect(said.join("")).toContain("go on from the journal");
+  }, 180_000);
+
+  // proves D-221: a checkpoint that does not record the host folder it was taken in (one taken before 1.5-field) is
+  // refused by the host form, and nothing is changed
+  it("refuses a checkpoint that does not record its host folder", async () => {
+    writeFileSync(join(dir, "state", "session.json"), JSON.stringify(sessionFile({ reversible_workspaces: ["/work/project"] })), { mode: 0o600 });
+    const { runCheckpointCli } = await import("../../runner/src/restore.js");
+    const { JournalWriter } = await import("../../journal/src/index.js");
+    const { checkpointId } = await import("../../enforcement/src/index.js");
+    expect(await serving(async () => {
+      expect(await runHookAdmitCli(["--control", join(sockets, "admit.sock"), join(dir, "state", "session.json")], quiet)).toBe(0);
+    })).toBe(0);
+    const manifest = [{ path: "", type: "directory", mode: 0o755 }];
+    const old = checkpointId("/work/project", manifest as never);
+    JournalWriter.open(journal()).append(`session-${SESSION}`, { kind: "note", actor: "juno.hook", provider: null, data_class: { sensitivity: "internal", integrity: "derived" }, cost: { tokens_in: 0, tokens_out: 0, tokens_cached: 0, currency: 0, duration_ms: 0 } }, new TextEncoder().encode(JSON.stringify({ type: "checkpoint", root: "/work/project", checkpoint: old, manifest })));
+    writeFileSync(join(work, "project", "created.txt"), "kept\n");
+    const refused = cliIo();
+    expect(await runCheckpointCli(restoreArgs(old), refused.io, undefined, undefined, runner)).toBe(1);
+    expect(refused.text()).toContain("does not record the host folder it was taken in");
+    expect(readFileSync(join(work, "project", "created.txt"), "utf8")).toBe("kept\n");
+  }, 60_000);
+});
+
+describe("the hook service holds the journal's lock (D-221)", () => {
+  // proves D-221: while another process holds the journal (a restore in progress, or a service already running on it),
+  // the service refuses to start and listens on nothing; once it is released, it starts
+  it("refuses to start on a journal another process holds", async () => {
+    const { acquireRunnerLock } = await import("../../journal/src/index.js");
+    const key = testJournalKey();
+    expect(await serving(() => Promise.resolve(), { anchoring: testAnchoring({ sink: anchors, journalKey: key }) })).toBe(0);
+    const lock = acquireRunnerLock(join(dir, "state", "journal") as never);
+    said = [];
+    expect(await serving(() => Promise.resolve())).toBe(1);
+    expect(said.join("")).toContain("is in use by another process");
+    expect(existsSync(join(sockets, "hook.sock"))).toBe(false);
+    lock.release();
+    said = [];
+    expect(await serving(() => Promise.resolve(), { anchoring: testAnchoring({ sink: anchors, journalKey: key }) }), said.join("")).toBe(0);
+  });
 });

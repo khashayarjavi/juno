@@ -3,12 +3,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import fc from "fast-check";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { CheckpointStore, GrantStore, HostPathResolver, Workspace, execFileScript } from "../../enforcement/src/index.js";
+import { CheckpointStore, GrantStore, HostPathResolver, HostReadView, SealedWorkspace } from "../../enforcement/src/index.js";
+import { unsealedLauncher } from "../../enforcement/test/sealed.js";
 import { readPayload, readTrajectory } from "../../journal/src/index.js";
 import { openTestLayer } from "../../enforcement/test/layer.js";
 import type { SessionLayer } from "../../enforcement/src/index.js";
 import { TEST_ANCHOR, signed } from "../../enforcement/test/test-keys.js";
-import { type DeclaredSource, classifyRead, isPublicInternet } from "../src/reads.js";
+import { type DeclaredSource, classifyRead, isPublicInternet, movedAside } from "../src/reads.js";
 import { type HookDecision, MediatedSessions, PathMap, SUPPORTED_TOOLS, type SessionRequest } from "../src/session.js";
 import { systemFilesystemIo } from "../src/filesystem.js";
 
@@ -104,7 +105,7 @@ beforeAll(async () => {
     grants,
     paths: new PathMap([work]),
     resolver: new HostPathResolver(work),
-    view: new Workspace(execFileScript(process.execPath, []), "/work", work),
+    view: new HostReadView(work),
     filesystem: systemFilesystemIo(),
     clock: () => T0,
   });
@@ -318,10 +319,10 @@ describe("D-162 positive controls: a read a declared source matches keeps its cl
       grants,
       paths: new PathMap([work]),
       resolver: new HostPathResolver(work),
-      view: new Workspace(execFileScript(process.execPath, []), "/work", work),
+      view: new HostReadView(work),
       filesystem: systemFilesystemIo(),
       clock: () => T0,
-      checkpoints: { workspace: new Workspace(execFileScript(process.execPath, []), "/work", work), store: new CheckpointStore(join(dir, "checkpoints")) },
+      checkpoints: { workspace: new SealedWorkspace(work, unsealedLauncher), store: new CheckpointStore(join(dir, "checkpoints")) },
     });
     expect(await checkpointed.admit(request(id, "internal", "grant-all", { reversible_workspaces: ["/work/project/rw"] }))).toMatchObject({ admitted: true });
     const cases: [string, Record<string, unknown>][] = [
@@ -379,7 +380,7 @@ describe("D-162 positive controls: a read a declared source matches keeps its cl
 });
 
 describe("D-162 and D-164: classifyRead on URLs, without a session", () => {
-  const unused = { resolver: { resolve: () => Promise.reject(new Error("no path is resolved for a URL")) }, view: {} as Workspace };
+  const unused = { resolver: { resolve: () => Promise.reject(new Error("no path is resolved for a URL")) }, view: {} as HostReadView };
   const declared = (selector: DeclaredSource["selector"]): DeclaredSource[] => [...SOURCES, { id: "web", selector, data_class: { sensitivity: "public", integrity: "untrusted" } }];
 
   // proves §1.5: a URL no source positively matches is the highest declared class
@@ -402,6 +403,41 @@ describe("D-162 and D-164: classifyRead on URLs, without a session", () => {
       }),
       { numRuns: 500, seed: 20261107 },
     );
+  });
+
+  // proves D-236 (review round 10 on PR #62; §1.3 classification by source, §1.4 "never lowers sensitivity"): the
+  // folder an undo moves aside lies beside the session's folder, where a source of a lower class may contain it. Its
+  // bytes, a file in it, and any tree holding it are read at the highest declared class, whatever source contains it;
+  // the same file in the session's folder keeps its class, and a tree without one keeps the source's
+  it("reads a moved-aside folder, a file in it and a tree holding it at the highest declared class", async () => {
+    const root = mkdtempSync(join(tmpdir(), "juno-aside-"));
+    try {
+      const host = join(root, "work");
+      const kept = "project.juno-undone-20261120T153000Z-1a2b3c4d";
+      mkdirSync(join(host, "project"), { recursive: true });
+      mkdirSync(join(host, kept), { recursive: true });
+      mkdirSync(join(host, "plain"), { recursive: true });
+      writeFileSync(join(host, "project", "secret.txt"), "s\n");
+      writeFileSync(join(host, kept, "secret.txt"), "s\n");
+      writeFileSync(join(host, "plain", "readme.txt"), "r\n");
+      const sources: DeclaredSource[] = [
+        { id: "all", selector: { kind: "path", prefix: "/work" }, data_class: { sensitivity: "public", integrity: "untrusted" } },
+        { id: "project", selector: { kind: "path", prefix: "/work/project" }, data_class: { sensitivity: "confidential", integrity: "untrusted" } },
+      ];
+      const context = { sources, resolver: new HostPathResolver(host), view: new HostReadView(host) };
+      const tree = (path: string): Promise<string> => classifyRead([{ kind: "tree", path }], context);
+      expect(await tree("/work/project/secret.txt")).toBe("confidential");
+      expect(await tree(`/work/${kept}/secret.txt`)).toBe("confidential");
+      expect(await tree(`/work/${kept}`)).toBe("confidential");
+      expect(await tree("/work")).toBe("confidential");
+      // Controls: a public folder with no moved-aside folder keeps its class.
+      expect(await tree("/work/plain")).toBe("public");
+      expect(await tree("/work/plain/readme.txt")).toBe("public");
+      expect(movedAside(`/work/${kept}/a`)).toBe(true);
+      expect(movedAside("/work/project/a")).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   // proves D-162: an unknown read, and a tool that declares no read at all, are the highest class

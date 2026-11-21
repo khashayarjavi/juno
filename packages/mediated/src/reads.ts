@@ -138,6 +138,15 @@ function sourceSet(path: string, sources: readonly DeclaredSource[]): string {
     .join("\u0000");
 }
 
+/**
+ * Whether a path has a component naming a folder an undo moved aside (`<name>.juno-undone-<time>-<hex>`, or
+ * `juno-undone-<time>-<hex>`; D-234, D-236). Any component containing `juno-undone-` counts (restrictive: a name the
+ * session chose like it is read at the highest class too, which only raises a class).
+ */
+export function movedAside(path: string): boolean {
+  return path.split("/").some((part) => part.includes("juno-undone-"));
+}
+
 /** Whether a declared path source lies strictly inside `path`. */
 function sourceInside(path: string, sources: readonly DeclaredSource[]): boolean {
   return sources.some((source) => source.selector.kind === "path" && source.selector.prefix !== path && pathWithin(source.selector.prefix, path));
@@ -159,6 +168,10 @@ function sourceInside(path: string, sources: readonly DeclaredSource[]): boolean
  */
 async function classifyTree(lexical: string, canonical: string, redirected: boolean, context: ReadContext, walk: TreeWalk, chain: readonly string[]): Promise<Sensitivity | null> {
   const sources = context.sources;
+  // D-236 (review round 10 on PR #62): a folder an undo moved aside holds what the session's folder held, under a name
+  // beside it that a source of any class may contain. Its bytes keep no class of their own, so a path in one, or a tree
+  // holding one, is read at the highest declared class, in every session.
+  if (movedAside(lexical) || movedAside(canonical)) return null;
   const here = sourceSet(canonical, sources);
   // Positive match only: a place no declared path source contains is read at the highest class (§1.5).
   if (here === "") return null;
@@ -172,6 +185,7 @@ async function classifyTree(lexical: string, canonical: string, redirected: bool
   const listed = await context.view.list(canonical, false);
   if (!listed.ok) return NO_TREE.test(listed.reason) ? reads : null;
   if (listed.snapshot.hardLinks.length > 0) return null;
+  if (listed.snapshot.manifest.some((entry) => movedAside(entry.path))) return null;
   for (const entry of listed.snapshot.manifest) {
     if (entry.type !== "symlink") continue;
     walk.links += 1;

@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
-import { type Budget, type DataClass, type TrajectoryEntry, pathWithin } from "../../contracts/src/index.js";
+import { type AbsolutePath, type Budget, type DataClass, type TrajectoryEntry, pathWithin } from "../../contracts/src/index.js";
 import {
+  type RunnerLock,
+  acquireRunnerLock,
   AnchorExistsError,
   AnchorReadBackError,
   type AnchorSink,
@@ -206,6 +208,8 @@ export class SessionLayer {
   readonly #clock: () => Date;
   readonly #sessions = new Map<string, GovernedSession>();
   readonly #workspaces: readonly { readonly path: string; readonly real: string }[];
+  /** The journal's one-writer lock, held by the hook and gateway services while they run (D-221). */
+  #lock: RunnerLock | null = null;
   readonly #anchoring: Anchoring;
   /** Per journal record: the seq last anchored and when (§3.4.1, D-122, D-198). */
   readonly #anchored = new Map<string, { seq: number; at: number }>();
@@ -259,7 +263,7 @@ export class SessionLayer {
    * (operator ruling D-201). Throws `StartupRefused` with every refusal otherwise; a start refused by the start-up
    * check has opened nothing, and one refused for its journal or anchors hands out no layer, so nothing is served.
    */
-  static async open(spec: StartupSpec, options: { readonly anchoring: Anchoring | ((journalRoot: string, pin: VerifiedPin | null) => Anchoring); readonly host?: HostIo; readonly clock?: () => Date; readonly journal?: JournalWriterOptions }): Promise<SessionLayer> {
+  static async open(spec: StartupSpec, options: { readonly anchoring: Anchoring | ((journalRoot: string, pin: VerifiedPin | null) => Anchoring); readonly host?: HostIo; readonly clock?: () => Date; readonly journal?: JournalWriterOptions; readonly lockJournal?: boolean }): Promise<SessionLayer> {
     const host = options.host ?? systemHostIo();
     const checked = startupCheck(spec, host);
     const refuse = (refusals: readonly string[]): never => {
@@ -288,6 +292,16 @@ export class SessionLayer {
     } catch (error: unknown) {
       return refuse([`the journal ${spec.journal} could not be opened: ${error instanceof Error ? error.message : String(error)} (§3.4.1, D-213)`]);
     }
+    // D-221: the hook and gateway services hold the journal's one-writer lock (the runner takes its own, D-069) from
+    // before the journal is verified or repaired until they stop, so `juno checkpoint restore` can prove that no service
+    // writes it. A journal another process holds (a running service, or a restore in progress) refuses the start.
+    if (options.lockJournal === true) {
+      try {
+        layer.#lock = acquireRunnerLock(layer.root as AbsolutePath);
+      } catch (error: unknown) {
+        return refuse([`the journal ${spec.journal} is in use by another process (a service already running on it, or a checkpoint restore): ${error instanceof Error ? error.message : String(error)} (D-221)`]);
+      }
+    }
     // D-201: the journal and its anchors are verified before anything is rebuilt, admitted or served.
     let unverified: string[];
     try {
@@ -296,7 +310,10 @@ export class SessionLayer {
     } catch (error: unknown) {
       unverified = [`the journal could not be verified: ${error instanceof Error ? error.message : String(error)} (§3.4.1, D-201)`];
     }
-    if (unverified.length > 0) return refuse(unverified);
+    if (unverified.length > 0) {
+      layer.releaseLock();
+      return refuse(unverified);
+    }
     for (const listener of OBSERVERS) listener({ spec, refusals: [], layer });
     return layer;
   }
@@ -828,7 +845,17 @@ export class SessionLayer {
   async close(): Promise<string[]> {
     if (this.#timer !== null) clearInterval(this.#timer);
     this.#timer = null;
-    return this.anchorPending();
+    try {
+      return await this.anchorPending();
+    } finally {
+      this.releaseLock();
+    }
+  }
+
+  /** Releases the journal's lock, if this layer holds it (D-221); the layer writes nothing more after it. */
+  releaseLock(): void {
+    this.#lock?.release();
+    this.#lock = null;
   }
 
   /** A refused admission: never run, never referenced, so recorded at the most restrictive class. */

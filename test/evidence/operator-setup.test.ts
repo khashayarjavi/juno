@@ -261,3 +261,72 @@ describe("D-219: CI covers the operator's own Docker and login shell, and the gu
     expect(partE.indexOf("find /opt/juno /opt/node22")).toBeGreaterThan(partE.indexOf("sudo env PATH=/opt/node22/bin:$PATH make build"));
   });
 });
+
+describe("the guide after the field report of the first real install (issue #59; D-222)", () => {
+  const part = (start: string, end: string): string => guide.slice(guide.indexOf(start), guide.indexOf(end, guide.indexOf(start)));
+
+  // proves D-222 finding 1: GitHub's host key is taken without ssh-keyscan, seen first with strict checking against an
+  // empty known-hosts file, and compared in full with api.github.com/meta, then checked by ssh against the pinned key
+  it("pins GitHub's host key by a full comparison, never by ssh-keyscan or a banner", () => {
+    const step = part("7. **Pin the repository where", "**Check:** step 5's");
+    expect(step).not.toMatch(/^\s*ssh-keyscan/m);
+    expect(step).toContain("-o StrictHostKeyChecking=yes -o UserKnownHostsFile=/dev/null");
+    expect(step).toContain("Host key verification failed.");
+    expect(step).toContain("curl -fsS https://api.github.com/meta -o meta.json");
+    expect(step).toContain('cmp offered.txt published.txt && echo "the same key"');
+    expect(step).toContain("-o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/juno/anchors_known_hosts");
+    expect(guide).not.toContain("babeld");
+  });
+
+  // proves D-241 ruling 1 (D-242): Part E step 12's Check reads the workspace disk's features from its superblock with
+  // dumpe2fs, as root, and stops on casefold; Part G step 4's check names what the real check prints on success
+  it("has you read the casefold feature from the superblock, and juno hook check confirm it", () => {
+    const step = part("12. **A root-owned copy of JUNO", "13. **Put your public key");
+    expect(step).toContain("findmnt -no SOURCE --target /srv/juno-work");
+    expect(step).toContain(`sudo dumpe2fs -h "$(findmnt -no SOURCE --target /srv/juno-work)" | grep '^Filesystem features'`);
+    expect(step).toContain("the word `casefold` is **not** in it");
+    const check = part("4. **Check the separation** (D-173).", "5. **Admit the session.**");
+    expect(check).toContain("`Case folding is switched off for its whole file system`");
+    expect(check).toContain("It must run with `sudo`");
+  });
+
+  // proves D-222's guide findings: the disk under WSL, landscape-client, the default user, the drive check, the access
+  // list, Claude Code's own sign-in, one run per session, the standing need for GitHub, and the upgrade section
+  it("says what the field report found", () => {
+    expect(guide).toContain("`BusType` is `SATA`, `NVMe` or `SAS`");
+    expect(guide).toContain("does **not** contain `Compressed`");
+    expect(guide).toContain("sudo systemctl mask --now landscape-client.service");
+    expect(guide).toContain("Set-ItemProperty $key.PSPath -Name DefaultUid -Value ([int]$uid)");
+    expect(guide).toContain("findmnt -t drvfs,9p,virtiofs");
+    expect(guide).not.toContain("`ls /mnt/c` prints `No such file or directory`;");
+    expect(guide).toContain("sudo -u juno-agent setfacl -d -m u:juno-runner:rwx,u:juno-agent:rwx /srv/juno-work");
+    expect(guide).toContain("sudo -u juno-agent setfacl -R -d -m u:juno-runner:rwx,u:juno-agent:rwx /srv/juno-work");
+    expect(guide).toContain("run `claude auth login`");
+    expect(guide).toContain("**Never copy Claude Code's credentials file");
+    expect(guide).toContain("**One admitted session is one Claude Code run.**");
+    expect(guide).toContain("**GitHub must be reachable every time the service starts, not only today.**");
+    expect(guide).toContain("checkpoint restore --journal /var/lib/juno-runner/journal --checkpoints /var/lib/juno-runner/checkpoints --workspace /srv/juno-work");
+    const upgrade = part("## Upgrading JUNO to a new commit", "## When something goes wrong");
+    for (const line of ["git bundle create $env:USERPROFILE\\juno.bundle HEAD", "systemctl --user stop juno-hook.service", "rm -rf ~/juno", "sudo rm -rf /opt/juno", "sudo git clone --quiet /opt/juno-setup/juno.bundle /opt/juno", "find /opt/juno /opt/node22 ! -type l -perm /022 -print", "systemctl --user start juno-hook.service"]) {
+      expect(upgrade, line).toContain(line);
+    }
+    expect(upgrade).not.toMatch(/rm -rf \/var\/lib\/juno-runner|rm -rf \/etc\/juno/);
+  });
+
+  // proves D-226 (review round 4 of PR #60): no step runs a root command that changes anything under the workspace,
+  // which the Claude Code user controls and could send through a link; every such step runs as juno-agent
+  it("never has root change anything under the workspace", () => {
+    const changing = /^\s*sudo\s+(?!-u juno-agent\b)(?:env\s+\S+\s+)?(setfacl|chmod|chown|chgrp|rm|mv|cp|tee|install|mkdir|touch|ln)\b/;
+    const offending = guide.split("\n").filter((line) => changing.test(line) && /\/srv\/juno-work|<folder>/.test(line) && !/install -d -o juno-agent -g juno-agent -m 0755 \/srv\/juno-work$/.test(line.trim()));
+    expect(offending).toEqual([]);
+    expect(guide).toContain("sudo -u juno-agent chmod u-s,g-s,o-t <folder>");
+    expect(guide).not.toContain("with `sudo chmod u-s,g-s,o-t");
+  });
+
+  // proves item 2 of 1.5-field: the example session file names a reversible workspace, with a comment saying what it does
+  it("gives the example session a reversible workspace and says how to undo", () => {
+    const example = JSON.parse(readFileSync(new URL("../../docs/examples/session.example.json", import.meta.url), "utf8")) as { comments: string[]; session: { reversible_workspaces?: string[] } };
+    expect(example.session.reversible_workspaces).toEqual(["/work/project"]);
+    expect(example.comments.some((line) => line.startsWith("reversible_workspaces:") && line.includes("juno checkpoint restore"))).toBe(true);
+  });
+});

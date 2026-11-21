@@ -1,8 +1,9 @@
-import { linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, linkSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CheckpointStore, GrantStore, HostPathResolver, Workspace, execFileScript } from "../../enforcement/src/index.js";
+import { CheckpointStore, GrantStore, HostPathResolver, HostReadView, SealedWorkspace, Workspace, execFileScript } from "../../enforcement/src/index.js";
+import { unsealedLauncher } from "../../enforcement/test/sealed.js";
 import { readPayload, readTrajectory } from "../../journal/src/index.js";
 import { openTestLayer } from "../../enforcement/test/layer.js";
 import type { SessionLayer } from "../../enforcement/src/index.js";
@@ -101,9 +102,9 @@ beforeEach(async () => {
     grants,
     // D-173: Linux paths only; the `\\wsl.localhost` spelling of the root (D-141) is gone, and the map refuses one.
     paths: new PathMap([work]),
-    resolver: new HostPathResolver(work), view: new Workspace(execFileScript(process.execPath, []), "/work", work), filesystem: systemFilesystemIo(),
+    resolver: new HostPathResolver(work), view: new HostReadView(work), filesystem: systemFilesystemIo(),
     clock: () => now,
-    checkpoints: { workspace: new Workspace(execFileScript(process.execPath, []), "/work", work), store: new CheckpointStore(join(dir, "checkpoints")) },
+    checkpoints: { workspace: new SealedWorkspace(work, unsealedLauncher), store: new CheckpointStore(join(dir, "checkpoints")) },
   });
   expect(await sessions.admit(request({ reversible_workspaces: ["/work/project"] }))).toMatchObject({ admitted: true });
 });
@@ -115,7 +116,7 @@ afterEach(() => {
 describe("§4.3 a session is a Task (V6-6) and §7.8 E2", () => {
   // proves §4.3 V6-6: admission refuses a session whose operator has not accepted unmetered tokens and currency
   it("refuses a session without the operator's acceptance of unmetered axes", async () => {
-    const other = new MediatedSessions({ layer, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), view: new Workspace(execFileScript(process.execPath, []), "/work", work), filesystem: systemFilesystemIo(), clock: () => now });
+    const other = new MediatedSessions({ layer, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), view: new HostReadView(work), filesystem: systemFilesystemIo(), clock: () => now });
     const refused = await other.admit({ ...request({ session_id: "other-1" }), unmetered_accepted: false });
     expect(refused).toMatchObject({ admitted: false });
   });
@@ -140,7 +141,7 @@ describe("D-178: admission refuses a workspace or source that is not on a case-s
     mountinfo: () => `20 1 0:20 / / rw - ${fsType} src rw`,
     attributes: (dirs) => Promise.resolve({ ok: true, flags: dirs.map((at) => (at === folding ? "-----F" : "------")) }),
   });
-  const withFs = (filesystem: FilesystemIo) => new MediatedSessions({ layer, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), view: new Workspace(execFileScript(process.execPath, []), "/work", work), filesystem, clock: () => now });
+  const withFs = (filesystem: FilesystemIo) => new MediatedSessions({ layer, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), view: new HostReadView(work), filesystem, clock: () => now });
 
   // proves D-178 (b): a workspace on a Windows folder mounted into WSL (drvfs or 9p) is refused, fail-closed, with a
   // plain reason, and the refusal is journalled; no call of that session is ever allowed
@@ -228,7 +229,7 @@ describe("§2.3.2 Bash in hook mode", () => {
 
   // proves §4.3: an operator-listed exact command proceeds as written, its words recorded as constants of operator integrity
   it("lets an operator-listed command proceed as written, as constants", async () => {
-    const listed = new MediatedSessions({ layer, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), view: new Workspace(execFileScript(process.execPath, []), "/work", work), filesystem: systemFilesystemIo(), clock: () => now });
+    const listed = new MediatedSessions({ layer, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), view: new HostReadView(work), filesystem: systemFilesystemIo(), clock: () => now });
     await listed.admit(request({ session_id: "listed-1", commands: ["cat notes.txt"] }));
     const asked = { ...(pre("Bash", { command: "cat notes.txt" }) as Record<string, unknown>), session_id: "listed-1" };
     expect(await listed.preToolUse(asked)).toEqual({ decision: "allow", updatedInput: { command: "/usr/bin/cat 'notes.txt'" } });
@@ -249,9 +250,9 @@ describe("§2.3.2 V6-10: a Bash call takes the effect of the program it runs (D-
       layer,
       grants,
       paths: new PathMap([work]),
-      resolver: new HostPathResolver(work), view: new Workspace(execFileScript(process.execPath, []), "/work", work), filesystem: systemFilesystemIo(),
+      resolver: new HostPathResolver(work), view: new HostReadView(work), filesystem: systemFilesystemIo(),
       clock: () => now,
-      checkpoints: { workspace: new Workspace(execFileScript(process.execPath, []), "/work", work), store: new CheckpointStore(join(dir, "checkpoints")) },
+      checkpoints: { workspace: new SealedWorkspace(work, unsealedLauncher), store: new CheckpointStore(join(dir, "checkpoints")) },
     });
     const admitted = await session.admit(request({ session_id: id, reversible_workspaces: [...reversible], name_map: [{ name: "cat", program: "/usr/bin/cat", side_effect: "read" }, { name: "rm", program: "/usr/bin/rm", side_effect: "write" }] }));
     expect(admitted).toMatchObject({ admitted: true });
@@ -289,6 +290,58 @@ describe("§2.2.2 in hook mode", () => {
     expect(entries().map(payload).some((body) => body["type"] === "checkpoint")).toBe(true);
   });
 
+  // proves operator ruling 1 of D-234 (§2.2.2 "restoring that checkpoint" must stay possible): reversibility is judged
+  // at every write. A Write proceeds while JUNO can show the undo; once the folder holding the workspace is one the
+  // restore could not change (it moves the workspace aside there: here, sticky), or the checkpoint's content is gone from the store,
+  // the next Write parks integrity_floor with the reason recorded; putting it right lets Writes proceed again
+  it("parks a Write once the workspace can no longer be undone, with the reason", async () => {
+    const recorded = (): string => JSON.stringify(entries().map(payload));
+    expect(await call("Write", { file_path: join(work, "project", "a.txt"), content: "a" })).toEqual({ decision: "none" });
+    // Round 3's trap (D-225), one folder up: a sticky bit on the folder holding the workspace, where the kernel would
+    // let the restore rename only what the runner owns.
+    chmodSync(work, 0o1755);
+    try {
+      expect(await call("Write", { file_path: join(work, "project", "b.txt"), content: "b" })).toMatchObject({ decision: "deny", reason: expect.stringContaining("integrity_floor") });
+      expect(recorded()).toContain(`the restore could not move /work/project aside: it could not change /work`);
+    } finally {
+      chmodSync(work, 0o755);
+    }
+    expect(await call("Write", { file_path: join(work, "project", "c.txt"), content: "c" })).toEqual({ decision: "none" });
+    const store = join(dir, "checkpoints");
+    const blob = readdirSync(store)[0] ?? "";
+    renameSync(join(store, blob), join(dir, "moved-blob"));
+    expect(await call("Write", { file_path: join(work, "project", "d.txt"), content: "d" })).toMatchObject({ decision: "deny", reason: expect.stringContaining("integrity_floor") });
+    expect(parks().at(-1)).toMatchObject({ reason: "integrity_floor", overridable: false });
+    expect(recorded()).toContain("/work/project can no longer be undone: 1 of its checkpoint's files are gone from the checkpoint store");
+    renameSync(join(dir, "moved-blob"), join(store, blob));
+    expect(await call("Write", { file_path: join(work, "project", "e.txt"), content: "e" })).toEqual({ decision: "none" });
+  });
+
+  // proves D-240 (review round 14 on PR #62; D-234 ruling 1): before every write JUNO runs the restore's own check on the
+  // folder holding the workspace, reading its case-folding attribute itself (never inferring it from a name a session
+  // chose). Once that folder carries the attribute, the next Write parks with the reason; without it, Writes proceed.
+  // (This machine cannot mount a case-folding file system, so the attribute is reported by the file-system reader.)
+  it("parks a Write once the folder holding the workspace has the case-folding attribute", async () => {
+    let folds = false;
+    const system = systemFilesystemIo();
+    const reader = { ...system, attributes: async (dirs: readonly string[]) => (folds && dirs.includes(work) ? { ok: true as const, flags: dirs.map((folder) => (folder === work ? "----F----" : "---------")) } : system.attributes(dirs)) };
+    const store = new CheckpointStore(join(dir, "checkpoints"));
+    const other = new MediatedSessions({ layer, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), view: new HostReadView(work), filesystem: reader, clock: () => now, checkpoints: { workspace: new SealedWorkspace(work, unsealedLauncher), store } });
+    expect(await other.admit(request({ session_id: "fold-1", reversible_workspaces: ["/work/project"] }))).toMatchObject({ admitted: true });
+    const write = async (name: string): Promise<unknown> => {
+      const asked = { ...(pre("Write", { file_path: join(work, "project", name), content: "x" }) as Record<string, unknown>), session_id: "fold-1", tool_use_id: `toolu_${name}` };
+      const decision = await other.preToolUse(asked);
+      if ((decision as HookDecision).decision !== "deny") expect(await other.postToolUse(post(asked))).toEqual({ recorded: true });
+      return decision;
+    };
+    expect(await write("a.txt")).toEqual({ decision: "none" });
+    folds = true;
+    expect(await write("b.txt")).toMatchObject({ decision: "deny", reason: expect.stringContaining("integrity_floor") });
+    expect(JSON.stringify(readTrajectory(journal.root, "session-fold-1").map(payload))).toContain("has the case-folding attribute (chattr +F)");
+    folds = false;
+    expect(await write("c.txt")).toEqual({ decision: "none" });
+  });
+
   // proves D-158 (autopilot ruling) in hook mode: inside the checkpointed workspace, a Write to a file that has a second
   // name outside it is irreversible (a restore would not undo it there) and parks integrity_floor; an ordinary file proceeds
   it("parks a Write to a hard-linked file inside the checkpointed workspace", async () => {
@@ -312,7 +365,7 @@ describe("§2.2.2 in hook mode", () => {
 
   // proves §2.2.2: with no checkpoint, the same Write is irreversible and its untrusted target parks integrity_floor
   it("parks a Write when the session has no checkpointed workspace", async () => {
-    const unchecked = new MediatedSessions({ layer, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), view: new Workspace(execFileScript(process.execPath, []), "/work", work), filesystem: systemFilesystemIo(), clock: () => now });
+    const unchecked = new MediatedSessions({ layer, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), view: new HostReadView(work), filesystem: systemFilesystemIo(), clock: () => now });
     await unchecked.admit(request({ session_id: "nockpt-1" }));
     const asked = { ...(pre("Write", { file_path: join(work, "project", "out.txt"), content: "x" }) as Record<string, unknown>), session_id: "nockpt-1" };
     expect(await unchecked.preToolUse(asked)).toMatchObject({ decision: "deny", reason: expect.stringContaining("integrity_floor") });
@@ -346,7 +399,7 @@ describe("§2.2.2 in hook mode", () => {
 
 describe("§2.7 order in mode C (D-150): the read gate never turns a park that cannot be overridden into one that can", () => {
   const plain = async (id: string, grantIds: readonly string[]): Promise<MediatedSessions> => {
-    const session = new MediatedSessions({ layer, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), view: new Workspace(execFileScript(process.execPath, []), "/work", work), filesystem: systemFilesystemIo(), clock: () => now });
+    const session = new MediatedSessions({ layer, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), view: new HostReadView(work), filesystem: systemFilesystemIo(), clock: () => now });
     expect(await session.admit(request({ session_id: id, grants: [...grantIds], name_map: [{ name: "cat", program: "/usr/bin/cat", side_effect: "read" }, { name: "rm", program: "/usr/bin/rm", side_effect: "write" }] }))).toMatchObject({ admitted: true });
     return session;
   };
@@ -403,7 +456,7 @@ describe("§2.7.1 D5 in mode C (D-151): an injected command is judged before any
 
   // proves D-151: after the tool-call budget is spent, an injected command still parks integrity_floor, not budget_exceeded
   it("parks integrity_floor even after the budget is spent", async () => {
-    const spent = new MediatedSessions({ layer, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), view: new Workspace(execFileScript(process.execPath, []), "/work", work), filesystem: systemFilesystemIo(), clock: () => now });
+    const spent = new MediatedSessions({ layer, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), view: new HostReadView(work), filesystem: systemFilesystemIo(), clock: () => now });
     await spent.admit(request({ session_id: "spent-1", budget: { tool_calls: 1, wall_clock_ms: 3_600_000 } }));
     const ask = (command: string) => spent.preToolUse({ ...(pre("Bash", { command }) as Record<string, unknown>), session_id: "spent-1" });
     const first = { ...(pre("Bash", { command: "cat notes.txt" }) as Record<string, unknown>), session_id: "spent-1" };
@@ -433,7 +486,7 @@ describe("plan item 10 (D-148): JUNO's own state is outside every scope", () => 
 
 describe("§4.3 V6-7 on what the call will read (D-156, PR #38 review round 4)", () => {
   const withLs = async (id: string): Promise<MediatedSessions> => {
-    const session = new MediatedSessions({ layer, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), view: new Workspace(execFileScript(process.execPath, []), "/work", work), filesystem: systemFilesystemIo(), clock: () => now });
+    const session = new MediatedSessions({ layer, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), view: new HostReadView(work), filesystem: systemFilesystemIo(), clock: () => now });
     const nameMap = [{ name: "cat", program: "/usr/bin/cat", side_effect: "read" as const }, { name: "ls", program: "/usr/bin/ls", side_effect: "read" as const }];
     expect(await session.admit(request({ session_id: id, name_map: nameMap }))).toMatchObject({ admitted: true });
     return session;
@@ -543,7 +596,7 @@ describe("§4.3 V6-7 on what the call will read (D-156, PR #38 review round 4)",
 
 describe("refuse cleverness (D-168, refined by D-174: a shortcut inside one source keeps its class)", () => {
   const withLs = async (id: string): Promise<MediatedSessions> => {
-    const session = new MediatedSessions({ layer, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), view: new Workspace(execFileScript(process.execPath, []), "/work", work), filesystem: systemFilesystemIo(), clock: () => now });
+    const session = new MediatedSessions({ layer, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), view: new HostReadView(work), filesystem: systemFilesystemIo(), clock: () => now });
     const nameMap = [{ name: "cat", program: "/usr/bin/cat", side_effect: "read" as const }, { name: "ls", program: "/usr/bin/ls", side_effect: "read" as const }];
     expect(await session.admit(request({ session_id: id, name_map: nameMap }))).toMatchObject({ admitted: true });
     return session;
@@ -646,7 +699,7 @@ describe("refuse cleverness (D-168, refined by D-174: a shortcut inside one sour
 
 describe("§4.3 V6-7 and hard links (D-157, operator ruling of 2026-11-07, amends D-156)", () => {
   const withLs = async (id: string): Promise<MediatedSessions> => {
-    const session = new MediatedSessions({ layer, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), view: new Workspace(execFileScript(process.execPath, []), "/work", work), filesystem: systemFilesystemIo(), clock: () => now });
+    const session = new MediatedSessions({ layer, grants, paths: new PathMap([work]), resolver: new HostPathResolver(work), view: new HostReadView(work), filesystem: systemFilesystemIo(), clock: () => now });
     const nameMap = [{ name: "cat", program: "/usr/bin/cat", side_effect: "read" as const }, { name: "ls", program: "/usr/bin/ls", side_effect: "read" as const }];
     expect(await session.admit(request({ session_id: id, name_map: nameMap }))).toMatchObject({ admitted: true });
     return session;

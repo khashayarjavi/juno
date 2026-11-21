@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import { type AbsolutePath, WorkPath, parseAtBoundary } from "../../contracts/src/index.js";
@@ -233,6 +233,16 @@ export class CheckpointStore {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     }
     return hash;
+  }
+
+  /** Whether the content `hash` is held, as a regular file (cheap: one lstat, never a read; D-234 ruling 1). */
+  has(hash: string): boolean {
+    if (!/^[0-9a-f]{64}$/.test(hash)) return false;
+    try {
+      return lstatSync(join(this.#dir, hash)).isFile();
+    } catch {
+      return false;
+    }
   }
 
   get(hash: string): Buffer {

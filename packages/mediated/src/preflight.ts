@@ -2,6 +2,7 @@ import { type Stats, lstatSync, readFileSync, readdirSync, realpathSync } from "
 import { dirname, join } from "node:path";
 import { PINNED_SSH, knownHostsRefusals, parseAnchorPin } from "../../enforcement/src/anchor-pin.js";
 import { type FilesystemIo, caseFoldingRefusals, systemFilesystemIo } from "./filesystem.js";
+import { type SuperblockIo, superblockRefusals, systemSuperblockIo } from "./superblock.js";
 import { type GatewayInstall, MANAGED_MCP_NAME, MANAGED_SETTINGS, gatewayInputRefusals, gatewaySettingsRefusals, hookRefusals, managedMcpRefusals } from "./install.js";
 
 /**
@@ -326,9 +327,10 @@ const ANCHOR_PIN = "/etc/juno/anchors.json";
 
 /**
  * `juno hook check …` (see USAGE in install.ts). Exit 0 when the separation holds and every workspace and source is on
- * a case-sensitive Linux file system with no case-folding folder (D-178), 1 refused, 2 bad usage.
+ * a case-sensitive Linux file system with no case-folding folder (D-178) whose whole file system has case folding
+ * switched off, read from its superblock (operator ruling 1 of 2026-11-21, D-241; D-242), 1 refused, 2 bad usage.
  */
-export async function runHookCheckCli(args: readonly string[], out: (text: string) => void, err: (text: string) => void, io: PreflightIo = systemPreflightIo(), fsIo: FilesystemIo = systemFilesystemIo()): Promise<number> {
+export async function runHookCheckCli(args: readonly string[], out: (text: string) => void, err: (text: string) => void, io: PreflightIo = systemPreflightIo(), fsIo: FilesystemIo = systemFilesystemIo(), sbIo: SuperblockIo = systemSuperblockIo()): Promise<number> {
   const single = ["--agent-user", "--runner-user", "--socket", "--client", "--node", "--settings", "--anchor", "--anchor-pin", "--gateway", "--shim", "--gateway-socket"];
   const repeated = ["--state", "--workspace", "--source"];
   const options = new Map<string, string>();
@@ -363,11 +365,14 @@ export async function runHookCheckCli(args: readonly string[], out: (text: strin
   }
   const gateway = gatewayName === undefined || shim === undefined || gatewaySocket === undefined ? undefined : { name: gatewayName, shim, socket: gatewaySocket };
   const refusals = hookPreflight({ agentUser, runnerUser, socket, client, node, state, settings: options.get("--settings") ?? MANAGED_SETTINGS, ...(anchor === undefined ? {} : { anchor }), anchorPin: options.get("--anchor-pin") ?? ANCHOR_PIN, ...(gateway === undefined ? {} : { gateway }) }, io);
-  refusals.push(...(await caseFoldingRefusals([...workspaces.map((path) => ({ what: "the workspace", path })), ...sources.map((path) => ({ what: "the source", path }))], fsIo)));
+  const judged = [...workspaces.map((path) => ({ what: "the workspace", path })), ...sources.map((path) => ({ what: "the source", path }))];
+  refusals.push(...(await caseFoldingRefusals(judged, fsIo)));
+  // D-241 ruling 1 (D-242): case folding switched off for the whole file system, read from its superblock.
+  refusals.push(...superblockRefusals(judged, sbIo));
   if (refusals.length > 0) {
     err(`juno hook check: refused:\n${refusals.map((line) => `  - ${line}`).join("\n")}\n`);
     return 1;
   }
-  out(`juno hook check: the Claude Code user ${agentUser} is separated from the runner ${runnerUser} as D-173 requires, and the workspace is on a case-sensitive Linux file system with no case-folding folder (D-178).${gateway === undefined ? "" : ` JUNO's gateway relay ${gateway.name} is the only MCP server Claude Code can load, and the Claude Code user cannot change it (D-190).`} The anchor repository and its host key are pinned in root's own file (D-208).\n`);
+  out(`juno hook check: the Claude Code user ${agentUser} is separated from the runner ${runnerUser} as D-173 requires, and the workspace is on a case-sensitive Linux file system with no case-folding folder (D-178). Case folding is switched off for its whole file system: read from the ext4 superblock, or from a tmpfs's mount options (D-242).${gateway === undefined ? "" : ` JUNO's gateway relay ${gateway.name} is the only MCP server Claude Code can load, and the Claude Code user cannot change it (D-190).`} The anchor repository and its host key are pinned in root's own file (D-208).\n`);
   return 0;
 }

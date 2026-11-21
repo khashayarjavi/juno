@@ -7,12 +7,11 @@ import {
   GrantStore,
   type HostIo,
   HostPathResolver,
+  HostReadView,
   SessionLayer,
   StartupRefused,
   type StartupSpec,
-  Workspace,
   anchoringState,
-  execFileScript,
   gitAnchoring,
   parseAnchorInterval,
   systemHostIo,
@@ -112,13 +111,13 @@ export async function runGatewayCli(args: readonly string[], io: GatewayCliIo): 
   // THE shared start-up check, before anything is opened (D-193, D-194).
   let layer: SessionLayer;
   try {
-    layer = await SessionLayer.open(gatewayStartupSpec({ session, socket, journal: journalDir, anchor, workspace, grants: grantFiles, anchoring }), { host: io.host, anchoring: io.anchoring ?? ((root, pin) => gitAnchoring(anchoring, root, pin)) });
+    layer = await SessionLayer.open(gatewayStartupSpec({ session, socket, journal: journalDir, anchor, workspace, grants: grantFiles, anchoring }), { host: io.host, lockJournal: true, anchoring: io.anchoring ?? ((root, pin) => gitAnchoring(anchoring, root, pin)) });
   } catch (error: unknown) {
     if (error instanceof StartupRefused) return refused(io, error.refusals);
     return refused(io, [error instanceof Error ? error.message : String(error)]);
   }
   const trust = layer.anchor;
-  if (trust === null) return refused(io, ["no verified trust anchor (D-194)"]);
+  if (trust === null) { layer.releaseLock(); return refused(io, ["no verified trust anchor (D-194)"]); }
   const refusals: string[] = [];
   let file: z.output<typeof GatewaySessionFile> | null = null;
   const grants: unknown[] = [];
@@ -136,13 +135,13 @@ export async function runGatewayCli(args: readonly string[], io: GatewayCliIo): 
       refusals.push(`the grant file ${grantFile} cannot be read as JSON: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  if (refusals.length > 0 || file === null) return refused(io, refusals);
+  if (refusals.length > 0 || file === null) { layer.releaseLock(); return refused(io, refusals); }
   const store = new GrantStore(trust);
   for (const grant of grants) {
     try {
       store.add(grant);
     } catch (error: unknown) {
-      return refused(io, [`a grant file holds no valid grant: ${error instanceof Error ? error.message : String(error)}`]);
+      { layer.releaseLock(); return refused(io, [`a grant file holds no valid grant: ${error instanceof Error ? error.message : String(error)}`]); }
     }
   }
   const upstream = file.upstream;
@@ -150,7 +149,8 @@ export async function runGatewayCli(args: readonly string[], io: GatewayCliIo): 
     layer,
     grants: store,
     resolver: new HostPathResolver(workspace),
-    view: new Workspace(execFileScript(process.execPath, []), "/work", workspace),
+    // D-228: names and kinds only; the read view never opens a file in the workspace.
+    view: new HostReadView(workspace),
     filesystem: io.filesystem,
     upstream: (refusedRequest) => new StdioUpstream(upstream.program, upstream.argv, { env: { ...upstream.env }, refused: refusedRequest }),
   });
@@ -167,6 +167,7 @@ export async function runGatewayCli(args: readonly string[], io: GatewayCliIo): 
     await service.listen(socket);
   } catch (error: unknown) {
     await service.close();
+    layer.releaseLock();
     return refused(io, [error instanceof Error ? error.message : String(error)]);
   }
   // §3.4.1 (D-198): every record is anchored at most one interval after it is written, and once more when the gateway stops.

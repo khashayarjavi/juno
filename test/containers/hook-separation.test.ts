@@ -130,6 +130,9 @@ describe("D-173: the Claude Code user cannot modify the hook settings or reach t
   // file system that is not a native case-sensitive Linux one, with a plain reason
   it("refuses a workspace that is not on a case-sensitive Linux file system (D-178)", () => {
     expect(results.check.stdout).toContain("case-sensitive Linux file system");
+    // D-242: the real check, as root, confirms case folding is switched off for the workspace's whole file system (a
+    // tmpfs here, judged from its mount options; an ext4's superblock is read in casefold-superblock.test.ts).
+    expect(results.check.stdout).toContain("Case folding is switched off for its whole file system");
     // proves D-206 item 2 (D-208), on the real kernel's ownership: the check refuses a pin that names no SSH address,
     // and a pin that is the runner's own file instead of root's
     expect(results.negative["pinIsLocal"]).toMatchObject({ code: 1, stderr: expect.stringContaining("names a local path") });

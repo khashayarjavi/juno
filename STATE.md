@@ -1,10 +1,151 @@
 # STATE
 
 ## Current increment
+**1.5-field — the field report of the first real install (issue [khashayarjavi/juno#59](https://github.com/khashayarjavi/juno/issues/59)), authorised by you on 2026-11-20 (D-220); your rulings on PR #60 (D-228), on D-233 (D-234) and on D-240 (D-241).** Branch `claude/optimistic-clarke-xblrwn` (this session's only pushable branch, D-241). It carries PR [khashayarjavi/juno#62](https://github.com/khashayarjavi/juno/pull/62)'s forty commits unchanged; its draft PR supersedes #62, and review rounds 15 to 17 run there. Spec v0.6.1. No objection open.
+
+Status (2026-11-21, this session): **your ruling 1 on D-240 built (D-242). `make verify: GREEN` on 99d68c7 (1,502 unit, 141 container). Draft PR [khashayarjavi/juno#63](https://github.com/khashayarjavi/juno/pull/63) supersedes #62. Review round 15 next.** main is unchanged at 6706b5a; your machine is unaffected.
+
+### Your rulings of 2026-11-21 on D-240 (D-241)
+1. `juno hook check` (as root) and Part E step 12's Check confirm that the file system holding `/srv/juno-work` has ext4's casefold feature switched off entirely, read from the superblock, and refuse otherwise in plain words. D-240's per-write check stays as a second layer. Tested against a real file system made with casefold on, in a container.
+2. Residual rule: a finding that needs a condition the verified install excludes and `juno hook check` checks for (a casefold-capable file system, root changing JUNO's files, a non-native file system) is a residual, not a STOP and not DO NOT MERGE.
+3. Review rounds 15 to 17 authorised. On MERGE: the gate, then STOP with the merge commit hash and your upgrade steps, and close issue #59.
+4. If round 17 still ends DO NOT MERGE: STOP, with the finding in one plain paragraph.
+
+### What D-242 changes, in plain words
+1. **`juno hook check` reads the disk itself.** For the workspace (and every source, and every mount inside them) it finds the disk that holds it and reads the disk's superblock, the record at its start that says how the file system was made. If that record says case folding is switched on, or JUNO cannot read it, the check refuses and says why. Only root can switch case folding on, so once the check passes, the Claude Code user cannot make any folder there ignore letter case.
+2. **It must run as root** (the guide's command already starts with `sudo`). Without `sudo` it refuses with `cannot read the superblock`.
+3. **The guide:** Part E step 12 adds two lines (`findmnt` and `sudo dumpe2fs -h …`); the features line must not contain `casefold`. Part G step 4's check now also prints `Case folding is switched off for its whole file system`. The upgrade's step 7 runs both.
+4. **Autopilot rulings:** a tmpfs is judged from its mount options (its superblock exists only in memory; D-178 already refuses its `casefold` option). A btrfs workspace is now refused by `juno hook check`, since no superblock read here can confirm it; your install is ext4.
+5. **Tests:** in a sealed container, the runner image's own `mkfs.ext4` makes a real ext4 with casefold, one without, and one that root switches to casefold later with `tune2fs`. `dumpe2fs` and JUNO's reader agree on each, and the refusal is checked word for word. The one stand-in is which disk holds the workspace: this machine's kernel cannot mount a case-folding ext4, and a sealed container cannot mount anything.
+
+**Left, in order:** review rounds 15 to 17 on PR #63; the merge gate; then STOP and report the merge commit hash and your upgrade steps; close issue #59.
+
+### STOP after review round 14 (D-240)
+- **Why this is a STOP.** Your ruling 5 authorised rounds 10 to 14. Round 14 ended DO NOT MERGE, and a fix nobody reviews cannot pass the merge gate.
+- **Round 14's finding, in plain words.** It needs a disk made to ignore letter case, an ext4 option the guide's setup does not use. On such a disk, the Claude Code user could empty `/srv/juno-work`, switch it to ignore case, and leave one oddly named file in it (a Turkish dotless `ı`, or a name that is not valid text). JUNO's check before each write then wrongly concluded the folder was case-sensitive, so writes proceeded while the undo would refuse.
+- **What I built anyway, not reviewed:** before every write, JUNO now runs the undo's own check on the folder holding the project, reading its case setting directly (`lsattr`) instead of inferring it from a file name. So the check before a write and the undo can no longer disagree on that folder.
+- **Your decision, recommended first:**
+  1. **Authorise one or more further review rounds on PR #62.**
+  2. **Accept this as a recorded limit** (it needs the special disk option and the Claude Code user emptying the workspace), and merge on the next MERGE.
+  3. Direct otherwise.
+
+### Why CI was red on 0b7285d, in plain words (D-235)
+- Only the `verify` job failed; both rootless jobs passed the same test. `verify` uses a root-run Docker, which puts every container under an AppArmor profile. AppArmor refuses to look up a file whose full path is longer than about 4,096 characters: some 2,000 levels of `d/`. The old undo looked up every level of the 8,000-level folder, so it was refused there. This session's machine has no AppArmor, so the test passed here.
+- **No walk could have reached the bottom under that profile.** Your ruling 2 removes the walk altogether, so the test passes without being changed in what it plants; it now also checks that the deep folder is kept aside.
+
+### What D-235 changes, in plain words
+1. **An undo moves the folder aside and makes it again (your ruling 2).** One rename moves `/srv/juno-work/project`, whatever it holds, to `/srv/juno-work/project.juno-undone-<UTC time>-<8 hex>`. JUNO then makes `/srv/juno-work/project` again from the checkpoint alone.
+   - **Kept:** the moved-aside folder is never deleted or changed by JUNO. The restore prints it as `kept`, and the journal records it.
+   - **Cost:** only the checkpoint's (at most 2,000 entries and 8 MB, which admission still enforces). Size, depth, a mount inside, a folder Claude locked or made sticky inside: none of them matters any more.
+   - **The rename needs no new privilege and no weaker seal.** It happens inside the one mount the sealed container already has, because a session's folder is always inside `/srv/juno-work`. So the streamed walk was not needed.
+2. **Every write checks that the folder can still be undone (your ruling 1).** The undo needs:
+   - `juno-runner` able to change `/srv/juno-work` and every folder on the way to the project;
+   - none of those folders sticky, set-user-ID or set-group-ID, and all on one file system;
+   - the project folder itself not a mount;
+   - the checkpoint's files still in the store.
+
+   If any of that fails, the write is judged irreversible and parks (`integrity_floor`, which nobody can override), with the reason in the journal.
+   - **Measured on 200,000 entries:** the check of the folders takes 0.014 ms; a write's whole check, including the path resolver every call already ran, takes 34 to 39 ms. Neither depends on the folder's size. The undo itself took 44 to 52 ms.
+   - **One exception, from the spec's text:** §2.2.2's table lets an irreversible write proceed when your grant names that exact path. In hook mode no grant of yours does, but you may tighten this.
+3. **The guide** ("Undo what Claude did in a session") says what comes back and with what permissions: the runner's own files, `rw-rw----`, and folders `rwxrwx---`, which `juno-agent` can still change through the access list. It also says where the old folder is kept and how to remove it yourself (new step 5), and that writes park when the folder cannot be undone (ruling 4).
+4. **Tests.** The tests that expected the old walk's refusals now expect the stronger behaviour: a locked or sticky folder *inside* no longer blocks the undo and is kept aside untouched. The same traps on the folder *holding* the project still refuse, with nothing changed. D-235 lists each changed expectation. New tests:
+   - 200,000 entries, in this process and against the real container runtime;
+   - writes park once the holding folder is locked or sticky, or a checkpoint file is gone, and proceed again once that is put right;
+   - against the kernel: what comes back is the runner's own with the fixed modes, and `juno-agent` can still change it.
+
+**Autopilot rulings this session:** D-234 (rounds 10 to 14 run on the superseding PR, numbered on from #61); D-235 (move-aside rather than the streamed walk; a folder locked or sticky inside the project still parks writes below it, kept as the more restrictive reading; an unrestorable workspace's write follows §2.2.2's irreversible row).
+
+**Review rounds on PR #62:**
+- **Round 10** (594d917): DO NOT MERGE. The undo's moved-aside folder sits beside the project, where a source of a lower class (`/work` declared public, say) could contain it, so a later session could read confidential files there as public. Fixed (D-236): every read of a moved-aside folder, or of a folder holding one, counts at the highest class the session declares. Also: the folder made again stays private until it is filled; a stray build file removed.
+
+- **Round 11** (257f83f): DO NOT MERGE. The restore command still ran the case-folding check over the whole project before the undo, so a large `node_modules` or a locked folder inside still refused the undo while writes proceeded (your ruling 3: a fix, not a STOP). Fixed (D-237): the restore checks only the folder holding the project. The service's start and new admissions still check the whole workspace, so the guide now says to remove a large or locked moved-aside folder if a start is refused.
+
+- **Round 12** (1ab8954): DO NOT MERGE. On a disk made to ignore letter case (an ext4 option), the Claude Code user could set that on `/srv/juno-work` after admission; the undo would then refuse while writes proceeded (your ruling 3: a fix). Fixed (D-238): every write asks the kernel whether each folder on the way ignores letter case, and parks if it does or cannot be asked.
+
+- **Round 13** (4e84b49): DO NOT MERGE. Round 12's fix missed one case: with the project folder moved away, the folder holding it was not asked. This repeats round 12's mechanism, which the standing rule would make a STOP, but your ruling 3 names this exact form as a fix (D-239 says so). Fixed (D-239): the last existing folder on the path is asked too.
+
+- **Round 14** (08ad3c4): DO NOT MERGE; the STOP above (D-240).
+
+**Left, in order:** your decision on D-240; then further review rounds if you authorise them; the merge gate; then STOP and report the merge commit hash and your upgrade steps; close issue #59.
+
+### STOP after review round 9 (D-233) — ruled on by you (D-234)
+- **Why this is a STOP.** Your ruling 2 makes a finding whose mechanism is recorded in DECISIONS.md a STOP. Round 9's mechanism is D-221's own recorded refusal: the undo refuses a workspace of more than 200,000 entries (and one with a mount inside).
+- **The finding, in plain words.** At admission JUNO copies the project folder (at most 2,000 entries). Nothing stops Claude growing it afterwards: one `npm install` can add more than 200,000 files. From then on every undo is refused ("nothing was changed"), but JUNO still lets writes there through as if they could be undone, until the service restarts. A single folder of about 1.5 million names is also more than the sealed container's memory, so the undo is killed and recorded `failed`. A FUSE mount inside the folder, where Ubuntu lets an ordinary user make one, would block the undo the same way.
+- **Your decision, most restrictive first:**
+  1. **Park writes in such a workspace:** once it holds more than the undo can handle, or a mount, its writes park, as for a folder `juno-runner` cannot change. Safe at once, but a session that runs `npm install` there can no longer write there.
+  2. **Remove the limit:** read folders as a stream so any folder the sealed container can walk is undoable; test past 200,000 entries and against its memory limit. The 180-second limit of a sealed run then becomes the bound, so this needs option 1 as the fallback.
+  3. **Record it as a known limit,** with a guide remedy: keep `node_modules` and similar outside the reversible folder, or remove them before an undo.
+  - **My recommendation: 2 with 1 as the fallback.**
+  - Also say how many further review rounds you authorise: rounds 6 to 9 of 10 are used.
+- **Rounds on PR #61, each new finding fixed with tests:**
+  - **Round 6** (d6b643e): a restore cut off part way was journalled "nothing was changed" (now `failed`); a file replaced mid-copy was misnamed a hard link (D-230).
+  - **Round 7** (6221078): a file name that is not valid UTF-8 made every undo refuse; names are now handled as bytes. Also, a sealed container past its time limit is now killed, and the read view keeps its size bound (D-231).
+  - **Round 8** (7539d1a): a folder thousands of levels deep crashed the undo; the walks no longer recurse. Also, a removed project folder is now made again (D-232).
+  - **Round 9** (d591415): the STOP above (D-233).
+
+### What D-228 changes, in plain words
+1. **JUNO never copies or undoes your project folder with its own privileges any more.** Every copy into a checkpoint, every check that the folder could be restored, and every restore runs in a new, sealed container of `juno-runner`'s own Docker: no network, no capabilities, no new privileges, a read-only image, and **one mount: your project folder** (read-only for the copy). The checkpoint's bytes go in and out through the container's input and output, so not even the checkpoint store is mounted. A link planted in the folder leads nowhere: JUNO's journal, keys and home do not exist inside that container. No sudo, no root, no new privilege for `juno-runner`.
+2. **JUNO takes only files and folders from your project.** A link, FIFO, socket, hard link, or a set-user-ID, set-group-ID or sticky bit anywhere inside makes admission refuse that reversible workspace, naming the entry. **An undo puts back content, not permissions:** every file comes back `rw-rw----`, every folder it makes `rwxrwx---` (executable bits are not kept).
+3. **The read view no longer reads file contents on the host** (it lists names and kinds only); the old one hashed every file it listed, by path.
+4. **Proven against the real container runtime** (`test/containers/sealed-copy.test.ts`): the sealed context cannot open the runner's journal key even handed its exact path (directly, through a planted link, or through `/proc`); and the traps of rounds 1 (set-user-ID program), 3 (sticky folder), 4 (planted links) and 5 (a link swapped in while copying) are each refused or harmless. Every existing test kept; where your ruling replaces an old expectation (links and modes restored), the test now asserts the stricter rule (D-228 lists each).
+5. **The guide** (Part E step 11, Part G step 2, "Undo what Claude did in a session", "Upgrading", "When something goes wrong") and **the evidence document** (property 22; residuals 40 to 42, 45 to 49) say this in plain words.
+
+**Autopilot rulings (D-228, D-229), one line each:**
+- The container mounts the workspace only, not the checkpoint store (more restrictive than the ruling's example).
+- The copy is on a read-only mount; whether the runner could restore is judged in a second sealed run with a writable mount that reads and changes nothing (the kernel refuses every write test on a read-only mount).
+- A file with a second name (hard link) refuses the checkpoint.
+- Fixed modes: files 0660, folders 0770.
+- The read view never opens a file on the host (the class closed beyond copies and restores).
+- Checkpoints not taken sealed (PR #60's unmerged commits only) are not restored and not confirmed after a restart.
+- Review rounds 6 to 10 run on the superseding PR, numbered on from #60.
+
+**Left, in order:** your decision on D-233; then the fix, further review rounds, the merge gate, the merge commit hash and the upgrade steps; close issue #59.
+
+### PR #60's review history (rounds 1 to 5; the STOP of D-227, now ruled on)
+- **Round 1** (c31be0f): a restore could recreate a set-user-ID program owned by the runner (D-223).
+- **Round 2** (8cffccd): after a restart, a session's writes stayed "undoable" though its checkpoint could not be restored (D-224).
+- **Round 3** (58e270b): a sticky bit set after admission made the restore fail part way (D-225).
+- **Round 4** (386439c): the guide had root run `setfacl`/`chmod` inside the Claude Code user's folder (D-226).
+- **Round 5** (192bc4f): the hook-mode checkpoint read files by name, so a swapped link could copy a runner-only file into it (D-227).
+
+### What 1.5-field changes, in plain words
+1. **You can now undo what Claude did in a hook session (§2.2.2).** `juno checkpoint restore --workspace /srv/juno-work ...`, run as `juno-runner` with the service stopped, puts the session's folder back exactly as it was when the session was admitted: files Claude made are removed, files it changed or deleted come back. It is recorded in the journal under your name. `juno checkpoint list` finds the checkpoint. The guide's new section "Undo what Claude did in a session" gives the steps.
+   - **Why it did not work before:** your workspace belonged to `juno-agent`, so `juno-runner` could change nothing in it. The guide now gives `juno-runner` an access list on `/srv/juno-work` that everything made there inherits (`setfacl`, package `acl`).
+   - **It refuses, changing nothing:** while the service runs (the services now hold the journal's lock), as root, as anyone but the journal's owner, for another principal, for another folder, for a checkpoint from before this version (it does not record its folder), and whenever it could not finish (for example a folder `juno-runner` cannot change). It never follows a link out of the folder and never writes through a hard link.
+   - **Reversible now means restorable:** JUNO refuses to admit a reversible workspace `juno-runner` could not restore, and parks (cannot be overridden) a write below a folder `juno-runner` could no longer change.
+   - **Gateway sessions** still have no reversible workspace: the MCP server makes its own changes, outside any folder JUNO can copy, so their writes park unless the grant names the exact target. Nothing to restore there.
+   - **Proven end to end** in a sealed container against the kernel, with the real hook service as `juno-runner` and the Claude Code user making its own changes, then the service started again on the same journal.
+2. **The example session file** has `"reversible_workspaces": ["/work/project"]` and a comment line saying what it does and how to undo.
+3. **The guide**, finding by finding: GitHub's host key compared in full with `api.github.com/meta` (no `ssh-keyscan`; no banner check); WSL's disk (SATA, NVMe or SAS; not compressed; free space); `landscape-client` masked; the Start-menu default user; `claude auth login`, never a copied credential; one admitted session is one Claude Code run; `/mnt/c` wording; GitHub reachable at every start; a full drive is not a broken disk; Node 22 beside another version; and **"Upgrading JUNO to a new commit"**. CI now builds your installed commit (6706b5a), lets it write a journal, and proves this commit's service starts on it with its grants, checkpoints and sessions.
+4. **The open item "anchoring over HTTPS, for networks that intercept SSH" is withdrawn.** Your test of 2026-11-20 shows JUNO starting, reading its anchors and pushing a new one with the VPN switched off; the earlier failure was a DNS failure, and the "interception" reading came from my out-of-date banner check. What remains is a standing requirement, now in the guide: GitHub must be reachable every time the service starts.
+
+**Autopilot rulings (D-221, D-222), one line each:**
+- "The session closed or the service stopped" is read as **the service stopped**, always: a running service is the journal's one writer.
+- A workspace `juno-runner` could not restore is not reversible: refused at admission, and a write below such a folder parks.
+- Gateway sessions keep no reversible workspace.
+- Checkpoints taken before this version are refused by the host restore (they do not record their folder).
+- A checkpoint holding a set-user-ID, set-group-ID or sticky bit is refused at admission and at the restore, never recreated (D-223).
+- A session rebuilt after a restart keeps a workspace reversible only if its checkpoint, taken in this service's folder, can be restored now; so after the upgrade, a session admitted under 6706b5a can read but its writes park: admit a new session (D-224).
+
+~~**Left, in order:** your decision on further review rounds (D-227)…~~ Superseded: you ruled (D-228); what is left is at the top of this file.
+
+## Previous increment: 1.5-wsl-fix (complete)
 **1.5-wsl-fix — `make verify-rootless` fails 2 of 118 on your machine (issue [khashayarjavi/juno#56](https://github.com/khashayarjavi/juno/issues/56)), authorised by you on 2026-11-14 (D-219).** Branch `claude/festive-cori-73zvj7` (this session's only pushable branch). It carries PR #55's two STATE.md commits; its PR supersedes #55. Spec v0.6.1. No objection open.
 
-Status (2026-11-14, this session): **fix built with tests (D-219). `make verify: GREEN` on 8b3023a (1,456 unit, 121 container). Draft PR [khashayarjavi/juno#57](https://github.com/khashayarjavi/juno/pull/57) supersedes #55. Review round 1 next.** Nothing merged yet.
-- **CI reproduced your failure, then passed with the fix.** On aef225f (the fix removed on purpose, reverted by the next commit), the new job running your setup failed exactly your two tests, with 116 others passing (run 43627885303). On 8b3023a (the fix) it passed 121 of 121 (run 43627931735), with Docker 29.9.2 and containerd 2.4.2 from Docker's apt repository, containerd's snapshotter, and umask `0002`: your `docker info` and your umask.
+**1.5-wsl-fix is complete and merged.** The autopilot has STOPPED, as your instruction directs.
+
+**For Part A step 4 of the guide, the commit hash is: `6706b5a30a9d6aca96d046a31de85a741a9804ef`** (the merge of PR #57 into main). Redo Part A steps 4 and 5 with it, then Part E step 11 (remove the old `~/juno` first, as the step now says) and go on from there.
+
+### Merge record (2026-11-14)
+- **PR [khashayarjavi/juno#57](https://github.com/khashayarjavi/juno/pull/57) (1.5-wsl-fix, supersedes #55): merged** as `6706b5a30a9d6aca96d046a31de85a741a9804ef`, pinned to head `dac77604b19cceee372bfa5abb2d0f1ad05687c7`.
+  - **Review round 1** (fresh reviewer, the review prompt verbatim): **MERGE** on dac7760. All six checks PASS.
+  - **CI on dac7760:** run 43628433488, `verify`, `verify-rootless` and `verify-rootless-operator` green.
+  - **CI on main for 6706b5a:** run 43629203792, all three jobs **green**.
+  - **Locally:** `make verify: GREEN` on 8b3023a (1,456 unit, 121 container); dac7760 adds only DECISIONS.md and STATE.md.
+  - **CI reproduced your failure, then passed with the fix.** On aef225f (the fix removed on purpose, reverted by the next commit), the new job running your setup failed exactly your two tests, with 116 others passing (run 43627885303). On 8b3023a it passed 121 of 121 (run 43627931735), with Docker 29.9.2 and containerd 2.4.2 from Docker's apt repository, containerd's snapshotter, and umask `0002`: your `docker info` and your umask.
+  - PR #55 is left open and untouched; #57 carried its two commits.
+  - Issue #56 is closed with the plain-language cause.
+- **This branch, after the merge:** it adds only this record. Its draft PR is the post-merge record, like #55, and is not merged by the autopilot.
 
 ### What went wrong on your machine, in plain words
 - Your runner terminal is a login shell (`sudo -iu juno-runner`). In a login shell Ubuntu lets your group write every file you make (umask `0002`).
@@ -20,10 +161,10 @@ Status (2026-11-14, this session): **fix built with tests (D-219). `make verify:
 4. **The guide:** step 11 says to remove an earlier `~/juno` before cloning the new commit; step 12 adds one check, `find /opt/juno /opt/node22 ! -type l -perm /022 -print`, which must print nothing. Your root copy (step 12 onward) was not affected: `sudo` gives root's commands the umask `022` whatever your own is.
 5. Neither `juno hook check` nor any test was weakened.
 
-**Left, in order:** review rounds (up to 5); the merge gate; then STOP and report the merge commit hash in full, for Part A step 4.
+**Left:** nothing in 1.5-wsl-fix. Your next step is the guide, with the commit hash above.
 
-### Open design items (not started)
-1. **Anchoring over HTTPS, for networks that intercept SSH.** Your network intercepts SSH to GitHub and you are using a VPN. This increment does not change how anchoring connects.
+### Open design items
+None. ("Anchoring over HTTPS, for networks that intercept SSH" was withdrawn by 1.5-field, D-222: it rested on a wrong diagnosis; JUNO anchors without the VPN.)
 
 **Previous increment, for reference:** 1.5-setup is complete and merged as `dbb272f21988f94cfbf4a849e408de29df0586ce` (below).
 
