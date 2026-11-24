@@ -3,8 +3,14 @@
 ## Current increment
 **1.5-ops — the field report of the operator's machine running bef25fe (a real undo passed there), authorised by you on 2026-11-24 (D-243).** Branch `claude/vibrant-mayer-mg2c73` (this session's only pushable branch). It carries draft PR #64's one STATE.md commit; its PR supersedes #64. Main at bef25fe. Spec v0.6.1. No objection open. Review: up to 5 rounds (D-179, D-211); merge through the gate; then STOP with the merge commit hash and your exact upgrade steps.
 
-Status (2026-11-24, this session): **all three items built with tests (D-243 to D-245). `make verify: GREEN` on 3b4a890 (1,521 unit, 147 container). Draft PR [khashayarjavi/juno#65](https://github.com/khashayarjavi/juno/pull/65) supersedes #64. Review round 1 next.**
-- The first two local runs were RED, each fixed: (1) `groq.test.ts` found socket code in the enforcement package (my probe for a dead service's socket); it moved to the hook service's socket file, which may use one (D-073). (2) `hook-restore.test.ts` expects the restore to say the service is running while it runs; its container had no machine id, so JUNO could not prove that; the container now has one, as every real machine has. No assertion changed.
+Status (2026-11-24, this session): **review round 1 ended DO NOT MERGE with two findings, both fixed (D-243). `make verify: GREEN` on 0715ee4 (1,522 unit, 148 container). Review round 2 next, once CI on this head has finished.** Draft PR [khashayarjavi/juno#65](https://github.com/khashayarjavi/juno/pull/65) supersedes #64.
+
+**Review rounds on PR #65:**
+- **Round 1** (6d425d3): DO NOT MERGE.
+  1. My new container test assumed Linux always gives the new PID namespace the dead one's number. In CI it gave the next number. JUNO did the right thing (it refused, since it could not prove the owner dead); the test was wrong. It now checks the rule for either number, and proves the take-over by start time deterministically, against the real kernel.
+  2. The Compose form of the restore could still take a lock over. Now neither form does; a test proves it.
+  - Also done from its notes: the `pgrep` in every remedy now also matches the Slice 1 runner process; one more residual recorded (time namespaces).
+- Earlier, before review, the first two local runs were RED, each fixed: socket code had slipped into the enforcement package (moved to the hook service's socket file, D-073); a container test's container had no machine id, so JUNO could not prove the running service owned the lock (it now has one, as every real machine does; no assertion changed).
 
 ### What 1.5-ops changes, in plain words
 1. **A service killed without a stop no longer locks the journal for good (D-243).** Checked against the code first:
