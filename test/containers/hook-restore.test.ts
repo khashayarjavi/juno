@@ -1,7 +1,11 @@
 import { execFile } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 // §2.2.2 (v0.6 A1): "A scope is reversible when a checkpoint of its full content is taken before the task's first effect
 // on it and restoring that checkpoint is an operator action recorded in the journal." D-221 (operator's increment
@@ -63,6 +67,11 @@ type Results = {
 };
 
 let results: Results;
+// The machine's identity, as every real host has one (/etc/machine-id; the runner image has none): the journal's lock
+// names its owner's machine, and only on the same machine can a restore tell that its owner, the service, is running (D-243).
+const identity = mkdtempSync(join(tmpdir(), "juno-hook-restore-"));
+writeFileSync(join(identity, "machine-id"), `${randomBytes(16).toString("hex")}\n`, { mode: 0o644 });
+afterAll(() => rmSync(identity, { recursive: true, force: true }));
 
 beforeAll(async () => {
   const { stdout } = await run(
@@ -73,6 +82,7 @@ beforeAll(async () => {
       "--security-opt", "no-new-privileges:true",
       "--mount", ["type=bind", ["source", fixtures].join("="), "target=/r", "readonly"].join(","),
       "--mount", ["type=bind", ["source", helpers].join("="), "target=/h", "readonly"].join(","),
+      "--mount", ["type=bind", ["source", join(identity, "machine-id")].join("="), "target=/etc/machine-id", "readonly"].join(","),
       // The workspace: a tmpfs, a case-sensitive Linux file system (D-178) that keeps access lists.
       "--tmpfs", "/srv/work:mode=0755",
       "--entrypoint", "/usr/local/bin/node", "juno-runner:local", "/r/driver.mjs",
