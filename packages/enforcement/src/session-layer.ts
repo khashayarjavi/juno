@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { realpathSync } from "node:fs";
+import { realpathSync, unlinkSync } from "node:fs";
+import { connect } from "node:net";
 import { type AbsolutePath, type Budget, type DataClass, type TrajectoryEntry, pathWithin } from "../../contracts/src/index.js";
 import {
   type RunnerLock,
@@ -211,6 +212,8 @@ export class SessionLayer {
   readonly #workspaces: readonly { readonly path: string; readonly real: string }[];
   /** The journal's one-writer lock, held by the hook and gateway services while they run (D-221). */
   #lock: RunnerLock | null = null;
+  /** Socket files a service killed without a stop left, removed by this start (D-243). */
+  readonly #clearedSockets: string[] = [];
   readonly #anchoring: Anchoring;
   /** Per journal record: the seq last anchored and when (§3.4.1, D-122, D-198). */
   readonly #anchored = new Map<string, { seq: number; at: number }>();
@@ -719,6 +722,39 @@ export class SessionLayer {
     const refusals = socketRefusals("the socket", path, this.#host);
     if ((mode & 0o007) !== 0 || (mode & ~0o660) !== 0) refusals.push("the socket's mode may give at most read and write to its owner and group (D-173)");
     if (refusals.length > 0) throw new SessionLayerError(refusals.join("; "));
+  }
+
+  /**
+   * Removes the socket file a service killed without a stop left at `path`, so this service can listen there (D-243).
+   * Only while this layer holds the journal's lock (no other JUNO process writes this journal), only a socket judged by
+   * the start-up check, owned by this process's user, on which nothing answers (a connection is refused). Anything else
+   * is left as it is, and listening then refuses as before. Answers whether it removed one.
+   */
+  async clearStaleSocket(path: string): Promise<boolean> {
+    if (this.#lock === null || !this.#spec.state.some((item) => item.kind === "socket" && item.path === path)) return false;
+    // Judged through the host, as every other ownership here is (D-194).
+    const facts = this.#host.lstat(path);
+    if (facts === null || !facts.isSocket() || facts.uid !== this.#host.uid) return false;
+    const refused = await new Promise<boolean>((resolve) => {
+      const probe = connect(path);
+      probe.once("connect", () => {
+        probe.destroy();
+        resolve(false);
+      });
+      probe.once("error", (error: Error) => {
+        probe.destroy();
+        resolve("code" in error && error.code === "ECONNREFUSED");
+      });
+    });
+    if (!refused) return false;
+    unlinkSync(path);
+    this.#clearedSockets.push(path);
+    return true;
+  }
+
+  /** The socket files left by a service killed without a stop that this start removed (D-243). */
+  get clearedSockets(): readonly string[] {
+    return [...this.#clearedSockets];
   }
 
   /**

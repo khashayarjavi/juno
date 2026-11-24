@@ -175,6 +175,7 @@ export async function runHookServeCli(args: readonly string[], io: HookServeIo):
   // D-243: the lock of a service that was provably no longer running was taken over at this start, and recorded.
   const reclaimed = layer.reclaimedLock;
   if (reclaimed !== null) io.err(`juno hook: the journal's lock was left by a JUNO process that is no longer running (${reclaimed.reason}, process ${String(reclaimed.holder["pid"])}), for example after WSL shut down under it. It was taken over and recorded in the journal (stale_lock_reclaimed), after the journal was checked (D-243).\n`);
+  for (const path of layer.clearedSockets) io.err(`juno hook: removed ${path}, a socket file left by a JUNO process that is no longer running (nothing answered on it), so this start could listen there (D-243).\n`);
   // D-206 item 1 (D-207): a torn final write was repaired at this start; say what it cost.
   const recovery = layer.recovery;
   if (recovery !== null) io.err(`juno hook: the journal's last entry was left incomplete (a power loss or a crash in the middle of a write). It was dropped and recorded (recovered_truncation). Every grant used by a session open at that moment is now exhausted and needs a new, newly signed grant: ${recovery.exhausted_grants.length === 0 ? "(none)" : recovery.exhausted_grants.join(", ")} (D-206).\n`);

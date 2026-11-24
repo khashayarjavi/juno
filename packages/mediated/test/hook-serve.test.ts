@@ -436,6 +436,50 @@ describe("the hook service holds the journal's lock (D-221)", () => {
     expect(await serving(() => Promise.resolve(), { anchoring: testAnchoring({ sink: anchors, journalKey: key }) }), said.join("")).toBe(0);
   });
 
+  // proves D-243: a socket file left at the service's socket path is removed only when it is a socket of this user on
+  // which nothing answers; a live listener there, or a file that is not a socket, is never removed and the start refuses
+  it("removes a dead service's socket file, never a live socket or another file", async () => {
+    const { createServer } = await import("node:net");
+    const key = testJournalKey();
+    const path = join(sockets, "hook.sock");
+    // The test host reports the socket's owner as the layer's own user, or as another (a suite run as root makes it root's;
+    // test/layer.ts names owners the same way for its folders).
+    const base = ordinaryHost();
+    const ownedBy = (uid: number): HookServeIo["host"] => ({ ...base, lstat: (at: string) => {
+      const facts = base.lstat(at);
+      return at === path && facts !== null ? Object.assign(Object.create(Object.getPrototypeOf(facts) as object) as typeof facts, facts, { uid }) : facts;
+    } });
+    const mine = ownedBy(base.uid);
+    // A live listener at the path, this user's own: left alone, and the start refuses.
+    const live = createServer();
+    await new Promise<void>((resolve) => live.listen(path, resolve));
+    said = [];
+    expect(await serving(() => Promise.resolve(), { host: mine, anchoring: testAnchoring({ sink: anchors, journalKey: key }) })).toBe(1);
+    expect(said.join("")).toContain("EADDRINUSE");
+    expect(existsSync(path)).toBe(true);
+    await new Promise<void>((resolve) => live.close(() => resolve()));
+    // A file that is not a socket: left alone, and the start refuses.
+    writeFileSync(path, "not a socket\n", { mode: 0o600 });
+    said = [];
+    expect(await serving(() => Promise.resolve(), { host: mine, anchoring: testAnchoring({ sink: anchors, journalKey: key }) })).toBe(1);
+    expect(readFileSync(path, "utf8")).toBe("not a socket\n");
+    rmSync(path);
+    // A listener killed with SIGKILL leaves its socket file, on which nothing answers: the start removes it, says so, and serves.
+    const child = execFile(process.execPath, ["-e", "require(\"node:net\").createServer().listen(process.argv[1], () => process.stdout.write(\"up\\n\"))", path]);
+    await new Promise<void>((resolve) => child.stdout?.once("data", () => resolve()));
+    const gone = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+    child.kill("SIGKILL");
+    await gone;
+    expect(existsSync(path)).toBe(true);
+    // Someone else's socket file: left alone, and the start refuses.
+    said = [];
+    expect(await serving(() => Promise.resolve(), { host: ownedBy(base.uid + 1), anchoring: testAnchoring({ sink: anchors, journalKey: key }) })).toBe(1);
+    expect(existsSync(path)).toBe(true);
+    said = [];
+    expect(await serving(() => Promise.resolve(), { host: mine, anchoring: testAnchoring({ sink: anchors, journalKey: key }) }), said.join("")).toBe(0);
+    expect(said.join("")).toContain(`juno hook: removed ${path}, a socket file left by a JUNO process that is no longer running`);
+  });
+
   // proves D-243: a lock left by a service killed without a stop (its process gone, same host, boot and PID namespace) is
   // refused by the checkpoint restore, changing nothing and saying to start the service once; the next start takes it
   // over, records that in the journal's own record after checking the journal, says so, and the start after reads it back

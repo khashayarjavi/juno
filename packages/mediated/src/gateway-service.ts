@@ -35,7 +35,8 @@ export class GatewayService {
     } catch (error: unknown) {
       return Promise.reject(error instanceof Error ? error : new Error(String(error)));
     }
-    return new Promise((resolve, reject) => {
+    // D-243: a socket file left by a service killed without a stop is removed first, under the journal's lock.
+    return this.#gateway.layer.clearStaleSocket(path).then(() => new Promise<void>((resolve, reject) => {
       this.#server.once("error", reject);
       this.#server.listen(path, () => {
         this.#server.off("error", reject);
@@ -48,7 +49,7 @@ export class GatewayService {
         }
         resolve();
       });
-    });
+    }));
   }
 
   close(): Promise<void> {
