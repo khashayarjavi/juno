@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -301,6 +301,42 @@ describe("a lock left by a service killed without a stop is taken over; one JUNO
     expect(() => acquireRunnerLock(root, () => new Date(), probe({}, false), { reclaim: false })).toThrow(/owner_dead/);
     expect(readFileSync(lockPath).equals(before)).toBe(true);
     expect(existsSync(join(root, TAKEOVER_FILE))).toBe(false);
+  });
+
+  // proves D-243 (review round 2 of PR #65): a take-over file left by a crash in the middle of a take-over is named by
+  // its real path, never the handle /proc/self/fd/<n>, and the remedy removes it with the lock, after the same check
+  it("names a leftover take-over file by its real path, and removes it in the remedy", () => {
+    writeFileSync(lockPath, holder());
+    writeFileSync(join(root, TAKEOVER_FILE), holder());
+    // The folder held by a handle, as the hook and gateway services hold the journal (D-213).
+    const fd = openSync(root, constants.O_RDONLY | constants.O_DIRECTORY);
+    let thrown: unknown;
+    try {
+      acquireRunnerLock(`/proc/self/fd/${String(fd)}` as AbsolutePath, () => new Date(), probe({}, false), { shown: "/var/lib/juno-runner/journal" });
+    } catch (error: unknown) {
+      thrown = error;
+    } finally {
+      closeSync(fd);
+    }
+    expect(thrown).toBeInstanceOf(RunnerLockRefused);
+    const refused = thrown as RunnerLockRefused;
+    expect(refused.reason).toBe("takeover_in_progress");
+    expect(refused.message).toContain("clearing this lock");
+    expect(refused.message).toContain("rm /var/lib/juno-runner/journal/runner.lock.takeover /var/lib/juno-runner/journal/runner.lock");
+    expect(refused.message).toContain("pgrep -af 'juno[.]js (hook serve|gateway serve|checkpoint restore)|runner/src/main[.]js'");
+    expect(refused.message).not.toContain("/proc/self/fd");
+    expect(refused.message).not.toContain(root);
+    // Nothing was changed.
+    expect(readFileSync(lockPath, "utf8")).toBe(holder());
+    expect(readFileSync(join(root, TAKEOVER_FILE), "utf8")).toBe(holder());
+  });
+
+  // proves D-243: every refusal says why once, in words, never the bare reason twice
+  it("explains every refusal reason in words", () => {
+    for (const [content, p, reason] of [[holder({ pid_ns: null }), probe({}, false), "pid_namespace_unknown"], [holder(), probe({}, null), "liveness_unknown"], [holder({ host: `${"b".repeat(32)}/x` }), probe({}, false), "other_host"]] as const) {
+      writeFileSync(lockPath, content);
+      expect(() => acquireRunnerLock(root, () => new Date(), p)).toThrow(new RegExp(`is held \\(${reason}\\): (?!${reason})`));
+    }
   });
 
   // proves D-243: neither form of the checkpoint restore takes a dead owner's lock over; it refuses, changing nothing

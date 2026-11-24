@@ -3151,3 +3151,16 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
 - **`juno checkpoint list` names who restored a checkpoint** (`by`), for done and refused restores alike (built in D-243; asserted in `hook-serve.test.ts`).
 - **The runner's environment in `~/.bashrc`, after Ubuntu's early return for non-interactive shells: verified that nothing depends on it.** The runner terminal is WSL's interactive login shell (`wsl -d Ubuntu-24.04 -u juno-runner`), which reads the whole file; every runner command the guide runs from PowerShell uses `--exec` with the program's full path, so no shell starts (a test checks every such line); the hook service's unit sets its own `PATH` and `DOCKER_HOST`; CI's rootless run uses `env -i`. So nothing is moved (autopilot ruling: moving it would change a working install for no gain). The guide now says why the lines are where they are and to leave them.
 - Reason: the operator's increment 1.5-ops item 3.
+
+## D-246 — STOP after review round 2 (PR #65): its finding repeats the mechanism D-243 records as fixed; fixed, not reviewed
+- Date: 2026-11-24
+- Status: STOP (awaiting the operator)
+- Applies to: `packages/journal/src/lock.ts` (`clearStale`, `explain`), `packages/runner/test/lock.test.ts`, `docs/operator-setup.md` ("When something goes wrong")
+- **Round 2 (head 50a1177; CI run 45505916191 green):** DO NOT MERGE, one finding. When a take-over file (`runner.lock.takeover`) is left by a crash in the middle of taking a lock over, the refusal built its path from the folder handle (`/proc/self/fd/<n>/runner.lock.takeover`) and its remedy named `runner.lock`, not the take-over file. Following it let one start through but left the take-over file, which then refused every later automatic take-over for that journal.
+- **Why this is a STOP.** CLAUDE.md §7: a round that finds a mechanism already recorded in DECISIONS.md is a STOP. The mechanism, a refusal naming the handle path instead of the journal's real path, is field-report defect 2, which D-243 records as fixed; my fix covered the main refusal and missed this one. With no ruling of yours naming this form a fix (as D-234 ruling 3 did for D-239), the restrictive reading is to stop (precedent: D-233).
+- **Built anyway, not reviewed (as D-240):** the take-over refusal now has its own reason (`takeover_in_progress`), names both files by their real paths, and its remedy removes both, after the same `pgrep` check; every reason is explained in words once (round 2's second note). A unit test holds the folder by a real handle, as the services do, plants a dead owner's lock and a take-over file, and asserts the message names `/var/lib/juno-runner/journal/runner.lock.takeover` and never `/proc/self/fd`; it fails on the code before the fix. The guide's "When something goes wrong" says to remove both files when the refusal names both.
+- **Round 2's other note, not changed:** a start that takes a lock over and then fails its journal check does not record the take-over (D-243 records this choice: nothing is written to a journal that did not verify).
+- **The operator's decision, recommended first:**
+  1. Authorise further review rounds on PR #65 (rounds 3 to 5 remain of the 5 you authorised), treating this finding as fixed.
+  2. Direct otherwise.
+- Reason: CLAUDE.md §7 STOP rule; D-233, D-240; D-243.

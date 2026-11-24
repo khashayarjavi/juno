@@ -196,8 +196,14 @@ function explain(reason: string, holder: LockRecord | null, probe: HostProbe): s
       return "whether this machine has restarted since the lock was taken is not known";
     case "lock_unreadable":
       return "the lock cannot be read";
+    case "takeover_in_progress":
+      return "another JUNO process is clearing this lock, or one crashed while doing so (its take-over file is there)";
+    case "lock_changed":
+      return "the lock changed while it was being taken over: another JUNO process took it";
+    case "lock_taken":
+      return "another JUNO process took the lock while this one was taking it over";
     default:
-      return reason;
+      return "JUNO cannot tell whether the process that took the lock still runs";
   }
 }
 
@@ -228,6 +234,8 @@ export function acquireRunnerLock(root: AbsolutePath, clock: () => Date = () => 
   const path = join(root, LOCK_FILE);
   // The path every message names: the journal as given, never the handle this process holds it by (D-243).
   const shown = join(options.shown ?? root, LOCK_FILE);
+  // The take-over file, by the same real path (D-243, review round 2 of PR #65).
+  const shownTakeover = join(options.shown ?? root, TAKEOVER_FILE);
   const record: LockRecord = {
     pid: probe.pid,
     host: probe.hostId(),
@@ -262,7 +270,9 @@ export function acquireRunnerLock(root: AbsolutePath, clock: () => Date = () => 
         ? "a start of JUNO's service takes such a lock over, records it in the journal and checks the journal"
         : proven
           ? `stop that JUNO process first (the hook service: systemctl --user stop juno-hook.service, as juno-runner; the gateway: Ctrl+C in its terminal; a checkpoint restore: let it finish)`
-          : `if no JUNO process runs on this machine (no service, no checkpoint restore, no runner: as juno-runner, pgrep -af 'juno[.]js (hook serve|gateway serve|checkpoint restore)|runner/src/main[.]js' prints nothing), remove the lock as juno-runner: rm ${shown}`;
+          : reason === "takeover_in_progress"
+            ? `if no JUNO process runs on this machine (no service, no checkpoint restore, no runner: as juno-runner, pgrep -af 'juno[.]js (hook serve|gateway serve|checkpoint restore)|runner/src/main[.]js' prints nothing), remove both files as juno-runner: rm ${shownTakeover} ${shown}`
+            : `if no JUNO process runs on this machine (no service, no checkpoint restore, no runner: as juno-runner, pgrep -af 'juno[.]js (hook serve|gateway serve|checkpoint restore)|runner/src/main[.]js' prints nothing), remove the lock as juno-runner: rm ${shown}`;
     throw new RunnerLockRefused(`the journal's lock ${shown} is held (${reason}): ${why}; one JUNO process writes a journal at a time; ${remedy}. The lock: ${holder}`, reason, shown);
   };
 
@@ -310,7 +320,8 @@ function clearStale(
   try {
     writeFileSync(takeover, holder, { flag: "wx", mode: 0o600 });
   } catch (error: unknown) {
-    if (isCode(error, "EEXIST")) return refuse(holder, `another runner is clearing this lock, or crashed doing so; if none is, remove ${takeover}`);
+    // Named by reason; the message names the file by its real path, never the handle this process holds it by (D-243).
+    if (isCode(error, "EEXIST")) return refuse(holder, "takeover_in_progress");
     throw error;
   }
   try {
