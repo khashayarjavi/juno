@@ -371,7 +371,7 @@ export class Runner {
     // §3.4.1 V6-4: the operator key never enters the runner, so the journal key can never be it. The layer's anchoring
     // was checked when it opened (D-198); the grant store's key is checked here too.
     if (sameKey(this.#layer.anchoring.journalKey.publicKey, options.grants.trustAnchor)) throw new RunnerError("the journal key is the operator's grant-signing key; the runner must hold its own (§3.4.1)");
-    this.#lock = acquireRunnerLock(this.#layer.root, this.#clock);
+    this.#lock = acquireRunnerLock(this.#layer.root, this.#clock, undefined, { shown: this.#layer.path });
     try {
       this.#reapplyQuarantines();
       this.#rebuildRunnerRecord();

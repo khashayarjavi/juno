@@ -48,4 +48,4 @@ export {
 } from "./sinks.js";
 export { SSH_ENVIRONMENT, sshInvocation } from "./anchor-ssh.js";
 export { HISTORY_GIT, type HistoryVerdict, anchorHistoryVerdict } from "./history.js";
-export { LOCK_FILE, RunnerLockError, type RunnerLock, acquireRunnerLock } from "./lock.js";
+export { LOCK_FILE, RunnerLockError, RunnerLockRefused, type RunnerLock, acquireRunnerLock } from "./lock.js";

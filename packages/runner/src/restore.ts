@@ -19,7 +19,7 @@ import {
 import { type FilesystemIo, caseFoldingRefusals, systemFilesystemIo } from "../../mediated/src/filesystem.js";
 import { type EntryDraft, JournalWriter as Writer, canonicalJson, readPayload, readTrajectory } from "../../journal/src/index.js";
 import { type CliIo, FILE_IO } from "./grant-cli.js";
-import { acquireRunnerLock } from "./lock.js";
+import { RunnerLockRefused, acquireRunnerLock } from "./lock.js";
 
 /**
  * Restoring a reversible workspace (spec §2.2.2, v0.6 A1: "restoring that checkpoint is an operator action recorded in
@@ -203,8 +203,21 @@ const USAGE =
   "       juno checkpoint list --journal <journal dir> <task id>\n";
 
 /**
+ * Why the restore could not lock the journal, in the operator's words (D-243): a running service is stopped first; a
+ * service that stopped without releasing its lock is started once, so that it takes the lock over and checks the
+ * journal, and stopped again; any other case names the lock's real path and how to remove it.
+ */
+export function lockRefusal(error: unknown): string {
+  if (!(error instanceof RunnerLockRefused)) return `the journal could not be locked: ${error instanceof Error ? error.message : String(error)}`;
+  if (error.reason === "owner_running") return `the journal is in use, so its service is running. Stop it first (systemctl --user stop juno-hook.service), then run this again. (${error.message})`;
+  if (error.reason === "owner_dead")
+    return `JUNO's service stopped without releasing the journal's lock (for example WSL shut down under it). Start the service once, so that it takes the lock over, records that and checks the journal (systemctl --user start juno-hook.service, then systemctl --user status juno-hook.service --no-pager must show active (running)); stop it again (systemctl --user stop juno-hook.service); then run this again. (${error.message})`;
+  return error.message;
+}
+
+/**
  * `juno checkpoint list` (D-221): the checkpoints a task's verified trajectory holds, oldest first, and every restore
- * recorded after them. Reads only; takes no lock.
+ * recorded after them, with who restored it (`by`, the principal it was recorded under, D-243). Reads only; takes no lock.
  */
 export function listCheckpoints(journalRoot: string, taskId: string): { readonly checkpoints: readonly Record<string, unknown>[]; readonly restores: readonly Record<string, unknown>[] } {
   const access: JournalAccess = { root: journalRoot, append: () => { throw new Error("listing writes nothing"); } };
@@ -215,8 +228,8 @@ export function listCheckpoints(journalRoot: string, taskId: string): { readonly
     const payload = payloadOf(access, entry.payload_ref);
     const note = CheckpointNote.safeParse(payload);
     if (note.success) checkpoints.push({ checkpoint: note.data.checkpoint, root: note.data.root, ...(note.data.workspace === undefined ? {} : { workspace: note.data.workspace }), ...(note.data.taken_by === undefined ? {} : { taken_by: note.data.taken_by }), taken_at: entry.timestamp, entries: note.data.manifest.length });
-    const restore = z.object({ type: z.literal("checkpoint_restore"), checkpoint: z.string(), outcome: z.string(), reason: z.string().optional(), kept: z.string().optional() }).safeParse(payload);
-    if (restore.success) restores.push({ checkpoint: restore.data.checkpoint, outcome: restore.data.outcome, at: entry.timestamp, ...(restore.data.reason === undefined ? {} : { reason: restore.data.reason }), ...(restore.data.kept === undefined ? {} : { kept: restore.data.kept }) });
+    const restore = z.object({ type: z.literal("checkpoint_restore"), checkpoint: z.string(), principal: z.string().optional(), outcome: z.string(), reason: z.string().optional(), kept: z.string().optional() }).safeParse(payload);
+    if (restore.success) restores.push({ checkpoint: restore.data.checkpoint, outcome: restore.data.outcome, at: entry.timestamp, by: restore.data.principal ?? entry.actor, ...(restore.data.reason === undefined ? {} : { reason: restore.data.reason }), ...(restore.data.kept === undefined ? {} : { kept: restore.data.kept }) });
   }
   return { checkpoints, restores };
 }
@@ -329,10 +342,12 @@ export async function runCheckpointCli(
   try {
     const journal = Writer.open(journalDir);
     try {
-      lock = acquireRunnerLock(journal.root);
+      // D-243: the restore never takes over a stale lock itself. A service start does, and records it in the journal only
+      // after checking the whole journal and repairing a torn write (D-206); a restore does neither.
+      lock = acquireRunnerLock(journal.root, undefined, undefined, { shown: journalDir, reclaim: !hostForm });
     } catch (error: unknown) {
       if (!hostForm) throw error;
-      io.err(`juno checkpoint restore: refused, nothing was changed: the journal is in use, so its service is running. Stop it first (systemctl --user stop juno-hook.service), then run this again. (${error instanceof Error ? error.message : String(error)})\n`);
+      io.err(`juno checkpoint restore: refused, nothing was changed: ${lockRefusal(error)}\n`);
       return 1;
     }
     const outcome = hostForm

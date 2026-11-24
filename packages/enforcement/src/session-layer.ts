@@ -3,6 +3,7 @@ import { realpathSync } from "node:fs";
 import { type AbsolutePath, type Budget, type DataClass, type TrajectoryEntry, pathWithin } from "../../contracts/src/index.js";
 import {
   type RunnerLock,
+  RunnerLockRefused,
   acquireRunnerLock,
   AnchorExistsError,
   AnchorReadBackError,
@@ -297,9 +298,12 @@ export class SessionLayer {
     // writes it. A journal another process holds (a running service, or a restore in progress) refuses the start.
     if (options.lockJournal === true) {
       try {
-        layer.#lock = acquireRunnerLock(layer.root as AbsolutePath);
+        // D-243: a lock whose owner is provably dead (a service killed without a stop, as when WSL tears its instance
+        // down) is taken over here; the take-over is recorded in the journal's own record once the journal has verified.
+        layer.#lock = acquireRunnerLock(layer.root as AbsolutePath, undefined, undefined, { shown: layer.path });
       } catch (error: unknown) {
-        return refuse([`the journal ${spec.journal} is in use by another process (a service already running on it, or a checkpoint restore): ${error instanceof Error ? error.message : String(error)} (D-221)`]);
+        const running = error instanceof RunnerLockRefused && error.reason === "owner_running";
+      return refuse([`the journal ${spec.journal} ${running ? "is in use by another process (a service already running on it, or a checkpoint restore)" : "cannot be locked for this service"}: ${error instanceof Error ? error.message : String(error)} (D-221, D-243)`]);
       }
     }
     // D-201: the journal and its anchors are verified before anything is rebuilt, admitted or served.
@@ -371,6 +375,8 @@ export class SessionLayer {
       // D-207: the recovery epoch is this record's first entry and no other; a recovered torn write is recorded here.
       else if (own && type === "recovery_epoch" && item.entry.seq === 0 && typeof field(item.payload, "epoch") === "string") journalEpoch = field(item.payload, "epoch") as string;
       else if (own && type === "recovered_truncation" && Array.isArray(field(item.payload, "exhausted_grants"))) continue;
+      // D-243: a start that took over the lock of a service that was provably no longer running records it here.
+      else if (own && type === "stale_lock_reclaimed" && typeof field(item.payload, "reason") === "string") continue;
       else refusals.push(`the journal's own record has an entry (seq ${String(item.entry.seq)}) that is not one JUNO writes there (D-202)`);
     }
     // D-206, D-207: the journal and the anchor pin must name the same recovery epoch. A journal that already has entries
@@ -448,9 +454,13 @@ export class SessionLayer {
       this.#recordRepairs(repairs);
       clearPendingRepairs(this.#journal.root);
     }
+    // D-243: the lock this start took over, from a service that was provably no longer running, is on the record; only
+    // now, once the journal has verified and any torn write is repaired, so it is never written to an unverified journal.
+    const reclaimed = this.#lock?.cleared ?? null;
+    if (reclaimed !== null) this.#write(this.#indexId, "note", INDEX_CLASS, { type: "stale_lock_reclaimed", reason: reclaimed.reason, holder: { ...reclaimed.holder } }, { actor: LAYER_ACTOR });
     for (const id of ids) {
-      // A record this start wrote to (the recovery's own notes) is read again from the journal.
-      const verdict = repairs.length > 0 || (fresh && id === this.#indexId) ? verifyTrajectory(this.#journal.root, id) : stored.get(id)?.verdict;
+      // A record this start wrote to (the recovery's own notes, a lock take-over) is read again from the journal.
+      const verdict = repairs.length > 0 || reclaimed !== null || (fresh && id === this.#indexId) ? verifyTrajectory(this.#journal.root, id) : stored.get(id)?.verdict;
       if (id !== this.#indexId) this.#known.add(id);
       if (verdict === undefined || !verdict.ok) continue;
       const entries = this.#read(id, verdict);
@@ -533,6 +543,12 @@ export class SessionLayer {
   /** What this start recovered from a torn final write, or null (D-207). A service says it on its output. */
   get recovery(): RecoveredTruncation | null {
     return this.#recovery;
+  }
+
+  /** The lock this start took over from a service that was provably no longer running, or null (D-243). */
+  get reclaimedLock(): { readonly reason: string; readonly holder: Readonly<Record<string, unknown>> } | null {
+    const cleared = this.#lock?.cleared ?? null;
+    return cleared === null ? null : { reason: cleared.reason, holder: { ...cleared.holder } };
   }
 
   /** The journal's recovery epoch in milliseconds, or null when it records none (D-207). */
