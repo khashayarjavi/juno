@@ -1,6 +1,32 @@
 # STATE
 
 ## Current increment
+**1.5-ops — the field report of the operator's machine running bef25fe (a real undo passed there), authorised by you on 2026-11-24 (D-243).** Branch `claude/vibrant-mayer-mg2c73` (this session's only pushable branch). It carries draft PR #64's one STATE.md commit; its PR supersedes #64. Main at bef25fe. Spec v0.6.1. No objection open. Review: up to 5 rounds (D-179, D-211); merge through the gate; then STOP with the merge commit hash and your exact upgrade steps.
+
+Status (2026-11-24, this session): **all three items built with tests (D-243 to D-245); `make verify` running; PR next; review round 1 after.**
+
+### What 1.5-ops changes, in plain words
+1. **A service killed without a stop no longer locks the journal for good (D-243).** Checked against the code first:
+   - the word `pid_namespace_differs` was also used when a namespace *could not be read*, so it was wrong in your case; it now says `pid_namespace_unknown` there;
+   - the refusal named `/proc/self/fd/21/runner.lock`, the handle the service holds the folder by; it now names `/var/lib/juno-runner/journal/runner.lock`;
+   - the restore said "stop the service" for every lock; now only when the service is provably running.
+   - Found too: Linux gives a torn-down PID namespace's number to the next one, and its PIDs start again from 1, so after WSL's teardown the new service very often gets the dead one's PID. The old code then saw that PID "running" (it was itself) and refused.
+   - **Now:** a lock whose owner is provably dead (same machine, same boot, same namespace name, and the PID gone, or now held by a process that started at another time, or by this very process) is taken over by the next **start**, written into the journal once the journal has been checked, and said on screen. Its leftover socket files are removed too (only a socket of the runner's on which nothing answers). A lock JUNO cannot prove dead still refuses, naming the real file and the command to run. **The restore never takes a lock over:** it tells you to start the service once, stop it, and restore.
+   - **Tested against the real hook service:** killed with SIGKILL; then killed with its whole PID namespace and started in a new container on the same journal (whose namespace number came out the same, as on your machine).
+2. **The upgrade (D-244).** It now stops **and disables** the service before touching `/opt/juno`, checks the new copy is complete, puts in the new service file, then **enables and starts** it, and only then runs the separation check (which needs the running service). Every Check passes as written; a test pins the order.
+   - `make build` now writes, as its last step, a list of every file JUNO runs from with its fingerprint. The service file has systemd check it before JUNO starts (`juno-build-check`, and three `AssertPathExists` lines). A half-built copy is refused in plain words, never started.
+   - The guide's upgrade step 7 removes your stand-in `juno-clear-stale-lock`, and says how.
+3. **Small items (D-245):** `juno checkpoint list` now names who restored each checkpoint (`by`). The runner's environment lines in `~/.bashrc` sit after Ubuntu's early return, and **nothing depends on them outside an interactive shell** (checked line by line; the service sets its own); the guide says so. `make verify-rootless` takes about 10 minutes on a 7200 rpm disk; the guide says so.
+
+**Autopilot rulings this session (one line each):**
+- D-243: the restore never takes a stale lock over; the start does, and records it only after the journal has verified.
+- D-243: a dead service's socket files are removed only under the journal's lock, and only a socket of the runner's on which nothing answers.
+- D-244: the build check runs from the service file (before any of JUNO loads), not inside `juno.js`, whose imports D-193's test pins.
+- D-245: the `~/.bashrc` lines stay where they are; nothing depends on them.
+
+**Left, in order:** `make verify` green; open the PR (supersedes #64); review rounds (up to 5); the merge gate; then STOP and report the merge commit hash and your upgrade steps.
+
+## Previous increment: 1.5-field (complete)
 **1.5-field is complete and merged** as `bef25fea19e419f1a6166ca70cd497ff93e0f3eb` (your rulings of 2026-11-21, D-241). The autopilot has STOPPED, as ruling 3 directs: nothing further is started. Issue [khashayarjavi/juno#59](https://github.com/khashayarjavi/juno/issues/59) is closed with the summary. Spec v0.6.1. No objection open.
 
 **For the guide's "Upgrading JUNO to a new commit", the commit hash is `bef25fea19e419f1a6166ca70cd497ff93e0f3eb`.**
