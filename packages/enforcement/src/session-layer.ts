@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import { realpathSync, unlinkSync } from "node:fs";
-import { connect } from "node:net";
 import { type AbsolutePath, type Budget, type DataClass, type TrajectoryEntry, pathWithin } from "../../contracts/src/index.js";
 import {
   type RunnerLock,
@@ -727,26 +726,16 @@ export class SessionLayer {
   /**
    * Removes the socket file a service killed without a stop left at `path`, so this service can listen there (D-243).
    * Only while this layer holds the journal's lock (no other JUNO process writes this journal), only a socket judged by
-   * the start-up check, owned by this process's user, on which nothing answers (a connection is refused). Anything else
-   * is left as it is, and listening then refuses as before. Answers whether it removed one.
+   * the start-up check, owned by this process's user, on which nothing answers. Whether anything answers is asked of
+   * `nothingAnswers`, the mediated services' own Unix-socket probe: the enforcement package holds no socket code (D-073).
+   * Anything else is left as it is, and listening then refuses as before. Answers whether it removed one.
    */
-  async clearStaleSocket(path: string): Promise<boolean> {
+  async clearStaleSocket(path: string, nothingAnswers: (socketPath: string) => Promise<boolean>): Promise<boolean> {
     if (this.#lock === null || !this.#spec.state.some((item) => item.kind === "socket" && item.path === path)) return false;
     // Judged through the host, as every other ownership here is (D-194).
     const facts = this.#host.lstat(path);
     if (facts === null || !facts.isSocket() || facts.uid !== this.#host.uid) return false;
-    const refused = await new Promise<boolean>((resolve) => {
-      const probe = connect(path);
-      probe.once("connect", () => {
-        probe.destroy();
-        resolve(false);
-      });
-      probe.once("error", (error: Error) => {
-        probe.destroy();
-        resolve("code" in error && error.code === "ECONNREFUSED");
-      });
-    });
-    if (!refused) return false;
+    if (!(await nothingAnswers(path))) return false;
     unlinkSync(path);
     this.#clearedSockets.push(path);
     return true;

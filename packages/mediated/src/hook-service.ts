@@ -1,7 +1,25 @@
 import { chmodSync } from "node:fs";
-import { type Server, type Socket, createServer } from "node:net";
+import { type Server, type Socket, connect, createServer } from "node:net";
 import type { MediatedSessions } from "./session.js";
 import { SessionLayer } from "../../enforcement/src/index.js";
+
+/**
+ * Whether nothing answers on the Unix socket at `socketPath`: a connection to it is refused (D-243). Any other outcome
+ * (it answers, or the attempt fails for another reason) is "something may": the file is then never removed.
+ */
+export function nothingAnswers(socketPath: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const probe = connect(socketPath);
+    probe.once("connect", () => {
+      probe.destroy();
+      resolve(false);
+    });
+    probe.once("error", (error: Error) => {
+      probe.destroy();
+      resolve("code" in error && error.code === "ECONNREFUSED");
+    });
+  });
+}
 
 /**
  * The boundary service for mode C (spec §4.3; DECISIONS.md D-142): a Unix-domain socket on the runner's host. Each
@@ -52,7 +70,7 @@ export class HookService {
       return Promise.reject(error instanceof Error ? error : new Error(String(error)));
     }
     // D-243: a socket file left by a service killed without a stop is removed first, under the journal's lock.
-    return this.#sessions.layer.clearStaleSocket(path).then(() => new Promise<void>((resolve, reject) => {
+    return this.#sessions.layer.clearStaleSocket(path, nothingAnswers).then(() => new Promise<void>((resolve, reject) => {
       this.#server.once("error", reject);
       this.#server.listen(path, () => {
         this.#server.off("error", reject);

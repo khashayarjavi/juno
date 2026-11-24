@@ -1,6 +1,7 @@
 import { chmodSync } from "node:fs";
 import { type Server, type Socket, connect, createServer } from "node:net";
 import { z } from "zod";
+import { nothingAnswers } from "./hook-service.js";
 import { GrantStore, SessionLayer } from "../../enforcement/src/index.js";
 import type { MediatedSessions } from "./session.js";
 import { HookSessionFile } from "./hook-session-file.js";
@@ -41,7 +42,7 @@ export class HookAdmissionService {
       return Promise.reject(error instanceof Error ? error : new Error(String(error)));
     }
     // D-243: a socket file left by a service killed without a stop is removed first, under the journal's lock.
-    return this.#layer.clearStaleSocket(path).then(() => new Promise<void>((resolve, reject) => {
+    return this.#layer.clearStaleSocket(path, nothingAnswers).then(() => new Promise<void>((resolve, reject) => {
       this.#server.once("error", reject);
       this.#server.listen(path, () => {
         this.#server.off("error", reject);

@@ -1,6 +1,7 @@
 import { chmodSync } from "node:fs";
 import { type Server, type Socket, createServer } from "node:net";
 import type { McpGateway } from "./gateway.js";
+import { nothingAnswers } from "./hook-service.js";
 import { SessionLayer } from "../../enforcement/src/index.js";
 import { serveStdio } from "./gateway-stdio.js";
 
@@ -36,7 +37,7 @@ export class GatewayService {
       return Promise.reject(error instanceof Error ? error : new Error(String(error)));
     }
     // D-243: a socket file left by a service killed without a stop is removed first, under the journal's lock.
-    return this.#gateway.layer.clearStaleSocket(path).then(() => new Promise<void>((resolve, reject) => {
+    return this.#gateway.layer.clearStaleSocket(path, nothingAnswers).then(() => new Promise<void>((resolve, reject) => {
       this.#server.once("error", reject);
       this.#server.listen(path, () => {
         this.#server.off("error", reject);
