@@ -3,7 +3,8 @@
 ## Current increment
 **1.5-ops — the field report of the operator's machine running bef25fe (a real undo passed there), authorised by you on 2026-11-24 (D-243).** Branch `claude/vibrant-mayer-mg2c73` (this session's only pushable branch). It carries draft PR #64's one STATE.md commit; its PR supersedes #64. Main at bef25fe. Spec v0.6.1. No objection open. Review: up to 5 rounds (D-179, D-211); merge through the gate; then STOP with the merge commit hash and your exact upgrade steps.
 
-Status (2026-11-24, this session): **all three items built with tests (D-243 to D-245); `make verify` running; PR next; review round 1 after.**
+Status (2026-11-24, this session): **all three items built with tests (D-243 to D-245). `make verify: GREEN` on 3b4a890 (1,521 unit, 147 container). Draft PR [khashayarjavi/juno#65](https://github.com/khashayarjavi/juno/pull/65) supersedes #64. Review round 1 next.**
+- The first two local runs were RED, each fixed: (1) `groq.test.ts` found socket code in the enforcement package (my probe for a dead service's socket); it moved to the hook service's socket file, which may use one (D-073). (2) `hook-restore.test.ts` expects the restore to say the service is running while it runs; its container had no machine id, so JUNO could not prove that; the container now has one, as every real machine has. No assertion changed.
 
 ### What 1.5-ops changes, in plain words
 1. **A service killed without a stop no longer locks the journal for good (D-243).** Checked against the code first:
@@ -24,7 +25,7 @@ Status (2026-11-24, this session): **all three items built with tests (D-243 to 
 - D-244: the build check runs from the service file (before any of JUNO loads), not inside `juno.js`, whose imports D-193's test pins.
 - D-245: the `~/.bashrc` lines stay where they are; nothing depends on them.
 
-**Left, in order:** `make verify` green; open the PR (supersedes #64); review rounds (up to 5); the merge gate; then STOP and report the merge commit hash and your upgrade steps.
+**Left, in order:** review rounds on PR #65 (up to 5); the merge gate; then STOP and report the merge commit hash and your upgrade steps.
 
 ## Previous increment: 1.5-field (complete)
 **1.5-field is complete and merged** as `bef25fea19e419f1a6166ca70cd497ff93e0f3eb` (your rulings of 2026-11-21, D-241). The autopilot has STOPPED, as ruling 3 directs: nothing further is started. Issue [khashayarjavi/juno#59](https://github.com/khashayarjavi/juno/issues/59) is closed with the summary. Spec v0.6.1. No objection open.
