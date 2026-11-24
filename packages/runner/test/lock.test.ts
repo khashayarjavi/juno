@@ -289,7 +289,7 @@ describe("a lock left by a service killed without a stop is taken over; one JUNO
     expect(refused.reason).toBe("pid_namespace_differs");
     expect(refused.lockPath).toBe("/var/lib/juno-runner/journal/runner.lock");
     expect(refused.message).toContain("rm /var/lib/juno-runner/journal/runner.lock");
-    expect(refused.message).toContain("pgrep -af 'juno[.]js (hook serve|gateway serve|checkpoint restore)'");
+    expect(refused.message).toContain("pgrep -af 'juno[.]js (hook serve|gateway serve|checkpoint restore)|runner/src/main[.]js'");
     expect(refused.message).not.toContain("/proc/self/fd");
     expect(refused.message).not.toMatch(/systemctl --user stop/);
   });
@@ -301,6 +301,23 @@ describe("a lock left by a service killed without a stop is taken over; one JUNO
     expect(() => acquireRunnerLock(root, () => new Date(), probe({}, false), { reclaim: false })).toThrow(/owner_dead/);
     expect(readFileSync(lockPath).equals(before)).toBe(true);
     expect(existsSync(join(root, TAKEOVER_FILE))).toBe(false);
+  });
+
+  // proves D-243: neither form of the checkpoint restore takes a dead owner's lock over; it refuses, changing nothing
+  it("never takes a lock over in a checkpoint restore, in the container form too", async () => {
+    const { runCheckpointCli } = await import("../src/restore.js");
+    const journalDir = join(root, "journal");
+    mkdirSync(journalDir, { mode: 0o700 });
+    const stale = holder({ pid: 4243, host: systemProbe.hostId(), boot: systemProbe.bootId(), pid_ns: systemProbe.pidNamespace(), pid_start: 1 });
+    // A PID that is not running here: the owner is provably dead, so only the refusal to take over can stop the restore.
+    expect(systemProbe.isRunning(4243)).toBe(false);
+    writeFileSync(join(journalDir, LOCK_FILE), stale);
+    const lines: string[] = [];
+    const io = { readFile: () => "", out: (text: string) => lines.push(text), err: (text: string) => lines.push(text) };
+    const code = await runCheckpointCli(["restore", "--journal", journalDir, "--checkpoints", join(root, "store"), "--compose", "/nonexistent/docker-compose.yml", "--project", "p", "--principal", "alireza", "task-1", "0".repeat(64)], io);
+    expect(code).toBe(1);
+    expect(lines.join("")).toContain("(owner_dead)");
+    expect(readFileSync(join(journalDir, LOCK_FILE), "utf8")).toBe(stale);
   });
 
   // proves D-243: the start time is field 22 of /proc/<pid>/stat, read after the last ")" of the command name

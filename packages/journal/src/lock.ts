@@ -262,7 +262,7 @@ export function acquireRunnerLock(root: AbsolutePath, clock: () => Date = () => 
         ? "a start of JUNO's service takes such a lock over, records it in the journal and checks the journal"
         : proven
           ? `stop that JUNO process first (the hook service: systemctl --user stop juno-hook.service, as juno-runner; the gateway: Ctrl+C in its terminal; a checkpoint restore: let it finish)`
-          : `if no JUNO service and no checkpoint restore runs on this machine (as juno-runner, pgrep -af 'juno[.]js (hook serve|gateway serve|checkpoint restore)' prints nothing), remove the lock as juno-runner: rm ${shown}`;
+          : `if no JUNO process runs on this machine (no service, no checkpoint restore, no runner: as juno-runner, pgrep -af 'juno[.]js (hook serve|gateway serve|checkpoint restore)|runner/src/main[.]js' prints nothing), remove the lock as juno-runner: rm ${shown}`;
     throw new RunnerLockRefused(`the journal's lock ${shown} is held (${reason}): ${why}; one JUNO process writes a journal at a time; ${remedy}. The lock: ${holder}`, reason, shown);
   };
 

@@ -384,7 +384,7 @@ describe("1.5-ops: the upgrade's order, the incomplete copy, the stale lock, and
   it("explains the lock take-over and removes the stand-in", () => {
     const wrong = guide.slice(guide.indexOf("## When something goes wrong"));
     expect(wrong).toContain("**The service was killed without a stop**");
-    expect(wrong).toContain("pgrep -af 'juno[.]js (hook serve|gateway serve|checkpoint restore)'");
+    expect(wrong).toContain("pgrep -af 'juno[.]js (hook serve|gateway serve|checkpoint restore)|runner/src/main[.]js'");
     expect(wrong).toContain("rm /var/lib/juno-runner/journal/runner.lock");
     expect(wrong).not.toContain("/proc/self/fd");
     expect(upgrade).toContain("sudo grep -rlsI juno-clear-stale-lock /etc /usr/local /home/juno-runner/.config");

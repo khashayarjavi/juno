@@ -342,9 +342,9 @@ export async function runCheckpointCli(
   try {
     const journal = Writer.open(journalDir);
     try {
-      // D-243: the restore never takes over a stale lock itself. A service start does, and records it in the journal only
-      // after checking the whole journal and repairing a torn write (D-206); a restore does neither.
-      lock = acquireRunnerLock(journal.root, undefined, undefined, { shown: journalDir, reclaim: !hostForm });
+      // D-243: the restore, in either form, never takes over a stale lock itself. A service start does, and records it in
+      // the journal only after checking the whole journal and repairing a torn write (D-206); a restore does neither.
+      lock = acquireRunnerLock(journal.root, undefined, undefined, { shown: journalDir, reclaim: false });
     } catch (error: unknown) {
       if (!hostForm) throw error;
       io.err(`juno checkpoint restore: refused, nothing was changed: ${lockRefusal(error)}\n`);

@@ -108,11 +108,26 @@ if (phase === "first") {
   setInterval(() => undefined, 60_000);
 } else {
   results.lockBefore = lock();
+  // Whatever number the kernel gave this namespace: the same as the dead one's (as WSL's next instance showed) or another
+  // (any namespace made in between takes the freed number). The test checks the rule for each.
   const next = await serve();
   results.started = next.started;
   results.text = next.text();
   results.pid = next.pid;
   if (next.started) results.stopped = await next.stop();
+  results.lockAfterFirst = lock();
+  // Deterministically, against the real kernel: the dead service's own lock as this namespace would hold it (its
+  // namespace name is this one's, the one field set here) and its PID now held by a live process of another start time
+  // (this container's first process, root's). The start must judge it by start time and take it over (owner_pid_reused).
+  const dead = JSON.parse(results.lockBefore ?? "null");
+  results.planted = JSON.stringify({ ...dead, pid: 1, pid_ns: results.namespace });
+  if (results.lockAfterFirst !== null) await asUser(RUNNER, "", ["/r/rm.mjs", LOCK]);
+  await asUser(RUNNER, "", ["/h/write-file.mjs", LOCK, results.planted]);
+  results.pidOneStart = Number(readFileSync("/proc/1/stat", "utf8").slice(readFileSync("/proc/1/stat", "utf8").lastIndexOf(")") + 2).split(" ")[19]);
+  const reused = await serve();
+  results.reusedStarted = reused.started;
+  results.reusedText = reused.text();
+  if (reused.started) await reused.stop();
   results.lockAfterStop = lock();
   const { listRecords, readPayload, readTrajectory } = await import("/app/dist/journal/src/index.js");
   results.reclaims = listRecords(JOURNAL).flatMap((record) => (record.taskId === null ? [] : readTrajectory(JOURNAL, record.taskId)).map((item) => {

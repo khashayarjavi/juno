@@ -26,7 +26,8 @@ type First = {
   lockAfterKill: string | null; restore: Exit; lockAfterRestore: string | null; againStarted: boolean; againText: string; againPid: number; lockHeld: string | null;
 };
 type Second = {
-  phase: "second"; namespace: string; lockBefore: string | null; started: boolean; text: string; pid: number; stopped?: Exit; lockAfterStop: string | null;
+  phase: "second"; namespace: string; lockBefore: string | null; started: boolean; text: string; pid: number; stopped?: Exit; lockAfterFirst: string | null;
+  planted: string; pidOneStart: number; reusedStarted: boolean; reusedText: string; lockAfterStop: string | null;
   reclaims: { actor: string; type: string; reason: string; holder: { pid: number; pid_ns: string; pid_start: number } }[];
   cleanStarted: boolean; cleanText: string; restoreAfterStop: Exit; lockAtEnd: string | null;
 };
@@ -116,23 +117,45 @@ describe("D-243: the real hook service killed without a stop leaves a lock the n
     expect(first.againText).toContain("juno hook: removed /var/lib/juno-runner/admit.sock, a socket file left by a JUNO process that is no longer running");
   });
 
-  // proves D-243 across a torn-down PID namespace: the new namespace carries the dead one's name (Linux reuses the number,
-  // as WSL's next instance shows), so the start takes the lock over, records it after checking the journal (D-201, D-206),
-  // and starts; once stopped cleanly no lock is left, the next start takes nothing over, and the restore gets the journal
-  it("takes the lock over after the whole PID namespace was torn down, and records both take-overs", () => {
+  // proves D-243 across a torn-down PID namespace, for whichever number the kernel gives the new one. Linux usually gives
+  // the next namespace the freed number (the field report's "all seen as pid:[N]"), but not always: any namespace made in
+  // between takes it (under rootless Docker in CI it came out one higher). The same number: the start takes the lock over
+  // and records it. Another number: the owner cannot be proven dead, so the start refuses, the lock unchanged, naming the
+  // real file and the command that removes it (restrictive)
+  it("after the whole PID namespace was torn down, takes the lock over under the same name and refuses under another", () => {
     const left = parse(second.lockBefore);
-    expect(left).toMatchObject({ pid: first.againPid, pid_ns: first.namespace });
-    // Linux gives a torn-down namespace's number to the next one made: the field report's "all seen as pid:[N]".
-    expect(second.namespace).toBe(first.namespace);
-    expect(second.started, second.text).toBe(true);
-    expect(second.text).toMatch(new RegExp(`the journal's lock was left by a JUNO process that is no longer running \\((owner_not_running|owner_pid_reused), process ${String(first.againPid)}\\)`));
-    // The admission socket was on the runner's state volume, so it outlived the namespace too.
-    expect(second.text).toContain("juno hook: removed /var/lib/juno-runner/admit.sock");
-    expect(second.stopped?.code).toBe(0);
+    expect(left).toMatchObject({ pid: first.againPid, pid_ns: first.namespace, pid_start: expect.any(Number) });
+    if (second.namespace === first.namespace) {
+      expect(second.started, second.text).toBe(true);
+      expect(second.text).toMatch(new RegExp(`the journal's lock was left by a JUNO process that is no longer running \\((owner_not_running|owner_pid_reused), process ${String(first.againPid)}\\)`));
+      expect(second.text).toContain("juno hook: removed /var/lib/juno-runner/admit.sock");
+      expect(second.stopped?.code).toBe(0);
+      expect(second.lockAfterFirst).toBeNull();
+    } else {
+      expect(second.started).toBe(false);
+      expect(second.text).toContain("(pid_namespace_differs)");
+      expect(second.text).toContain(`the lock was taken in another PID namespace (${first.namespace}; this process is in ${second.namespace})`);
+      expect(second.text).toContain("rm /var/lib/juno-runner/journal/runner.lock");
+      expect(second.text).not.toContain("/proc/self/fd");
+      expect(second.lockAfterFirst).toBe(second.lockBefore);
+    }
+  });
+
+  // proves D-243's start-time rule against the real kernel, deterministically: the dead service's lock, under this
+  // namespace's name, with its PID now held by a live process that started at another time, is taken over as
+  // owner_pid_reused and recorded; the journal's own record holds every take-over; a clean stop leaves no lock, the next
+  // start takes nothing over, and the restore gets past the lock
+  it("takes over a lock whose PID a different process now holds, judged by start time, and records every take-over", () => {
+    expect(parse(second.planted)).toMatchObject({ pid: 1, pid_ns: second.namespace, pid_start: parse(second.lockBefore)["pid_start"] });
+    expect(second.pidOneStart).not.toBe(parse(second.lockBefore)["pid_start"]);
+    expect(second.reusedStarted, second.reusedText).toBe(true);
+    expect(second.reusedText).toContain("the journal's lock was left by a JUNO process that is no longer running (owner_pid_reused, process 1)");
     expect(second.lockAfterStop).toBeNull();
+    const across = second.namespace === first.namespace ? [expect.objectContaining({ actor: "juno.session-layer", type: "stale_lock_reclaimed", reason: expect.stringMatching(/^(owner_not_running|owner_pid_reused)$/), holder: expect.objectContaining({ pid: first.againPid }) })] : [];
     expect(second.reclaims).toEqual([
       expect.objectContaining({ actor: "juno.session-layer", type: "stale_lock_reclaimed", reason: "owner_not_running", holder: expect.objectContaining({ pid: first.firstPid }) }),
-      expect.objectContaining({ actor: "juno.session-layer", type: "stale_lock_reclaimed", reason: expect.stringMatching(/^(owner_not_running|owner_pid_reused)$/), holder: expect.objectContaining({ pid: first.againPid }) }),
+      ...across,
+      expect.objectContaining({ actor: "juno.session-layer", type: "stale_lock_reclaimed", reason: "owner_pid_reused", holder: expect.objectContaining({ pid: 1 }) }),
     ]);
     expect(second.cleanStarted, second.cleanText).toBe(true);
     expect(second.cleanText).not.toContain("no longer running");
