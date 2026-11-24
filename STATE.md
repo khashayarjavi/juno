@@ -3,13 +3,22 @@
 ## Current increment
 **1.5-ops — the field report of the operator's machine running bef25fe (a real undo passed there), authorised by you on 2026-11-24 (D-243).** Branch `claude/vibrant-mayer-mg2c73` (this session's only pushable branch). It carries draft PR #64's one STATE.md commit; its PR supersedes #64. Main at bef25fe. Spec v0.6.1. No objection open. Review: up to 5 rounds (D-179, D-211); merge through the gate; then STOP with the merge commit hash and your exact upgrade steps.
 
-Status (2026-11-24, this session): **review round 1 ended DO NOT MERGE with two findings, both fixed (D-243). `make verify: GREEN` on 0715ee4 (1,522 unit, 148 container). Review round 2 next, once CI on this head has finished.** Draft PR [khashayarjavi/juno#65](https://github.com/khashayarjavi/juno/pull/65) supersedes #64.
+Status (2026-11-24, this session): **STOPPED after review round 2 (D-246): it found the same kind of mistake D-243 records as fixed. That finding is fixed, with a test, but not reviewed. `make verify: GREEN` on daf8ad7 (1,524 unit, 148 container). Nothing is merged; main is unchanged at bef25fe, so your machine is unaffected.** Draft PR [khashayarjavi/juno#65](https://github.com/khashayarjavi/juno/pull/65) supersedes #64.
+
+### STOP after review round 2 (D-246)
+- **Why this is a STOP.** The rules stop me when a review round finds a mistake of a kind DECISIONS.md already records as fixed. Round 2 found one. Your report's defect 2 was a refusal that named `/proc/self/fd/<n>/…`, a path you cannot use. D-243 records it as fixed. My fix covered the main refusal and missed one more.
+- **The finding, in plain words.** If JUNO is stopped in the very middle of taking over a stale lock, it leaves a second file, `runner.lock.takeover`. The next start then refused with the unusable `/proc/self/fd/…` path. Its advice named only `runner.lock`. Following that advice let one start through but left the second file, which quietly stopped every later automatic take-over.
+- **Built anyway, not reviewed:** that refusal now names both files by their real paths (`/var/lib/juno-runner/journal/runner.lock.takeover` and `…/runner.lock`). Its advice removes both, after the same `pgrep` check. A test holds the folder exactly as the service does, and it fails on the old code. The guide says the same.
+- **Your decision, recommended first:**
+  1. **Authorise further review rounds on PR #65**, treating this finding as fixed. Rounds 3 to 5 of your 5 remain. On MERGE: the gate, then STOP with the merge commit hash and your upgrade steps.
+  2. Direct otherwise.
 
 **Review rounds on PR #65:**
 - **Round 1** (6d425d3): DO NOT MERGE.
   1. My new container test assumed Linux always gives the new PID namespace the dead one's number. In CI it gave the next number. JUNO did the right thing (it refused, since it could not prove the owner dead); the test was wrong. It now checks the rule for either number, and proves the take-over by start time deterministically, against the real kernel.
   2. The Compose form of the restore could still take a lock over. Now neither form does; a test proves it.
   - Also done from its notes: the `pgrep` in every remedy now also matches the Slice 1 runner process; one more residual recorded (time namespaces).
+- **Round 2** (50a1177; CI run 45505916191, all three jobs green): DO NOT MERGE; the STOP above (D-246).
 - Earlier, before review, the first two local runs were RED, each fixed: socket code had slipped into the enforcement package (moved to the hook service's socket file, D-073); a container test's container had no machine id, so JUNO could not prove the running service owned the lock (it now has one, as every real machine does; no assertion changed).
 
 ### What 1.5-ops changes, in plain words
@@ -31,7 +40,7 @@ Status (2026-11-24, this session): **review round 1 ended DO NOT MERGE with two 
 - D-244: the build check runs from the service file (before any of JUNO loads), not inside `juno.js`, whose imports D-193's test pins.
 - D-245: the `~/.bashrc` lines stay where they are; nothing depends on them.
 
-**Left, in order:** review rounds on PR #65 (up to 5); the merge gate; then STOP and report the merge commit hash and your upgrade steps.
+**Left, in order:** your decision on D-246; then review rounds 3 to 5 if you authorise them; the merge gate; then STOP and report the merge commit hash and your upgrade steps.
 
 ## Previous increment: 1.5-field (complete)
 **1.5-field is complete and merged** as `bef25fea19e419f1a6166ca70cd497ff93e0f3eb` (your rulings of 2026-11-21, D-241). The autopilot has STOPPED, as ruling 3 directs: nothing further is started. Issue [khashayarjavi/juno#59](https://github.com/khashayarjavi/juno/issues/59) is closed with the summary. Spec v0.6.1. No objection open.
