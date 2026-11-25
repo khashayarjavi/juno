@@ -507,9 +507,17 @@ A `sources` list with folders and the web looks like this:
    ```
    env -i /opt/node22/bin/node /opt/juno/dist/runner/src/juno.js journal check --journal ~/juno-check/journal --anchors ~/juno-check/anchors --key ~/juno-check/journal-key.pub.pem <task id>
    ```
-   **Check:** it prints JSON with `"ok": true`, `"unanchored": 0` and `"history": "checked"`. Then start the service again, in the runner terminal: `systemctl --user start juno-hook.service`.
+   **Check:** it prints JSON with `"ok": true`, `"unanchored": 0` and `"history": "checked"`. Then start the service again, in the runner terminal: `systemctl --user start juno-hook.service` (or first do step 8, your weekly review, on the same copies).
    The check also reads the history of your fresh copy of `juno-anchors`: if any commit ever removed, changed or renamed an anchor file, it refuses with `"anchor_history"` (D-217). That is what an attacker holding the push key would have to do to make a forged journal agree. **Do not delete anything**; send the agent the lines it printed. Do not clone with `--depth`: a shallow copy is refused, because its history is not all there.
    (`/var/lib/juno-runner/juno-anchors` is only JUNO's own copy of the repository; JUNO rebuilds it from GitHub at every start and never trusts it, and this check never reads it. A check run as `juno-runner` does not count.)
+
+8. **Your weekly review: what the journal holds, summarised (D-254).** Right after step 7's check, with the same copies in `~/juno-check` (the service still stopped), still in the **admin terminal**:
+   ```
+   env -i /opt/node22/bin/node /opt/juno/dist/runner/src/juno.js journal report --journal ~/juno-check/journal --anchors ~/juno-check/anchors --key ~/juno-check/journal-key.pub.pem
+   ```
+   It only reads. Before it shows anything, it checks the whole journal, every session in it, as step 7 checks one: the history of your fresh copy of `juno-anchors`, every record's chain, and every record against its anchors with nothing left unanchored. Then it prints, for each session and in total: the tool calls JUNO allowed, parked and rejected; the parks by reason (`integrity_floor`, `scope_violation`, `awaiting_grant`, …), by capability (`cc.write`, or `tool Bash` for a call parked before a capability was judged), and by the program a shell command asked for; and the paths, addresses and commands most often blocked. Add `--json` at the end for the same in JSON.
+   **Check:** the first line says `records verified against their anchors (anchor history checked)`. Everything in double quotes is as the journal holds it, and the paths, commands and programs among it were chosen by Claude or by files in the workspace: an odd character in them is written as `\u{…}` or `\u…`. **Read them; never copy one into a terminal.** The report gives no command.
+   If it prints `refused`, it reports nothing: `entries after its latest anchor` means the service was still running when root copied the journal (stop it, and do step 7's copy again); any other reason, **do not delete or repair anything** and send the agent the line. Then start the service again, in the runner terminal: `systemctl --user start juno-hook.service`.
 
 A session JUNO did not admit is denied every call. **One admitted session is one Claude Code run.** Claude Code takes the session id for the first `claude` started with it; a second `claude --session-id` with the same id fails with `Session ID ... is already in use`. So each new Claude Code run needs its own `session_id` (step 2) and its own `juno hook admit` (step 5).
 

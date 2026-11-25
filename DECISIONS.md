@@ -3309,3 +3309,30 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   - The helper's doc comment now says what D-251 requires.
 - Every test kept; no assertion removed.
 - Reason: CLAUDE.md §7 step 5; D-251.
+
+## D-254 — Increment 1.5-report: `juno journal report`, the operator's weekly summary of a verified journal (queue item 2 of D-251; autopilot rulings, restrictive)
+- Date: 2026-11-25
+- Status: Accepted (built with tests)
+- Applies to: `packages/runner/src/journal-report.ts` (new), `packages/runner/src/journal-cli.ts` (the `report` subcommand; unknown options are bad usage), `packages/runner/src/entry-points.ts` (usage and the `journal` entry's reason), `packages/enforcement/src/session-layer.ts` (`JOURNAL_RECORD_PREFIX`); `docs/operator-setup.md` Part G step 8; tests: `packages/runner/test/journal-report.test.ts`; evidence property 28, residual 58
+- **What it is:** `juno journal report --journal <dir> --anchors <clone> --key <journal-key.pub.pem> [--no-history] [--json]`. Read-only. Run as the guide's admin check runs (Part G step 7): the admin user, `env -i`, root's Node and JUNO, on root's copy of the journal and the admin's own fresh clone of `juno-anchors`.
+- **It verifies before it reports, and refuses otherwise (nothing summarised), restrictive:**
+  - the anchor clone's history, as `journal check` (D-217); `--no-history` exists for the same reason as there, and the report's first line says `NOT checked` when it is used;
+  - every record's chain (§3.4.2);
+  - exactly one journal's own record (`juno.journal.…`), and every other record named by it (D-202). On a copy the own record's id cannot be computed from the folder's path, so it is found by its prefix;
+  - every record agrees with its anchors, **with nothing after the latest anchor**: a stopped service anchors everything, so entries after the latest anchor mean the copy was taken from a running service, and the refusal says so (restrictive: an unanchored entry is not verified off the host);
+  - every payload present, unchanged and a JSON object.
+- **What it counts, per session (every record but the journal's own) and in total:**
+  - allowed: `capability_call` entries with outcome `proceed`;
+  - parked: `park` entries (whichever check made them: the hook before a capability was judged, the boundary, the budget, the rejection limit);
+  - rejected: `rejection` notes and `capability_call` entries with outcome `reject`;
+  - passed to the gateway: `gateway_call` notes (the gateway journals its decisions in its own journal, on which the report runs too);
+  - parks by reason; by capability (the judged call's capability, or `tool <name>` when the hook parked it before one was judged); by program requested (the judged `program` argument, or the first word of a command parked before it was parsed);
+  - the targets most often blocked (parked or rejected): the judged call's path and URL arguments and every argv operand that is a path; for a command parked before it was parsed, the command; for a write parked as outside the workspace, `(not recorded: a <field> outside the workspace)`, because the journal records only the field (autopilot ruling: the report does not invent a target the journal does not hold).
+- **D-251 in the report:** every value is shown as an escaped quotation (JSON quotes, then `shownName`), every printed line through `displayLine`; the JSON form holds printable ASCII only, every other character and every backtick as a JSON `\u` escape. The report gives no command; its header says to read the values, never run them.
+- **Tests,** on journals written by the real hook service (`juno hook serve`, `juno hook admit`, the real sockets and hook client), copied by `cp -RP` as the guide copies, against a real git clone of the anchors:
+  - two sessions of real calls (reads and a `cat` that run; a shell-syntax command, a program outside the name map, writes outside the workspace and outside any reversible folder, a hostile file name, a URL); every count per session and in total;
+  - the text form: no backtick, no control or format character, the hostile name escaped;
+  - refused, with nothing reported: a changed entry; a missing latest anchor (`stop the service first`); a record with no anchor; a record the journal's own record does not name; an anchor clone whose history changed an anchor;
+  - Part G step 8's command run word for word, and the line its Check names;
+  - bad usage: a task id, a missing option, an unknown option (also for `check`).
+- Reason: D-251 (queue item 2); §3.4.1, §3.4.2; D-202, D-217.

@@ -92,6 +92,9 @@ const OWN_RECORD_PREFIX = "juno.";
  * finding F3; D-213), and the journal itself is opened once, from a directory handle (`openJournalFolder`). At start, a record the journal holds that it does not name was not written
  * by JUNO, and anchors of a record it names that the journal no longer holds show a deleted record.
  */
+/** Every journal's own record id begins so (D-202); `juno journal report` finds it by this prefix on a copy (D-254). */
+export const JOURNAL_RECORD_PREFIX = `${OWN_RECORD_PREFIX}journal.`;
+
 export function journalRecordId(journalRoot: string): string {
   return `${OWN_RECORD_PREFIX}journal.${createHash("sha256").update(journalRoot, "utf8").digest("hex").slice(0, 32)}`;
 }
