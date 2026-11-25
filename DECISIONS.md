@@ -3309,3 +3309,21 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   - The helper's doc comment now says what D-251 requires.
 - Every test kept; no assertion removed.
 - Reason: CLAUDE.md §7 step 5; D-251.
+
+## D-260 — Increment 1.5-public: the workflows made safe for a public repository; a README for a newcomer; SECURITY.md (queue item 3 of D-251; autopilot rulings, restrictive)
+- Date: 2026-11-26
+- Status: Accepted (built with tests)
+- Applies to: `.github/workflows/verify.yml`, `README.md`, `SECURITY.md` (new); tests: `test/lint/workflows.test.ts` (new)
+- **Numbering:** D-254 to D-259 are on draft PR #68 (1.5-report), which is not merged; this decision is numbered after them so the numbers never repeat.
+- **Branch:** this increment is on `claude/elegant-ritchie-6pkguy-public`, made from main at 9fc412b, with the operator's explicit permission of 2026-11-26 (the session's own branch holds PR #68).
+- **The audit, workflow by workflow** (there is one, `verify.yml`):
+  - **Already safe and kept:** no `pull_request_target`; one top-level `permissions: contents: read`, none per job; no secret anywhere. So a pull request from a fork runs with a read-only token and no secret, and no step has write access.
+  - **Pinned by full commit SHA:** `actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09` (the commit GitHub's tag `v5` and `v5.1.0` point at, read with `git ls-remote` from github.com) and `actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444` (`v5`, `v5.0.0`). Both tags are lightweight: the SHA is the commit itself. The tag is kept as a comment.
+  - **No stored token:** `persist-credentials: false` on every checkout. No later step uses git with the token (the upgrade test reads the full history already fetched).
+  - **Concurrency (autopilot ruling):** `group` is the workflow and, for a pull request, `pr-<number>`; for every other event (a push to main, a manual run) the commit's SHA. `cancel-in-progress` is true only for a pull request. So a new push to a pull request cancels its superseded run (that head is never merged: the merge gate merges only the head whose run it read green, pinned by SHA); a run on main for a merge commit, or a manual run, is in a group of its own and is never cancelled or replaced. GitHub replaces a pending run in the same group even without `cancel-in-progress`, which is why main's runs do not share a group.
+  - **Checks not loosened:** the three jobs and their commands are unchanged; a test pins them.
+- **README:** what JUNO is and is not, its status (Slice 1.5, one real install), the threat model in short, and links to the spec, the evidence, the guide, STATE, DECISIONS, CLAUDE.md and SECURITY.md. It says no licence is granted until one is chosen.
+- **SECURITY.md:** report privately through GitHub's private vulnerability reporting (the repository's Security tab); what to include; what happens next; what is out of scope (what the evidence document says JUNO does not protect).
+- **Open items for the operator (not done here):** the licence (the operator's decision; no LICENSE is added); switching on private vulnerability reporting in the repository's settings if it is off (the agent never changes repository settings).
+- **Tests:** `test/lint/workflows.test.ts` fails on a `pull_request_target`, a secret, a write permission or a permission per job, an action not pinned by full commit SHA, a checkout that keeps the token, and a concurrency setting other than the above; its self-test plants each form. It also pins the three jobs and their commands, and forbids `continue-on-error` and `if: false`.
+- Reason: D-251 (queue item 3); CLAUDE.md §7 (the CI workflow's checks never loosened).

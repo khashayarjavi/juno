@@ -1,6 +1,9 @@
 # STATE
 
 ## Current increment
+**1.5-public (queue item 3 of D-251).** Branch `claude/elegant-ritchie-6pkguy-public` (made from main at 9fc412b, with your permission of 2026-11-26). Built (D-260): the workflow pins its actions by commit SHA, keeps no token after checkout, and cancels only a pull request's superseded run; a README for a newcomer; SECURITY.md; a test that fails on any unsafe workflow form. **Open items for you:** the licence (none added), and switching on private vulnerability reporting in the repository's settings if it is off. Queue item 2 (1.5-report) is draft PR #68, its five review rounds used (D-259, on its own branch); its STATE is there.
+
+## Before this increment
 **1.5-ops (queue item 1 of 3, D-251).** Branch `claude/elegant-ritchie-6pkguy` (this session's only pushable branch). It carries PR [khashayarjavi/juno#66](https://github.com/khashayarjavi/juno/pull/66)'s twenty-six commits unchanged; its draft PR supersedes #66, and review rounds 6 to 10 run there. Main at bef25fe. Spec v0.6.1. No objection open. The repository is public now (your choice), so CI runs again.
 
 Status (2026-11-25, this session): **your ruling of D-251 built (D-252), with tests. `make verify: GREEN` on c7a4f43 (1,548 unit, 156 container). Draft PR [khashayarjavi/juno#67](https://github.com/khashayarjavi/juno/pull/67) supersedes #66. Review round 6: DO NOT MERGE (a test that depended on where the code is checked out; CI's `verify` job red); fixed (D-253). Round 7 next.** Nothing merged yet; main is unchanged at bef25fe, so your machine is unaffected.
