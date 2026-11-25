@@ -1,4 +1,4 @@
-import { anchorHistoryVerdict, checkAnchors, HISTORY_GIT, journalPublicKeyFromPem, junoProgramText, readAnchorDirectory, taskDigest, verifyTrajectory } from "../../journal/src/index.js";
+import { anchorHistoryVerdict, checkAnchors, HISTORY_GIT, journalPublicKeyFromPem, displayLine, junoProgramText, operatorText, readAnchorDirectory, taskDigest, verifyTrajectory } from "../../journal/src/index.js";
 import { type CliIo, FILE_IO } from "./grant-cli.js";
 
 /**
@@ -59,7 +59,8 @@ export async function runJournalCli(args: readonly string[], io: CliIo = FILE_IO
     io.out(`${JSON.stringify({ ...result, history: noHistory ? "not_checked" : "checked" }, null, 2)}\n`);
     return result.ok ? 0 : 1;
   } catch (error: unknown) {
-    io.err(`juno journal: ${error instanceof Error ? error.message : String(error)}\n`);
+    // D-250: printed as every refusal line is (D-249).
+    io.err(`juno journal: ${displayLine(operatorText(error instanceof Error ? error.message : String(error)))}\n`);
     return 1;
   }
 }

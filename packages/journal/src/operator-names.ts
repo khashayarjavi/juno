@@ -69,6 +69,12 @@ export function takeoverFileOf(journal: string): string {
   return join(operatorPath(journal), TAKEOVER_FILE);
 }
 
+/** The name `/etc/passwd` gives the user `uid`; null when it gives none (D-250: never put in a command then). */
+export function knownUserName(uid: number): string | null {
+  const name = userName(uid);
+  return name === `the user with uid ${String(uid)}` ? null : name;
+}
+
 /** The name of the user `uid`, from `/etc/passwd`; `the user with uid <n>` when it has none. */
 export function userName(uid: number): string {
   try {
@@ -135,9 +141,14 @@ export function commandText(argv: readonly string[], placeholder?: string): stri
   return `\`${words.join(" ")}\``;
 }
 
-/** `argv` run as the user `owner`: as it is when that is this process's own user, else through `sudo -u` (D-249). */
-export function asUserCommand(owner: string, argv: readonly string[]): readonly string[] {
-  return owner === userName(process.geteuid?.() ?? -1) ? argv : ["sudo", "-u", owner, ...argv];
+/**
+ * `argv` run as the user `uid`: as it is when that is this process's own user, else through `sudo -u <name>` (D-249);
+ * null when `/etc/passwd` gives that user no name, so no command is given (review round 5 of PR #66, D-250).
+ */
+export function asUserCommand(uid: number, argv: readonly string[]): readonly string[] | null {
+  if (uid === (process.geteuid?.() ?? -1)) return argv;
+  const name = knownUserName(uid);
+  return name === null ? null : ["sudo", "-u", name, ...argv];
 }
 
 /** `argv` run as root, through `sudo` (D-249). */

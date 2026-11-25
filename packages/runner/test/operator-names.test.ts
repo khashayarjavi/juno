@@ -8,6 +8,7 @@ import {
   asRootCommand,
   asUserCommand,
   displayLine,
+  knownUserName,
   removeBitsCommand,
   shownName,
   LOCK_HOLDING_COMMANDS,
@@ -89,8 +90,13 @@ describe("the names refusals and remedies give (D-247)", () => {
     expect(line.endsWith("`rm /var/lib/juno-runner/journal/runner.lock`")).toBe(true);
     expect(displayLine(displayLine(forged))).toBe(displayLine(forged));
     expect(asRootCommand(["x"])).toEqual(["sudo", "x"]);
-    expect(asUserCommand(userName(process.geteuid?.() ?? -1), ["x"])).toEqual(["x"]);
-    expect(asUserCommand("juno-agent", ["x"])).toEqual(["sudo", "-u", "juno-agent", "x"]);
+    expect(asUserCommand(process.geteuid?.() ?? -1, ["x"])).toEqual(["x"]);
+    // proves D-250 (review round 5 of PR #66): a user /etc/passwd names is run as by that name; a uid it gives no name
+    // gets no command at all, never `sudo -u 'the user with uid …'`, which sudo refuses
+    if ((process.geteuid?.() ?? -1) !== 0) expect(asUserCommand(0, ["x"])).toEqual(["sudo", "-u", "root", "x"]);
+    expect(knownUserName(0)).toBe("root");
+    expect(knownUserName(4_000_000)).toBeNull();
+    expect(asUserCommand(4_000_000, ["x"])).toBeNull();
     expect(removeBitsCommand("/srv/juno-work/project/a")).toEqual(["chmod", "u-s,g-s,o-t", "/srv/juno-work/project/a"]);
   });
 

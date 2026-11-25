@@ -207,7 +207,8 @@ export class SealedWorkspace {
           return null;
         }
       })());
-      if (!parsed.success) return { error: `the sealed copy context did not answer (exit ${String(result.exitCode)}${result.stderr.trim() === "" ? "" : `: ${result.stderr.trim().slice(0, 500)}`})` };
+      // D-250: what the sealed program printed is its text too, shown as a name (D-249).
+      if (!parsed.success) return { error: `the sealed copy context did not answer (exit ${String(result.exitCode)}${result.stderr.trim() === "" ? "" : `: ${shownName(result.stderr.trim().slice(0, 500))}`})` };
       return this.#named(parsed.data, root);
     } catch (error: unknown) {
       return { error: `the sealed copy context did not run: ${operatorText(error instanceof Error ? error.message : String(error))}` };
@@ -247,9 +248,11 @@ export class SealedWorkspace {
       if (real !== host || stats.isSymbolicLink() || (stats.mode & 0o7000) === 0) continue;
       const owner = ownerName(host);
       if (owner === null) continue;
+      const command = asUserCommand(stats.uid, removeBitsCommand(host));
       // The path is shown as a name (the agent chose its last parts), and a command is given only when every word of it
       // is printable ASCII with no backtick (commandText, D-249).
-      remedies.push(`to remove the bit from ${shownName(host)}, as ${shownName(owner)}: ${commandText(asUserCommand(owner, removeBitsCommand(host)))}`);
+      // D-250: an owner /etc/passwd gives no name gets no command (sudo -u would refuse it); it is said in words.
+      remedies.push(command === null ? `to remove the bit from ${shownName(host)}: its owner, uid ${String(stats.uid)}, has no user name on this machine, so JUNO gives no command; remove the bit as that uid (or as root)` : `to remove the bit from ${shownName(host)}, as ${shownName(owner)}: ${commandText(command)}`);
     }
     if (remedies.length === 0) return rest;
     const line = remedies.join("; ");

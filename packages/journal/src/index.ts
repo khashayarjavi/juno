@@ -61,6 +61,7 @@ export {
   junoCommand,
   junoEntry,
   junoProgramText,
+  knownUserName,
   lockFileOf,
   noJunoProcessCommand,
   operatorPath,

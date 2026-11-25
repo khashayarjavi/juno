@@ -289,7 +289,8 @@ export async function runCheckpointCli(
       return 2;
     }
     try {
-      io.out(`${JSON.stringify(listCheckpoints(journalDir, taskId), null, 2)}\n`);
+      // D-250: reasons journaled by an older JUNO are printed escaped too (D-249).
+      io.out(`${JSON.stringify(listCheckpoints(journalDir, taskId), (_key, value: unknown) => (typeof value === "string" ? displayLine(value) : value), 2)}\n`);
       return 0;
     } catch (error: unknown) {
       io.err(`juno checkpoint list: ${displayLine(operatorText(error instanceof Error ? error.message : String(error)))}\n`);
