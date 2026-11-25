@@ -1,8 +1,10 @@
 import { chmodSync } from "node:fs";
+import { join } from "node:path";
 import { type Server, type Socket, connect, createServer } from "node:net";
 import { z } from "zod";
-import { nothingAnswers } from "./hook-service.js";
+import { listenError, nothingAnswers } from "./hook-service.js";
 import { GrantStore, SessionLayer } from "../../enforcement/src/index.js";
+import { JOURNAL_KEY_PUBLIC_FILE, operatorPath, operatorText } from "../../journal/src/index.js";
 import type { MediatedSessions } from "./session.js";
 import { HookSessionFile } from "./hook-session-file.js";
 
@@ -43,9 +45,11 @@ export class HookAdmissionService {
     }
     // D-243: a socket file left by a service killed without a stop is removed first, under the journal's lock.
     return this.#layer.clearStaleSocket(path, nothingAnswers).then(() => new Promise<void>((resolve, reject) => {
-      this.#server.once("error", reject);
+      // D-247: a socket already in use is named by its real path, with a remedy that works.
+      const failed = (error: Error): void => reject(listenError(error, path));
+      this.#server.once("error", failed);
       this.#server.listen(path, () => {
-        this.#server.off("error", reject);
+        this.#server.off("error", failed);
         try {
           chmodSync(path, 0o600);
         } catch (error: unknown) {
@@ -62,8 +66,13 @@ export class HookAdmissionService {
     return new Promise((resolve) => this.#server.close(() => resolve()));
   }
 
-  /** Admits the session the file names, or says every reason why not. */
-  async admitFile(path: string): Promise<{ readonly admitted: true; readonly task_id: string; readonly check?: { readonly journal: string; readonly anchors: string; readonly key: string } } | { readonly admitted: false; readonly failures: readonly string[] }> {
+  /** Admits the session the file names, or says every reason why not, with no descriptor path in any reason (D-247). */
+  async admitFile(path: string): ReturnType<HookAdmissionService["admitOrRefuse"]> {
+    const answer = await this.admitOrRefuse(path);
+    return answer.admitted ? answer : { admitted: false, failures: answer.failures.map(operatorText) };
+  }
+
+  private async admitOrRefuse(path: string): Promise<{ readonly admitted: true; readonly task_id: string; readonly check?: { readonly journal: string; readonly anchors: string; readonly key: string } } | { readonly admitted: false; readonly failures: readonly string[] }> {
     const refusals = this.#layer.fileRefusals("the session file", path);
     if (refusals.length > 0) return { admitted: false, failures: refusals };
     let file: z.output<typeof HookSessionFile>;
@@ -91,7 +100,7 @@ export class HookAdmissionService {
     const at = (what: string): string | undefined => this.#layer.spec.state.find((item) => item.what === what)?.path;
     const keys = at("the journal key folder");
     const anchors = at("the anchor repository clone");
-    return keys === undefined || anchors === undefined ? admitted : { ...admitted, check: { journal: this.#layer.path, anchors, key: `${keys}/journal-key.pub.pem` } };
+    return keys === undefined || anchors === undefined ? admitted : { ...admitted, check: { journal: operatorPath(this.#layer.path), anchors: operatorPath(anchors), key: join(operatorPath(keys), JOURNAL_KEY_PUBLIC_FILE) } };
   }
 
   #serve(socket: Socket): void {

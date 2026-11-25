@@ -1,7 +1,7 @@
 import { chmodSync } from "node:fs";
 import { type Server, type Socket, createServer } from "node:net";
 import type { McpGateway } from "./gateway.js";
-import { nothingAnswers } from "./hook-service.js";
+import { listenError, nothingAnswers } from "./hook-service.js";
 import { SessionLayer } from "../../enforcement/src/index.js";
 import { serveStdio } from "./gateway-stdio.js";
 
@@ -38,9 +38,11 @@ export class GatewayService {
     }
     // D-243: a socket file left by a service killed without a stop is removed first, under the journal's lock.
     return this.#gateway.layer.clearStaleSocket(path, nothingAnswers).then(() => new Promise<void>((resolve, reject) => {
-      this.#server.once("error", reject);
+      // D-247: a socket already in use is named by its real path, with a remedy that works.
+      const failed = (error: Error): void => reject(listenError(error, path));
+      this.#server.once("error", failed);
       this.#server.listen(path, () => {
-        this.#server.off("error", reject);
+        this.#server.off("error", failed);
         try {
           chmodSync(path, mode);
         } catch (error: unknown) {

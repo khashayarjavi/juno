@@ -6,6 +6,7 @@ import { z } from "zod";
 import { MAX_CHECKPOINT_BYTES, MAX_CHECKPOINT_ENTRIES, type ManifestEntry, type Snapshot, Workspace, sameManifest } from "./checkpoint.js";
 import { WORKLOAD_NODE } from "./canonical.js";
 import { DIR_MODE, FILE_MODE } from "./workspace-copy.mjs";
+import { commandText, junoCommand } from "../../journal/src/index.js";
 
 export { DIR_MODE, FILE_MODE, asideName, kernelMayChange, listTree, openRoot, openRootAt, remove as removeEntry, restoreTree, undoRefusals, undoTo } from "./workspace-copy.mjs";
 
@@ -294,7 +295,7 @@ export class HostReadView extends Workspace {
   }
 
   override restore(): Promise<{ ok: false; reason: string }> {
-    return Promise.resolve({ ok: false, reason: "a host workspace is restored by juno checkpoint restore --workspace, in the sealed context (D-228)" });
+    return Promise.resolve({ ok: false, reason: `a host workspace is restored by ${commandText(junoCommand(["checkpoint", "restore"]))} with --workspace, in the sealed context (D-228)` });
   }
 }
 

@@ -1,6 +1,7 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import { CASE_SENSITIVE_TYPES, type Mount, mountOf, parseMountinfo } from "./filesystem.js";
+import { commandText } from "../../journal/src/index.js";
 
 /**
  * Case folding switched off for the whole file system, read from its superblock (operator ruling 1 of 2026-11-21 on
@@ -88,7 +89,7 @@ function mountsWithDevices(text: string): (Mount & { readonly device: DeviceNumb
  * The refusals for these paths (workspace roots and sources, as host paths): empty when every file system holding one,
  * or mounted inside one, is confirmed to have case folding switched off (D-242). `what` names each path's role.
  */
-export function superblockRefusals(paths: readonly { readonly what: string; readonly path: string }[], io: SuperblockIo): string[] {
+export function superblockRefusals(paths: readonly { readonly what: string; readonly path: string }[], io: SuperblockIo, rerun?: readonly string[]): string[] {
   const text = io.mountinfo();
   const mounts = text === null ? null : mountsWithDevices(text);
   if (mounts === null) return ["JUNO cannot read /proc/self/mountinfo, so it cannot tell which file system holds the workspace or read its superblock (D-242)"];
@@ -111,14 +112,14 @@ export function superblockRefusals(paths: readonly { readonly what: string; read
       const key = `${where}\n${mount.mountPoint}`;
       if (judged.has(key)) continue;
       judged.add(key);
-      const refusal = judgeMount(role, role === what ? path : where, where, mount, io);
+      const refusal = judgeMount(role, role === what ? path : where, where, mount, io, rerun);
       if (refusal !== null) refusals.push(refusal);
     }
   }
   return refusals;
 }
 
-function judgeMount(what: string, path: string, where: string, mount: Mount & { readonly device: DeviceNumber | null }, io: SuperblockIo): string | null {
+function judgeMount(what: string, path: string, where: string, mount: Mount & { readonly device: DeviceNumber | null }, io: SuperblockIo, rerun?: readonly string[]): string | null {
   if (mount.fsType === "tmpfs") return null; // Its case folding is a superblock option mountinfo shows; D-178 judges it.
   if (mount.fsType !== "ext4") {
     if (!CASE_SENSITIVE_TYPES.has(mount.fsType)) return null; // D-178 refuses this type, with its reason.
@@ -136,7 +137,7 @@ function judgeMount(what: string, path: string, where: string, mount: Mount & { 
   const node = `/dev/${name}`;
   const read = io.readSuperblock(node);
   if (!read.ok) {
-    return `JUNO cannot read the superblock of ${node}, the ext4 file system holding ${what} ${path} (${read.error}), so it cannot confirm that case folding is switched off; run juno hook check as root, with sudo (D-242)`;
+    return `JUNO cannot read the superblock of ${node}, the ext4 file system holding ${what} ${path} (${read.error}), so it cannot confirm that case folding is switched off; run juno hook check as root, with sudo${rerun === undefined ? "" : `: ${commandText(["sudo", ...rerun])}`} (D-242)`;
   }
   if (read.blockDevice === null || !same(read.blockDevice, device)) {
     return `${node} is not the block device ${named(device)} that holds ${what} ${path}, so JUNO cannot read that file system's superblock to confirm that case folding is switched off (D-242)`;

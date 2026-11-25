@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { runHookCheckCli } from "./preflight.js";
+import { commandText, junoCommand } from "../../journal/src/index.js";
 
 /**
  * `juno hook install` (spec §4.3 "Fail-closed ingress": a configuration in which a hook failure lets a call proceed is
@@ -316,6 +317,6 @@ export async function runHookInstallCli(args: readonly string[], out: (text: str
     err(`juno hook install: refused:\n${result.refusals.map((line) => `  - ${line}`).join("\n")}\n`);
     return 1;
   }
-  out(`JUNO's hook is installed in ${settings}.${gateway === undefined ? "" : `\nJUNO's gateway relay ${gateway.name} is the only MCP server Claude Code loads (${join(dirname(settings), MANAGED_MCP_NAME)}).`}\nNext: juno hook check, as root, before the first governed session.\nWhat it cannot control:\n${result.not_controlled.map((line) => `  - ${line}`).join("\n")}\n`);
+  out(`JUNO's hook is installed in ${settings}.${gateway === undefined ? "" : `\nJUNO's gateway relay ${gateway.name} is the only MCP server Claude Code loads (${join(dirname(settings), MANAGED_MCP_NAME)}).`}\nNext: JUNO's hook check, as root, before the first governed session: ${commandText(["sudo", ...junoCommand(["hook", "check"])])} with the arguments of the guide's Part E step 12.\nWhat it cannot control:\n${result.not_controlled.map((line) => `  - ${line}`).join("\n")}\n`);
   return 0;
 }

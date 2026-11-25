@@ -17,7 +17,7 @@ import {
   workloadWorkspace,
 } from "../../enforcement/src/index.js";
 import { type FilesystemIo, caseFoldingRefusals, systemFilesystemIo } from "../../mediated/src/filesystem.js";
-import { type EntryDraft, JournalWriter as Writer, canonicalJson, readPayload, readTrajectory } from "../../journal/src/index.js";
+import { type EntryDraft, JournalWriter as Writer, canonicalJson, commandText, operatorText, readPayload, readTrajectory, serviceCommand, userName } from "../../journal/src/index.js";
 import { type CliIo, FILE_IO } from "./grant-cli.js";
 import { RunnerLockRefused, acquireRunnerLock } from "./lock.js";
 
@@ -208,10 +208,11 @@ const USAGE =
  * journal, and stopped again; any other case names the lock's real path and how to remove it.
  */
 export function lockRefusal(error: unknown): string {
-  if (!(error instanceof RunnerLockRefused)) return `the journal could not be locked: ${error instanceof Error ? error.message : String(error)}`;
-  if (error.reason === "owner_running") return `the journal is in use, so its service is running. Stop it first (systemctl --user stop juno-hook.service), then run this again. (${error.message})`;
+  // D-247: every command named here is built by the one shared helper; the lock's own message names its real path.
+  if (!(error instanceof RunnerLockRefused)) return operatorText(`the journal could not be locked: ${error instanceof Error ? error.message : String(error)}`);
+  if (error.reason === "owner_running") return `the journal is in use, so its service is running. Stop it first (${commandText(serviceCommand("stop"))}), then run this again. (${error.message})`;
   if (error.reason === "owner_dead")
-    return `JUNO's service stopped without releasing the journal's lock (for example WSL shut down under it). Start the service once, so that it takes the lock over, records that and checks the journal (systemctl --user start juno-hook.service, then systemctl --user status juno-hook.service --no-pager must show active (running)); stop it again (systemctl --user stop juno-hook.service); then run this again. (${error.message})`;
+    return `JUNO's service stopped without releasing the journal's lock (for example WSL shut down under it). Start the service once, so that it takes the lock over, records that and checks the journal (${commandText(serviceCommand("start"))}, then ${commandText(serviceCommand("status"))} must show active (running)); stop it again (${commandText(serviceCommand("stop"))}); then run this again. (${error.message})`;
   return error.message;
 }
 
@@ -323,7 +324,9 @@ export async function runCheckpointCli(
     // D-221: the operator runs it as juno-runner, never as root: the user that owns the journal and the checkpoint store.
     const uid = host.uid();
     const refusals: string[] = [];
-    if (uid === 0) refusals.push("it runs as root; run it as juno-runner (sudo -iu juno-runner), never as root");
+    // D-247: the user named is the journal's owner, by name, never a literal.
+    const journalOwner = journalDir.startsWith("/") ? host.ownerOf(journalDir) : null;
+    if (uid === 0) refusals.push(`it runs as root; run it as ${journalOwner === null || journalOwner === 0 ? "the user that owns the journal and the checkpoint store" : `${userName(journalOwner)}, the user that owns the journal ${journalDir}`}, never as root`);
     for (const [what, dir] of [["the journal", journalDir], ["the checkpoint store", storeDir]] as const) {
       if (!dir.startsWith("/")) {
         refusals.push(`${what} ${dir} is not an absolute path`);
@@ -331,7 +334,7 @@ export async function runCheckpointCli(
       }
       const owner = host.ownerOf(dir);
       if (owner === null) refusals.push(`${what} ${dir} is not a folder that exists`);
-      else if (owner !== uid) refusals.push(`${what} ${dir} is not this user's: run it as the user that owns it (juno-runner)`);
+      else if (owner !== uid) refusals.push(`${what} ${dir} is not this user's: run it as the user that owns it (${userName(owner)})`);
     }
     if (refusals.length > 0) {
       io.err(`juno checkpoint restore: refused, nothing was changed:\n${refusals.map((line) => `  - ${line}`).join("\n")}\n`);
@@ -347,7 +350,7 @@ export async function runCheckpointCli(
       lock = acquireRunnerLock(journal.root, undefined, undefined, { shown: journalDir, reclaim: false });
     } catch (error: unknown) {
       if (!hostForm) throw error;
-      io.err(`juno checkpoint restore: refused, nothing was changed: ${lockRefusal(error)}\n`);
+      io.err(`juno checkpoint restore: refused, nothing was changed: ${operatorText(lockRefusal(error))}\n`);
       return 1;
     }
     const outcome = hostForm
@@ -356,7 +359,7 @@ export async function runCheckpointCli(
     io.out(`${JSON.stringify(outcome, null, 2)}\n`);
     return outcome.ok ? 0 : 1;
   } catch (error: unknown) {
-    io.err(`juno checkpoint: ${error instanceof Error ? error.message : String(error)}\n`);
+    io.err(`juno checkpoint: ${operatorText(error instanceof Error ? error.message : String(error))}\n`);
     return 1;
   } finally {
     lock?.release();

@@ -3,6 +3,7 @@ import { hostname } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import type { AbsolutePath } from "../../contracts/src/index.js";
+import { LOCK_FILE, TAKEOVER_FILE, commandText, lockFileOf, ownerName, removeIfNoJunoRuns, serviceCommand, takeoverFileOf } from "./operator-names.js";
 
 /**
  * One runner per journal (DECISIONS.md D-025 Increment 5, D-064, amended by
@@ -16,9 +17,7 @@ import type { AbsolutePath } from "../../contracts/src/index.js";
  * and how to remove it (§0.2 D8: when unsure, stop and ask).
  */
 
-export const LOCK_FILE = "runner.lock";
-/** Held only while a stale lock is cleared, so two runners never clear one lock together. */
-export const TAKEOVER_FILE = "runner.lock.takeover";
+export { LOCK_FILE, TAKEOVER_FILE };
 
 export class RunnerLockError extends Error {
   override readonly name = "RunnerLockError";
@@ -232,10 +231,11 @@ const isCode = (error: unknown, code: string): boolean => error instanceof Error
 
 export function acquireRunnerLock(root: AbsolutePath, clock: () => Date = () => new Date(), probe: HostProbe = systemProbe, options: LockOptions = {}): RunnerLock {
   const path = join(root, LOCK_FILE);
-  // The path every message names: the journal as given, never the handle this process holds it by (D-243).
-  const shown = join(options.shown ?? root, LOCK_FILE);
-  // The take-over file, by the same real path (D-243, review round 2 of PR #65).
-  const shownTakeover = join(options.shown ?? root, TAKEOVER_FILE);
+  // Every name a message gives is built by the one shared helper from the journal folder the code opened: as given, and
+  // never the handle this process holds it by (D-243, D-247).
+  const journal = options.shown ?? root;
+  const shown = lockFileOf(journal);
+  const shownTakeover = takeoverFileOf(journal);
   const record: LockRecord = {
     pid: probe.pid,
     host: probe.hostId(),
@@ -265,14 +265,16 @@ export function acquireRunnerLock(root: AbsolutePath, clock: () => Date = () => 
     }
     const why = reason === "owner_dead" ? "the process that took the lock is no longer running" : explain(reason, parsed, probe);
     const proven = reason === "owner_running" && parsed !== null && parsed.pid_start !== undefined && parsed.pid_start !== null;
+    // The user to act as: the owner of the files to remove (the lock's, else the journal folder's), by name (D-247).
+    const owner = ownerName(path) ?? ownerName(root);
     const remedy =
       reason === "owner_dead"
         ? "a start of JUNO's service takes such a lock over, records it in the journal and checks the journal"
         : proven
-          ? `stop that JUNO process first (the hook service: systemctl --user stop juno-hook.service, as juno-runner; the gateway: Ctrl+C in its terminal; a checkpoint restore: let it finish)`
+          ? `stop that JUNO process first (the hook service: ${commandText(serviceCommand("stop"))}, as ${owner ?? "the user that runs it"}; the gateway: Ctrl+C in its terminal; a checkpoint restore: let it finish)`
           : reason === "takeover_in_progress"
-            ? `if no JUNO process runs on this machine (no service, no checkpoint restore, no runner: as juno-runner, pgrep -af 'juno[.]js (hook serve|gateway serve|checkpoint restore)|runner/src/main[.]js' prints nothing), remove both files as juno-runner: rm ${shownTakeover} ${shown}`
-            : `if no JUNO process runs on this machine (no service, no checkpoint restore, no runner: as juno-runner, pgrep -af 'juno[.]js (hook serve|gateway serve|checkpoint restore)|runner/src/main[.]js' prints nothing), remove the lock as juno-runner: rm ${shown}`;
+            ? removeIfNoJunoRuns([shownTakeover, shown], owner)
+            : removeIfNoJunoRuns([shown], owner);
     throw new RunnerLockRefused(`the journal's lock ${shown} is held (${reason}): ${why}; one JUNO process writes a journal at a time; ${remedy}. The lock: ${holder}`, reason, shown);
   };
 

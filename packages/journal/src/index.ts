@@ -38,6 +38,7 @@ export {
   AnchorSinkError,
   ContainerAnchorSink,
   GitAnchorSink,
+  JOURNAL_KEY_PUBLIC_FILE,
   type JournalKey,
   JournalKeyError,
   type PinnedRepository,
@@ -49,3 +50,23 @@ export {
 export { SSH_ENVIRONMENT, sshInvocation } from "./anchor-ssh.js";
 export { HISTORY_GIT, type HistoryVerdict, anchorHistoryVerdict } from "./history.js";
 export { LOCK_FILE, RunnerLockError, RunnerLockRefused, type RunnerLock, acquireRunnerLock } from "./lock.js";
+export {
+  HOOK_SERVICE_UNIT,
+  LOCK_HOLDING_COMMANDS,
+  TAKEOVER_FILE,
+  commandText,
+  junoCommand,
+  junoEntry,
+  lockFileOf,
+  noJunoProcessCommand,
+  operatorPath,
+  operatorText,
+  ownerName,
+  quoteArgument,
+  removeCommand,
+  removeIfNoJunoRuns,
+  serviceCommand,
+  socketInUse,
+  takeoverFileOf,
+  userName,
+} from "./operator-names.js";

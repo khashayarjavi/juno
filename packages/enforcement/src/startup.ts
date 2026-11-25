@@ -1,6 +1,7 @@
 import { type Stats, accessSync, constants, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
 import { WORK_NAMESPACE, pathsOverlap } from "../../contracts/src/index.js";
+import { operatorText } from "../../journal/src/index.js";
 import { PINNED_SSH, type VerifiedPin, knownHostsRefusals, parseAnchorPin } from "./anchor-pin.js";
 import { type TrustAnchor, trustAnchorFromPem } from "./signature.js";
 
@@ -340,7 +341,9 @@ export class StartupRefused extends Error {
   readonly refusals: readonly string[];
 
   constructor(service: string, refusals: readonly string[]) {
-    super(`the ${service} service will not start:\n${refusals.map((line) => `  - ${line}`).join("\n")}`);
-    this.refusals = refusals;
+    // D-247: no refusal names a descriptor path; each is named by the folder the descriptor holds.
+    const named = refusals.map(operatorText);
+    super(`the ${service} service will not start:\n${named.map((line) => `  - ${line}`).join("\n")}`);
+    this.refusals = named;
   }
 }
