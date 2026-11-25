@@ -69,12 +69,6 @@ export function takeoverFileOf(journal: string): string {
   return join(operatorPath(journal), TAKEOVER_FILE);
 }
 
-/** The name `/etc/passwd` gives the user `uid`; null when it gives none (D-250: never put in a command then). */
-export function knownUserName(uid: number): string | null {
-  const name = userName(uid);
-  return name === `the user with uid ${String(uid)}` ? null : name;
-}
-
 /** The name of the user `uid`, from `/etc/passwd`; `the user with uid <n>` when it has none. */
 export function userName(uid: number): string {
   try {
@@ -141,24 +135,25 @@ export function commandText(argv: readonly string[], placeholder?: string): stri
   return `\`${words.join(" ")}\``;
 }
 
-/**
- * `argv` run as the user `uid`: as it is when that is this process's own user, else through `sudo -u <name>` (D-249);
- * null when `/etc/passwd` gives that user no name, so no command is given (review round 5 of PR #66, D-250).
- */
-export function asUserCommand(uid: number, argv: readonly string[]): readonly string[] | null {
-  if (uid === (process.geteuid?.() ?? -1)) return argv;
-  const name = knownUserName(uid);
-  return name === null ? null : ["sudo", "-u", name, ...argv];
-}
-
-/** `argv` run as root, through `sudo` (D-249). */
+/** `argv` run as root, through `sudo` (D-249). Only ever for a command built from JUNO's own configured values (D-251). */
 export function asRootCommand(argv: readonly string[]): readonly string[] {
   return ["sudo", ...argv];
 }
 
-/** Removes the set-user-ID, set-group-ID and sticky bits from exactly `path` (D-247, D-249). */
-export function removeBitsCommand(path: string): readonly string[] {
-  return ["chmod", "u-s,g-s,o-t", operatorPath(path)];
+/**
+ * The guide a refusal points to when the fix would need a command naming something in a workspace (operator ruling
+ * D-251): such a refusal says what is wrong in plain words, names the entry only as an escaped quotation, and points to
+ * the guide's section holding the fixed command. A test pins each section's title to the guide's text.
+ */
+export const OPERATOR_GUIDE = "docs/operator-setup.md";
+/** The guide's sections a refusal may point to, by the words of their bold title in "When something goes wrong". */
+export const GUIDE_SECTIONS = {
+  specialBits: "A refusal names a set-user-ID, set-group-ID or sticky bit in the workspace",
+} as const;
+
+/** Where in the guide the fixed command for `section` is: its title, in the guide's "When something goes wrong" part. */
+export function guidePointer(section: keyof typeof GUIDE_SECTIONS): string {
+  return `see the guide (${OPERATOR_GUIDE}), "When something goes wrong", the item "${GUIDE_SECTIONS[section]}", which holds the command to run; JUNO prints no command that names something in a workspace (D-251)`;
 }
 
 /** This copy of JUNO's `juno.js`. */

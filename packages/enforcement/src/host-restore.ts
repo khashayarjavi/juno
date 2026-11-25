@@ -6,7 +6,7 @@ import { z } from "zod";
 import { MAX_CHECKPOINT_BYTES, MAX_CHECKPOINT_ENTRIES, type ManifestEntry, type Snapshot, Workspace, sameManifest } from "./checkpoint.js";
 import { WORKLOAD_NODE } from "./canonical.js";
 import { DIR_MODE, FILE_MODE } from "./workspace-copy.mjs";
-import { asUserCommand, commandText, junoCommand, operatorPath, operatorText, ownerName, removeBitsCommand, shownName } from "../../journal/src/index.js";
+import { commandText, guidePointer, junoCommand, operatorPath, operatorText, shownName } from "../../journal/src/index.js";
 
 export { DIR_MODE, FILE_MODE, asideName, kernelMayChange, listTree, openRoot, openRootAt, remove as removeEntry, restoreTree, undoRefusals, undoTo } from "./workspace-copy.mjs";
 
@@ -218,11 +218,13 @@ export class SealedWorkspace {
   }
 
   /**
-   * The sealed program's answer, with a remedy for each entry it refused for a set-user-ID, set-group-ID or sticky bit
-   * (D-247, D-248). The entries come only from the answer's own `bits` field, never from any text (a name in the
-   * workspace is the agent's to choose). A command is given only for an entry whose path is plain, lies inside this
-   * session's folder on this host with no symbolic link on the way, and which this host itself sees with such a bit:
-   * its real path and its owner, by name. Anything else gets no command.
+   * The sealed program's answer, with the remedy for an entry it refused for a set-user-ID, set-group-ID or sticky bit
+   * (D-247, D-248, D-251). The entries come only from the answer's own `bits` field, never from any text (a name in the
+   * workspace is the agent's to choose). The remedy is given only when at least one entry is plain, lies inside this
+   * session's folder on this host with no symbolic link on the way, and this host itself sees with such a bit. It is
+   * never a command (operator ruling D-251: no command a refusal prints holds anything a workspace or the Claude Code
+   * user can name, its entries' names, paths or owners): it says what to do in words and points to the guide's section
+   * that holds the fixed command. The entry itself is named by the sealed program's own text, an escaped quotation.
    */
   #named(answer: SealedAnswer, root: string): SealedAnswer {
     const { bits, ...raw } = answer as SealedAnswer & { readonly bits?: readonly string[] };
@@ -232,28 +234,18 @@ export class SealedWorkspace {
     const rest = ("error" in raw ? { error: shownName(raw.error) } : "refusals" in raw ? { refusals: raw.refusals.map(shownName) } : "refused" in raw ? { refused: raw.refused.map(shownName) } : "failed" in raw ? { failed: shownName(raw.failed), kept: raw.kept } : raw) as SealedAnswer;
     if (bits === undefined || bits.length === 0) return rest;
     const base = operatorPath(join(this.workspace, root.slice("/work".length)));
-    const remedies: string[] = [];
-    for (const rel of new Set(bits)) {
-      if (rel.length > 4096 || (rel !== "" && !rel.split("/").every((part) => part !== "" && part !== "." && part !== ".." && !part.includes("\0")))) continue;
+    const seen = [...new Set(bits)].some((rel) => {
+      if (rel.length > 4096 || (rel !== "" && !rel.split("/").every((part) => part !== "" && part !== "." && part !== ".." && !part.includes("\0")))) return false;
       const host = rel === "" ? base : join(base, rel);
-      if (host !== base && !host.startsWith(`${base}/`)) continue;
-      let real: string;
-      let stats: Stats;
+      if (host !== base && !host.startsWith(`${base}/`)) return false;
       try {
-        real = realpathSync(host);
-        stats = lstatSync(host);
+        const stats = lstatSync(host);
+        return realpathSync(host) === host && !stats.isSymbolicLink() && (stats.mode & 0o7000) !== 0;
       } catch {
-        continue;
+        return false;
       }
-      if (real !== host || stats.isSymbolicLink() || (stats.mode & 0o7000) === 0) continue;
-      const owner = ownerName(host);
-      if (owner === null) continue;
-      const command = asUserCommand(stats.uid, removeBitsCommand(host));
-      // The path is shown as a name (the agent chose its last parts), and a command is given only when every word of it
-      // is printable ASCII with no backtick (commandText, D-249).
-      // D-250: an owner /etc/passwd gives no name gets no command (sudo -u would refuse it); it is said in words.
-      remedies.push(command === null ? `to remove the bit from ${shownName(host)}: its owner, uid ${String(stats.uid)}, has no user name on this machine, so JUNO gives no command; remove the bit as that uid (or as root)` : `to remove the bit from ${shownName(host)}, as ${shownName(owner)}: ${commandText(command)}`);
-    }
+    });
+    const remedies = seen ? [`to remove such a bit, as the Claude Code user that owns the workspace, never as root, ${guidePointer("specialBits")}`] : [];
     if (remedies.length === 0) return rest;
     const line = remedies.join("; ");
     if ("error" in rest) return { error: `${rest.error}; ${line}` };

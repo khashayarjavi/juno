@@ -113,3 +113,64 @@ describe("every name a message gives is built by the one shared helper (D-247)",
     expect(FORBIDDEN.some(({ pattern }) => pattern.test('import { rmSync } from "node:fs";'))).toBe(false);
   });
 });
+
+// Operator ruling D-251: no refusal or advice text prints a runnable command holding a value derived from a workspace or
+// from anything the Claude Code user can name (file names, owners, paths inside /srv/juno-work). The class is closed in
+// the structure: the helper has no builder that takes a workspace entry (D-251 removed `asUserCommand` and
+// `removeBitsCommand`), and every place in the sources that builds a command for the operator is listed here, with where
+// each of its values comes from. A new place, or a changed one, fails this test until it is listed with its provenance;
+// none may take its values from a workspace. packages/mediated/test/hostile-names.test.ts proves the property over every
+// refusal a hostile workspace name can reach.
+const BUILDS_A_COMMAND = /\b(?:commandText|removeIfNoJunoRuns|socketInUse)\(/;
+const COMMAND_SITES: readonly { readonly file: string; readonly holds: string; readonly from: string }[] = [
+  { file: "packages/enforcement/src/host-restore.ts", holds: 'commandText(junoCommand(["checkpoint", "restore"]))', from: "this copy's Node and juno.js, and fixed words" },
+  { file: "packages/journal/src/lock.ts", holds: 'commandText(serviceCommand("stop"))', from: "the service unit's fixed name" },
+  { file: "packages/journal/src/lock.ts", holds: "removeIfNoJunoRuns([shownTakeover, shown], owner)", from: "the journal folder the service was configured with (its lock and take-over file); the owner only in words" },
+  { file: "packages/journal/src/lock.ts", holds: "removeIfNoJunoRuns([shown], owner)", from: "the journal folder the service was configured with (its lock); the owner only in words" },
+  { file: "packages/runner/src/restore.ts", holds: 'Stop it first (${commandText(serviceCommand("stop"))})', from: "the service unit's fixed name" },
+  { file: "packages/runner/src/restore.ts", holds: 'records that and checks the journal (${commandText(serviceCommand("start"))}', from: "the service unit's fixed name" },
+  { file: "packages/runner/src/restore.ts", holds: 'then ${commandText(serviceCommand("status"))}', from: "the service unit's fixed name" },
+  { file: "packages/runner/src/restore.ts", holds: 'stop it again (${commandText(serviceCommand("stop"))})', from: "the service unit's fixed name" },
+  { file: "packages/mediated/src/superblock.ts", holds: "commandText(asRootCommand(rerun))", from: "this very `juno hook check` command line, as the operator gave it (its configured paths), never a mount or name read from the workspace" },
+  { file: "packages/mediated/src/hook-service.ts", holds: "socketInUse(path)", from: "the socket path the service was configured with; its owner only in words" },
+  { file: "packages/mediated/src/install.ts", holds: 'commandText(asRootCommand(junoCommand(["hook", "check"])))', from: "this copy's Node and juno.js, and fixed words" },
+  { file: "packages/mediated/src/hook-serve.ts", holds: 'commandText(junoCommand(["hook", "admit", "--control", control]), "<session file>")', from: "the control socket the service was configured with" },
+  { file: "packages/mediated/src/hook-serve.ts", holds: 'commandText(junoCommand(["journal", "check", "--journal", check.journal, "--anchors", check.anchors, "--key", check.key, parsed.data.task_id]))', from: "the service's configured journal, anchors and key, and the session id (letters, digits and hyphens only, checked at admission) from the operator's session file" },
+];
+
+describe("no command a message gives holds a value from a workspace (operator ruling D-251)", () => {
+  // proves D-251: every place that builds a command for the operator is one listed with its provenance, none from a
+  // workspace; and no listed place outlives its line
+  it("finds every command built for the operator at a listed place", () => {
+    const found: string[] = [];
+    const used = new Set<number>();
+    for (const path of sources(join(ROOT, "packages"))) {
+      const file = relative(ROOT, path);
+      if (file === HELPER) continue;
+      code(readFileSync(path, "utf8")).forEach((line, index) => {
+        if (!BUILDS_A_COMMAND.test(line)) return;
+        let rest = line;
+        for (const [at, site] of COMMAND_SITES.entries()) {
+          if (site.file === file && rest.includes(site.holds)) {
+            used.add(at);
+            rest = rest.replace(site.holds, "");
+          }
+        }
+        if (BUILDS_A_COMMAND.test(rest)) found.push(`${file}:${String(index + 1)}: ${line.trim()}`);
+      });
+    }
+    expect(found).toEqual([]);
+    expect(COMMAND_SITES.filter((_, index) => !used.has(index))).toEqual([]);
+  });
+
+  // proves D-251's structure: the helper exports no builder that turns a path or an owner into a command run as that owner
+  it("keeps no builder of a command from a workspace entry in the helper", () => {
+    const helper = readFileSync(join(ROOT, HELPER), "utf8");
+    for (const gone of ["asUserCommand", "removeBitsCommand", "knownUserName", '"-u"']) expect(helper, gone).not.toContain(gone);
+  });
+
+  // proves the scan itself: a new command built anywhere else is caught
+  it("catches a command built at an unlisted place", () => {
+    for (const sample of ["`remove it: ${commandText(removeCommand([entry]))}`", "socketInUse(join(workspace, name))", "removeIfNoJunoRuns([host], owner)"]) expect(BUILDS_A_COMMAND.test(sample), sample).toBe(true);
+  });
+});

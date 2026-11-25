@@ -6,10 +6,8 @@ import { afterAll, describe, expect, it } from "vitest";
 import {
   HOOK_SERVICE_UNIT,
   asRootCommand,
-  asUserCommand,
   displayLine,
-  knownUserName,
-  removeBitsCommand,
+  guidePointer,
   shownName,
   LOCK_HOLDING_COMMANDS,
   commandText,
@@ -25,6 +23,7 @@ import {
   takeoverFileOf,
   userName,
 } from "../../journal/src/index.js";
+import * as journal from "../../journal/src/index.js";
 import { ENTRY_POINTS } from "../src/entry-points.js";
 
 // Operator ruling D-247 item 1: the one shared helper every refusal and remedy builds its names with. These tests pin
@@ -90,14 +89,15 @@ describe("the names refusals and remedies give (D-247)", () => {
     expect(line.endsWith("`rm /var/lib/juno-runner/journal/runner.lock`")).toBe(true);
     expect(displayLine(displayLine(forged))).toBe(displayLine(forged));
     expect(asRootCommand(["x"])).toEqual(["sudo", "x"]);
-    expect(asUserCommand(process.geteuid?.() ?? -1, ["x"])).toEqual(["x"]);
-    // proves D-250 (review round 5 of PR #66): a user /etc/passwd names is run as by that name; a uid it gives no name
-    // gets no command at all, never `sudo -u 'the user with uid …'`, which sudo refuses
-    if ((process.geteuid?.() ?? -1) !== 0) expect(asUserCommand(0, ["x"])).toEqual(["sudo", "-u", "root", "x"]);
-    expect(knownUserName(0)).toBe("root");
-    expect(knownUserName(4_000_000)).toBeNull();
-    expect(asUserCommand(4_000_000, ["x"])).toBeNull();
-    expect(removeBitsCommand("/srv/juno-work/project/a")).toEqual(["chmod", "u-s,g-s,o-t", "/srv/juno-work/project/a"]);
+    // proves operator ruling D-251 (it replaces D-249's and D-250's expectations of `asUserCommand` and
+    // `removeBitsCommand`): the helper no longer has any builder that turns a workspace entry's path or its owner into a
+    // command; a refusal about such an entry points to the guide in words, with no command, and names its section
+    expect(Object.keys(journal).filter((name) => /^(?:asUserCommand|removeBitsCommand|knownUserName)$/.test(name))).toEqual([]);
+    expect(userName(0)).toBe("root");
+    expect(userName(4_000_000)).toBe("the user with uid 4000000");
+    const pointer = guidePointer("specialBits");
+    expect(pointer).not.toContain("`");
+    expect(pointer).toContain('"When something goes wrong", the item "A refusal names a set-user-ID, set-group-ID or sticky bit in the workspace"');
   });
 
   // proves D-247 item 1: a JUNO command is this copy's own Node and juno.js, never a literal path or `juno` on a PATH
