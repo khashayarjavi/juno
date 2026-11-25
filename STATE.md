@@ -1,26 +1,39 @@
 # STATE
 
 ## Current increment
-**1.5-ops (queue item 1 of 3, D-251).** Branch `claude/elegant-ritchie-6pkguy` (this session's only pushable branch). It carries PR [khashayarjavi/juno#66](https://github.com/khashayarjavi/juno/pull/66)'s twenty-six commits unchanged; its draft PR supersedes #66, and review rounds 6 to 10 run there. Main at bef25fe. Spec v0.6.1. No objection open. The repository is public now (your choice), so CI runs again.
-
-Status (2026-11-25, this session): **your ruling of D-251 built (D-252), with tests. `make verify: GREEN` on c7a4f43 (1,548 unit, 156 container). Draft PR [khashayarjavi/juno#67](https://github.com/khashayarjavi/juno/pull/67) supersedes #66. Review round 6: DO NOT MERGE (a test that depended on where the code is checked out; CI's `verify` job red); fixed (D-253). Round 7 next.** Nothing merged yet; main is unchanged at bef25fe, so your machine is unaffected.
+**1.5-report (queue item 2 of 3, D-251): `juno journal report`.** Branch `claude/elegant-ritchie-6pkguy`, restarted from main at 9fc412b (its PR #67 merged). Spec v0.6.1. No objection open. Not started yet.
 
 ### The queue (D-251)
-1. **1.5-ops**, PR #66's work: your ruling (no command built from a workspace value), then review rounds 6 to 10, then the merge gate. **In progress.**
-2. **1.5-report**: `juno journal report`, a read-only weekly summary of a journal. Not started.
+1. **1.5-ops: merged** as 9fc412b (below).
+2. **1.5-report**: `juno journal report`, a read-only weekly summary of a journal. **Next.**
 3. **1.5-public**: the workflows audited for a public repository; a README for a newcomer; SECURITY.md. No LICENSE: **open item for you** (the license is your decision). Not started.
 
-### What D-252 changes, in plain words
-- **Before:** the refusal for a set-user-ID, set-group-ID or sticky bit gave a command naming the file and its owner (`sudo -u <owner> chmod u-s,g-s,o-t <path>`). Both were the Claude Code user's to choose.
-- **Now:** that refusal names the file only in double quotes, with odd characters written as `\u{…}`, gives **no command**, and says to see the guide, "When something goes wrong", item "A refusal names a set-user-ID, set-group-ID or sticky bit in the workspace". That item holds one fixed command, run as `juno-agent`: `sudo -u juno-agent find /srv/juno-work -xdev -perm /7000 -exec chmod u-s,g-s,o-t {} +`.
-- **Also fixed, same kind:** the superblock check showed a mount point inside the workspace exactly as named; it is now shown escaped.
-- **Still printed:** commands built only from JUNO's configured values (the journal's lock, the socket, the service, JUNO's own Node and `juno.js`, the hook check's own command line).
-- **Tests:** names an attacker would choose are planted and every refusal they can reach is triggered; no command in any of them holds the name or a workspace path. A lint test lists every place that builds a command for you, with where its values come from; a new place fails until listed. The guide's fixed command is read from the guide and run in a test; it removes the bits.
+### Merges this session
+- **PR [khashayarjavi/juno#67](https://github.com/khashayarjavi/juno/pull/67) (1.5-ops; supersedes #65 and #66): merged** as `9fc412bdaf4555be1decbd118ee5945214da70e6`, pinned to head `8d61cfe377c9c2062cff0c55d9e7f57091cc2184`.
+  - **Reviewer:** round 6 DO NOT MERGE (fixed, D-253); **round 7 MERGE** on 8d61cfe, all six checks PASS, no new mechanism. Two notes, not blocking: the `pgrep` test's assertion is conditional on no JUNO process running (D-253); the command scan's program list could name more programs (`mv`, `cp`, `ln`, `tar`, `e2fsck`), none of which appears in a refusal today.
+  - **CI on 8d61cfe:** run 45709796122: `verify`, `verify-rootless`, `verify-rootless-operator` green. **Locally:** `make verify: GREEN` on 8d61cfe (1,548 unit, 156 container).
+  - **CI on main for 9fc412b:** being read (see the next STATE commit).
+  - PRs #65 and #66 are left open and untouched; #67 carried their commits.
 
-**Review rounds on PR #67:**
-- **Round 6** (85e2d43): DO NOT MERGE. The new hostile-names test looked for the text `/work/` in every command; CI checks the code out under `/home/runner/work/…`, so JUNO's own correct command tripped it. Also two tests that failed once each, and the command list missed command lines written straight into text. All fixed (D-253); JUNO's behaviour did not change.
+### Your upgrade steps, from bef25fe to 9fc412b
+Follow the guide's **"Upgrading JUNO to a new commit"** (`docs/operator-setup.md`) with the hash `9fc412bdaf4555be1decbd118ee5945214da70e6`, steps 1 to 10 in order:
+1. Windows: fetch, check out the hash, build, bundle. **Check:** `git rev-parse HEAD` prints the hash.
+2. Copy the bundle into WSL.
+3. Stop **and disable** the service. **Check:** `disabled` and `inactive`.
+4. The runner's copy, then `make verify-rootless` (about 10 minutes on your disk). **Check:** `make verify-rootless: GREEN`.
+5. Root's copy, `make build`, then `juno-build-check`. **Check:** `… is complete: every file matches dist/build-manifest.json`.
+6. **Skip** (it is only for 6706b5a and earlier).
+7. **Remove your stand-in `juno-clear-stale-lock`** on the WSL side (the `grep` line lists every file; each kind has its removal), **and on Windows**: the `Select-String` line finds each line of your scripts in `C:\Users\Khashayar\juno-setup` that runs it (delete exactly those lines), and the `Get-ScheduledTask` line finds a scheduled task that runs it. **Check:** both `grep` and `Select-String` print nothing.
+8. The new service file (four check lines). **Check:** prints `4`.
+9. Enable and start the service. **Check:** `active (running)`, `enabled`, `serving /var/lib/juno-hook/hook.sock`.
+10. The separation check and the disk's features. **Check:** no `casefold`; `separated from the runner`; `Case folding is switched off for its whole file system`.
 
-**Left, in order:** review rounds 7 to 10 as needed; CI green on the head; the merge gate; record the merge and your upgrade steps; then queue item 2.
+**What is new for you after the upgrade:** a service killed without a stop (WSL shut down) is taken over at the next start and recorded; every refusal names real files and commands you can run; and no refusal gives a command that names something in the workspace (a file, a folder, an owner). For a special bit in the workspace, the refusal points to the guide's item "A refusal names a set-user-ID, set-group-ID or sticky bit in the workspace", which holds the one command to run.
+
+### 1.5-ops this session, in plain words
+- **Your ruling (D-251), built (D-252):** the refusal for a special bit in the workspace named the file and its owner inside a command; it now names the file in quotes only, gives no command, and points to the guide's fixed command (`sudo -u juno-agent find /srv/juno-work -xdev -perm /7000 -exec chmod u-s,g-s,o-t {} +`). The superblock check's mount-point names are escaped too. Tests plant names an attacker would choose and trigger every refusal they can reach; a lint test lists every place that builds a command, with where its values come from.
+- **Review round 6** (85e2d43): DO NOT MERGE. The new test looked for the text `/work/` in commands; CI checks the code out under `/home/runner/work/…`. Fixed with two flaky tests and a fuller command list (D-253). JUNO's behaviour did not change.
+- **Review round 7** (8d61cfe): MERGE.
 
 ## Before this session: 1.5-ops on PR #66 (rounds 3 to 5)
 ### STOP after review round 5 (D-250)
