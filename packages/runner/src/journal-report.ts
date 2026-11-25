@@ -1,6 +1,6 @@
 import type { KeyObject } from "node:crypto";
 import type { TrajectoryEntry } from "../../contracts/src/index.js";
-import { JOURNAL_RECORD_PREFIX, ownRecordEntry } from "../../enforcement/src/index.js";
+import { JOURNAL_RECORD_PREFIX, journalledCall, ownRecordEntry } from "../../enforcement/src/index.js";
 import { checkAnchors, listRecords, readPayload, shownName, taskDigest } from "../../journal/src/index.js";
 
 /**
@@ -125,25 +125,29 @@ function summarise(read: readonly Read[]): Summary {
   const programs: string[] = [];
   const targets: string[] = [];
   for (const { entry, payload } of read) {
-    if (entry.kind === "capability_call") {
+    // D-256: what each entry is as a call, by the one rule a service's replay uses too (`journalledCall`): a rejection
+    // note that names the judged call is that call's, counted once, as the call.
+    const judged = journalledCall(entry, payload);
+    if (judged === null) continue;
+    if (judged.kind === "call") {
       calls.set(entry.seq, payload);
-      const outcome = field(field(payload, "verdict"), "outcome");
-      if (outcome === "proceed") allowed += 1;
-      else if (outcome === "reject") {
+      if (judged.outcome === "proceed") allowed += 1;
+      else if (judged.outcome === "reject") {
         rejected += 1;
         targets.push(...targetsOf(payload));
       }
       continue;
     }
-    if (entry.kind === "note" && payload["type"] === "rejection") {
+    if (judged.kind === "rejection") {
       rejected += 1;
+      const tool = text(payload["tool"]);
+      targets.push(`(not recorded: ${tool === null ? "a call" : `a ${tool} call`} rejected before it was judged)`);
       continue;
     }
-    if (entry.kind === "note" && payload["type"] === "gateway_call") {
+    if (judged.kind === "gateway_call") {
       passed += 1;
       continue;
     }
-    if (entry.kind !== "park") continue;
     parked += 1;
     reasons.push(text(payload["reason"]) ?? "(no reason recorded)");
     const seq = payload["call_seq"];

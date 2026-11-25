@@ -92,6 +92,24 @@ const OWN_RECORD_PREFIX = "juno.";
  * finding F3; D-213), and the journal itself is opened once, from a directory handle (`openJournalFolder`). At start, a record the journal holds that it does not name was not written
  * by JUNO, and anchors of a record it names that the journal no longer holds show a deleted record.
  */
+/**
+ * What one journal entry is as a tool call (D-256), or null when it is none: a judged call (`capability_call`, with its
+ * verdict's outcome); a park (`judged` when it names the call the boundary judged; `command` when the hook parked a shell
+ * command before parsing it); a rejection no `capability_call` records (a `rejection` note that names a judged call is
+ * that call's, counted once, as the call); or a call passed to JUNO's gateway. The one rule for a service's replay of a
+ * session (`reopen`) and for `juno journal report`, so the two can never count a call differently.
+ */
+export function journalledCall(entry: TrajectoryEntry, payload: unknown): { readonly kind: "call"; readonly outcome: unknown } | { readonly kind: "park"; readonly judged: boolean; readonly reason: unknown; readonly command: boolean } | { readonly kind: "rejection" } | { readonly kind: "gateway_call" } | null {
+  const judged = field(payload, "call_seq") !== undefined && field(payload, "call_seq") !== null;
+  if (entry.kind === "capability_call") return { kind: "call", outcome: field(field(payload, "verdict"), "outcome") };
+  if (entry.kind === "park") return { kind: "park", judged, reason: field(payload, "reason"), command: field(payload, "command") !== undefined };
+  if (entry.kind !== "note") return null;
+  const type = field(payload, "type");
+  if (type === "gateway_call") return { kind: "gateway_call" };
+  if (type === "rejection" && !judged) return { kind: "rejection" };
+  return null;
+}
+
 /** Every journal's own record id begins so (D-202); `juno journal report` finds it by this prefix on a copy (D-254). */
 export const JOURNAL_RECORD_PREFIX = `${OWN_RECORD_PREFIX}journal.`;
 
@@ -981,23 +999,20 @@ export class SessionLayer {
     let rejections: RejectionMark[] = [];
     const stopped = this.#stoppedIn(taskId);
     for (const { entry, payload } of record.entries) {
-      const judged = field(payload, "call_seq") !== undefined && field(payload, "call_seq") !== null;
-      if (entry.kind === "capability_call") {
+      // D-256: one rule says what each entry is as a call, for this replay and for `juno journal report`.
+      const call = journalledCall(entry, payload);
+      if (call === null) continue;
+      if (call.kind === "call") {
         turns += 1;
-        const outcome = field(field(payload, "verdict"), "outcome");
-        if (outcome === "reject") rejections.push({ kind: "call", seq: entry.seq });
-        else if (outcome === "proceed") rejections = [];
-      } else if (entry.kind === "park") {
-        const reason = field(payload, "reason");
-        if (!judged && reason !== "budget_exceeded" && reason !== "rejection_limit" && field(payload, "command") === undefined) turns += 1;
+        if (call.outcome === "reject") rejections.push({ kind: "call", seq: entry.seq });
+        else if (call.outcome === "proceed") rejections = [];
+      } else if (call.kind === "park") {
+        if (!call.judged && call.reason !== "budget_exceeded" && call.reason !== "rejection_limit" && !call.command) turns += 1;
         rejections = [];
-      } else if (entry.kind === "note") {
-        const type = field(payload, "type");
-        if (type === "gateway_call") turns += 1;
-        else if (type === "rejection" && !judged) {
-          turns += 1;
-          rejections.push({ kind: "call", seq: entry.seq });
-        }
+      } else if (call.kind === "gateway_call") turns += 1;
+      else {
+        turns += 1;
+        rejections.push({ kind: "call", seq: entry.seq });
       }
     }
     const session = new GovernedSession(this, taskId, this.mode, limits, admittedAt, { ...NO_SPEND, turns }, options.now ?? (() => this.now()));

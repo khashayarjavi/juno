@@ -3,7 +3,7 @@
 ## Current increment
 **1.5-report (queue item 2 of 3, D-251): `juno journal report`.** Branch `claude/elegant-ritchie-6pkguy`, restarted from main at 9fc412b (its PR #67 merged). Spec v0.6.1. No objection open.
 
-Status: **built (D-254), with tests; draft PR [khashayarjavi/juno#68](https://github.com/khashayarjavi/juno/pull/68). Review round 1: DO NOT MERGE (a session deleted from the journal copy was left out instead of refused); fixed (D-255). Round 2 next.** What it does, in plain words: after Part G step 7's check, on the same copies, `juno journal report` checks the whole journal (every session) against your fresh clone of `juno-anchors`, refuses one that does not verify, and then prints, per session and in total, the calls allowed, parked and rejected, the parks by reason, capability and program, and the paths and commands most often blocked. Every value Claude or the workspace chose is shown in quotes, escaped; it gives no command. The guide's new Part G step 8 gives the command.
+Status: **built (D-254), with tests; draft PR [khashayarjavi/juno#68](https://github.com/khashayarjavi/juno/pull/68). Review round 1: DO NOT MERGE (a session deleted from the journal copy was left out instead of refused); fixed (D-255). Round 2: DO NOT MERGE (a call the gateway rejects was counted twice); fixed by one shared rule for the report and the service's replay (D-256). Round 3 next.** What it does, in plain words: after Part G step 7's check, on the same copies, `juno journal report` checks the whole journal (every session) against your fresh clone of `juno-anchors`, refuses one that does not verify, and then prints, per session and in total, the calls allowed, parked and rejected, the parks by reason, capability and program, and the paths and commands most often blocked. Every value Claude or the workspace chose is shown in quotes, escaped; it gives no command. The guide's new Part G step 8 gives the command.
 
 ### The queue (D-251)
 1. **1.5-ops: merged** as 9fc412b (below).
@@ -14,7 +14,7 @@ Status: **built (D-254), with tests; draft PR [khashayarjavi/juno#68](https://gi
 - **PR [khashayarjavi/juno#67](https://github.com/khashayarjavi/juno/pull/67) (1.5-ops; supersedes #65 and #66): merged** as `9fc412bdaf4555be1decbd118ee5945214da70e6`, pinned to head `8d61cfe377c9c2062cff0c55d9e7f57091cc2184`.
   - **Reviewer:** round 6 DO NOT MERGE (fixed, D-253); **round 7 MERGE** on 8d61cfe, all six checks PASS, no new mechanism. Two notes, not blocking: the `pgrep` test's assertion is conditional on no JUNO process running (D-253); the command scan's program list could name more programs (`mv`, `cp`, `ln`, `tar`, `e2fsck`), none of which appears in a refusal today.
   - **CI on 8d61cfe:** run 45709796122: `verify`, `verify-rootless`, `verify-rootless-operator` green. **Locally:** `make verify: GREEN` on 8d61cfe (1,548 unit, 156 container).
-  - **CI on main for 9fc412b:** being read (see the next STATE commit).
+  - **CI on main for 9fc412b:** run 45711095168: green (all three jobs).
   - PRs #65 and #66 are left open and untouched; #67 carried their commits.
 
 ### Your upgrade steps, from bef25fe to 9fc412b
