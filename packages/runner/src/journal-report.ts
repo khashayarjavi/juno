@@ -28,8 +28,12 @@ export type CallCounts = {
   readonly parked: number;
   /** Calls JUNO rejected (`rejection` notes, and `capability_call` entries with outcome `reject`). */
   readonly rejected: number;
+  /** Calls denied because an earlier call's result never arrived (`result_missing`, plan item 8). */
+  readonly denied_result_missing: number;
   /** Calls the hook passed to JUNO's gateway, which judged them there and journals them in its own journal (D-190). */
   readonly passed_to_gateway: number;
+  /** Times the session parked at its rejection limit: each after a rejected call counted above, not a call of its own (D-257). */
+  readonly rejection_limit_reached: number;
 };
 
 export type Summary = CallCounts & {
@@ -120,6 +124,8 @@ function summarise(read: readonly Read[]): Summary {
   let parked = 0;
   let rejected = 0;
   let passed = 0;
+  let missing = 0;
+  let limits = 0;
   const reasons: string[] = [];
   const capabilities: string[] = [];
   const programs: string[] = [];
@@ -148,6 +154,14 @@ function summarise(read: readonly Read[]): Summary {
       passed += 1;
       continue;
     }
+    if (judged.kind === "result_missing") {
+      missing += 1;
+      continue;
+    }
+    if (judged.kind === "rejection_limit") {
+      limits += 1;
+      continue;
+    }
     parked += 1;
     reasons.push(text(payload["reason"]) ?? "(no reason recorded)");
     const seq = payload["call_seq"];
@@ -163,7 +177,7 @@ function summarise(read: readonly Read[]): Summary {
     else if (command !== null) targets.push(command);
     else if (payload["outside_workspace"] === true) targets.push(`(not recorded: a ${text(payload["field"]) ?? "field"} outside the workspace)`);
   }
-  return { allowed, parked, rejected, passed_to_gateway: passed, parks_by_reason: tally(reasons), parks_by_capability: tally(capabilities), parks_by_program: tally(programs), blocked_targets: tally(targets) };
+  return { allowed, parked, rejected, denied_result_missing: missing, passed_to_gateway: passed, rejection_limit_reached: limits, parks_by_reason: tally(reasons), parks_by_capability: tally(capabilities), parks_by_program: tally(programs), blocked_targets: tally(targets) };
 }
 
 function sum(parts: readonly Summary[]): Summary {
@@ -172,7 +186,9 @@ function sum(parts: readonly Summary[]): Summary {
     allowed: parts.reduce((total, part) => total + part.allowed, 0),
     parked: parts.reduce((total, part) => total + part.parked, 0),
     rejected: parts.reduce((total, part) => total + part.rejected, 0),
+    denied_result_missing: parts.reduce((total, part) => total + part.denied_result_missing, 0),
     passed_to_gateway: parts.reduce((total, part) => total + part.passed_to_gateway, 0),
+    rejection_limit_reached: parts.reduce((total, part) => total + part.rejection_limit_reached, 0),
     parks_by_reason: merge((part) => part.parks_by_reason),
     parks_by_capability: merge((part) => part.parks_by_capability),
     parks_by_program: merge((part) => part.parks_by_program),
@@ -265,7 +281,8 @@ function tallyLines(title: string, items: Tally, limit?: number): string[] {
 
 function summaryLines(summary: Summary): string[] {
   return [
-    `  tool calls: ${String(summary.allowed)} allowed, ${String(summary.parked)} parked, ${String(summary.rejected)} rejected${summary.passed_to_gateway > 0 ? `, ${String(summary.passed_to_gateway)} passed to the gateway` : ""}`,
+    `  tool calls: ${String(summary.allowed)} allowed, ${String(summary.parked)} parked, ${String(summary.rejected)} rejected${summary.denied_result_missing > 0 ? `, ${String(summary.denied_result_missing)} denied because an earlier call's result never arrived` : ""}${summary.passed_to_gateway > 0 ? `, ${String(summary.passed_to_gateway)} passed to the gateway` : ""}`,
+    ...(summary.rejection_limit_reached > 0 ? [`  the session parked at its rejection limit ${String(summary.rejection_limit_reached)} time${summary.rejection_limit_reached === 1 ? "" : "s"} (each after a rejected call counted above)`] : []),
     ...tallyLines("parks by reason", summary.parks_by_reason),
     ...tallyLines("parks by capability", summary.parks_by_capability),
     ...tallyLines("parks by program requested", summary.parks_by_program),

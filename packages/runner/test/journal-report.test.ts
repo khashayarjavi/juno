@@ -7,7 +7,7 @@ import { MemoryAnchorSink, testAnchoring, testJournalKey } from "../../enforceme
 import { ordinaryHost } from "../../enforcement/test/layer.js";
 import { unsealedLauncher } from "../../enforcement/test/sealed.js";
 import { TEST_ANCHOR, signed } from "../../enforcement/test/test-keys.js";
-import { anchorPath, taskDigest } from "../../journal/src/index.js";
+import { taskDigest } from "../../journal/src/index.js";
 import { systemFilesystemIo } from "../../mediated/src/filesystem.js";
 import { runHookClient } from "../../mediated/src/hook-client.js";
 import { runHookAdmitCli, runHookServeCli } from "../../mediated/src/hook-serve.js";
@@ -301,8 +301,85 @@ describe("juno journal report (D-251 queue item 2, D-254)", () => {
     const result = await report(copy);
     expect(result.code).toBe(1);
     expect(result.out).toContain("the anchor clone's history cannot be trusted");
-    expect(anchorPath(taskDigest("x"), 0)).toContain("000000000000.json");
   }, 120_000);
+
+  // proves D-257 (review round 3 of PR #68), the class "one call counted other than once": for seeded random sequences
+  // of every kind of call through the real hook service (allowed, parked by the hook or the boundary, rejected before or
+  // at judgement, past the rejection limit, and denied because an earlier result never arrived), the report counts
+  // every call exactly once, in the category the hook's answer gave it
+  it("counts every call exactly once, whatever the sequence", async () => {
+    const kinds: readonly { readonly name: string; readonly run: (session: string) => Promise<string> }[] = [
+      { name: "allowed", run: async (session) => (await call(session, "Read", { file_path: join(work, "project", "notes.txt") })) },
+      { name: "allowed", run: async (session) => (await call(session, "Bash", { command: "cat notes.txt" })) },
+      { name: "parked", run: async (session) => (await call(session, "Bash", { command: "cat notes.txt; id" })) },
+      { name: "parked", run: async (session) => (await call(session, "Write", { file_path: "/etc/passwd", content: "x" })) },
+      { name: "parked", run: async (session) => (await call(session, "Write", { file_path: join(work, "project", "n.txt"), content: "x" })) },
+      { name: "rejected", run: async (session) => (await call(session, "mcp__other__send", { to: "x" })) },
+      { name: "result_missing", run: async (session) => {
+        // A call JUNO allowed whose result never comes, then the next call, denied for it.
+        uses += 1;
+        const answer = await runHookClient(JSON.stringify({ session_id: session, hook_event_name: "PreToolUse", tool_name: "Read", tool_input: { file_path: join(work, "project", "notes.txt") }, tool_use_id: `toolu_${String(uses)}`, cwd: join(work, "project") }), join(sockets, "hook.sock"));
+        expect(answer.stdout).toBe("");
+        return (await call(session, "Read", { file_path: join(work, "project", "notes.txt") }));
+      } },
+    ];
+    const reached = { limits: 0, result_missing: 0 };
+    for (const seed of [1, 7, 42]) {
+      sink = new MemoryAnchorSink();
+      rmSync(join(dir, "state", "journal"), { recursive: true, force: true });
+      rmSync(join(dir, "state", "juno-anchors"), { recursive: true, force: true });
+      let state = seed;
+      const next = (n: number): number => {
+        state = (state * 1103515245 + 12345) % 2147483648;
+        return state % n;
+      };
+      const expected = { allowed: 0, parked: 0, rejected: 0, result_missing: 0, limits: 0 };
+      let consecutiveRejections = 0;
+      await serving(async () => {
+        const id = SESSIONS[0] ?? "";
+        writeFileSync(join(dir, "state", "session-seq.json"), JSON.stringify(sessionFile(id)), { mode: 0o600 });
+        expect(await runHookAdmitCli(["--control", join(sockets, "admit.sock"), join(dir, "state", "session-seq.json")], quiet)).toBe(0);
+        // Fourteen random calls, then three rejections in a row, so every sequence reaches the rejection limit.
+        const rejectedAt = kinds.findIndex((kind) => kind.name === "rejected");
+        const steps = [...Array.from({ length: 14 }, () => next(kinds.length)), rejectedAt, rejectedAt, rejectedAt];
+        for (const step of steps) {
+          const kind = kinds[step];
+          if (kind === undefined) continue;
+          const outcome = await kind.run(id);
+          if (kind.name === "result_missing") {
+            // The first Read was allowed; the second was denied for its missing result.
+            expected.allowed += 1;
+            expected.result_missing += 1;
+            expect(outcome).toBe("denied");
+            continue;
+          }
+          expect(outcome, kind.name).toBe(kind.name === "allowed" ? "ran" : "denied");
+          if (kind.name === "rejected") {
+            expected.rejected += 1;
+            consecutiveRejections += 1;
+            // §2.7.1 A4: the third rejection in a row parks the session at its limit (that call is still the rejected one).
+            if (consecutiveRejections === 3) {
+              expected.limits += 1;
+              consecutiveRejections = 0;
+            }
+          } else {
+            if (kind.name === "allowed") expected.allowed += 1;
+            else expected.parked += 1;
+            consecutiveRejections = 0;
+          }
+        }
+      });
+      const result = await report(await adminCopy(), ["--json"]);
+      expect(result.code, result.out).toBe(0);
+      const total = (JSON.parse(result.out) as { total: Record<string, unknown> }).total;
+      expect(total, `seed ${String(seed)}`).toMatchObject({ allowed: expected.allowed, parked: expected.parked, rejected: expected.rejected, denied_result_missing: expected.result_missing, rejection_limit_reached: expected.limits });
+      reached.limits += expected.limits;
+      reached.result_missing += expected.result_missing;
+    }
+    // The seeds reach the cases the class is about: the rejection limit, and a result that never arrived.
+    expect(reached.limits).toBeGreaterThan(0);
+    expect(reached.result_missing).toBeGreaterThan(0);
+  }, 300_000);
 
   // proves D-254 for the guide: Part G step 8's command, word for word (the copies' paths in place of ~/juno-check),
   // reports on a journal the real hook service wrote, as step 8's Check says

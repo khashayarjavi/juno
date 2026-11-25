@@ -93,20 +93,28 @@ const OWN_RECORD_PREFIX = "juno.";
  * by JUNO, and anchors of a record it names that the journal no longer holds show a deleted record.
  */
 /**
- * What one journal entry is as a tool call (D-256), or null when it is none: a judged call (`capability_call`, with its
- * verdict's outcome); a park (`judged` when it names the call the boundary judged; `command` when the hook parked a shell
- * command before parsing it); a rejection no `capability_call` records (a `rejection` note that names a judged call is
- * that call's, counted once, as the call); or a call passed to JUNO's gateway. The one rule for a service's replay of a
- * session (`reopen`) and for `juno journal report`, so the two can never count a call differently.
+ * What one journal entry is as a tool call (D-256, D-257), or null when it is none. Each tool call JUNO decided has
+ * exactly one entry of kind `call` (a judged call, with its verdict's outcome; a judged park is that call's, counted
+ * as the park), `park` (a park no judged call records: the hook's own, or the budget's), `rejection` (a rejection no
+ * judged call records; one that names a judged call is that call's) or `result_missing` (the call denied because an
+ * earlier call's result never arrived). `gateway_call` is a call passed to JUNO's gateway, which decides it in its own
+ * journal. `rejection_limit` is the park a session makes when a rejection reaches its limit: it follows that rejected
+ * call and is not a call of its own (review round 3 of PR #68). The one rule for a service's replay of a session
+ * (`reopen`) and for `juno journal report`, so the two can never classify an entry differently.
  */
-export function journalledCall(entry: TrajectoryEntry, payload: unknown): { readonly kind: "call"; readonly outcome: unknown } | { readonly kind: "park"; readonly judged: boolean; readonly reason: unknown; readonly command: boolean } | { readonly kind: "rejection" } | { readonly kind: "gateway_call" } | null {
+export function journalledCall(entry: TrajectoryEntry, payload: unknown): { readonly kind: "call"; readonly outcome: unknown } | { readonly kind: "park"; readonly judged: boolean; readonly reason: unknown; readonly command: boolean } | { readonly kind: "rejection_limit" } | { readonly kind: "rejection" } | { readonly kind: "result_missing" } | { readonly kind: "gateway_call" } | null {
   const judged = field(payload, "call_seq") !== undefined && field(payload, "call_seq") !== null;
   if (entry.kind === "capability_call") return { kind: "call", outcome: field(field(payload, "verdict"), "outcome") };
-  if (entry.kind === "park") return { kind: "park", judged, reason: field(payload, "reason"), command: field(payload, "command") !== undefined };
+  if (entry.kind === "park") {
+    const reason = field(payload, "reason");
+    if (reason === "rejection_limit") return { kind: "rejection_limit" };
+    return { kind: "park", judged, reason, command: field(payload, "command") !== undefined };
+  }
   if (entry.kind !== "note") return null;
   const type = field(payload, "type");
   if (type === "gateway_call") return { kind: "gateway_call" };
   if (type === "rejection" && !judged) return { kind: "rejection" };
+  if (type === "result_missing") return { kind: "result_missing" };
   return null;
 }
 
@@ -1007,9 +1015,11 @@ export class SessionLayer {
         if (call.outcome === "reject") rejections.push({ kind: "call", seq: entry.seq });
         else if (call.outcome === "proceed") rejections = [];
       } else if (call.kind === "park") {
-        if (!call.judged && call.reason !== "budget_exceeded" && call.reason !== "rejection_limit" && !call.command) turns += 1;
+        if (!call.judged && call.reason !== "budget_exceeded" && !call.command) turns += 1;
         rejections = [];
-      } else if (call.kind === "gateway_call") turns += 1;
+      } else if (call.kind === "rejection_limit") rejections = [];
+      else if (call.kind === "gateway_call") turns += 1;
+      else if (call.kind === "result_missing") continue;
       else {
         turns += 1;
         rejections.push({ kind: "call", seq: entry.seq });
