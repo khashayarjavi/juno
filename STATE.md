@@ -3,7 +3,12 @@
 ## Current increment
 **1.5-ops — the field report of the operator's machine running bef25fe, authorised by you on 2026-11-24 (D-243); continued under your rulings of 2026-11-25 (D-247).** Branch `claude/elegant-heisenberg-nvw7vq` (this session's only pushable branch). Draft PR [khashayarjavi/juno#66](https://github.com/khashayarjavi/juno/pull/66) carries PR #65's fourteen commits unchanged and supersedes it. Main at bef25fe. Spec v0.6.1. No objection open.
 
-Status (2026-11-25, this session): **your ruling 1 built (D-247); `make verify` running; review round 3 next.** Nothing is merged; main is unchanged at bef25fe, so your machine is unaffected.
+Status (2026-11-25, this session): **your ruling 1 built (D-247). Review round 3: DO NOT MERGE, two findings, both fixed (D-248); `make verify` running on the fix; review round 4 next.**
+
+**Review rounds on PR #66 (numbered on from #65's):**
+- **Round 3** (d29c3b6; CI's two rootless jobs green, `make verify: GREEN` on 7c4812a, 1,534 unit and 156 container tests): DO NOT MERGE.
+  1. If an undo stopped part way (a full disk, say), its message still carried Node's own words from inside the sealed container. Those name that container's handle (`/proc/self/fd/22/…`) and the folder as `/work/…`, neither usable on your machine. Now the message names the file it stopped at, from the session's folder, and the error code; your machine's path for the kept folder is added from its own field.
+  2. My D-247 fix for the sticky-bit advice read a marker out of the message text. A file name Claude chose could forge that marker and make JUNO tell you to run `chmod` as root on a folder outside the workspace. Now the sealed copy returns those entries in a separate field. A command is given only for an entry inside the session's folder, with no link on the way, that your machine itself sees with the bit. Tests prove a forged marker or path gets no command. Nothing is merged; main is unchanged at bef25fe, so your machine is unaffected.
 
 ### Your rulings of 2026-11-25 (D-247)
 1. Round 2's finding is accepted as fixed. Its class is closed: every refusal or remedy that names a file, folder or command builds it through one shared helper, from the value the code uses; a test triggers each refusal against a real service and real files and checks every path and every command.

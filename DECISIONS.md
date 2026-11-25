@@ -3198,3 +3198,21 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
 - **The guide:** upgrade step 7 now also finds and updates the operator's Windows scripts in `%USERPROFILE%\juno-setup` and any Windows scheduled task that run the stand-in; "When something goes wrong" says every lock and socket refusal gives its commands between backticks, with the real paths.
 - **Residual 55:** the systemd test's unit runs a stand-in that holds the lock with JUNO's own lock code, not the hook service itself (the real service's refusals and take-overs are proven in sealed containers, where no systemd runs). The `pgrep` the remedies give sees only its own PID namespace (residual 53).
 - Reason: the operator's rulings; CLAUDE.md §7.
+
+## D-248 — Review round 3 (PR #66): the sealed copy's messages name no descriptor or sealed path, and a remedy's command is never built from text (autopilot rulings, D-247 ruling 2, restrictive)
+- Date: 2026-11-25
+- Status: Accepted (built with tests)
+- Applies to: `packages/enforcement/src/workspace-copy.mjs` (`said`, `entryName`, `bitEntries`, `restoreTree`, `undoTo`, `main`), `packages/enforcement/src/host-restore.ts` (`SealedAnswer`'s `bits`, `#named`), `packages/runner/src/restore.ts` (`keptAt`, the failed reason); tests: `packages/enforcement/test/host-restore.test.ts`
+- **Round 3 (fresh reviewer, the review prompt verbatim; head d29c3b6): DO NOT MERGE.** Checks 1 to 4 and 6 PASS; check 5 FAIL with two findings. Under D-247 ruling 2 each is another wrong path or command in a message, so a fix, not a STOP.
+  - **A.** A restore that stops part way forwarded Node's own error text from inside the sealed context, which names that process's descriptor paths (`/proc/self/fd/22/…`), and named the kept folder as `/work/…`. Neither can be used on the host, and the host's `operatorText` cannot resolve another process's descriptor. A full disk during a restore is a realistic trigger.
+  - **B.** Introduced by D-247 in this PR: the host read an in-band marker out of the sealed program's texts to write the bit remedy's command. Texts can carry names the agent chose, so a file named with the marker could make JUNO tell the operator to run a root `chmod` on a path outside the workspace (`/tmp`), or cut a refusal short.
+- **Fixed (restrictive):**
+  - The sealed program never forwards Node's text. A failure says what it wrote itself (`said`): the entry it stopped at by its path from the session's folder, through JSON, and the error code (`"x…x" could not be restored (ENAMETOOLONG)`). Every step of `restoreTree` that can fail is wrapped so. The texts no longer name `/work` paths either: they say "the session's folder" and name folders above it and the aside name through JSON.
+  - Where the old folder is kept comes only from the answer's `kept` field. The host checks that it is a plain path under `/work`, names it on this machine, and adds it to the failed reason.
+  - The marker is gone. The sealed program collects each entry it refuses for a special bit in a set and returns it in the answer's own `bits` field, never inside a text. The host gives a command only for an entry that passes every check: its path is plain (no empty, `.` or `..` part); it lies inside the session's folder on this host; `realpath` shows no symbolic link on the way; and this host's own `lstat` shows it with a set-user-ID, set-group-ID or sticky bit. Any other entry gets no command. The command is appended as its own line, and the texts are never parsed.
+- **Tests:**
+  - the bit remedy, run exactly as given, removes the bit (as before, in the new form);
+  - a forged answer, whose text holds the old marker and whose `bits` name `../../` paths, a link, `/etc`, or entries without the bit, comes back word for word with no command added, and the folder outside keeps its sticky bit;
+  - a real restore through the sealed program that stops part way (a 300-byte name, `ENAMETOOLONG`) names the entry through JSON and no `/proc`, `/dev/fd` or `/work` path, and the kept folder exists on the host.
+  - Every existing test is kept. The only lines removed are from the D-247 test this PR added, rewritten to the new form.
+- Reason: D-247 rulings 1 and 2; §0.2 D8; §8.3 (a value the agent wrote never becomes a command the operator is told to run).
