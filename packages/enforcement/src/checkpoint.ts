@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { type AbsolutePath, WorkPath, parseAtBoundary } from "../../contracts/src/index.js";
 import { WORKLOAD_NODE } from "./canonical.js";
-import { canonicalJson } from "../../journal/src/index.js";
+import { canonicalJson, operatorText, shownName } from "../../journal/src/index.js";
 import { type WorkloadTarget, WorkloadTarget as WorkloadTargetSchema } from "../../registry/src/index.js";
 
 /**
@@ -160,7 +160,7 @@ export class Workspace {
       const result = await this.#run(args, null);
       output = SnapshotOutput.parse(JSON.parse(result.exitCode === 0 ? result.stdout : "null"));
     } catch (error: unknown) {
-      return { ok: false, reason: `the snapshot did not run: ${error instanceof Error ? error.message : String(error)}` };
+      return { ok: false, reason: `the snapshot did not run: ${shownName(operatorText(error instanceof Error ? error.message : String(error)))}` };
     }
     if ("error" in output) return { ok: false, reason: output.error };
     const contents = new Map<string, Buffer>();
@@ -184,7 +184,7 @@ export class Workspace {
       const output = RestoreOutput.parse(JSON.parse(result.exitCode === 0 ? result.stdout : "null"));
       return "error" in output ? { ok: false, reason: output.error } : { ok: true };
     } catch (error: unknown) {
-      return { ok: false, reason: `the restore did not run: ${error instanceof Error ? error.message : String(error)}` };
+      return { ok: false, reason: `the restore did not run: ${shownName(operatorText(error instanceof Error ? error.message : String(error)))}` };
     }
   }
 }

@@ -412,7 +412,7 @@ function listNames(workspace: string, root: string): { ok: true; snapshot: Snaps
           } finally {
             closeSync(child);
           }
-        } else return `the workspace holds an entry that is not a file, directory or symlink: ${path}`;
+        } else return `the workspace holds an entry that is not a file, directory or symlink: ${shownName(JSON.stringify(path))}`;
       }
       return null;
     };
