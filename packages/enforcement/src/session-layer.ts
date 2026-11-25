@@ -102,7 +102,8 @@ const OWN_RECORD_PREFIX = "juno.";
  * decides it in its own journal. `rejection_limit` is the park a session makes when a rejection reaches its limit: it
  * follows that rejected call and is not a call of its own (D-257). `session_ended` with `call: false` is a session
  * stopped because its journal head could not be anchored, which can happen outside any call. **After a session ends,
- * JUNO denies its later calls without journalling them**: no entry, so no count (review round 4 of PR #68).
+ * or when its admission was refused, JUNO denies its calls; it journals only a shell command it cannot read** (D-151,
+ * D-152: parked whatever the session's state), so every other such call has no entry, and no count (D-258, D-259).
  * The one rule for a service's replay of a session (`reopen`) and for `juno journal report`, so the two can never
  * classify an entry differently.
  */

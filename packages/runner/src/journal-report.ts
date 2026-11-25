@@ -55,6 +55,12 @@ export type SessionReport = Summary & {
    * JUNO denies its calls without journalling them, so the report cannot count them (D-258).
    */
   readonly ended: { readonly reason: string; readonly at: string } | null;
+  /**
+   * Whether JUNO admitted the session (D-259): `refused` when its admission was refused. JUNO denies every call of a
+   * refused or ended session; of those it journals only a shell command it cannot read (D-151, D-152: parked whatever the
+   * session's state, counted as a park), never the others, which no report on the journal can count.
+   */
+  readonly admission: "admitted" | "refused" | "not recorded";
   readonly mode: string | null;
   readonly principal: string | null;
   readonly first_entry: string | null;
@@ -62,7 +68,7 @@ export type SessionReport = Summary & {
 };
 
 export type Report =
-  | { readonly ok: true; readonly verified: { readonly records: number; readonly history: "checked" | "not_checked"; readonly never_written: readonly string[] }; readonly sessions: readonly SessionReport[]; readonly total: Summary }
+  | { readonly ok: true; readonly verified: { readonly records: number; readonly history: "checked" | "not_checked"; readonly never_written: readonly string[]; readonly empty_folders: readonly string[] }; readonly sessions: readonly SessionReport[]; readonly total: Summary }
   | { readonly ok: false; readonly refused: string };
 
 type Payload = Record<string, unknown>;
@@ -218,9 +224,18 @@ export function journalReport(journal: string, anchorsOf: (digest: string) => un
   const records = listRecords(journal);
   if (records.length === 0) return refuse("the journal holds no record");
   const verified = new Map<string, readonly TrajectoryEntry[]>();
+  const emptyFolders: string[] = [];
   for (const record of records) {
     if (!record.verdict.ok) return refuse(`journal record ${quoted(record.taskId ?? record.digest)} does not verify: ${record.verdict.failure.code} (§3.4.2)`);
-    if (record.taskId === null) return refuse(`journal folder ${quoted(record.digest)} holds no record JUNO wrote (D-202)`);
+    if (record.taskId === null) {
+      // D-259: an empty folder (no entries, no head) is a record a crash left before its first entry; a service's start
+      // passes it too. It hides nothing: a record the journal names is judged by its id below, folder or none.
+      if (record.verdict.entries.length === 0) {
+        emptyFolders.push(record.digest);
+        continue;
+      }
+      return refuse(`journal folder ${quoted(record.digest)} holds no record JUNO wrote (D-202)`);
+    }
     verified.set(record.taskId, record.verdict.entries);
   }
   // D-202, as a service's start judges it (`ownRecordEntry`, the one rule for both): one journal's own record, holding
@@ -265,6 +280,7 @@ export function journalReport(journal: string, anchorsOf: (digest: string) => un
     const end = read.read.map(({ entry, payload }) => ({ entry, judged: journalledCall(entry, payload) })).find(({ judged }) => judged?.kind === "session_ended");
     sessions.push({
       id,
+      admission: admission === undefined ? "not recorded" : admission["outcome"] === "admitted" ? "admitted" : "refused",
       mode: text(admission?.["mode"]),
       principal: text(field(admission?.["request"], "principal")),
       ended: end?.judged?.kind === "session_ended" ? { reason: end.judged.reason, at: end.entry.timestamp } : null,
@@ -274,7 +290,7 @@ export function journalReport(journal: string, anchorsOf: (digest: string) => un
     });
   }
   sessions.sort((a, b) => (a.first_entry ?? "").localeCompare(b.first_entry ?? "") || a.id.localeCompare(b.id));
-  return { ok: true, verified: { records: verified.size, history, never_written: neverWritten }, sessions, total: sum(sessions) };
+  return { ok: true, verified: { records: verified.size, history, never_written: neverWritten, empty_folders: emptyFolders.sort() }, sessions, total: sum(sessions) };
 }
 
 /** A value from the journal as the text form shows it: an escaped quotation (D-251), never part of a command. */
@@ -305,19 +321,25 @@ function summaryLines(summary: Summary): string[] {
   ];
 }
 
+/** What the report says of a refused or ended session's calls (D-259): which are journalled, and which are not counted. */
+const UNJOURNALLED = "Of those calls JUNO journals only a shell command it could not read (parked, and counted above); every other call was denied without a journal entry, so it is not counted here.";
+
 /** The report as plain text for the operator. Every value from the journal is an escaped quotation; no command is given. */
 export function reportText(report: Report): string {
   if (!report.ok) return `juno journal report: refused: ${report.refused}\n`;
   const lines = [
     `JUNO journal report: ${String(report.verified.records)} records verified against their anchors (anchor history ${report.verified.history === "checked" ? "checked" : "NOT checked: --no-history"}).`,
     "Values in quotes are as the journal holds them; paths, commands, programs and tools were chosen by Claude or the workspace: read them, never run them.",
+    ...(report.verified.empty_folders.length === 0 ? [] : [`Empty record folders (a crash before a record's first entry; nothing in them): ${report.verified.empty_folders.map(quoted).join(", ")}.`]),
     ...(report.verified.never_written.length === 0 ? [] : [`Named by the journal but never written (no entries, no anchors): ${report.verified.never_written.map(quoted).join(", ")}.`]),
     "",
   ];
   for (const session of report.sessions) {
-    lines.push(`Session ${quoted(session.id)} (${session.mode === null ? "mode not recorded" : `mode ${quoted(session.mode)}`}${session.principal === null ? "" : `, principal ${quoted(session.principal)}`}), ${session.first_entry ?? "?"} to ${session.last_entry ?? "?"}:`, ...summaryLines(session), ...(session.ended === null ? [] : [`  ended at ${session.ended.at}: ${quoted(session.ended.reason)}. JUNO denies every later call of this session without journalling it, so those calls are not counted here.`]), "");
+    lines.push(`Session ${quoted(session.id)} (${session.mode === null ? "mode not recorded" : `mode ${quoted(session.mode)}`}${session.principal === null ? "" : `, principal ${quoted(session.principal)}`}), ${session.first_entry ?? "?"} to ${session.last_entry ?? "?"}:`, ...summaryLines(session), ...(session.admission === "refused" ? [`  ADMISSION REFUSED: JUNO denied every call of this session. ${UNJOURNALLED}`] : []), ...(session.admission === "not recorded" ? ["  no admission recorded: JUNO admitted nothing under this id."] : []), ...(session.ended === null ? [] : [`  ended at ${session.ended.at}: ${quoted(session.ended.reason)}. JUNO denied every later call of this session. ${UNJOURNALLED}`]), "");
   }
   const endedCount = report.sessions.filter((session) => session.ended !== null).length;
-  lines.push(`Total, ${String(report.sessions.length)} session${report.sessions.length === 1 ? "" : "s"}${endedCount === 0 ? "" : `, ${String(endedCount)} of them ended (their later calls are not journalled, so not counted)`}:`, ...summaryLines(report.total));
+  const refusedCount = report.sessions.filter((session) => session.admission !== "admitted").length;
+  const notes = [...(endedCount === 0 ? [] : [`${String(endedCount)} ended`]), ...(refusedCount === 0 ? [] : [`${String(refusedCount)} not admitted`])];
+  lines.push(`Total, ${String(report.sessions.length)} session${report.sessions.length === 1 ? "" : "s"}${notes.length === 0 ? "" : ` (${notes.join(", ")}: the calls JUNO denied there without journalling them are not counted)`}:`, ...summaryLines(report.total));
   return `${lines.join("\n")}\n`;
 }
