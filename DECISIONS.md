@@ -3238,3 +3238,22 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   - Every existing test is kept. The only lines changed are in tests this PR added (one odd word in the round-trip test, now `$(z)`, since a backtick word is no longer rendered).
 - **Residual 56:** a name that is printable but misleading (a look-alike letter, say) is shown as it is in prose; it is never part of a command (commands hold printable ASCII only).
 - Reason: D-247 rulings 1 and 2; D-179; §0.2 D8; §8.3.
+
+## D-250 — STOP after review round 5 (PR #66): the last authorised round ends DO NOT MERGE, and CI no longer starts; its finding fixed, not reviewed
+- Date: 2026-11-25
+- Status: STOP (awaiting the operator)
+- Applies to: `packages/journal/src/operator-names.ts` (`knownUserName`, `asUserCommand`), `packages/enforcement/src/host-restore.ts`, `packages/runner/src/restore.ts`, `packages/runner/src/journal-cli.ts`, `packages/runner/test/operator-names.test.ts`
+- **Round 5 (fresh reviewer, the review prompt verbatim; head b6e92e4): DO NOT MERGE.** Checks 1 to 4 and 6 PASS; check 5 FAIL, one finding and two notes:
+  - **Finding.** For an entry whose owner `/etc/passwd` gives no name (a numeric owner left by `sudo tar x`, say), the bit remedy gave `` `sudo -u 'the user with uid 165536' chmod …` ``, which `sudo` refuses. That breaks D-247 ruling 1 ("every command it gives runs"). It is another wrong command in a message, so a fix under D-247 ruling 2, not a STOP by itself.
+  - **Notes.** The sealed program's stderr (when it gives no answer) was escaped as a line but not as a name. `juno checkpoint list` and `juno journal`'s error line printed without the printers' escaping.
+- **Why this is a STOP.** CLAUDE.md §7: five review rounds still end DO NOT MERGE (rounds 1 and 2 on #65, 3 to 5 here, the five D-247 ruling 2 authorises). Separately, the merge gate cannot be met: since 6d7c540, every CI run on this PR fails at once, with no step run. Runs 45565553861, 45565662864 and 45565736912 each failed all three jobs within about 2 seconds. The reviewer read GitHub's annotation there as a failed account payment or a spending limit. The round-4 and round-5 fixes have therefore never run in CI. The last green CI run is 45562833328, on 2c828f7.
+- **Built anyway, not reviewed (as D-240, D-246):**
+  - `asUserCommand` takes the owner's uid. It returns the command as it is for this process's own user, `sudo -u <name>` for a user `/etc/passwd` names (`knownUserName`), and **null, so no command at all,** for a uid with no name. The bit remedy then says in words that the owner (uid N) has no user name and that JUNO gives no command.
+  - The sealed program's stderr is shown as a name.
+  - `juno checkpoint list`'s JSON and `juno journal`'s error line are printed escaped, as every refusal line is.
+  - Tests: a nameless uid gets no command; root is named `root`.
+  - `make verify: GREEN` on 5b851d3 (1,539 unit, 156 container tests).
+- **The operator's decision, recommended first:**
+  1. **Restore GitHub Actions on the repository** (the account's payment or spending limit), then **authorise one or more further review rounds** on PR #66. On MERGE: the gate, then STOP with the merge commit hash and the upgrade steps (D-247 ruling 3).
+  2. Direct otherwise.
+- Reason: CLAUDE.md §7 STOP rules (five rounds; merge gate step b); D-240, D-246 precedent.

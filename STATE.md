@@ -3,9 +3,22 @@
 ## Current increment
 **1.5-ops — the field report of the operator's machine running bef25fe, authorised by you on 2026-11-24 (D-243); continued under your rulings of 2026-11-25 (D-247).** Branch `claude/elegant-heisenberg-nvw7vq` (this session's only pushable branch). Draft PR [khashayarjavi/juno#66](https://github.com/khashayarjavi/juno/pull/66) carries PR #65's fourteen commits unchanged and supersedes it. Main at bef25fe. Spec v0.6.1. No objection open.
 
-Status (2026-11-25, this session): **your ruling 1 built (D-247). Rounds 3 and 4 each ended DO NOT MERGE; every finding is fixed (D-248, D-249). `make verify` is running on the fix; review round 5, the last you authorised, is next.**
+Status (2026-11-25, this session): **STOPPED after review round 5 (D-250).** The last round you authorised ended DO NOT MERGE. Its finding is fixed, with a test, but not reviewed. CI has stopped starting on this PR (see below). `make verify: GREEN` on 5b851d3 (1,539 unit, 156 container tests). **Nothing is merged; main is unchanged at bef25fe, so your machine is unaffected.**
+
+### STOP after review round 5 (D-250)
+- **Why this is a STOP.**
+  - Your ruling 2 authorised review rounds 3 to 5. Round 5 ended DO NOT MERGE.
+  - Separately, the merge gate needs CI green on the head, and CI no longer runs. Since 6d7c540, every run on this PR fails all three jobs in about 2 seconds, before any step (runs 45565553861, 45565662864, 45565736912). The reviewer read GitHub's notice as a failed payment or a spending limit on the account. So the fixes of rounds 4 and 5 have never run in CI. The last green CI is run 45562833328, on 2c828f7.
+- **Round 5's finding, in plain words.** For a file whose owner has no user name on the machine (a numeric owner, as `sudo tar x` can leave), the advice for removing a sticky or set-user-ID bit said ``sudo -u 'the user with uid 165536' chmod …``, which `sudo` refuses. That is a command that does not run.
+- **Built anyway, not reviewed:**
+  - for such an owner JUNO now gives no command and says why, in words;
+  - the reviewer's two small notes are done too: the sealed copy's error output is shown escaped, and so are `juno checkpoint list` and `juno journal`'s error line.
+- **Your decision, recommended first:**
+  1. **Restore GitHub Actions** on the account (its payment or spending limit), so CI runs again. Then **authorise one or more further review rounds** on PR #66. On MERGE: the gate, then STOP with the merge commit hash and your upgrade steps.
+  2. Direct otherwise.
 
 **Review rounds on PR #66 (numbered on from #65's):**
+- **Round 5** (b6e92e4; CI did not start): DO NOT MERGE; the STOP above (D-250).
 - **Round 4** (2c828f7; `make verify: GREEN` on ba3a183, 1,536 unit and 156 container tests; CI's two rootless jobs green): DO NOT MERGE.
   1. A file or folder name Claude chose could hold a line break, a fake command between backticks, or a terminal control code. JUNO showed it as it was in a refusal you would see at the next admission, and the guide tells you to copy commands between backticks. Now:
      - every such name is shown with those characters escaped (as `\u{…}`);
@@ -39,7 +52,7 @@ Status (2026-11-25, this session): **your ruling 1 built (D-247). Rounds 3 and 4
 
 **Autopilot rulings this session (D-247, one line each):** a socket in use refuses with its path and remedy; the restore as root names the journal's owner, with no `sudo` command; the sealed copy's bit remedy is written on the host from the real path and owner; usage lines name this copy's Node and `juno.js`; the superblock refusal adds the exact `sudo` command to run the check again; residual 55 (the systemd test's unit holds the lock with JUNO's own lock code, not the service itself).
 
-**Left, in order:** `make verify` green; CI green on the PR's head; review round 3 (up to 5); the merge gate; then STOP with the merge commit hash and your upgrade steps.
+**Left, in order:** GitHub Actions restored; your decision on D-250; further review rounds if you authorise them; CI green on the head; the merge gate; then STOP with the merge commit hash and your upgrade steps.
 
 ## Before this session: 1.5-ops rounds 1 and 2 (PR #65)
 ### STOP after review round 2 (D-246)
