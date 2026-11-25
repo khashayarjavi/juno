@@ -28,6 +28,8 @@ export type CallCounts = {
   readonly parked: number;
   /** Calls JUNO rejected (`rejection` notes, and `capability_call` entries with outcome `reject`). */
   readonly rejected: number;
+  /** The call that found the session's time to live expired, denied (D-258); later calls are not journalled. */
+  readonly denied_session_ended: number;
   /** Calls denied because an earlier call's result never arrived (`result_missing`, plan item 8). */
   readonly denied_result_missing: number;
   /** Calls the hook passed to JUNO's gateway, which judged them there and journals them in its own journal (D-190). */
@@ -48,6 +50,11 @@ export type Summary = CallCounts & {
 
 export type SessionReport = Summary & {
   readonly id: string;
+  /**
+   * How the session ended, when it did (its time to live, or its journal head not anchored), and when: after that,
+   * JUNO denies its calls without journalling them, so the report cannot count them (D-258).
+   */
+  readonly ended: { readonly reason: string; readonly at: string } | null;
   readonly mode: string | null;
   readonly principal: string | null;
   readonly first_entry: string | null;
@@ -126,6 +133,7 @@ function summarise(read: readonly Read[]): Summary {
   let passed = 0;
   let missing = 0;
   let limits = 0;
+  let ended = 0;
   const reasons: string[] = [];
   const capabilities: string[] = [];
   const programs: string[] = [];
@@ -162,6 +170,10 @@ function summarise(read: readonly Read[]): Summary {
       limits += 1;
       continue;
     }
+    if (judged.kind === "session_ended") {
+      if (judged.call) ended += 1;
+      continue;
+    }
     parked += 1;
     reasons.push(text(payload["reason"]) ?? "(no reason recorded)");
     const seq = payload["call_seq"];
@@ -177,7 +189,7 @@ function summarise(read: readonly Read[]): Summary {
     else if (command !== null) targets.push(command);
     else if (payload["outside_workspace"] === true) targets.push(`(not recorded: a ${text(payload["field"]) ?? "field"} outside the workspace)`);
   }
-  return { allowed, parked, rejected, denied_result_missing: missing, passed_to_gateway: passed, rejection_limit_reached: limits, parks_by_reason: tally(reasons), parks_by_capability: tally(capabilities), parks_by_program: tally(programs), blocked_targets: tally(targets) };
+  return { allowed, parked, rejected, denied_session_ended: ended, denied_result_missing: missing, passed_to_gateway: passed, rejection_limit_reached: limits, parks_by_reason: tally(reasons), parks_by_capability: tally(capabilities), parks_by_program: tally(programs), blocked_targets: tally(targets) };
 }
 
 function sum(parts: readonly Summary[]): Summary {
@@ -186,6 +198,7 @@ function sum(parts: readonly Summary[]): Summary {
     allowed: parts.reduce((total, part) => total + part.allowed, 0),
     parked: parts.reduce((total, part) => total + part.parked, 0),
     rejected: parts.reduce((total, part) => total + part.rejected, 0),
+    denied_session_ended: parts.reduce((total, part) => total + part.denied_session_ended, 0),
     denied_result_missing: parts.reduce((total, part) => total + part.denied_result_missing, 0),
     passed_to_gateway: parts.reduce((total, part) => total + part.passed_to_gateway, 0),
     rejection_limit_reached: parts.reduce((total, part) => total + part.rejection_limit_reached, 0),
@@ -249,10 +262,12 @@ export function journalReport(journal: string, anchorsOf: (digest: string) => un
     const read = readAll(journal, id, entries);
     if (!read.ok) return refuse(read.reason);
     const admission = read.read.find(({ entry, payload }) => entry.kind === "note" && payload["type"] === "admission")?.payload;
+    const end = read.read.map(({ entry, payload }) => ({ entry, judged: journalledCall(entry, payload) })).find(({ judged }) => judged?.kind === "session_ended");
     sessions.push({
       id,
       mode: text(admission?.["mode"]),
       principal: text(field(admission?.["request"], "principal")),
+      ended: end?.judged?.kind === "session_ended" ? { reason: end.judged.reason, at: end.entry.timestamp } : null,
       first_entry: entries[0]?.timestamp ?? null,
       last_entry: entries[entries.length - 1]?.timestamp ?? null,
       ...summarise(read.read),
@@ -281,7 +296,7 @@ function tallyLines(title: string, items: Tally, limit?: number): string[] {
 
 function summaryLines(summary: Summary): string[] {
   return [
-    `  tool calls: ${String(summary.allowed)} allowed, ${String(summary.parked)} parked, ${String(summary.rejected)} rejected${summary.denied_result_missing > 0 ? `, ${String(summary.denied_result_missing)} denied because an earlier call's result never arrived` : ""}${summary.passed_to_gateway > 0 ? `, ${String(summary.passed_to_gateway)} passed to the gateway` : ""}`,
+    `  tool calls: ${String(summary.allowed)} allowed, ${String(summary.parked)} parked, ${String(summary.rejected)} rejected${summary.denied_session_ended > 0 ? `, ${String(summary.denied_session_ended)} denied because the session's time to live had expired` : ""}${summary.denied_result_missing > 0 ? `, ${String(summary.denied_result_missing)} denied because an earlier call's result never arrived` : ""}${summary.passed_to_gateway > 0 ? `, ${String(summary.passed_to_gateway)} passed to the gateway` : ""}`,
     ...(summary.rejection_limit_reached > 0 ? [`  the session parked at its rejection limit ${String(summary.rejection_limit_reached)} time${summary.rejection_limit_reached === 1 ? "" : "s"} (each after a rejected call counted above)`] : []),
     ...tallyLines("parks by reason", summary.parks_by_reason),
     ...tallyLines("parks by capability", summary.parks_by_capability),
@@ -300,8 +315,9 @@ export function reportText(report: Report): string {
     "",
   ];
   for (const session of report.sessions) {
-    lines.push(`Session ${quoted(session.id)} (${session.mode === null ? "mode not recorded" : `mode ${quoted(session.mode)}`}${session.principal === null ? "" : `, principal ${quoted(session.principal)}`}), ${session.first_entry ?? "?"} to ${session.last_entry ?? "?"}:`, ...summaryLines(session), "");
+    lines.push(`Session ${quoted(session.id)} (${session.mode === null ? "mode not recorded" : `mode ${quoted(session.mode)}`}${session.principal === null ? "" : `, principal ${quoted(session.principal)}`}), ${session.first_entry ?? "?"} to ${session.last_entry ?? "?"}:`, ...summaryLines(session), ...(session.ended === null ? [] : [`  ended at ${session.ended.at}: ${quoted(session.ended.reason)}. JUNO denies every later call of this session without journalling it, so those calls are not counted here.`]), "");
   }
-  lines.push(`Total, ${String(report.sessions.length)} session${report.sessions.length === 1 ? "" : "s"}:`, ...summaryLines(report.total));
+  const endedCount = report.sessions.filter((session) => session.ended !== null).length;
+  lines.push(`Total, ${String(report.sessions.length)} session${report.sessions.length === 1 ? "" : "s"}${endedCount === 0 ? "" : `, ${String(endedCount)} of them ended (their later calls are not journalled, so not counted)`}:`, ...summaryLines(report.total));
   return `${lines.join("\n")}\n`;
 }

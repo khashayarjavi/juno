@@ -381,6 +381,30 @@ describe("juno journal report (D-251 queue item 2, D-254)", () => {
     expect(reached.result_missing).toBeGreaterThan(0);
   }, 300_000);
 
+  // proves D-258 (review round 4 of PR #68): a session that ends (here its time to live) is reported as ended, with
+  // when and why; the call that found it expired is counted once, as denied; and the report says plainly that JUNO
+  // denies every later call without journalling it, so those are not counted
+  it("reports a session that ended, and says its later calls are not counted", async () => {
+    await serving(async () => {
+      const id = SESSIONS[0] ?? "";
+      const file = sessionFile(id) as { session: Record<string, unknown> };
+      writeFileSync(join(dir, "state", "session-short.json"), JSON.stringify({ ...file, session: { ...file.session, ttl: 2_000, budget: { tool_calls: 40, wall_clock_ms: 2_000 } } }), { mode: 0o600 });
+      expect(await runHookAdmitCli(["--control", join(sockets, "admit.sock"), join(dir, "state", "session-short.json")], quiet)).toBe(0);
+      expect(await call(id, "Read", { file_path: join(work, "project", "notes.txt") })).toBe("ran");
+      await new Promise((resolve) => setTimeout(resolve, 2_500));
+      for (let attempt = 0; attempt < 3; attempt += 1) expect(await call(id, "Write", { file_path: "/etc/passwd", content: "x" })).toBe("denied");
+    });
+    const copy = await adminCopy();
+    const json = await report(copy, ["--json"]);
+    expect(json.code, json.out).toBe(0);
+    const session = (JSON.parse(json.out) as { sessions: Record<string, unknown>[] }).sessions[0];
+    expect(session).toMatchObject({ allowed: 1, parked: 0, rejected: 0, denied_session_ended: 1, ended: { reason: "ttl_expired", at: expect.stringMatching(/^\d{4}-/) } });
+    const text = await report(copy);
+    expect(text.out).toContain("1 denied because the session's time to live had expired");
+    expect(text.out).toMatch(/ended at \S+: "ttl_expired"\. JUNO denies every later call of this session without journalling it, so those calls are not counted here\./);
+    expect(text.out).toContain("Total, 1 session, 1 of them ended (their later calls are not journalled, so not counted):");
+  }, 120_000);
+
   // proves D-254 for the guide: Part G step 8's command, word for word (the copies' paths in place of ~/juno-check),
   // reports on a journal the real hook service wrote, as step 8's Check says
   it("runs Part G step 8's command as the guide gives it", async () => {
