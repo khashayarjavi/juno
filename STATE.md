@@ -3,7 +3,7 @@
 ## Current increment
 **1.5-ops (queue item 1 of 3, D-251).** Branch `claude/elegant-ritchie-6pkguy` (this session's only pushable branch). It carries PR [khashayarjavi/juno#66](https://github.com/khashayarjavi/juno/pull/66)'s twenty-six commits unchanged; its draft PR supersedes #66, and review rounds 6 to 10 run there. Main at bef25fe. Spec v0.6.1. No objection open. The repository is public now (your choice), so CI runs again.
 
-Status (2026-11-25, this session): **your ruling of D-251 built (D-252), with tests. `make verify: GREEN` on c7a4f43 (1,548 unit, 156 container). Draft PR [khashayarjavi/juno#67](https://github.com/khashayarjavi/juno/pull/67) supersedes #66. Review round 6 running.** Nothing merged yet; main is unchanged at bef25fe, so your machine is unaffected.
+Status (2026-11-25, this session): **your ruling of D-251 built (D-252), with tests. `make verify: GREEN` on c7a4f43 (1,548 unit, 156 container). Draft PR [khashayarjavi/juno#67](https://github.com/khashayarjavi/juno/pull/67) supersedes #66. Review round 6: DO NOT MERGE (a test that depended on where the code is checked out; CI's `verify` job red); fixed (D-253). Round 7 next.** Nothing merged yet; main is unchanged at bef25fe, so your machine is unaffected.
 
 ### The queue (D-251)
 1. **1.5-ops**, PR #66's work: your ruling (no command built from a workspace value), then review rounds 6 to 10, then the merge gate. **In progress.**
@@ -17,7 +17,10 @@ Status (2026-11-25, this session): **your ruling of D-251 built (D-252), with te
 - **Still printed:** commands built only from JUNO's configured values (the journal's lock, the socket, the service, JUNO's own Node and `juno.js`, the hook check's own command line).
 - **Tests:** names an attacker would choose are planted and every refusal they can reach is triggered; no command in any of them holds the name or a workspace path. A lint test lists every place that builds a command for you, with where its values come from; a new place fails until listed. The guide's fixed command is read from the guide and run in a test; it removes the bits.
 
-**Left, in order:** `make verify` green; the superseding PR; review rounds 6 to 10; CI green on the head; the merge gate; record the merge and your upgrade steps; then queue item 2.
+**Review rounds on PR #67:**
+- **Round 6** (85e2d43): DO NOT MERGE. The new hostile-names test looked for the text `/work/` in every command; CI checks the code out under `/home/runner/work/…`, so JUNO's own correct command tripped it. Also two tests that failed once each, and the command list missed command lines written straight into text. All fixed (D-253); JUNO's behaviour did not change.
+
+**Left, in order:** review rounds 7 to 10 as needed; CI green on the head; the merge gate; record the merge and your upgrade steps; then queue item 2.
 
 ## Before this session: 1.5-ops on PR #66 (rounds 3 to 5)
 ### STOP after review round 5 (D-250)

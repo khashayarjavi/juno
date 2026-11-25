@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { closeSync, constants, mkdirSync, mkdtempSync, openSync, rmSync } from "node:fs";
+import { closeSync, constants, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
@@ -123,9 +123,32 @@ describe("the names refusals and remedies give (D-247)", () => {
     expect(new Set(holders)).toEqual(new Set(LOCK_HOLDING_COMMANDS.map((words) => words[0])));
     expect(ENTRY_POINTS.find((entry) => entry.id === "runner.process")?.program).toBe("packages/runner/src/main.ts");
     expect(ENTRY_POINTS.find((entry) => entry.id === "juno")?.program).toBe("packages/runner/src/juno.ts");
-    // Run exactly as given: no JUNO process runs in a unit test, so it prints nothing and says so by its exit code.
+    // Run exactly as given. When no lock-holding JUNO process runs on this machine (read from /proc before and after), it
+    // prints nothing and says so by its exit code. Another test's real service may run meanwhile (the container tests
+    // run JUNO's services, and this machine's pgrep sees into their namespaces: review round 6 of PR #67); then every
+    // line it prints names such a process, and never pgrep itself.
+    const running = (): string[] =>
+      readdirSync("/proc").filter((name) => /^\d+$/.test(name)).flatMap((pid) => {
+        try {
+          const command = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").filter((word) => word !== "").join(" ");
+          return matches.test(command) && !command.startsWith("pgrep") ? [pid] : [];
+        } catch {
+          return [];
+        }
+      });
+    const before = running();
     const exit = await new Promise<{ code: number; out: string }>((resolve) => execFile(program ?? "", [flags ?? "", pattern ?? ""], (error, out) => resolve({ code: error === null ? 0 : Number(error.code), out })));
-    expect(exit).toEqual({ code: 1, out: "" });
+    const after = running();
+    if (before.length === 0 && after.length === 0) expect(exit).toEqual({ code: 1, out: "" });
+    else {
+      expect(exit.code === 0).toBe(exit.out !== "");
+      for (const line of exit.out.split("\n").filter((text) => text !== "")) {
+        const [pid, ...words] = line.split(" ");
+        expect(words[0], line).not.toBe("pgrep");
+        expect(matches.test(words.join(" ")), line).toBe(true);
+        expect(Number(pid), line).not.toBe(process.pid);
+      }
+    }
   });
 
   // proves D-247 item 1: the service commands name the unit the guide installs, under the user's own systemd

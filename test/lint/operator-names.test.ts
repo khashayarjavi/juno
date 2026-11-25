@@ -122,6 +122,9 @@ describe("every name a message gives is built by the one shared helper (D-247)",
 // none may take its values from a workspace. packages/mediated/test/hostile-names.test.ts proves the property over every
 // refusal a hostile workspace name can reach.
 const BUILDS_A_COMMAND = /\b(?:commandText|removeIfNoJunoRuns|socketInUse)\(/;
+// Review round 6 of PR #67: a command line can also be written straight into a text, a program followed by an option.
+// Every such line in the sources is listed too, with where its values come from.
+const WRITES_A_COMMAND = /\b(?:claude|dumpe2fs|chmod|chown|chattr|setfacl|getfacl|find|git|docker|sudo|rm|pgrep|systemctl|journalctl|lsattr|tune2fs|mkfs\.ext4|findmnt|node)\s+(?:-{1,2}[a-zA-Z]|\+[a-zA-Z])/;
 const COMMAND_SITES: readonly { readonly file: string; readonly holds: string; readonly from: string }[] = [
   { file: "packages/enforcement/src/host-restore.ts", holds: 'commandText(junoCommand(["checkpoint", "restore"]))', from: "this copy's Node and juno.js, and fixed words" },
   { file: "packages/journal/src/lock.ts", holds: 'commandText(serviceCommand("stop"))', from: "the service unit's fixed name" },
@@ -136,6 +139,10 @@ const COMMAND_SITES: readonly { readonly file: string; readonly holds: string; r
   { file: "packages/mediated/src/install.ts", holds: 'commandText(asRootCommand(junoCommand(["hook", "check"])))', from: "this copy's Node and juno.js, and fixed words" },
   { file: "packages/mediated/src/hook-serve.ts", holds: 'commandText(junoCommand(["hook", "admit", "--control", control]), "<session file>")', from: "the control socket the service was configured with" },
   { file: "packages/mediated/src/hook-serve.ts", holds: 'commandText(junoCommand(["journal", "check", "--journal", check.journal, "--anchors", check.anchors, "--key", check.key, parsed.data.task_id]))', from: "the service's configured journal, anchors and key, and the session id (letters, digits and hyphens only, checked at admission) from the operator's session file" },
+  { file: "packages/mediated/src/superblock.ts", holds: "(dumpe2fs -h ${node} must not list casefold)", from: "the block device the kernel names for the mount, checked against DEVICE_NAME" },
+  { file: "packages/mediated/src/filesystem.ts", holds: "has the case-folding attribute (chattr +F)", from: "fixed words naming the attribute; the folder is shown as a name and is not part of it" },
+  { file: "packages/mediated/src/install.ts", holds: "refusals.push(`claude --version did not run:", from: "fixed words: the program JUNO ran; Node's error follows as prose" },
+  { file: "packages/mediated/src/hook-serve.ts", holds: "Start Claude Code for it with: claude --session-id ${sessionId}", from: "the session id from the operator's session file, letters, digits and hyphens only (checked at admission)" },
 ];
 
 describe("no command a message gives holds a value from a workspace (operator ruling D-251)", () => {
@@ -148,7 +155,7 @@ describe("no command a message gives holds a value from a workspace (operator ru
       const file = relative(ROOT, path);
       if (file === HELPER) continue;
       code(readFileSync(path, "utf8")).forEach((line, index) => {
-        if (!BUILDS_A_COMMAND.test(line)) return;
+        if (!BUILDS_A_COMMAND.test(line) && !WRITES_A_COMMAND.test(line)) return;
         let rest = line;
         for (const [at, site] of COMMAND_SITES.entries()) {
           if (site.file === file && rest.includes(site.holds)) {
@@ -156,7 +163,7 @@ describe("no command a message gives holds a value from a workspace (operator ru
             rest = rest.replace(site.holds, "");
           }
         }
-        if (BUILDS_A_COMMAND.test(rest)) found.push(`${file}:${String(index + 1)}: ${line.trim()}`);
+        if (BUILDS_A_COMMAND.test(rest) || WRITES_A_COMMAND.test(rest)) found.push(`${file}:${String(index + 1)}: ${line.trim()}`);
       });
     }
     expect(found).toEqual([]);
@@ -172,5 +179,6 @@ describe("no command a message gives holds a value from a workspace (operator ru
   // proves the scan itself: a new command built anywhere else is caught
   it("catches a command built at an unlisted place", () => {
     for (const sample of ["`remove it: ${commandText(removeCommand([entry]))}`", "socketInUse(join(workspace, name))", "removeIfNoJunoRuns([host], owner)"]) expect(BUILDS_A_COMMAND.test(sample), sample).toBe(true);
+    for (const sample of ["`run: chmod -R u-s ${entry}`", "`fix it with chattr -F ${folder}`", "`then: sudo -u ${owner} rm -rf ${kept}`", "`claude --session-id ${id}`"]) expect(WRITES_A_COMMAND.test(sample), sample).toBe(true);
   });
 });

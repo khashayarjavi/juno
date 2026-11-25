@@ -12,7 +12,8 @@ import { fileURLToPath } from "node:url";
  *     descriptor holds, as the kernel names it (`operatorPath`, and `operatorText` for any text, a Node error included);
  *   - a JUNO command is this copy's own Node (`process.execPath`) and this copy's own `juno.js`, found from where this
  *     module itself was loaded (the build puts both under one `dist`);
- *   - the user to run a command as is the owner of the file it acts on, by name from `/etc/passwd`;
+ *   - a command never names anything a workspace or the Claude Code user can name (operator ruling D-251): a refusal
+ *     about such an entry points to the guide's fixed command instead (`guidePointer`);
  *   - the hook service's unit is `HOOK_SERVICE_UNIT`, the name the guide installs `docs/examples/juno-hook.service`
  *     under (a test pins the two together).
  * Commands are argument vectors; `commandText` writes one for the operator, quoted as a POSIX shell reads it, between

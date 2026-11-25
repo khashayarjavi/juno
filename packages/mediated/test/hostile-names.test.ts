@@ -37,7 +37,9 @@ function noCommandFromTheWorkspace(text: string, workspace: string): void {
   for (const command of commands(text)) {
     expect(command, printed).not.toContain(MARK);
     expect(command, printed).not.toContain(workspace);
-    expect(command, printed).not.toContain("/work/");
+    // The sealed context's own root, as a path (never text that merely holds `/work/`, as a checkout under a folder
+    // named `work` does: review round 6 of PR #67).
+    expect(command, printed).not.toMatch(/(?:^|[\s'"=(])\/work\//);
   }
 }
 
@@ -94,7 +96,7 @@ describe("no refusal a hostile workspace name reaches prints a command holding i
         rmSync(at, { recursive: true, force: true });
       }
     }
-  });
+  }, 60_000);
 
   // proves D-251 over the undo: a restore that stops part way at a hostile name names it with no command
   it("a restore that stops part way at a hostile name", async () => {
@@ -111,7 +113,7 @@ describe("no refusal a hostile workspace name reaches prints a command holding i
       noCommandFromTheWorkspace(outcome.ok ? "" : outcome.reason, work);
       noCommandFromTheWorkspace(JSON.stringify(outcome), work);
     }
-  });
+  }, 60_000);
 
   // proves D-251 over the read view: an odd entry's reason names it with no command
   it("the read view's odd-entry reason", async () => {
@@ -122,7 +124,7 @@ describe("no refusal a hostile workspace name reaches prints a command holding i
       if (!listed.ok) noCommandFromTheWorkspace(listed.reason, work);
       rmSync(at, { force: true });
     }
-  });
+  }, 60_000);
 
   // proves D-251 over the case-folding check (D-178): a hostile folder with the case-folding attribute is refused with
   // its name escaped, and no command
@@ -140,7 +142,7 @@ describe("no refusal a hostile workspace name reaches prints a command holding i
       expect(refusals.length, JSON.stringify(name)).toBeGreaterThan(0);
       for (const refusal of refusals) noCommandFromTheWorkspace(refusal, "/srv/juno-work/");
     }
-  });
+  }, 60_000);
 
   // proves D-251 over the superblock check (D-242): a mount the Claude Code user made inside the workspace, under a
   // hostile name, is named escaped; the only command the check gives is this very check again, built from the operator's
@@ -175,7 +177,7 @@ describe("no refusal a hostile workspace name reaches prints a command holding i
         }
       }
     }
-  });
+  }, 60_000);
 
   // proves the property's own test: it catches a command holding the name, and a stray backtick
   it("catches a command holding a hostile name", () => {
@@ -183,5 +185,8 @@ describe("no refusal a hostile workspace name reaches prints a command holding i
     expect(() => noCommandFromTheWorkspace(`run \`rm ${MARK}\``, "/nowhere/")).toThrow();
     expect(() => noCommandFromTheWorkspace(`a name ${MARK}\` alone`, "/nowhere/")).toThrow();
     expect(() => noCommandFromTheWorkspace(`run \`systemctl --user stop juno-hook.service\``, work)).not.toThrow();
+    // JUNO's own command from a copy checked out under a folder named `work` is not the sealed root; `/work/x` is.
+    expect(() => noCommandFromTheWorkspace("run `sudo /home/runner/work/juno/juno.js hook check`", "/nowhere/")).not.toThrow();
+    expect(() => noCommandFromTheWorkspace("run `chmod u-s /work/project/x`", "/nowhere/")).toThrow();
   });
 });

@@ -3292,3 +3292,20 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   - `host-restore.test.ts`, "shows a forged name escaped": its last line asserted D-249's "no command is given here" words, which no longer arise for a bit; it now asserts the guide pointer. Every other line is kept.
   - `operator-names.test.ts` (runner): the lines testing `asUserCommand`, `removeBitsCommand` and `knownUserName` (added by this PR, D-249 and D-250) now assert that the helper has none of them, that a nameless uid is still named in words, and the pointer's text.
 - Reason: D-251; §0.2 D8; §8.3 (a value the agent wrote never becomes a command the operator is told to run).
+
+## D-253 — Review round 6 (PR #67): the class test no longer depends on where the code is checked out; the flaky tests made dependable; the command pin also sees command lines written into text (autopilot rulings, D-251)
+- Date: 2026-11-25
+- Status: Accepted (built with tests)
+- Applies to: `packages/mediated/test/hostile-names.test.ts`, `packages/runner/test/operator-names.test.ts`, `test/lint/operator-names.test.ts`, `packages/journal/src/operator-names.ts` (doc comment)
+- **Round 6 (fresh reviewer, the review prompt verbatim; head 85e2d43): DO NOT MERGE.** Checks 2 to 6 PASS; check 1 FAIL:
+  - **CI's `verify` job was red on the head** (run 45707017117): D-252's class test looked for the bare text `/work/` in every command. CI checks the repository out under `/home/runner/work/…`, so JUNO's own rerun command (`sudo <node> …/work/juno/juno/…/juno.js hook check …`) tripped it. JUNO's behaviour was right; the test depended on the checkout's place.
+  - **Two tests failed once each on the reviewer's machine:** the `pgrep` remedy test ("never pgrep itself") and a hostile-names test near vitest's 5-second limit.
+  - **Note (check 5):** D-252's pin found only commands built through the helper; command lines written straight into text (`claude --session-id …`, `dumpe2fs -h …`) were not seen, so "every place" was overstated. None used a workspace value. A doc comment still said commands run "as the owner of the file".
+- **Fixed:**
+  - The class test now matches the sealed root only as a path that starts with `/work/` (at the start, or after a space, a quote, `=` or `(`). Its self-test proves both directions: JUNO's command from a checkout under `…/work/…` passes, and `chmod u-s /work/project/x` is caught. Nothing it checked before is checked less.
+  - **The `pgrep` test** keeps its strict assertion whenever `/proc` shows no lock-holding JUNO process before and after the run: it prints nothing, exit 1. Its flake had a real cause: the container tests run JUNO's real services, and this machine's `pgrep` sees into their PID namespaces. When such a process runs, the test now asserts that every line printed names a process the pattern matches, never `pgrep` itself and never the test. (Autopilot ruling: the property "never itself, only lock holders" is asserted in both cases; "nothing when none runs" is asserted whenever none runs.)
+  - The hostile-names tests have a 60-second limit, as the other tests that run the sealed program do.
+  - **The pin is complete:** it also finds a command line written into text (a known program followed by an option), and lists the four in the sources with their provenance: the superblock's `dumpe2fs -h` (the kernel's device name, checked by pattern), the case-folding refusal's `chattr +F` (fixed words), `claude --version did not run` (fixed words), and `claude --session-id` (the operator's session id: letters, digits and hyphens). Its self-test catches four forms an attacker's value could take.
+  - The helper's doc comment now says what D-251 requires.
+- Every test kept; no assertion removed.
+- Reason: CLAUDE.md §7 step 5; D-251.
