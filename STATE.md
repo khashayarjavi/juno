@@ -1,10 +1,35 @@
 # STATE
 
 ## Current increment
-**1.5-ops — the field report of the operator's machine running bef25fe (a real undo passed there), authorised by you on 2026-11-24 (D-243).** Branch `claude/vibrant-mayer-mg2c73` (this session's only pushable branch). It carries draft PR #64's one STATE.md commit; its PR supersedes #64. Main at bef25fe. Spec v0.6.1. No objection open. Review: up to 5 rounds (D-179, D-211); merge through the gate; then STOP with the merge commit hash and your exact upgrade steps.
+**1.5-ops — the field report of the operator's machine running bef25fe, authorised by you on 2026-11-24 (D-243); continued under your rulings of 2026-11-25 (D-247).** Branch `claude/elegant-heisenberg-nvw7vq` (this session's only pushable branch). Draft PR [khashayarjavi/juno#66](https://github.com/khashayarjavi/juno/pull/66) carries PR #65's fourteen commits unchanged and supersedes it. Main at bef25fe. Spec v0.6.1. No objection open.
 
-Status (2026-11-24, this session): **STOPPED after review round 2 (D-246): it found the same kind of mistake D-243 records as fixed. That finding is fixed, with a test, but not reviewed. `make verify: GREEN` on daf8ad7 (1,524 unit, 148 container). Nothing is merged; main is unchanged at bef25fe, so your machine is unaffected.** Draft PR [khashayarjavi/juno#65](https://github.com/khashayarjavi/juno/pull/65) supersedes #64.
+Status (2026-11-25, this session): **your ruling 1 built (D-247); `make verify` running; review round 3 next.** Nothing is merged; main is unchanged at bef25fe, so your machine is unaffected.
 
+### Your rulings of 2026-11-25 (D-247)
+1. Round 2's finding is accepted as fixed. Its class is closed: every refusal or remedy that names a file, folder or command builds it through one shared helper, from the value the code uses; a test triggers each refusal against a real service and real files and checks every path and every command.
+2. Review rounds 3 to 5 on the PR are authorised; another wrong path or command in a message is fixed under ruling 1, not a STOP.
+3. On MERGE: the gate, then STOP with the merge commit hash and your upgrade steps, including removing `juno-clear-stale-lock` and updating your scripts in `C:\Users\Khashayar\juno-setup`.
+
+### What ruling 1 changed, in plain words
+- **One place builds every name JUNO gives you** (`packages/journal/src/operator-names.ts`):
+  - the lock and take-over file, from the journal folder JUNO opened;
+  - any path JUNO holds through a handle (`/proc/self/fd/…`), by the folder the handle really holds;
+  - every JUNO command as this copy's own Node and `juno.js` (before, some messages said `juno …` or `node /opt/juno/…`, which your terminals do not run);
+  - the service commands from one name, `juno-hook.service`, pinned by a test to the file the guide installs;
+  - the user to act as, by the real owner of the file.
+- **Commands now appear between backticks**, exactly as you would type them.
+- **Also fixed in the same class:** a socket JUNO cannot listen on now names its path and the fix; the "Check its journal with" line and the start line's admit command run as printed; the restore run as root names the journal's real owner; the sealed copy's "set-user-ID or sticky bit" refusal now names the real file and its owner (it said `sudo -u juno-agent … <folder or file>`).
+- **Tests:**
+  - against the real hook service, admission and restore in a sealed container: each refusal is triggered; every path it names exists, or is exactly what its `rm` removes; `rm`, `juno hook admit` and `juno journal check` run as printed; `pgrep` runs on the host and lists the running service, and nothing once it is gone;
+  - the `systemctl` commands run against a real systemd user manager in CI's rootless jobs (never against your installed service);
+  - a scan fails if anyone writes such a name as a literal again.
+- **The guide, upgrade step 7,** now also finds the lines in your Windows scripts (`%USERPROFILE%\juno-setup`) and any Windows scheduled task that call the stand-in, and says to delete exactly those lines.
+
+**Autopilot rulings this session (D-247, one line each):** a socket in use refuses with its path and remedy; the restore as root names the journal's owner, with no `sudo` command; the sealed copy's bit remedy is written on the host from the real path and owner; usage lines name this copy's Node and `juno.js`; the superblock refusal adds the exact `sudo` command to run the check again; residual 55 (the systemd test's unit holds the lock with JUNO's own lock code, not the service itself).
+
+**Left, in order:** `make verify` green; CI green on the PR's head; review round 3 (up to 5); the merge gate; then STOP with the merge commit hash and your upgrade steps.
+
+## Before this session: 1.5-ops rounds 1 and 2 (PR #65)
 ### STOP after review round 2 (D-246)
 - **Why this is a STOP.** The rules stop me when a review round finds a mistake of a kind DECISIONS.md already records as fixed. Round 2 found one. Your report's defect 2 was a refusal that named `/proc/self/fd/<n>/…`, a path you cannot use. D-243 records it as fixed. My fix covered the main refusal and missed one more.
 - **The finding, in plain words.** If JUNO is stopped in the very middle of taking over a stale lock, it leaves a second file, `runner.lock.takeover`. The next start then refused with the unusable `/proc/self/fd/…` path. Its advice named only `runner.lock`. Following that advice let one start through but left the second file, which quietly stopped every later automatic take-over.
