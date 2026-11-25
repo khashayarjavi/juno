@@ -164,7 +164,7 @@ describe("juno journal report (D-251 queue item 2, D-254)", () => {
     const result = await report(copy, ["--json"]);
     expect(result.code, result.out + result.err).toBe(0);
     const parsed = JSON.parse(result.out) as Record<string, unknown> & { sessions: Record<string, unknown>[]; total: Record<string, unknown> };
-    expect(parsed).toMatchObject({ ok: true, verified: { records: 3, history: "checked" } });
+    expect(parsed).toMatchObject({ ok: true, verified: { records: 3, history: "checked", never_written: [] } });
     const [first, second] = parsed.sessions;
     expect(first).toMatchObject({ id: `session-${SESSIONS[0] ?? ""}`, mode: "hook", principal: PRINCIPAL, allowed: 2, parked: 6, rejected: 0 });
     expect(first?.["parks_by_reason"]).toEqual([{ value: "integrity_floor", count: 5 }, { value: "scope_violation", count: 1 }]);
@@ -246,6 +246,45 @@ describe("juno journal report (D-251 queue item 2, D-254)", () => {
     const result = await report(copy);
     expect(result.code).toBe(1);
     expect(result.out).toContain('journal record "session-planted" is not named by the journal\'s own record');
+  }, 120_000);
+
+  // proves D-254 over D-202 and §3.4.1 (review round 1 of PR #68): a session the journal's own record names, whose
+  // anchors exist, is refused when its entries are deleted from the journal; never silently left out
+  it("refuses a journal from which a named session was deleted", async () => {
+    await twoSessions();
+    const copy = await adminCopy();
+    const second = `session-${SESSIONS[1] ?? ""}`;
+    rmSync(join(copy.journal, "tasks", taskDigest(second)), { recursive: true });
+    const result = await report(copy);
+    expect(result.code).toBe(1);
+    expect(result.out).toContain(`journal record "${second}" does not agree with its anchors in the clone: truncated (the journal names it, its anchors exist, and its entries are gone: it was deleted)`);
+    expect(result.out).not.toContain("tool calls");
+    // Its anchors removed from the clone too: a commit that deletes anchor files is refused by the history check ...
+    const git = (args: readonly string[]) => executeOutbound({ file: "/usr/bin/git", args: ["-c", "user.name=o", "-c", "user.email=o@o", "-C", copy.anchors, ...args] });
+    expect((await git(["rm", "-r", "--quiet", taskDigest(second)])).exitCode).toBe(0);
+    expect((await git(["commit", "--quiet", "-m", "remove"])).exitCode).toBe(0);
+    const removed = await report(copy);
+    expect(removed.code).toBe(1);
+    expect(removed.out).toContain("the anchor clone's history cannot be trusted");
+    // ... and without that check (--no-history), the name with neither entries nor anchors is listed, never hidden.
+    const unchecked = await report(copy, ["--no-history"]);
+    expect(unchecked.code).toBe(0);
+    expect(unchecked.out).toContain("anchor history NOT checked: --no-history");
+    expect(unchecked.out).toContain(`Named by the journal but never written (no entries, no anchors): "${second}".`);
+  }, 120_000);
+
+  // proves D-254 over D-202: the journal's own record may hold only the entries a service's start accepts there (one
+  // rule for both, `ownRecordEntry`)
+  it("refuses a journal whose own record holds an entry JUNO does not write there", async () => {
+    await twoSessions();
+    const copy = await adminCopy();
+    const { JournalWriter, listRecords } = await import("../../journal/src/index.js");
+    const own = listRecords(copy.journal).find((record) => record.taskId?.startsWith("juno.journal.") === true)?.taskId ?? "";
+    expect(own).not.toBe("");
+    JournalWriter.open(copy.journal).append(own, { kind: "note", actor: "juno.session-layer", provider: null, data_class: { sensitivity: "internal", integrity: "derived" }, cost: { tokens_in: 0, tokens_out: 0, tokens_cached: 0, currency: 0, duration_ms: 0 } } as never, new TextEncoder().encode(JSON.stringify({ type: "planted" })));
+    const result = await report(copy);
+    expect(result.code).toBe(1);
+    expect(result.out).toMatch(/the journal's own record has an entry \(seq \d+\) that is not one JUNO writes there \(D-202\)/);
   }, 120_000);
 
   // proves D-217 for the report: a clone whose history changed an anchor file is refused before anything is read

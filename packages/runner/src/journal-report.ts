@@ -1,6 +1,6 @@
 import type { KeyObject } from "node:crypto";
 import type { TrajectoryEntry } from "../../contracts/src/index.js";
-import { JOURNAL_RECORD_PREFIX, LAYER_ACTOR } from "../../enforcement/src/index.js";
+import { JOURNAL_RECORD_PREFIX, ownRecordEntry } from "../../enforcement/src/index.js";
 import { checkAnchors, listRecords, readPayload, shownName, taskDigest } from "../../journal/src/index.js";
 
 /**
@@ -51,7 +51,7 @@ export type SessionReport = Summary & {
 };
 
 export type Report =
-  | { readonly ok: true; readonly verified: { readonly records: number; readonly history: "checked" | "not_checked" }; readonly sessions: readonly SessionReport[]; readonly total: Summary }
+  | { readonly ok: true; readonly verified: { readonly records: number; readonly history: "checked" | "not_checked"; readonly never_written: readonly string[] }; readonly sessions: readonly SessionReport[]; readonly total: Summary }
   | { readonly ok: false; readonly refused: string };
 
 type Payload = Record<string, unknown>;
@@ -76,14 +76,14 @@ function readAll(journal: string, id: string, entries: readonly TrajectoryEntry[
   const read: Read[] = [];
   for (const entry of entries) {
     const blob = readPayload(journal, entry.payload_ref);
-    if (blob.status !== "present") return { ok: false, reason: `journal record ${JSON.stringify(id)} entry ${String(entry.seq)} has no readable payload (${blob.status})` };
+    if (blob.status !== "present") return { ok: false, reason: `journal record ${quoted(id)} entry ${String(entry.seq)} has no readable payload (${blob.status})` };
     let payload: unknown;
     try {
       payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(blob.bytes));
     } catch {
-      return { ok: false, reason: `journal record ${JSON.stringify(id)} entry ${String(entry.seq)} has a payload that is not JSON` };
+      return { ok: false, reason: `journal record ${quoted(id)} entry ${String(entry.seq)} has a payload that is not JSON` };
     }
-    if (typeof payload !== "object" || payload === null || Array.isArray(payload)) return { ok: false, reason: `journal record ${JSON.stringify(id)} entry ${String(entry.seq)} has a payload that is not a JSON object` };
+    if (typeof payload !== "object" || payload === null || Array.isArray(payload)) return { ok: false, reason: `journal record ${quoted(id)} entry ${String(entry.seq)} has a payload that is not a JSON object` };
     read.push({ entry, payload: payload as Payload });
   }
   return { ok: true, read };
@@ -186,25 +186,42 @@ export function journalReport(journal: string, anchorsOf: (digest: string) => un
   if (records.length === 0) return refuse("the journal holds no record");
   const verified = new Map<string, readonly TrajectoryEntry[]>();
   for (const record of records) {
-    if (!record.verdict.ok) return refuse(`journal record ${JSON.stringify(record.taskId ?? record.digest)} does not verify: ${record.verdict.failure.code} (§3.4.2)`);
-    if (record.taskId === null) return refuse(`journal folder ${record.digest} holds no record JUNO wrote (D-202)`);
+    if (!record.verdict.ok) return refuse(`journal record ${quoted(record.taskId ?? record.digest)} does not verify: ${record.verdict.failure.code} (§3.4.2)`);
+    if (record.taskId === null) return refuse(`journal folder ${quoted(record.digest)} holds no record JUNO wrote (D-202)`);
     verified.set(record.taskId, record.verdict.entries);
   }
-  // D-202: one journal's own record, and every other record named by it.
+  // D-202, as a service's start judges it (`ownRecordEntry`, the one rule for both): one journal's own record, holding
+  // only entries JUNO writes there; every other record named by it.
   const own = [...verified.keys()].filter((id) => id.startsWith(JOURNAL_RECORD_PREFIX));
   if (own.length !== 1) return refuse(`the journal holds ${String(own.length)} records of its own where a service's journal holds exactly one (D-202)`);
   const ownId = own[0] ?? "";
   const ownRead = readAll(journal, ownId, verified.get(ownId) ?? []);
   if (!ownRead.ok) return refuse(ownRead.reason);
-  const named = new Set(ownRead.read.flatMap(({ entry, payload }) => (entry.kind === "note" && entry.actor === LAYER_ACTOR && payload["type"] === "record" && typeof payload["task"] === "string" ? [payload["task"]] : [])));
-  for (const id of verified.keys()) {
-    if (id !== ownId && !named.has(id)) return refuse(`journal record ${JSON.stringify(id)} is not named by the journal's own record, so this journal did not write it (D-202)`);
+  const named = new Set<string>();
+  for (const { entry, payload } of ownRead.read) {
+    const judged = ownRecordEntry(entry, payload);
+    if (judged === null) return refuse(`the journal's own record has an entry (seq ${String(entry.seq)}) that is not one JUNO writes there (D-202)`);
+    if (judged.kind === "record") named.add(judged.task);
   }
-  // §3.4.1: every record agrees with its anchors, with nothing after the latest anchor (a stopped service anchors all).
-  for (const [id, entries] of verified) {
-    const check = checkAnchors(id, { ok: true, entries, head: null }, anchorsOf(taskDigest(id)), publicKey);
-    if (!check.ok) return refuse(`journal record ${JSON.stringify(id)} does not agree with its anchors in the clone: ${check.failure.code} (§3.4.1)`);
-    if (check.unanchored > 0) return refuse(`journal record ${JSON.stringify(id)} has ${String(check.unanchored)} entries after its latest anchor: stop the service first (stopping it anchors what is pending), then copy the journal again (§3.4.1)`);
+  for (const id of verified.keys()) {
+    if (id !== ownId && !named.has(id)) return refuse(`journal record ${quoted(id)} is not named by the journal's own record, so this journal did not write it (D-202)`);
+  }
+  // §3.4.1: the journal's own record and every record it names agree with their anchors, with nothing after the latest
+  // anchor (a stopped service anchors all). A named record whose folder is gone is judged as holding no entries, as a
+  // service's start judges it: with anchors held for it, it was deleted, and that refuses (review round 1 of PR #68).
+  // Named with no folder and no anchor, it is a record never written (its name is journalled before its first entry);
+  // the report lists it as such, never silently.
+  const neverWritten: string[] = [];
+  for (const id of [ownId, ...[...named].sort()]) {
+    const entries = verified.get(id);
+    const held = anchorsOf(taskDigest(id));
+    if (entries === undefined && held.length === 0) {
+      neverWritten.push(id);
+      continue;
+    }
+    const check = checkAnchors(id, { ok: true, entries: entries ?? [], head: null }, held, publicKey);
+    if (!check.ok) return refuse(`journal record ${quoted(id)} does not agree with its anchors in the clone: ${check.failure.code}${entries === undefined ? " (the journal names it, its anchors exist, and its entries are gone: it was deleted)" : ""} (§3.4.1, D-202)`);
+    if (check.unanchored > 0) return refuse(`journal record ${quoted(id)} has ${String(check.unanchored)} entries after its latest anchor: stop the service first (stopping it anchors what is pending), then copy the journal again (§3.4.1)`);
   }
   const sessions: SessionReport[] = [];
   for (const [id, entries] of verified) {
@@ -222,7 +239,7 @@ export function journalReport(journal: string, anchorsOf: (digest: string) => un
     });
   }
   sessions.sort((a, b) => (a.first_entry ?? "").localeCompare(b.first_entry ?? "") || a.id.localeCompare(b.id));
-  return { ok: true, verified: { records: verified.size, history }, sessions, total: sum(sessions) };
+  return { ok: true, verified: { records: verified.size, history, never_written: neverWritten }, sessions, total: sum(sessions) };
 }
 
 /** A value from the journal as the text form shows it: an escaped quotation (D-251), never part of a command. */
@@ -258,6 +275,7 @@ export function reportText(report: Report): string {
   const lines = [
     `JUNO journal report: ${String(report.verified.records)} records verified against their anchors (anchor history ${report.verified.history === "checked" ? "checked" : "NOT checked: --no-history"}).`,
     "Values in quotes are as the journal holds them; paths, commands, programs and tools were chosen by Claude or the workspace: read them, never run them.",
+    ...(report.verified.never_written.length === 0 ? [] : [`Named by the journal but never written (no entries, no anchors): ${report.verified.never_written.map(quoted).join(", ")}.`]),
     "",
   ];
   for (const session of report.sessions) {

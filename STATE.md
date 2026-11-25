@@ -3,7 +3,7 @@
 ## Current increment
 **1.5-report (queue item 2 of 3, D-251): `juno journal report`.** Branch `claude/elegant-ritchie-6pkguy`, restarted from main at 9fc412b (its PR #67 merged). Spec v0.6.1. No objection open.
 
-Status: **built (D-254), with tests; `make verify` and the PR next.** What it does, in plain words: after Part G step 7's check, on the same copies, `juno journal report` checks the whole journal (every session) against your fresh clone of `juno-anchors`, refuses one that does not verify, and then prints, per session and in total, the calls allowed, parked and rejected, the parks by reason, capability and program, and the paths and commands most often blocked. Every value Claude or the workspace chose is shown in quotes, escaped; it gives no command. The guide's new Part G step 8 gives the command.
+Status: **built (D-254), with tests; draft PR [khashayarjavi/juno#68](https://github.com/khashayarjavi/juno/pull/68). Review round 1: DO NOT MERGE (a session deleted from the journal copy was left out instead of refused); fixed (D-255). Round 2 next.** What it does, in plain words: after Part G step 7's check, on the same copies, `juno journal report` checks the whole journal (every session) against your fresh clone of `juno-anchors`, refuses one that does not verify, and then prints, per session and in total, the calls allowed, parked and rejected, the parks by reason, capability and program, and the paths and commands most often blocked. Every value Claude or the workspace chose is shown in quotes, escaped; it gives no command. The guide's new Part G step 8 gives the command.
 
 ### The queue (D-251)
 1. **1.5-ops: merged** as 9fc412b (below).

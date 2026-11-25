@@ -95,6 +95,26 @@ const OWN_RECORD_PREFIX = "juno.";
 /** Every journal's own record id begins so (D-202); `juno journal report` finds it by this prefix on a copy (D-254). */
 export const JOURNAL_RECORD_PREFIX = `${OWN_RECORD_PREFIX}journal.`;
 
+/**
+ * What one entry of a journal's own record is (D-202), or null when it is not one JUNO writes there. The one rule for
+ * the service's start (`#recover`) and for `juno journal report` (D-254), so the two can never judge differently.
+ */
+export function ownRecordEntry(entry: TrajectoryEntry, payload: unknown): { readonly kind: "record"; readonly task: string } | { readonly kind: "recovery_epoch"; readonly epoch: string } | { readonly kind: "journal_note" } | null {
+  const task = field(payload, "task");
+  const type = field(payload, "type");
+  const own = entry.kind === "note" && entry.actor === LAYER_ACTOR;
+  if (own && type === "record" && typeof task === "string") return { kind: "record", task };
+  // D-203 journals a failed anchor of this record in it; that note is JUNO's own and names no record (D-205).
+  if (entry.kind === "note" && entry.actor === ANCHOR_ACTOR && type === "anchor_failed") return { kind: "journal_note" };
+  // D-207: the recovery epoch is this record's first entry and no other; a recovered torn write is recorded here.
+  const epoch = field(payload, "epoch");
+  if (own && type === "recovery_epoch" && entry.seq === 0 && typeof epoch === "string") return { kind: "recovery_epoch", epoch };
+  if (own && type === "recovered_truncation" && Array.isArray(field(payload, "exhausted_grants"))) return { kind: "journal_note" };
+  // D-243: a start that took over the lock of a service that was provably no longer running records it here.
+  if (own && type === "stale_lock_reclaimed" && typeof field(payload, "reason") === "string") return { kind: "journal_note" };
+  return null;
+}
+
 export function journalRecordId(journalRoot: string): string {
   return `${OWN_RECORD_PREFIX}journal.${createHash("sha256").update(journalRoot, "utf8").digest("hex").slice(0, 32)}`;
 }
@@ -371,18 +391,10 @@ export class SessionLayer {
     let journalEpoch: string | null = null;
     const index = this.#read(this.#indexId, stored.get(this.#indexId)?.verdict);
     for (const item of index) {
-      const task = field(item.payload, "task");
-      const type = field(item.payload, "type");
-      const own = item.entry.kind === "note" && item.entry.actor === LAYER_ACTOR;
-      if (own && type === "record" && typeof task === "string") named.push(task);
-      // D-203 journals a failed anchor of this record in it; that note is JUNO's own and names no record (D-205).
-      else if (item.entry.kind === "note" && item.entry.actor === ANCHOR_ACTOR && type === "anchor_failed") continue;
-      // D-207: the recovery epoch is this record's first entry and no other; a recovered torn write is recorded here.
-      else if (own && type === "recovery_epoch" && item.entry.seq === 0 && typeof field(item.payload, "epoch") === "string") journalEpoch = field(item.payload, "epoch") as string;
-      else if (own && type === "recovered_truncation" && Array.isArray(field(item.payload, "exhausted_grants"))) continue;
-      // D-243: a start that took over the lock of a service that was provably no longer running records it here.
-      else if (own && type === "stale_lock_reclaimed" && typeof field(item.payload, "reason") === "string") continue;
-      else refusals.push(`the journal's own record has an entry (seq ${String(item.entry.seq)}) that is not one JUNO writes there (D-202)`);
+      const judged = ownRecordEntry(item.entry, item.payload);
+      if (judged === null) refusals.push(`the journal's own record has an entry (seq ${String(item.entry.seq)}) that is not one JUNO writes there (D-202)`);
+      else if (judged.kind === "record") named.push(judged.task);
+      else if (judged.kind === "recovery_epoch") journalEpoch = judged.epoch;
     }
     // D-206, D-207: the journal and the anchor pin must name the same recovery epoch. A journal that already has entries
     // was registered at the epoch it records; a pin that now says otherwise (or a journal with an epoch and no pin) is a

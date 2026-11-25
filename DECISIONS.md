@@ -3336,3 +3336,19 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   - Part G step 8's command run word for word, and the line its Check names;
   - bad usage: a task id, a missing option, an unknown option (also for `check`).
 - Reason: D-251 (queue item 2); §3.4.1, §3.4.2; D-202, D-217.
+
+## D-255 — Review round 1 (PR #68): the report checks every record the journal names, as a service's start does; one rule for the journal's own record (autopilot rulings, restrictive)
+- Date: 2026-11-25
+- Status: Accepted (built with tests)
+- Applies to: `packages/runner/src/journal-report.ts`; `packages/enforcement/src/session-layer.ts` (`ownRecordEntry`, now used by `#recover` and by the report); tests: `packages/runner/test/journal-report.test.ts`
+- **Round 1 (fresh reviewer, the review prompt verbatim; head 2985e0d): DO NOT MERGE.** Checks 2, 3, 4 and 6 PASS; checks 1 and 5 FAIL:
+  - **Finding.** The report checked only the records present in the journal folder. A session the journal's own record names, with anchors off the host, whose folder was deleted from the copy, was never checked: the report said `verified` and left the session out. A service's start refuses that journal (D-202: a named record with anchors and no entries is `truncated`). Reproduced by the reviewer.
+  - **Not recorded:** the report did not check that the journal's own record holds only entries JUNO writes there (D-202), as a start does.
+  - **Note:** refusal lines quoted record ids with `JSON.stringify`, not the `quoted` helper (a backtick in a tampered journal's id was not escaped).
+- **Fixed:**
+  - The journal's own record and **every record it names** are checked against their anchors, whether or not its folder exists. A named record whose entries are gone and whose anchors exist refuses, saying it was deleted.
+  - A named record with neither entries nor anchors is a record never written (its name is journalled before its first entry; a service's start accepts it too). The report **lists it** (`Named by the journal but never written`, and `never_written` in JSON), never silently. Removing its anchors from the clone takes a commit that deletes anchor files, which the history check refuses; only with `--no-history`, whose report says `NOT checked`, can that be hidden from the check.
+  - **One rule for the journal's own record:** `ownRecordEntry` in the session layer says what each of its entries is, or that JUNO does not write it there. A service's start (`#recover`) and the report both use it, so they cannot judge differently. The start's behaviour is unchanged (the same five kinds of entry, in the same order).
+  - Every id and folder name in a refusal is an escaped quotation (`quoted`).
+- **Tests:** a named session's folder deleted from the copy refuses; its anchors removed by a commit too refuses on the history check; with `--no-history` the name is listed as never written; an entry planted in the journal's own record refuses. Every earlier test kept; the JSON test now also asserts `never_written: []`.
+- Reason: CLAUDE.md §7 step 5; D-202; §3.4.1; §0.2 D8.
