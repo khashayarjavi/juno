@@ -22,7 +22,7 @@ import {
   runtimeRefusal,
   systemHostIo,
 } from "../../enforcement/src/index.js";
-import { commandText, junoCommand, operatorPath, operatorText } from "../../journal/src/index.js";
+import { commandText, junoCommand, junoProgramText, operatorPath, operatorText } from "../../journal/src/index.js";
 import { type FilesystemIo, caseFoldingRefusals, systemFilesystemIo } from "./filesystem.js";
 import { HookAdmissionService, askAdmission } from "./hook-admission.js";
 import { HookService } from "./hook-service.js";
@@ -68,8 +68,8 @@ export type HookServeIo = {
   readonly err: (text: string) => void;
 };
 
-const SERVE_USAGE = "usage: juno hook serve --socket <hook.sock> --control <admit.sock> --journal <dir> --anchor <operator.pub> --journal-key <dir> --anchors <juno-anchors clone> [--anchor-pin <file>] [--anchor-interval <seconds>] --workspace <dir> --checkpoints <dir> [--protect <path> ...] [--gateway <name>]\n";
-const ADMIT_USAGE = "usage: juno hook admit --control <admit.sock> <session file>\n";
+const SERVE_USAGE = `usage: ${junoProgramText()} hook serve --socket <hook.sock> --control <admit.sock> --journal <dir> --anchor <operator.pub> --journal-key <dir> --anchors <juno-anchors clone> [--anchor-pin <file>] [--anchor-interval <seconds>] --workspace <dir> --checkpoints <dir> [--protect <path> ...] [--gateway <name>]\n`;
+const ADMIT_USAGE = `usage: ${junoProgramText()} hook admit --control <admit.sock> <session file>\n`;
 
 /** What `juno hook serve` asks the shared start-up check to judge (D-194, D-196). */
 export function hookStartupSpec(options: { readonly socket: string; readonly control: string; readonly journal: string; readonly anchor: string; readonly workspace: string; readonly checkpoints: string; readonly protect: readonly string[]; readonly anchoring: AnchoringConfig }): StartupSpec {

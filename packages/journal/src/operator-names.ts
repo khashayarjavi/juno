@@ -151,3 +151,8 @@ export function removeIfNoJunoRuns(paths: readonly string[], owner: string | nul
 export function socketInUse(path: string): string {
   return `the socket ${operatorPath(path)} cannot be listened on (EADDRINUSE): something is already there (another process listening on it, or a file that is not a socket this service's user left); ${removeIfNoJunoRuns([path], ownerName(path))}`;
 }
+
+/** How a usage line names the `juno` command: this copy's own Node and juno.js, as the operator types them. */
+export function junoProgramText(): string {
+  return junoCommand([]).map(quoteArgument).join(" ");
+}

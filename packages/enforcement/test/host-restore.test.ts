@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CheckpointStore, DIR_MODE, FILE_MODE, HostPathResolver, HostReadView, NOT_READ, SealedWorkspace, listTree, openRoot, removeEntry, restoreTree, undoRefusals, undoTo, workspaceRefusals } from "../src/index.js";
 import type { ManifestEntry, SealedLauncher } from "../src/index.js";
 import { unsealedLauncher } from "./sealed.js";
+import { userName } from "../../journal/src/index.js";
 
 // §2.2.2 (v0.6 A1): "A scope is reversible when a checkpoint of its full content is taken before the task's first effect
 // on it and restoring that checkpoint is an operator action recorded in the journal." D-221: the restore of a hook
@@ -223,6 +224,30 @@ describe("restoring a host-folder checkpoint (§2.2.2, D-221, D-228)", () => {
       chmodSync(join(work, "project", "notes.txt"), 0o644);
       rmSync(join(work, "project", "created.txt"));
     }
+  });
+
+  // proves D-247 item 1: the refusal for such a bit names the entry by its real path on this host and gives the command
+  // its owner, by name, removes the bit with; run exactly as given, it does, and the checkpoint is then taken
+  it("names a set-user-ID, set-group-ID or sticky entry by its real path, with a command that removes the bit", async () => {
+    const me = userName(process.geteuid?.() ?? -1);
+    for (const [path, bits] of [["notes.txt", 0o4755], ["docs", 0o1777]] as const) {
+      const at = join(work, "project", path);
+      chmodSync(at, bits);
+      const taken = await sealed().checkpoint("/work/project");
+      const reason = taken.ok ? "" : taken.reason;
+      expect(reason).not.toContain("[[");
+      expect(reason).toContain(`remove the bit as its owner, then try again (as ${me}: \`chmod u-s,g-s,o-t ${at}\`)`);
+      const command = /`([^`]+)`/.exec(reason)?.[1]?.split(" ") ?? [];
+      expect(command).toEqual(["chmod", "u-s,g-s,o-t", at]);
+      await run(command[0] ?? "", command.slice(1));
+      expect(lstatSync(at).mode & 0o7000).toBe(0);
+      expect((await sealed().checkpoint("/work/project")).ok).toBe(true);
+    }
+    // The workspace root itself, named by its real path.
+    chmodSync(join(work, "project"), 0o1775);
+    const root = await sealed().checkpoint("/work/project");
+    expect(root.ok ? "" : root.reason).toContain(`(as ${me}: \`chmod u-s,g-s,o-t ${join(work, "project")}\`)`);
+    chmodSync(join(work, "project"), 0o775);
   });
 
   // proves D-225 (review round 3 of PR #60) with D-234: a sticky folder the session made inside its folder no longer

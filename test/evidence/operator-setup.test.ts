@@ -1,9 +1,10 @@
 import { execFile } from "node:child_process";
-import { createReadStream, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createReadStream, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { executeOutbound } from "../../packages/registry/src/index.js";
+import { HOOK_SERVICE_UNIT, junoEntry } from "../../packages/journal/src/index.js";
 import { GrantStore } from "../../packages/enforcement/src/index.js";
 import { TEST_ANCHOR, signed } from "../../packages/enforcement/test/test-keys.js";
 
@@ -404,5 +405,20 @@ describe("1.5-ops: the upgrade's order, the incomplete copy, the stale lock, and
     for (const line of guide.split("\n").filter((text) => /wsl(\.exe)? .*(-u|--user) juno-runner/.test(text) && !/^\s*-\s+\*\*Runner terminal/.test(text) && !/wsl -d Ubuntu-24.04 -u juno-runner` and press Enter/.test(text))) {
       expect(line, line).toMatch(/--exec \/usr\/bin\//);
     }
+  });
+});
+
+describe("the names the refusals give are the names the guide installs (D-247)", () => {
+  // proves D-247 item 1: the unit every service command names is the unit the guide installs, from the shipped file of
+  // that name, and the juno.js every JUNO command names is where the guide's commands run it from
+  it("names the unit the guide installs, and the juno.js its commands run", () => {
+    expect(existsSync(new URL(`../../docs/examples/${HOOK_SERVICE_UNIT}`, import.meta.url))).toBe(true);
+    const installs = guide.split("\n").filter((text) => text.includes("cp /opt/juno/docs/examples/") && text.includes("systemd/user"));
+    expect(installs.length).toBeGreaterThan(0);
+    for (const line of installs) expect(line.trim()).toBe(`cp /opt/juno/docs/examples/${HOOK_SERVICE_UNIT} ~/.config/systemd/user/${HOOK_SERVICE_UNIT}`);
+    expect(guide).toContain(`systemctl --user enable --now ${HOOK_SERVICE_UNIT}`);
+    // The build lays juno.js out at dist/runner/src/juno.js, where the guide runs it (/opt/juno/dist/runner/src/juno.js).
+    expect(junoEntry().endsWith("/runner/src/juno.js")).toBe(true);
+    expect(guide).toContain("/opt/node22/bin/node /opt/juno/dist/runner/src/juno.js hook admit");
   });
 });

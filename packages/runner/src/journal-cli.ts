@@ -1,4 +1,4 @@
-import { HISTORY_GIT, anchorHistoryVerdict, checkAnchors, journalPublicKeyFromPem, readAnchorDirectory, taskDigest, verifyTrajectory } from "../../journal/src/index.js";
+import { anchorHistoryVerdict, checkAnchors, HISTORY_GIT, journalPublicKeyFromPem, junoProgramText, readAnchorDirectory, taskDigest, verifyTrajectory } from "../../journal/src/index.js";
 import { type CliIo, FILE_IO } from "./grant-cli.js";
 
 /**
@@ -18,7 +18,7 @@ import { type CliIo, FILE_IO } from "./grant-cli.js";
  * copy instead and says so in the result (`"history": "not_checked"`); it is not the operator's check.
  */
 
-const USAGE = "usage: juno journal check --journal <journal dir> --anchors <anchor clone> --key <journal-key.pub.pem> [--no-history] <task id>\n";
+const USAGE = `usage: ${junoProgramText()} journal check --journal <journal dir> --anchors <anchor clone> --key <journal-key.pub.pem> [--no-history] <task id>\n`;
 
 export async function runJournalCli(args: readonly string[], io: CliIo = FILE_IO, readAnchors: (dir: string, task: string) => unknown[] = readAnchorDirectory, git = HISTORY_GIT): Promise<number> {
   const [command, ...rest] = args;

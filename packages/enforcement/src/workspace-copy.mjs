@@ -73,8 +73,11 @@ export function kernelMayChange(folder) {
   }
 }
 
+// The sealed program knows neither the host's path of the workspace nor its user names: it marks the entry, and the host
+// writes the remedy's command with the entry's real path and its owner's name (host-restore.ts, D-247).
+export const BITS_MARK = "[[remove-bits:";
 const bitsRefusal = (rel, mode) =>
-  `${shown(rel)} has a set-user-ID, set-group-ID or sticky bit (mode ${octal(mode)}), which JUNO never takes from a workspace and never recreates; remove the bit as its owner (sudo -u juno-agent chmod u-s,g-s,o-t <folder or file>) and try again (D-223, D-225, D-228)`;
+  `${shown(rel)} has a set-user-ID, set-group-ID or sticky bit (mode ${octal(mode)}), which JUNO never takes from a workspace and never recreates; remove the bit as its owner, then try again ${BITS_MARK}${JSON.stringify(rel)}]] (D-223, D-225, D-228)`;
 
 /** Why the folder at `fd` stops a checkpoint or a restore, or null. */
 function folderRefusal(fd, rel, top, mayChange) {

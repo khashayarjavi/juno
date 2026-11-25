@@ -1,6 +1,6 @@
 import { type Stats, lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { junoCommand, operatorText } from "../../journal/src/index.js";
+import { junoCommand, junoProgramText, operatorText } from "../../journal/src/index.js";
 import { PINNED_SSH, knownHostsRefusals, parseAnchorPin } from "../../enforcement/src/anchor-pin.js";
 import { type FilesystemIo, caseFoldingRefusals, systemFilesystemIo } from "./filesystem.js";
 import { type SuperblockIo, superblockRefusals, systemSuperblockIo } from "./superblock.js";
@@ -321,7 +321,7 @@ export function systemPreflightIo(): PreflightIo {
   };
 }
 
-const CHECK_USAGE = "usage: juno hook check --agent-user <name> --runner-user <name> --socket <path> --client <juno-hook.js> --node <node> --state <path> [--state <path> ...] --workspace <path> [--workspace <path> ...] [--source <path> ...] [--anchor <file>] [--anchor-pin <file>] [--settings <file>] [--gateway <name> --shim <juno-mcp.js> --gateway-socket <path>]\n";
+const CHECK_USAGE = `usage: ${junoProgramText()} hook check --agent-user <name> --runner-user <name> --socket <path> --client <juno-hook.js> --node <node> --state <path> [--state <path> ...] --workspace <path> [--workspace <path> ...] [--source <path> ...] [--anchor <file>] [--anchor-pin <file>] [--settings <file>] [--gateway <name> --shim <juno-mcp.js> --gateway-socket <path>]\n`;
 
 /** D-208: the anchor pin's place unless the operator names another (the services' default too). */
 const ANCHOR_PIN = "/etc/juno/anchors.json";

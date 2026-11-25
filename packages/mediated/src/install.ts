@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { runHookCheckCli } from "./preflight.js";
-import { commandText, junoCommand } from "../../journal/src/index.js";
+import { commandText, junoCommand, junoProgramText } from "../../journal/src/index.js";
 
 /**
  * `juno hook install` (spec §4.3 "Fail-closed ingress": a configuration in which a hook failure lets a call proceed is
@@ -273,7 +273,7 @@ export async function installHook(file: string, hook: HookCommand, client: strin
   return { installed: true, settings: result, not_controlled: gateway === undefined ? NOT_CONTROLLED : [...NOT_CONTROLLED, ...GATEWAY_NOT_CONTROLLED] };
 }
 
-const USAGE = "usage: juno hook install --socket <path> --client <juno-hook.js> [--node <node>] [--claude <claude>] [--settings /etc/claude-code/managed-settings.json] [--gateway <name> --shim <juno-mcp.js> --gateway-socket <path>]\n       juno hook check --agent-user <name> --runner-user <name> --socket <path> --client <juno-hook.js> --node <node> --state <path> [--state <path> ...] --workspace <path> [--workspace <path> ...] [--source <path> ...] [--anchor <file>] [--anchor-pin <file>] [--settings <file>] [--gateway <name> --shim <juno-mcp.js> --gateway-socket <path>]\n";
+const USAGE = `usage: ${junoProgramText()} hook install --socket <path> --client <juno-hook.js> [--node <node>] [--claude <claude>] [--settings /etc/claude-code/managed-settings.json] [--gateway <name> --shim <juno-mcp.js> --gateway-socket <path>]\n       ${junoProgramText()} hook check --agent-user <name> --runner-user <name> --socket <path> --client <juno-hook.js> --node <node> --state <path> [--state <path> ...] --workspace <path> [--workspace <path> ...] [--source <path> ...] [--anchor <file>] [--anchor-pin <file>] [--settings <file>] [--gateway <name> --shim <juno-mcp.js> --gateway-socket <path>]\n`;
 
 /**
  * `juno hook install --socket <path> --client <juno-hook.js> [--node <node>] [--claude <claude>] [--settings <file>]`

@@ -17,7 +17,7 @@ import {
   workloadWorkspace,
 } from "../../enforcement/src/index.js";
 import { type FilesystemIo, caseFoldingRefusals, systemFilesystemIo } from "../../mediated/src/filesystem.js";
-import { type EntryDraft, JournalWriter as Writer, canonicalJson, commandText, operatorText, readPayload, readTrajectory, serviceCommand, userName } from "../../journal/src/index.js";
+import { canonicalJson, commandText, type EntryDraft, JournalWriter as Writer, junoProgramText, operatorText, readPayload, readTrajectory, serviceCommand, userName } from "../../journal/src/index.js";
 import { type CliIo, FILE_IO } from "./grant-cli.js";
 import { RunnerLockRefused, acquireRunnerLock } from "./lock.js";
 
@@ -114,7 +114,7 @@ export async function restoreCheckpoint(
   try {
     restored = await checkpoints.workspace.restore(root, manifest, (hash) => checkpoints.store.get(hash));
   } catch (error: unknown) {
-    restored = { ok: false, reason: error instanceof Error ? error.message : String(error) };
+    restored = { ok: false, reason: operatorText(error instanceof Error ? error.message : String(error)) };
   }
   if (!restored.ok) outcome = { ok: false, reason: restored.reason };
   else outcome = await compared(checkpoints.workspace, root, manifest);
@@ -182,7 +182,7 @@ export async function restoreHostCheckpoint(
   try {
     outcome = await new SealedWorkspace(workspace, host.launcher).restore(root, manifest, (hash) => store.get(hash));
   } catch (error: unknown) {
-    outcome = { ok: false, changed: true, reason: `the restore stopped part way: ${error instanceof Error ? error.message : String(error)}` };
+    outcome = { ok: false, changed: true, reason: `the restore stopped part way: ${operatorText(error instanceof Error ? error.message : String(error))}` };
   }
   // D-234: the folder as it stood was moved aside, whole, beside it; the journal and the answer say where (a host path).
   const keptAt = (kept: string | null | undefined): string | undefined => (typeof kept === "string" ? workspace + kept.slice("/work".length) : undefined);
@@ -198,9 +198,9 @@ export async function restoreHostCheckpoint(
 }
 
 const USAGE =
-  "usage: juno checkpoint restore --journal <journal dir> --checkpoints <checkpoint dir> --compose <docker-compose.yml> --project <compose project> --principal <operator> <task id> <checkpoint>\n" +
-  "       juno checkpoint restore --journal <journal dir> --checkpoints <checkpoint dir> --workspace <host folder> --principal <operator> <task id> <checkpoint>\n" +
-  "       juno checkpoint list --journal <journal dir> <task id>\n";
+  `usage: ${junoProgramText()} checkpoint restore --journal <journal dir> --checkpoints <checkpoint dir> --compose <docker-compose.yml> --project <compose project> --principal <operator> <task id> <checkpoint>\n` +
+  `       ${junoProgramText()} checkpoint restore --journal <journal dir> --checkpoints <checkpoint dir> --workspace <host folder> --principal <operator> <task id> <checkpoint>\n` +
+  `       ${junoProgramText()} checkpoint list --journal <journal dir> <task id>\n`;
 
 /**
  * Why the restore could not lock the journal, in the operator's words (D-243): a running service is stopped first; a
@@ -290,7 +290,7 @@ export async function runCheckpointCli(
       io.out(`${JSON.stringify(listCheckpoints(journalDir, taskId), null, 2)}\n`);
       return 0;
     } catch (error: unknown) {
-      io.err(`juno checkpoint list: ${error instanceof Error ? error.message : String(error)}\n`);
+      io.err(`juno checkpoint list: ${operatorText(error instanceof Error ? error.message : String(error))}\n`);
       return 1;
     }
   }

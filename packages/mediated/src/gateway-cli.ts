@@ -16,7 +16,7 @@ import {
   parseAnchorInterval,
   systemHostIo,
 } from "../../enforcement/src/index.js";
-import { operatorPath, operatorText } from "../../journal/src/index.js";
+import { junoProgramText, operatorPath, operatorText } from "../../journal/src/index.js";
 import { type FilesystemIo, systemFilesystemIo } from "./filesystem.js";
 import { GatewaySessionRequest, McpGateway } from "./gateway.js";
 import { GatewayService } from "./gateway-service.js";
@@ -63,7 +63,7 @@ export type GatewayCliIo = {
   readonly err: (text: string) => void;
 };
 
-const USAGE = "usage: juno gateway serve --session <file> --socket <path> --journal <dir> --anchor <operator.pub> --workspace <dir> --journal-key <dir> --anchors <juno-anchors clone> [--anchor-pin <file>] [--anchor-interval <seconds>] --grant <file> [--grant <file> ...]\n";
+const USAGE = `usage: ${junoProgramText()} gateway serve --session <file> --socket <path> --journal <dir> --anchor <operator.pub> --workspace <dir> --journal-key <dir> --anchors <juno-anchors clone> [--anchor-pin <file>] [--anchor-interval <seconds>] --grant <file> [--grant <file> ...]\n`;
 
 /** What `juno gateway serve` asks the shared start-up check to judge (D-194). */
 export function gatewayStartupSpec(options: { readonly session: string; readonly socket: string; readonly journal: string; readonly anchor: string; readonly workspace: string; readonly grants: readonly string[]; readonly anchoring: AnchoringConfig }): StartupSpec {

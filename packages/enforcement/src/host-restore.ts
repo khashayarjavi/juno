@@ -1,12 +1,12 @@
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { type Stats, closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { z } from "zod";
 import { MAX_CHECKPOINT_BYTES, MAX_CHECKPOINT_ENTRIES, type ManifestEntry, type Snapshot, Workspace, sameManifest } from "./checkpoint.js";
 import { WORKLOAD_NODE } from "./canonical.js";
-import { DIR_MODE, FILE_MODE } from "./workspace-copy.mjs";
-import { commandText, junoCommand } from "../../journal/src/index.js";
+import { BITS_MARK, DIR_MODE, FILE_MODE } from "./workspace-copy.mjs";
+import { commandText, junoCommand, operatorPath, operatorText, ownerName, userName } from "../../journal/src/index.js";
 
 export { DIR_MODE, FILE_MODE, asideName, kernelMayChange, listTree, openRoot, openRootAt, remove as removeEntry, restoreTree, undoRefusals, undoTo } from "./workspace-copy.mjs";
 
@@ -206,12 +206,52 @@ export class SealedWorkspace {
         }
       })());
       if (!parsed.success) return { error: `the sealed copy context did not answer (exit ${String(result.exitCode)}${result.stderr.trim() === "" ? "" : `: ${result.stderr.trim().slice(0, 500)}`})` };
-      return parsed.data;
+      return this.#named(parsed.data, root);
     } catch (error: unknown) {
-      return { error: `the sealed copy context did not run: ${error instanceof Error ? error.message : String(error)}` };
+      return { error: `the sealed copy context did not run: ${operatorText(error instanceof Error ? error.message : String(error))}` };
     } finally {
       closeSync(fd);
     }
+  }
+
+  /**
+   * The sealed program's answer with every entry it marks for its set-user-ID, set-group-ID or sticky bit named by its
+   * real path on this host and the command its owner, by name, removes the bit with (D-247): the sealed program knows
+   * neither, since it sees the workspace at /work and no user names.
+   */
+  #named(answer: SealedAnswer, root: string): SealedAnswer {
+    const remedy = (rel: string): string => {
+      const host = operatorPath(join(this.workspace, root.slice("/work".length), rel));
+      const owner = ownerName(host);
+      const chmod = ["chmod", "u-s,g-s,o-t", host];
+      if (owner === null) return `(as the user that owns ${host}: ${commandText(chmod)})`;
+      return `(as ${owner}: ${commandText(owner === userName(process.geteuid?.() ?? -1) ? chmod : ["sudo", "-u", owner, ...chmod])})`;
+    };
+    // The mark is BITS_MARK, a JSON string (the entry's path from the workspace root), then "]]".
+    const quoted = (text: string, from: number): number => {
+      if (text[from] !== '"') return -1;
+      for (let at = from + 1; at < text.length; at += 1) {
+        if (text[at] === "\\") at += 1;
+        else if (text[at] === '"') return at + 1;
+      }
+      return -1;
+    };
+    const name = (text: string): string => {
+      let out = "";
+      let rest = text;
+      for (let at = rest.indexOf(BITS_MARK); at >= 0; at = rest.indexOf(BITS_MARK)) {
+        const close = quoted(rest, at + BITS_MARK.length);
+        const parsed = close < 0 || rest.slice(close, close + 2) !== "]]" ? null : z.string().safeParse(JSON.parse(rest.slice(at + BITS_MARK.length, close)));
+        out += rest.slice(0, at) + (parsed?.success === true ? remedy(parsed.data) : "");
+        rest = close < 0 ? "" : rest.slice(close + 2);
+      }
+      return out + rest;
+    };
+    if ("error" in answer) return { error: name(answer.error) };
+    if ("refusals" in answer) return { refusals: answer.refusals.map(name) };
+    if ("refused" in answer) return { refused: answer.refused.map(name) };
+    if ("failed" in answer) return { failed: name(answer.failed), kept: answer.kept };
+    return answer;
   }
 
   /**
@@ -257,7 +297,8 @@ export class SealedWorkspace {
     try {
       for (const entry of manifest) if (entry.type === "file") contents[entry.sha256] = content(entry.sha256).toString("base64");
     } catch (error: unknown) {
-      return { ok: false, changed: false, reason: `${error instanceof Error ? error.message : String(error)}; nothing was changed` };
+      // D-247: a Node error names the descriptor path it opened; the operator is given the folder it holds.
+      return { ok: false, changed: false, reason: `${operatorText(error instanceof Error ? error.message : String(error))}; nothing was changed` };
     }
     const answer = await this.#run("restore", root, JSON.stringify({ manifest, contents }));
     const unchanged = (reason: string): string => (/nothing was (read or )?changed$/.test(reason) ? reason : `${reason}; nothing was changed`);
