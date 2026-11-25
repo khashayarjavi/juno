@@ -6,8 +6,6 @@ type Opened = { readonly ok: true; readonly fd: number } | { readonly ok: false;
 type Judge = { readonly mayChange?: (folder: string) => boolean; readonly uid?: number };
 
 export const FILE_MODE: number;
-/** Marks an entry whose set-user-ID, set-group-ID or sticky bit must go; the host names its path and owner (D-247). */
-export const BITS_MARK: string;
 export const DIR_MODE: number;
 export const MAX_ENTRIES: number;
 export const MAX_BYTES: number;

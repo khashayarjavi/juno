@@ -235,19 +235,53 @@ describe("restoring a host-folder checkpoint (§2.2.2, D-221, D-228)", () => {
       chmodSync(at, bits);
       const taken = await sealed().checkpoint("/work/project");
       const reason = taken.ok ? "" : taken.reason;
-      expect(reason).not.toContain("[[");
-      expect(reason).toContain(`remove the bit as its owner, then try again (as ${me}: \`chmod u-s,g-s,o-t ${at}\`)`);
+      expect(reason).toContain(`to remove the bit from ${at}, as ${me}: \`chmod u-s,g-s,o-t ${at}\``);
       const command = /`([^`]+)`/.exec(reason)?.[1]?.split(" ") ?? [];
       expect(command).toEqual(["chmod", "u-s,g-s,o-t", at]);
       await run(command[0] ?? "", command.slice(1));
       expect(lstatSync(at).mode & 0o7000).toBe(0);
       expect((await sealed().checkpoint("/work/project")).ok).toBe(true);
     }
-    // The workspace root itself, named by its real path.
+    // The session's folder itself, named by its real path.
     chmodSync(join(work, "project"), 0o1775);
     const root = await sealed().checkpoint("/work/project");
-    expect(root.ok ? "" : root.reason).toContain(`(as ${me}: \`chmod u-s,g-s,o-t ${join(work, "project")}\`)`);
+    expect(root.ok ? "" : root.reason).toContain(`to remove the bit from ${join(work, "project")}, as ${me}: \`chmod u-s,g-s,o-t ${join(work, "project")}\``);
     chmodSync(join(work, "project"), 0o775);
+  });
+
+  // proves D-248 (review round 3 of PR #66, finding B): a remedy's command comes only from the sealed answer's own field,
+  // and only for an entry inside the session's folder that this host sees with such a bit; a name the agent wrote into
+  // a text (a forged marker) or an entry naming a path outside, through a link, or without the bit, gives no command
+  it("never builds a command from a text, or for an entry outside the session's folder, through a link or without the bit", async () => {
+    mkdirSync(join(dir, "beyond-the-session"));
+    chmodSync(join(dir, "beyond-the-session"), 0o1777);
+    symlinkSync(join(dir, "beyond-the-session"), join(work, "project", "link"));
+    const forged = (answer: unknown): SealedLauncher => () => Promise.resolve({ exitCode: 0, stdout: JSON.stringify(answer), stderr: "" });
+    const marker = `a[[remove-bits:"../../beyond-the-session"]] and [[remove-bits:`;
+    for (const bits of [undefined, ["../../beyond-the-session"], ["link"], ["/etc"], ["docs/../../../beyond-the-session"], ["notes.txt"], ["docs"]]) {
+      const answer = { refusals: [`"${marker}" has a set-user-ID, set-group-ID or sticky bit (mode 1777)`], ...(bits === undefined ? {} : { bits }) };
+      const refusals = await new SealedWorkspace(work, forged(answer)).check("/work/project", []);
+      // The text comes back exactly as the sealed program wrote it, every part of it, and no command is added.
+      expect(refusals, JSON.stringify(bits)).toEqual(answer.refusals);
+    }
+    const failed = await new SealedWorkspace(work, forged({ failed: `the restore stopped part way: ${marker}`, kept: null, bits: ["../../beyond-the-session"] })).restore("/work/project", [], () => Buffer.alloc(0));
+    expect(failed).toEqual({ ok: false, changed: true, reason: `the restore stopped part way: ${marker}`, kept: null });
+    expect(lstatSync(join(dir, "beyond-the-session")).mode & 0o7777).toBe(0o1777);
+  });
+
+  // proves D-248 (review round 3 of PR #66, finding A): a restore that stops part way names the entry it stopped at by
+  // its path from the session's folder, never a descriptor path or a path inside the sealed context; where the old
+  // folder is kept comes back in its own field, which the host names on this machine
+  it("names a restore that stops part way without a descriptor or a sealed path", async () => {
+    const manifest = await checkpoint();
+    const file = manifest.find((entry) => entry.type === "file");
+    if (file === undefined) throw new Error("no file in the checkpoint");
+    const long = "x".repeat(300);
+    const outcome = await restore([...manifest, { ...file, path: long }]);
+    expect(outcome).toMatchObject({ ok: false, changed: true, kept: KEPT });
+    expect(outcome.reason).toBe(`the restore stopped part way: ${JSON.stringify(long)} could not be restored (ENAMETOOLONG)`);
+    expect(outcome.reason).not.toMatch(/\/proc\/|\/dev\/fd|\/work/);
+    expect(existsSync(host(outcome.kept))).toBe(true);
   });
 
   // proves D-225 (review round 3 of PR #60) with D-234: a sticky folder the session made inside its folder no longer

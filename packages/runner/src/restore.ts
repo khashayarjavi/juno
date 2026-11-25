@@ -17,7 +17,7 @@ import {
   workloadWorkspace,
 } from "../../enforcement/src/index.js";
 import { type FilesystemIo, caseFoldingRefusals, systemFilesystemIo } from "../../mediated/src/filesystem.js";
-import { canonicalJson, commandText, type EntryDraft, JournalWriter as Writer, junoProgramText, operatorText, readPayload, readTrajectory, serviceCommand, userName } from "../../journal/src/index.js";
+import { canonicalJson, commandText, type EntryDraft, JournalWriter as Writer, junoProgramText, operatorPath, operatorText, readPayload, readTrajectory, serviceCommand, userName } from "../../journal/src/index.js";
 import { type CliIo, FILE_IO } from "./grant-cli.js";
 import { RunnerLockRefused, acquireRunnerLock } from "./lock.js";
 
@@ -185,7 +185,8 @@ export async function restoreHostCheckpoint(
     outcome = { ok: false, changed: true, reason: `the restore stopped part way: ${operatorText(error instanceof Error ? error.message : String(error))}` };
   }
   // D-234: the folder as it stood was moved aside, whole, beside it; the journal and the answer say where (a host path).
-  const keptAt = (kept: string | null | undefined): string | undefined => (typeof kept === "string" ? workspace + kept.slice("/work".length) : undefined);
+  // D-248: where the old folder is kept, named on this host from the sealed answer's own field (a plain path under /work).
+  const keptAt = (kept: string | null | undefined): string | undefined => (typeof kept === "string" && kept.startsWith("/work/") && kept.slice("/work/".length).split("/").every((part) => part !== "" && part !== "." && part !== "..") ? operatorPath(workspace + kept.slice("/work".length)) : undefined);
   if (outcome.ok) {
     const kept = keptAt(outcome.kept);
     record("restored", undefined, kept);
@@ -193,8 +194,9 @@ export async function restoreHostCheckpoint(
   }
   if (!outcome.changed) return refused(outcome.reason.endsWith("nothing was changed") || outcome.reason.endsWith("nothing was read or changed") ? outcome.reason : `${outcome.reason}; nothing was changed`);
   const kept = keptAt(outcome.kept);
-  record("failed", outcome.reason, kept);
-  return { ok: false, reason: outcome.reason, ...(kept === undefined ? {} : { kept }) };
+  const reason = kept === undefined ? outcome.reason : `${outcome.reason}; the folder as it was is kept, whole, at ${kept}`;
+  record("failed", reason, kept);
+  return { ok: false, reason, ...(kept === undefined ? {} : { kept }) };
 }
 
 const USAGE =

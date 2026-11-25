@@ -62,6 +62,12 @@ const kindOf = (stats) =>
   stats.isDirectory() ? "folder" : stats.isFile() ? "file" : stats.isSymbolicLink() ? "symbolic link" : stats.isFIFO() ? "FIFO" : stats.isSocket() ? "socket" : stats.isCharacterDevice() || stats.isBlockDevice() ? "device" : "entry of an unknown kind";
 
 class Refusal extends Error {}
+/**
+ * What a failure says (round 3 of PR #66, D-248): a refusal this program wrote, which names entries only by their path
+ * from the workspace root, through JSON; never Node's own text, which names this process's descriptor paths.
+ */
+const said = (error) => (error instanceof Refusal ? error.message : `a step failed (${code(error)})`);
+const entryName = (path) => (path === null ? "an entry whose name is not valid UTF-8" : path === "" ? "the session's folder" : JSON.stringify(path));
 
 /** The kernel's own answer (access(2), access lists included): may this process read, change and enter the folder? */
 export function kernelMayChange(folder) {
@@ -73,11 +79,16 @@ export function kernelMayChange(folder) {
   }
 }
 
-// The sealed program knows neither the host's path of the workspace nor its user names: it marks the entry, and the host
-// writes the remedy's command with the entry's real path and its owner's name (host-restore.ts, D-247).
-export const BITS_MARK = "[[remove-bits:";
-const bitsRefusal = (rel, mode) =>
-  `${shown(rel)} has a set-user-ID, set-group-ID or sticky bit (mode ${octal(mode)}), which JUNO never takes from a workspace and never recreates; remove the bit as its owner, then try again ${BITS_MARK}${JSON.stringify(rel)}]] (D-223, D-225, D-228)`;
+// The sealed program knows neither the host's path of the workspace nor its user names. Each entry refused for such a
+// bit is collected here, as its path from the workspace root, and returned in its own field of the answer (`bits`);
+// the host writes the remedy's command from that field, never from any text (round 3 of PR #66, D-248).
+export const bitEntries = new Set();
+const bitsRefusal = (rel, mode) => {
+  bitEntries.add(rel);
+  return bitsText(rel, mode);
+};
+const bitsText = (rel, mode) =>
+  `${shown(rel)} has a set-user-ID, set-group-ID or sticky bit (mode ${octal(mode)}), which JUNO never takes from a workspace and never recreates; remove the bit as its owner, then try again (D-223, D-225, D-228)`;
 
 /** Why the folder at `fd` stops a checkpoint or a restore, or null. */
 function folderRefusal(fd, rel, top, mayChange) {
@@ -93,9 +104,9 @@ function folderRefusal(fd, rel, top, mayChange) {
  * component at a time, never following a link. The caller closes the handle it gets.
  */
 export function openRootAt(baseFd, root) {
-  if (root !== "/work" && !root.startsWith("/work/")) return { ok: false, reason: `${root} is not a path under /work` };
+  if (root !== "/work" && !root.startsWith("/work/")) return { ok: false, reason: "the folder JUNO named is not inside the workspace" };
   const parts = root === "/work" ? [] : root.slice("/work/".length).split("/");
-  if (!parts.every(plain)) return { ok: false, reason: `${root} is not a plain path` };
+  if (!parts.every(plain)) return { ok: false, reason: "the folder JUNO named is not a plain path" };
   let fd;
   try {
     fd = openSync(at(baseFd, "."), DIR_FLAGS);
@@ -108,7 +119,7 @@ export function openRootAt(baseFd, root) {
       next = openSync(at(fd, part), DIR_FLAGS);
     } catch (error) {
       closeSync(fd);
-      return { ok: false, reason: `${root} is not a folder reached without a symbolic link (${part}: ${code(error)})` };
+      return { ok: false, reason: `the session's folder is not a folder reached without a symbolic link (at ${JSON.stringify(part)}: ${code(error)})` };
     }
     closeSync(fd);
     fd = next;
@@ -261,7 +272,7 @@ const rootParts = (root) => {
  */
 export function undoRefusals(baseFd, root, options = {}) {
   const parts = rootParts(root);
-  if (parts === null) return [`${String(root)} is not a folder below /work: JUNO undoes a session's folder by moving it aside inside the workspace, so it cannot undo the workspace itself (D-234)`];
+  if (parts === null) return [`the folder JUNO named is not a folder inside the workspace: JUNO undoes a session's folder by moving it aside inside the workspace, so it cannot undo the workspace itself (D-234)`];
   const mayChange = options.mayChange ?? kernelMayChange;
   const top = fstatSync(baseFd);
   let fd = baseFd;
@@ -316,7 +327,7 @@ function contentsOf(manifest, content) {
   for (const entry of manifest) {
     if (entry.type !== "file" || bytes.has(entry.sha256)) continue;
     const data = content(entry.sha256);
-    if (!Buffer.isBuffer(data) || createHash("sha256").update(data).digest("hex") !== entry.sha256) throw new Refusal(`the checkpoint's content for ${entry.path} does not match its hash`);
+    if (!Buffer.isBuffer(data) || createHash("sha256").update(data).digest("hex") !== entry.sha256) throw new Refusal(`the checkpoint's content for ${JSON.stringify(entry.path)} does not match its hash`);
     bytes.set(entry.sha256, data);
   }
   return bytes;
@@ -337,7 +348,7 @@ export function undoTo(baseFd, root, manifest, content, options = {}) {
   try {
     bytes = contentsOf(manifest, content);
   } catch (error) {
-    return { refused: [error instanceof Error ? error.message : String(error)] };
+    return { refused: [said(error)] };
   }
   const refusals = undoRefusals(baseFd, root, options);
   if (refusals.length > 0) return { refused: refusals };
@@ -347,7 +358,8 @@ export function undoTo(baseFd, root, manifest, content, options = {}) {
   let fd = baseFd;
   let made = false;
   let kept = null;
-  const stop = (reason) => (made || kept !== null ? { failed: kept === null ? reason : `${reason}; the folder as it was is kept, whole, at ${kept}`, kept } : { refused: [reason] });
+  // Where the old folder is kept is said by the host, from `kept`, as a path on the host (D-248).
+  const stop = (reason) => (made || kept !== null ? { failed: reason, kept } : { refused: [reason] });
   try {
     // 1. The folders above it: each opened never following a link, or made again when gone.
     for (const part of parts.slice(0, -1)) {
@@ -357,14 +369,14 @@ export function undoTo(baseFd, root, manifest, content, options = {}) {
         madeHere = true;
         made = true;
       } catch (error) {
-        if (code(error) !== "EEXIST") return stop(`${part} cannot be made again (${code(error)})`);
+        if (code(error) !== "EEXIST") return stop(`the folder ${JSON.stringify(part)} above the session's folder cannot be made again (${code(error)})`);
       }
       let next;
       try {
         next = openSync(at(fd, part), DIR_FLAGS);
         if (madeHere) fchmodSync(next, DIR_MODE);
       } catch (error) {
-        return stop(`${root} is not a folder reached without a symbolic link (${part}: ${code(error)})`);
+        return stop(`the session's folder is not a folder reached without a symbolic link (at ${JSON.stringify(part)}: ${code(error)})`);
       }
       if (fd !== baseFd) closeSync(fd);
       fd = next;
@@ -374,21 +386,21 @@ export function undoTo(baseFd, root, manifest, content, options = {}) {
     try {
       lstatSync(at(fd, name));
     } catch (error) {
-      if (code(error) !== "ENOENT") return stop(`${root} cannot be read (${code(error)})`);
+      if (code(error) !== "ENOENT") return stop(`the session's folder cannot be read (${code(error)})`);
       exists = false;
     }
     if (exists) {
       const aside = asideName(name);
       try {
         lstatSync(at(fd, aside));
-        return stop(`${aside} already exists beside ${root}`);
+        return stop(`${JSON.stringify(aside)} already exists beside the session's folder`);
       } catch (error) {
-        if (code(error) !== "ENOENT") return stop(`${aside} cannot be read (${code(error)})`);
+        if (code(error) !== "ENOENT") return stop(`${JSON.stringify(aside)}, beside the session's folder, cannot be read (${code(error)})`);
       }
       try {
         renameSync(at(fd, name), at(fd, aside));
       } catch (error) {
-        return stop(`${root} cannot be moved aside (${code(error)})`);
+        return stop(`the session's folder cannot be moved aside (${code(error)})`);
       }
       kept = `${root.slice(0, root.length - name.length)}${aside}`;
     }
@@ -397,23 +409,23 @@ export function undoTo(baseFd, root, manifest, content, options = {}) {
       mkdirSync(at(fd, name), 0o700);
       made = true;
     } catch (error) {
-      return stop(`${root} could not be made again (${code(error)}): something made it while it was undone`);
+      return stop(`the session's folder could not be made again (${code(error)}): something made it while it was undone`);
     }
     let fresh;
     try {
       fresh = openSync(at(fd, name), DIR_FLAGS);
     } catch (error) {
-      return stop(`${root} could not be opened once made again (${code(error)})`);
+      return stop(`the session's folder could not be opened once made again (${code(error)})`);
     }
     try {
       const stats = fstatSync(fresh);
-      if (stats.uid !== uid) return stop(`${root} made again is not JUNO's own folder`);
+      if (stats.uid !== uid) return stop("the session's folder made again is not JUNO's own folder");
       // Its mode stays 0700 (so, through the access list's mask, no one else's) while it is filled; `restoreTree` gives
       // it DIR_MODE last, with every other folder (review round 10's note, D-236).
       try {
         restoreTree(fresh, manifest, (hash) => bytes.get(hash), { uid });
       } catch (error) {
-        return stop(`the restore stopped part way: ${error instanceof Error ? error.message : String(error)}`);
+        return stop(`the restore stopped part way: ${said(error)}`);
       }
       const after = listTree(fresh, { strict: true, uid, ...(options.mayChange === undefined ? {} : { mayChange: options.mayChange }) });
       if (!after.ok) return stop(`the folder after the restore is not the checkpoint: ${after.reason}`);
@@ -493,13 +505,13 @@ function keeps(dirFd, name, stats, want, uid) {
  */
 export function restoreTree(rootFd, manifest, content, options = {}) {
   const want = wanted(manifest);
-  if (typeof want === "string") throw new Error(want);
+  if (typeof want === "string") throw new Refusal(want);
   const uid = options.uid ?? process.geteuid();
   const bytes = new Map();
   for (const entry of manifest) {
     if (entry.type !== "file" || bytes.has(entry.sha256)) continue;
     const data = content(entry.sha256);
-    if (!Buffer.isBuffer(data) || createHash("sha256").update(data).digest("hex") !== entry.sha256) throw new Error(`the checkpoint's content for ${entry.path} does not match its hash`);
+    if (!Buffer.isBuffer(data) || createHash("sha256").update(data).digest("hex") !== entry.sha256) throw new Refusal(`the checkpoint's content for ${JSON.stringify(entry.path)} does not match its hash`);
     bytes.set(entry.sha256, data);
   }
   // 1. Remove what the checkpoint lacks, or holds as another type, or (for a file) holds otherwise.
@@ -508,65 +520,80 @@ export function restoreTree(rootFd, manifest, content, options = {}) {
       // A name that is not valid UTF-8 is in no checkpoint (none records one), so it is removed as the bytes it is.
       const text = utf8(name);
       const path = text === null ? null : rel === "" ? text : `${rel}/${text}`;
-      let stats;
       try {
-        stats = lstatSync(at(fd, name));
+        pruneOne(fd, name, path);
       } catch (error) {
-        if (code(error) === "ENOENT") continue;
-        throw error;
-      }
-      const entry = path === null ? undefined : want.get(path);
-      if (!keeps(fd, name, stats, entry, uid)) {
-        remove(fd, name);
-        continue;
-      }
-      if (entry.type !== "directory") continue;
-      let child;
-      try {
-        child = openSync(at(fd, name), DIR_FLAGS);
-      } catch {
-        // Swapped for something else since it was read: removed as what it now is.
-        remove(fd, name);
-        continue;
-      }
-      try {
-        prune(child, path);
-      } finally {
-        closeSync(child);
+        throw error instanceof Refusal ? error : new Refusal(`${entryName(path)} could not be read or removed (${code(error)})`);
       }
     }
   };
+  const pruneOne = (fd, name, path) => {
+    let stats;
+    try {
+      stats = lstatSync(at(fd, name));
+    } catch (error) {
+      if (code(error) === "ENOENT") return;
+      throw error;
+    }
+    const entry = path === null ? undefined : want.get(path);
+    if (!keeps(fd, name, stats, entry, uid)) {
+      remove(fd, name);
+      return;
+    }
+    if (entry.type !== "directory") return;
+    let child;
+    try {
+      child = openSync(at(fd, name), DIR_FLAGS);
+    } catch {
+      // Swapped for something else since it was read: removed as what it now is.
+      remove(fd, name);
+      return;
+    }
+    try {
+      prune(child, path);
+    } finally {
+      closeSync(child);
+    }
+  };
   const folders = new Map([["", rootFd]]);
+  // 2's one step: an entry the checkpoint holds, made where it is missing, in manifest order (every folder first).
+  const createOne = (entry) => {
+    const slash = entry.path.lastIndexOf("/");
+    const parent = folders.get(slash < 0 ? "" : entry.path.slice(0, slash));
+    const name = slash < 0 ? entry.path : entry.path.slice(slash + 1);
+    if (parent === undefined) throw new Refusal(`the folder above ${JSON.stringify(entry.path)} was not restored`);
+    let exists = true;
+    try {
+      lstatSync(at(parent, name));
+    } catch (error) {
+      if (code(error) !== "ENOENT") throw error;
+      exists = false;
+    }
+    if (entry.type === "directory") {
+      if (!exists) mkdirSync(at(parent, name), 0o700);
+      folders.set(entry.path, openSync(at(parent, name), DIR_FLAGS));
+      return;
+    }
+    if (exists) return;
+    const data = bytes.get(entry.sha256);
+    if (data === undefined) throw new Refusal(`no content for ${JSON.stringify(entry.path)}`);
+    const fd = openSync(at(parent, name), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    try {
+      for (let offset = 0; offset < data.length; ) offset += writeSync(fd, data, offset, data.length - offset);
+      fchmodSync(fd, FILE_MODE);
+    } finally {
+      closeSync(fd);
+    }
+  };
   try {
     prune(rootFd, "");
     // 2. Create what is missing, in manifest order (every folder before what it holds).
     for (const entry of manifest) {
       if (entry.path === "") continue;
-      const slash = entry.path.lastIndexOf("/");
-      const parent = folders.get(slash < 0 ? "" : entry.path.slice(0, slash));
-      const name = slash < 0 ? entry.path : entry.path.slice(slash + 1);
-      if (parent === undefined) throw new Error(`the folder above ${entry.path} was not restored`);
-      let exists = true;
       try {
-        lstatSync(at(parent, name));
+        createOne(entry);
       } catch (error) {
-        if (code(error) !== "ENOENT") throw error;
-        exists = false;
-      }
-      if (entry.type === "directory") {
-        if (!exists) mkdirSync(at(parent, name), 0o700);
-        folders.set(entry.path, openSync(at(parent, name), DIR_FLAGS));
-        continue;
-      }
-      if (exists) continue;
-      const data = bytes.get(entry.sha256);
-      if (data === undefined) throw new Error(`no content for ${entry.path}`);
-      const fd = openSync(at(parent, name), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
-      try {
-        for (let offset = 0; offset < data.length; ) offset += writeSync(fd, data, offset, data.length - offset);
-        fchmodSync(fd, FILE_MODE);
-      } finally {
-        closeSync(fd);
+        throw error instanceof Refusal ? error : new Refusal(`${entryName(entry.path)} could not be restored (${code(error)})`);
       }
     }
     // 3. Every folder the runner owns gets DIR_MODE, the deepest first. A folder of another user's keeps its own mode,
@@ -575,8 +602,12 @@ export function restoreTree(rootFd, manifest, content, options = {}) {
       if (entry.type !== "directory") continue;
       const fd = folders.get(entry.path);
       if (fd === undefined) continue;
-      const stats = fstatSync(fd);
-      if (stats.uid === uid && (stats.mode & 0o7777) !== DIR_MODE) fchmodSync(fd, DIR_MODE);
+      try {
+        const stats = fstatSync(fd);
+        if (stats.uid === uid && (stats.mode & 0o7777) !== DIR_MODE) fchmodSync(fd, DIR_MODE);
+      } catch (error) {
+        throw new Refusal(`${entryName(entry.path)} could not be given its mode (${code(error)})`);
+      }
     }
   } finally {
     for (const [path, fd] of folders) if (path !== "") closeSync(fd);
@@ -591,7 +622,8 @@ export function restoreTree(rootFd, manifest, content, options = {}) {
  */
 export async function main(argv, input) {
   const [op, base, root, dev, ino] = argv;
-  const answer = (value) => process.stdout.write(JSON.stringify(value));
+  // Every answer carries, in its own field, the entries refused for a special bit (D-248); never inside a text.
+  const answer = (value) => process.stdout.write(JSON.stringify(bitEntries.size === 0 ? value : { ...value, bits: [...bitEntries] }));
   // What is said before anything could have changed. For a restore that is `refused`: the one answer JUNO reads as
   // "nothing was changed"; any other end of a restore run (an error later, no answer at all) counts as changed (D-230).
   const early = (reason) => answer(op === "restore" ? { refused: [reason] } : { error: reason });
@@ -620,7 +652,7 @@ export async function main(argv, input) {
         return answer(undoTo(baseFd, root, request?.manifest, (hash) => (typeof contents[hash] === "string" ? Buffer.from(contents[hash], "base64") : Buffer.alloc(0))));
       } catch (error) {
         // Thrown after a check passed: the folder may have changed (D-230).
-        return answer({ failed: `the restore stopped part way: ${error instanceof Error ? error.message : String(error)}`, kept: null });
+        return answer({ failed: `the restore stopped part way: ${said(error)}`, kept: null });
       }
     }
     const opened = openRootAt(baseFd, root);

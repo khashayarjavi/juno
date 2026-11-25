@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { z } from "zod";
 import { MAX_CHECKPOINT_BYTES, MAX_CHECKPOINT_ENTRIES, type ManifestEntry, type Snapshot, Workspace, sameManifest } from "./checkpoint.js";
 import { WORKLOAD_NODE } from "./canonical.js";
-import { BITS_MARK, DIR_MODE, FILE_MODE } from "./workspace-copy.mjs";
+import { DIR_MODE, FILE_MODE } from "./workspace-copy.mjs";
 import { commandText, junoCommand, operatorPath, operatorText, ownerName, userName } from "../../journal/src/index.js";
 
 export { DIR_MODE, FILE_MODE, asideName, kernelMayChange, listTree, openRoot, openRootAt, remove as removeEntry, restoreTree, undoRefusals, undoTo } from "./workspace-copy.mjs";
@@ -155,13 +155,15 @@ const SealedEntrySchema = z.discriminatedUnion("type", [
   z.strictObject({ path: z.string(), type: z.literal("directory"), mode: z.literal(DIR_MODE) }),
   z.strictObject({ path: z.string(), type: z.literal("file"), mode: z.literal(FILE_MODE), sha256: z.string().regex(/^[0-9a-f]{64}$/) }),
 ]);
+/** The entries the sealed program refused for a set-user-ID, set-group-ID or sticky bit, by path from the workspace root (D-248). */
+const Bits = z.array(z.string()).max(MAX_CHECKPOINT_ENTRIES).optional();
 const SealedAnswer = z.union([
-  z.strictObject({ error: z.string() }),
-  z.strictObject({ manifest: z.array(SealedEntrySchema), contents: z.record(z.string(), z.string()) }),
-  z.strictObject({ refusals: z.array(z.string()) }),
-  z.strictObject({ refused: z.array(z.string()) }),
-  z.strictObject({ failed: z.string(), kept: z.string().nullable() }),
-  z.strictObject({ restored: z.array(SealedEntrySchema), kept: z.string().nullable() }),
+  z.strictObject({ error: z.string(), bits: Bits }),
+  z.strictObject({ manifest: z.array(SealedEntrySchema), contents: z.record(z.string(), z.string()), bits: Bits }),
+  z.strictObject({ refusals: z.array(z.string()), bits: Bits }),
+  z.strictObject({ refused: z.array(z.string()), bits: Bits }),
+  z.strictObject({ failed: z.string(), kept: z.string().nullable(), bits: Bits }),
+  z.strictObject({ restored: z.array(SealedEntrySchema), kept: z.string().nullable(), bits: Bits }),
 ]);
 type SealedAnswer = z.infer<typeof SealedAnswer>;
 
@@ -215,43 +217,42 @@ export class SealedWorkspace {
   }
 
   /**
-   * The sealed program's answer with every entry it marks for its set-user-ID, set-group-ID or sticky bit named by its
-   * real path on this host and the command its owner, by name, removes the bit with (D-247): the sealed program knows
-   * neither, since it sees the workspace at /work and no user names.
+   * The sealed program's answer, with a remedy for each entry it refused for a set-user-ID, set-group-ID or sticky bit
+   * (D-247, D-248). The entries come only from the answer's own `bits` field, never from any text (a name in the
+   * workspace is the agent's to choose). A command is given only for an entry whose path is plain, lies inside this
+   * session's folder on this host with no symbolic link on the way, and which this host itself sees with such a bit:
+   * its real path and its owner, by name. Anything else gets no command.
    */
   #named(answer: SealedAnswer, root: string): SealedAnswer {
-    const remedy = (rel: string): string => {
-      const host = operatorPath(join(this.workspace, root.slice("/work".length), rel));
+    const { bits, ...rest } = answer as SealedAnswer & { readonly bits?: readonly string[] };
+    if (bits === undefined || bits.length === 0) return rest as SealedAnswer;
+    const base = operatorPath(join(this.workspace, root.slice("/work".length)));
+    const remedies: string[] = [];
+    for (const rel of new Set(bits)) {
+      if (rel.length > 4096 || (rel !== "" && !rel.split("/").every((part) => part !== "" && part !== "." && part !== ".." && !part.includes("\0")))) continue;
+      const host = rel === "" ? base : join(base, rel);
+      if (host !== base && !host.startsWith(`${base}/`)) continue;
+      let real: string;
+      let stats: Stats;
+      try {
+        real = realpathSync(host);
+        stats = lstatSync(host);
+      } catch {
+        continue;
+      }
+      if (real !== host || stats.isSymbolicLink() || (stats.mode & 0o7000) === 0) continue;
       const owner = ownerName(host);
+      if (owner === null) continue;
       const chmod = ["chmod", "u-s,g-s,o-t", host];
-      if (owner === null) return `(as the user that owns ${host}: ${commandText(chmod)})`;
-      return `(as ${owner}: ${commandText(owner === userName(process.geteuid?.() ?? -1) ? chmod : ["sudo", "-u", owner, ...chmod])})`;
-    };
-    // The mark is BITS_MARK, a JSON string (the entry's path from the workspace root), then "]]".
-    const quoted = (text: string, from: number): number => {
-      if (text[from] !== '"') return -1;
-      for (let at = from + 1; at < text.length; at += 1) {
-        if (text[at] === "\\") at += 1;
-        else if (text[at] === '"') return at + 1;
-      }
-      return -1;
-    };
-    const name = (text: string): string => {
-      let out = "";
-      let rest = text;
-      for (let at = rest.indexOf(BITS_MARK); at >= 0; at = rest.indexOf(BITS_MARK)) {
-        const close = quoted(rest, at + BITS_MARK.length);
-        const parsed = close < 0 || rest.slice(close, close + 2) !== "]]" ? null : z.string().safeParse(JSON.parse(rest.slice(at + BITS_MARK.length, close)));
-        out += rest.slice(0, at) + (parsed?.success === true ? remedy(parsed.data) : "");
-        rest = close < 0 ? "" : rest.slice(close + 2);
-      }
-      return out + rest;
-    };
-    if ("error" in answer) return { error: name(answer.error) };
-    if ("refusals" in answer) return { refusals: answer.refusals.map(name) };
-    if ("refused" in answer) return { refused: answer.refused.map(name) };
-    if ("failed" in answer) return { failed: name(answer.failed), kept: answer.kept };
-    return answer;
+      remedies.push(`to remove the bit from ${host}, as ${owner}: ${commandText(owner === userName(process.geteuid?.() ?? -1) ? chmod : ["sudo", "-u", owner, ...chmod])}`);
+    }
+    if (remedies.length === 0) return rest as SealedAnswer;
+    const line = remedies.join("; ");
+    if ("error" in rest) return { error: `${rest.error}; ${line}` };
+    if ("refusals" in rest) return { refusals: [...rest.refusals, line] };
+    if ("refused" in rest) return { refused: [...rest.refused, line] };
+    if ("failed" in rest) return { failed: `${rest.failed}; ${line}`, kept: rest.kept };
+    return rest as SealedAnswer;
   }
 
   /**
