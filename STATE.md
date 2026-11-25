@@ -3,7 +3,7 @@
 ## Current increment
 **1.5-ops (queue item 1 of 3, D-251).** Branch `claude/elegant-ritchie-6pkguy` (this session's only pushable branch). It carries PR [khashayarjavi/juno#66](https://github.com/khashayarjavi/juno/pull/66)'s twenty-six commits unchanged; its draft PR supersedes #66, and review rounds 6 to 10 run there. Main at bef25fe. Spec v0.6.1. No objection open. The repository is public now (your choice), so CI runs again.
 
-Status (2026-11-25, this session): **your ruling of D-251 built (D-252), with tests. `make verify` running. Review round 6 next.** Nothing merged yet; main is unchanged at bef25fe, so your machine is unaffected.
+Status (2026-11-25, this session): **your ruling of D-251 built (D-252), with tests. `make verify: GREEN` on c7a4f43 (1,548 unit, 156 container). Draft PR [khashayarjavi/juno#67](https://github.com/khashayarjavi/juno/pull/67) supersedes #66. Review round 6 running.** Nothing merged yet; main is unchanged at bef25fe, so your machine is unaffected.
 
 ### The queue (D-251)
 1. **1.5-ops**, PR #66's work: your ruling (no command built from a workspace value), then review rounds 6 to 10, then the merge gate. **In progress.**
