@@ -42,6 +42,8 @@ test-watch:
 # `juno-anchor-ssh.js` is run by git itself as GIT_SSH, so it is made executable (DECISIONS.md D-208).
 # The last step makes everything built writable by its owner only, whatever the umask of whoever runs make: Ubuntu's
 # login shell gives 0002, and `juno hook check` rightly refuses a hook client its group could change (DECISIONS.md D-219).
+# The very last step writes dist/build-manifest.json (mode 0644): every file JUNO runs from, with its SHA-256. The hook
+# service's unit checks it before JUNO starts, so a copy that is not a finished build is refused (DECISIONS.md D-244).
 build:
 	rm -rf dist
 	npx tsc -p tsconfig.build.json
@@ -50,6 +52,7 @@ build:
 	cp packages/enforcement/src/workspace-copy.mjs dist/enforcement/src/workspace-copy.mjs
 	chmod 0755 dist/journal/src/juno-anchor-ssh.js
 	chmod -R go-w dist
+	node tools/write-build-manifest.mjs
 
 # Production dependencies, installed on the host for COPY into images (D-001), writable by their owner only (D-219).
 stage:

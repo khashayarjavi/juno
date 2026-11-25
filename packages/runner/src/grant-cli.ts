@@ -2,6 +2,7 @@ import { createPrivateKey } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { Grant, parseAtBoundary } from "../../contracts/src/index.js";
 import { grantSignatureValid, grantSigningBytes, signGrant, sshKeygenSign, trustAnchorFromPem } from "../../enforcement/src/index.js";
+import { junoProgramText } from "../../journal/src/index.js";
 
 /**
  * `juno grant sign` and `juno grant verify` (spec §3.2, v0.6 C1; the plan's Increment 2 item 3; DECISIONS.md D-117).
@@ -35,7 +36,7 @@ export const FILE_IO: CliIo = {
   err: (text) => process.stderr.write(text),
 };
 
-const USAGE = "usage: juno grant sign --ssh-key <key.pub> <grant.json> [--out <file>] | juno grant sign --key <private-key.pem> <grant.json> [--out <file>] | juno grant verify --anchor <public key> <grant.json>\n";
+const USAGE = `usage: ${junoProgramText()} grant sign --ssh-key <key.pub> <grant.json> [--out <file>] | ${junoProgramText()} grant sign --key <private-key.pem> <grant.json> [--out <file>] | ${junoProgramText()} grant verify --anchor <public key> <grant.json>\n`;
 
 /**
  * What a failed `--ssh-key` signing tells the operator (operator ruling D-214 item 4; D-216). `ssh-keygen -Y sign` with

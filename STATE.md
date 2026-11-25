@@ -1,9 +1,129 @@
 # STATE
 
 ## Current increment
-**1.5-field — the field report of the first real install (issue [khashayarjavi/juno#59](https://github.com/khashayarjavi/juno/issues/59)), authorised by you on 2026-11-20 (D-220); your rulings on PR #60 (D-228), on D-233 (D-234) and on D-240 (D-241).** Branch `claude/optimistic-clarke-xblrwn` (this session's only pushable branch, D-241). It carries PR [khashayarjavi/juno#62](https://github.com/khashayarjavi/juno/pull/62)'s forty commits unchanged; its draft PR supersedes #62, and review rounds 15 to 17 run there. Spec v0.6.1. No objection open.
+**1.5-ops (queue item 1 of 3, D-251).** Branch `claude/elegant-ritchie-6pkguy` (this session's only pushable branch). It carries PR [khashayarjavi/juno#66](https://github.com/khashayarjavi/juno/pull/66)'s twenty-six commits unchanged; its draft PR supersedes #66, and review rounds 6 to 10 run there. Main at bef25fe. Spec v0.6.1. No objection open. The repository is public now (your choice), so CI runs again.
 
-Status (2026-11-21, this session): **your ruling 1 on D-240 built (D-242). `make verify: GREEN` on 99d68c7 (1,502 unit, 141 container). Draft PR [khashayarjavi/juno#63](https://github.com/khashayarjavi/juno/pull/63) supersedes #62. Review round 15 next.** main is unchanged at 6706b5a; your machine is unaffected.
+Status (2026-11-25, this session): **your ruling of D-251 built (D-252), with tests. `make verify: GREEN` on c7a4f43 (1,548 unit, 156 container). Draft PR [khashayarjavi/juno#67](https://github.com/khashayarjavi/juno/pull/67) supersedes #66. Review round 6: DO NOT MERGE (a test that depended on where the code is checked out; CI's `verify` job red); fixed (D-253). Round 7 next.** Nothing merged yet; main is unchanged at bef25fe, so your machine is unaffected.
+
+### The queue (D-251)
+1. **1.5-ops**, PR #66's work: your ruling (no command built from a workspace value), then review rounds 6 to 10, then the merge gate. **In progress.**
+2. **1.5-report**: `juno journal report`, a read-only weekly summary of a journal. Not started.
+3. **1.5-public**: the workflows audited for a public repository; a README for a newcomer; SECURITY.md. No LICENSE: **open item for you** (the license is your decision). Not started.
+
+### What D-252 changes, in plain words
+- **Before:** the refusal for a set-user-ID, set-group-ID or sticky bit gave a command naming the file and its owner (`sudo -u <owner> chmod u-s,g-s,o-t <path>`). Both were the Claude Code user's to choose.
+- **Now:** that refusal names the file only in double quotes, with odd characters written as `\u{…}`, gives **no command**, and says to see the guide, "When something goes wrong", item "A refusal names a set-user-ID, set-group-ID or sticky bit in the workspace". That item holds one fixed command, run as `juno-agent`: `sudo -u juno-agent find /srv/juno-work -xdev -perm /7000 -exec chmod u-s,g-s,o-t {} +`.
+- **Also fixed, same kind:** the superblock check showed a mount point inside the workspace exactly as named; it is now shown escaped.
+- **Still printed:** commands built only from JUNO's configured values (the journal's lock, the socket, the service, JUNO's own Node and `juno.js`, the hook check's own command line).
+- **Tests:** names an attacker would choose are planted and every refusal they can reach is triggered; no command in any of them holds the name or a workspace path. A lint test lists every place that builds a command for you, with where its values come from; a new place fails until listed. The guide's fixed command is read from the guide and run in a test; it removes the bits.
+
+**Review rounds on PR #67:**
+- **Round 6** (85e2d43): DO NOT MERGE. The new hostile-names test looked for the text `/work/` in every command; CI checks the code out under `/home/runner/work/…`, so JUNO's own correct command tripped it. Also two tests that failed once each, and the command list missed command lines written straight into text. All fixed (D-253); JUNO's behaviour did not change.
+
+**Left, in order:** review rounds 7 to 10 as needed; CI green on the head; the merge gate; record the merge and your upgrade steps; then queue item 2.
+
+## Before this session: 1.5-ops on PR #66 (rounds 3 to 5)
+### STOP after review round 5 (D-250)
+- **Why this is a STOP.**
+  - Your ruling 2 authorised review rounds 3 to 5. Round 5 ended DO NOT MERGE.
+  - Separately, the merge gate needs CI green on the head, and CI no longer runs. Since 6d7c540, every run on this PR fails all three jobs in about 2 seconds, before any step (runs 45565553861, 45565662864, 45565736912). The reviewer read GitHub's notice as a failed payment or a spending limit on the account. So the fixes of rounds 4 and 5 have never run in CI. The last green CI is run 45562833328, on 2c828f7.
+- **Round 5's finding, in plain words.** For a file whose owner has no user name on the machine (a numeric owner, as `sudo tar x` can leave), the advice for removing a sticky or set-user-ID bit said ``sudo -u 'the user with uid 165536' chmod …``, which `sudo` refuses. That is a command that does not run.
+- **Built anyway, not reviewed:**
+  - for such an owner JUNO now gives no command and says why, in words;
+  - the reviewer's two small notes are done too: the sealed copy's error output is shown escaped, and so are `juno checkpoint list` and `juno journal`'s error line.
+- **Your decision, recommended first:**
+  1. **Restore GitHub Actions** on the account (its payment or spending limit), so CI runs again. Then **authorise one or more further review rounds** on PR #66. On MERGE: the gate, then STOP with the merge commit hash and your upgrade steps.
+  2. Direct otherwise.
+
+**Review rounds on PR #66 (numbered on from #65's):**
+- **Round 5** (b6e92e4; CI did not start): DO NOT MERGE; the STOP above (D-250).
+- **Round 4** (2c828f7; `make verify: GREEN` on ba3a183, 1,536 unit and 156 container tests; CI's two rootless jobs green): DO NOT MERGE.
+  1. A file or folder name Claude chose could hold a line break, a fake command between backticks, or a terminal control code. JUNO showed it as it was in a refusal you would see at the next admission, and the guide tells you to copy commands between backticks. Now:
+     - every such name is shown with those characters escaped (as `\u{…}`);
+     - every printed line escapes what a terminal acts on;
+     - JUNO never prints a command holding anything but plain printable characters (no command is given for such a name).
+  2. Three remedy programs (`chmod`, `sudo`) were still written outside the one helper, and the lint scan did not see that form. Now they come from the helper, and the scan sees them.
+  - This is not a STOP: the kind of mistake (an agent's text reaching a command you are told to run) was round 3's, but the way in was new; under D-179 and your ruling 2 it is a fix (D-249).
+- **Round 3** (d29c3b6; CI's two rootless jobs green, `make verify: GREEN` on 7c4812a, 1,534 unit and 156 container tests): DO NOT MERGE.
+  1. If an undo stopped part way (a full disk, say), its message still carried Node's own words from inside the sealed container. Those name that container's handle (`/proc/self/fd/22/…`) and the folder as `/work/…`, neither usable on your machine. Now the message names the file it stopped at, from the session's folder, and the error code; your machine's path for the kept folder is added from its own field.
+  2. My D-247 fix for the sticky-bit advice read a marker out of the message text. A file name Claude chose could forge that marker and make JUNO tell you to run `chmod` as root on a folder outside the workspace. Now the sealed copy returns those entries in a separate field. A command is given only for an entry inside the session's folder, with no link on the way, that your machine itself sees with the bit. Tests prove a forged marker or path gets no command. Nothing is merged; main is unchanged at bef25fe, so your machine is unaffected.
+
+### Your rulings of 2026-11-25 (D-247)
+1. Round 2's finding is accepted as fixed. Its class is closed: every refusal or remedy that names a file, folder or command builds it through one shared helper, from the value the code uses; a test triggers each refusal against a real service and real files and checks every path and every command.
+2. Review rounds 3 to 5 on the PR are authorised; another wrong path or command in a message is fixed under ruling 1, not a STOP.
+3. On MERGE: the gate, then STOP with the merge commit hash and your upgrade steps, including removing `juno-clear-stale-lock` and updating your scripts in `C:\Users\Khashayar\juno-setup`.
+
+### What ruling 1 changed, in plain words
+- **One place builds every name JUNO gives you** (`packages/journal/src/operator-names.ts`):
+  - the lock and take-over file, from the journal folder JUNO opened;
+  - any path JUNO holds through a handle (`/proc/self/fd/…`), by the folder the handle really holds;
+  - every JUNO command as this copy's own Node and `juno.js` (before, some messages said `juno …` or `node /opt/juno/…`, which your terminals do not run);
+  - the service commands from one name, `juno-hook.service`, pinned by a test to the file the guide installs;
+  - the user to act as, by the real owner of the file.
+- **Commands now appear between backticks**, exactly as you would type them.
+- **Also fixed in the same class:** a socket JUNO cannot listen on now names its path and the fix; the "Check its journal with" line and the start line's admit command run as printed; the restore run as root names the journal's real owner; the sealed copy's "set-user-ID or sticky bit" refusal now names the real file and its owner (it said `sudo -u juno-agent … <folder or file>`).
+- **Tests:**
+  - against the real hook service, admission and restore in a sealed container: each refusal is triggered; every path it names exists, or is exactly what its `rm` removes; `rm`, `juno hook admit` and `juno journal check` run as printed; `pgrep` runs on the host and lists the running service, and nothing once it is gone;
+  - the `systemctl` commands run against a real systemd user manager in CI's rootless jobs (never against your installed service);
+  - a scan fails if anyone writes such a name as a literal again.
+- **The guide, upgrade step 7,** now also finds the lines in your Windows scripts (`%USERPROFILE%\juno-setup`) and any Windows scheduled task that call the stand-in, and says to delete exactly those lines.
+
+**Autopilot rulings this session (D-247, one line each):** a socket in use refuses with its path and remedy; the restore as root names the journal's owner, with no `sudo` command; the sealed copy's bit remedy is written on the host from the real path and owner; usage lines name this copy's Node and `juno.js`; the superblock refusal adds the exact `sudo` command to run the check again; residual 55 (the systemd test's unit holds the lock with JUNO's own lock code, not the service itself).
+
+**Left, in order:** GitHub Actions restored; your decision on D-250; further review rounds if you authorise them; CI green on the head; the merge gate; then STOP with the merge commit hash and your upgrade steps.
+
+## Before this session: 1.5-ops rounds 1 and 2 (PR #65)
+### STOP after review round 2 (D-246)
+- **Why this is a STOP.** The rules stop me when a review round finds a mistake of a kind DECISIONS.md already records as fixed. Round 2 found one. Your report's defect 2 was a refusal that named `/proc/self/fd/<n>/…`, a path you cannot use. D-243 records it as fixed. My fix covered the main refusal and missed one more.
+- **The finding, in plain words.** If JUNO is stopped in the very middle of taking over a stale lock, it leaves a second file, `runner.lock.takeover`. The next start then refused with the unusable `/proc/self/fd/…` path. Its advice named only `runner.lock`. Following that advice let one start through but left the second file, which quietly stopped every later automatic take-over.
+- **Built anyway, not reviewed:** that refusal now names both files by their real paths (`/var/lib/juno-runner/journal/runner.lock.takeover` and `…/runner.lock`). Its advice removes both, after the same `pgrep` check. A test holds the folder exactly as the service does, and it fails on the old code. The guide says the same.
+- **Your decision, recommended first:**
+  1. **Authorise further review rounds on PR #65**, treating this finding as fixed. Rounds 3 to 5 of your 5 remain. On MERGE: the gate, then STOP with the merge commit hash and your upgrade steps.
+  2. Direct otherwise.
+
+**Review rounds on PR #65:**
+- **Round 1** (6d425d3): DO NOT MERGE.
+  1. My new container test assumed Linux always gives the new PID namespace the dead one's number. In CI it gave the next number. JUNO did the right thing (it refused, since it could not prove the owner dead); the test was wrong. It now checks the rule for either number, and proves the take-over by start time deterministically, against the real kernel.
+  2. The Compose form of the restore could still take a lock over. Now neither form does; a test proves it.
+  - Also done from its notes: the `pgrep` in every remedy now also matches the Slice 1 runner process; one more residual recorded (time namespaces).
+- **Round 2** (50a1177; CI run 45505916191, all three jobs green): DO NOT MERGE; the STOP above (D-246).
+- Earlier, before review, the first two local runs were RED, each fixed: socket code had slipped into the enforcement package (moved to the hook service's socket file, D-073); a container test's container had no machine id, so JUNO could not prove the running service owned the lock (it now has one, as every real machine does; no assertion changed).
+
+### What 1.5-ops changes, in plain words
+1. **A service killed without a stop no longer locks the journal for good (D-243).** Checked against the code first:
+   - the word `pid_namespace_differs` was also used when a namespace *could not be read*, so it was wrong in your case; it now says `pid_namespace_unknown` there;
+   - the refusal named `/proc/self/fd/21/runner.lock`, the handle the service holds the folder by; it now names `/var/lib/juno-runner/journal/runner.lock`;
+   - the restore said "stop the service" for every lock; now only when the service is provably running.
+   - Found too: Linux gives a torn-down PID namespace's number to the next one, and its PIDs start again from 1, so after WSL's teardown the new service very often gets the dead one's PID. The old code then saw that PID "running" (it was itself) and refused.
+   - **Now:** a lock whose owner is provably dead (same machine, same boot, same namespace name, and the PID gone, or now held by a process that started at another time, or by this very process) is taken over by the next **start**, written into the journal once the journal has been checked, and said on screen. Its leftover socket files are removed too (only a socket of the runner's on which nothing answers). A lock JUNO cannot prove dead still refuses, naming the real file and the command to run. **The restore never takes a lock over:** it tells you to start the service once, stop it, and restore.
+   - **Tested against the real hook service:** killed with SIGKILL; then killed with its whole PID namespace and started in a new container on the same journal (whose namespace number came out the same, as on your machine).
+2. **The upgrade (D-244).** It now stops **and disables** the service before touching `/opt/juno`, checks the new copy is complete, puts in the new service file, then **enables and starts** it, and only then runs the separation check (which needs the running service). Every Check passes as written; a test pins the order.
+   - `make build` now writes, as its last step, a list of every file JUNO runs from with its fingerprint. The service file has systemd check it before JUNO starts (`juno-build-check`, and three `AssertPathExists` lines). A half-built copy is refused in plain words, never started.
+   - The guide's upgrade step 7 removes your stand-in `juno-clear-stale-lock`, and says how.
+3. **Small items (D-245):** `juno checkpoint list` now names who restored each checkpoint (`by`). The runner's environment lines in `~/.bashrc` sit after Ubuntu's early return, and **nothing depends on them outside an interactive shell** (checked line by line; the service sets its own); the guide says so. `make verify-rootless` takes about 10 minutes on a 7200 rpm disk; the guide says so.
+
+**Autopilot rulings this session (one line each):**
+- D-243: the restore never takes a stale lock over; the start does, and records it only after the journal has verified.
+- D-243: a dead service's socket files are removed only under the journal's lock, and only a socket of the runner's on which nothing answers.
+- D-244: the build check runs from the service file (before any of JUNO loads), not inside `juno.js`, whose imports D-193's test pins.
+- D-245: the `~/.bashrc` lines stay where they are; nothing depends on them.
+
+**Left, in order:** your decision on D-246; then review rounds 3 to 5 if you authorise them; the merge gate; then STOP and report the merge commit hash and your upgrade steps.
+
+## Previous increment: 1.5-field (complete)
+**1.5-field is complete and merged** as `bef25fea19e419f1a6166ca70cd497ff93e0f3eb` (your rulings of 2026-11-21, D-241). The autopilot has STOPPED, as ruling 3 directs: nothing further is started. Issue [khashayarjavi/juno#59](https://github.com/khashayarjavi/juno/issues/59) is closed with the summary. Spec v0.6.1. No objection open.
+
+**For the guide's "Upgrading JUNO to a new commit", the commit hash is `bef25fea19e419f1a6166ca70cd497ff93e0f3eb`.**
+
+### Merge this session (2026-11-21)
+- **PR [khashayarjavi/juno#63](https://github.com/khashayarjavi/juno/pull/63) (1.5-field, supersedes #60, #61 and #62): merged** as bef25fea19e419f1a6166ca70cd497ff93e0f3eb, pinned to head f267072f0221f79ea717e1dc3fa7914045137d48.
+  - **Review round 15** (fresh reviewer, the review prompt verbatim): **MERGE** on f267072. All six checks PASS; no new mechanism. Two notes, not blocking:
+    - tmpfs's `casefold` option is read from mountinfo (D-178's claim, not re-checked); the verified install's ext4 does not depend on it, so it is a residual under D-241 ruling 2.
+    - A doc comment in `packages/mediated/src/session.ts` sits above `contentHashes` instead of `hookLimits` (cosmetic, not fixed: the head was not moved after the review).
+  - **CI on f267072:** run 44868556493: `verify`, `verify-rootless` and `verify-rootless-operator` green.
+  - **CI on main for bef25fe:** run 44869401818: all three green.
+  - **Locally:** `make verify: GREEN` on 99d68c7 (1,502 unit, 141 container); f267072 adds only STATE.md.
+  - Rounds 16 and 17 were not needed. PRs #60, #61 and #62 are left open and untouched; #63 carried their commits.
 
 ### Your rulings of 2026-11-21 on D-240 (D-241)
 1. `juno hook check` (as root) and Part E step 12's Check confirm that the file system holding `/srv/juno-work` has ext4's casefold feature switched off entirely, read from the superblock, and refuse otherwise in plain words. D-240's per-write check stays as a second layer. Tested against a real file system made with casefold on, in a container.
@@ -18,7 +138,7 @@ Status (2026-11-21, this session): **your ruling 1 on D-240 built (D-242). `make
 4. **Autopilot rulings:** a tmpfs is judged from its mount options (its superblock exists only in memory; D-178 already refuses its `casefold` option). A btrfs workspace is now refused by `juno hook check`, since no superblock read here can confirm it; your install is ext4.
 5. **Tests:** in a sealed container, the runner image's own `mkfs.ext4` makes a real ext4 with casefold, one without, and one that root switches to casefold later with `tune2fs`. `dumpe2fs` and JUNO's reader agree on each, and the refusal is checked word for word. The one stand-in is which disk holds the workspace: this machine's kernel cannot mount a case-folding ext4, and a sealed container cannot mount anything.
 
-**Left, in order:** review rounds 15 to 17 on PR #63; the merge gate; then STOP and report the merge commit hash and your upgrade steps; close issue #59.
+**Left:** nothing in 1.5-field. Your next step is the guide's "Upgrading JUNO to a new commit", with the hash above.
 
 ### STOP after review round 14 (D-240)
 - **Why this is a STOP.** Your ruling 5 authorised rounds 10 to 14. Round 14 ended DO NOT MERGE, and a fix nobody reviews cannot pass the merge gate.

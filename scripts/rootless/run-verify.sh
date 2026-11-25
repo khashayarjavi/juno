@@ -24,6 +24,10 @@ RUNNER_UID="$(id -u "$RUNNER_USER")"
 RUNNER_HOME="$(getent passwd "$RUNNER_USER" | cut -d: -f6)"
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
 node_bin="${JUNO_NODE_BIN:-$(dirname "$(command -v node)")}"
+# D-247: with systemd (CI's rootless jobs), the runner's user manager runs (setup-root.sh step 6), so the test that runs
+# the service commands a refusal gives (test/containers/remedies-systemd.test.ts) must run against it, never skip.
+systemd_user=0
+if [ "$(cat /proc/1/comm)" = systemd ]; then systemd_user=1; fi
 
 rm -rf "$RUNNER_HOME/juno"
 cp -a "$repo" "$RUNNER_HOME/juno"
@@ -53,7 +57,7 @@ if [ "$login" = true ]; then
     sudo -iu "$RUNNER_USER" -- env -i -C "$RUNNER_HOME/juno" HOME="$RUNNER_HOME" \
       PATH="$node_bin:/usr/sbin:/usr/bin:/sbin:/bin" \
       XDG_RUNTIME_DIR="/run/user/$RUNNER_UID" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$RUNNER_UID/bus" \
-      DOCKER_HOST="unix:///run/user/$RUNNER_UID/docker.sock" "${pass[@]}" "$@"
+      DOCKER_HOST="unix:///run/user/$RUNNER_UID/docker.sock" JUNO_SYSTEMD_USER_REQUIRED="$systemd_user" "${pass[@]}" "$@"
   }
   as_login npm ci --no-audit --no-fund
   as_login make verify-rootless
@@ -64,5 +68,5 @@ cd "$RUNNER_HOME/juno"
 exec runuser -u "$RUNNER_USER" -- env -i HOME="$RUNNER_HOME" \
   PATH="$node_bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/juno-rootless/bin" \
   XDG_RUNTIME_DIR="/run/user/$RUNNER_UID" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$RUNNER_UID/bus" \
-  DOCKER_HOST="unix:///run/user/$RUNNER_UID/docker.sock" "${pass[@]}" \
+  DOCKER_HOST="unix:///run/user/$RUNNER_UID/docker.sock" JUNO_SYSTEMD_USER_REQUIRED="$systemd_user" "${pass[@]}" \
   make verify-rootless

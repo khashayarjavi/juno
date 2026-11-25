@@ -1,11 +1,12 @@
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { type Stats, closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { z } from "zod";
 import { MAX_CHECKPOINT_BYTES, MAX_CHECKPOINT_ENTRIES, type ManifestEntry, type Snapshot, Workspace, sameManifest } from "./checkpoint.js";
 import { WORKLOAD_NODE } from "./canonical.js";
 import { DIR_MODE, FILE_MODE } from "./workspace-copy.mjs";
+import { commandText, guidePointer, junoCommand, operatorPath, operatorText, shownName } from "../../journal/src/index.js";
 
 export { DIR_MODE, FILE_MODE, asideName, kernelMayChange, listTree, openRoot, openRootAt, remove as removeEntry, restoreTree, undoRefusals, undoTo } from "./workspace-copy.mjs";
 
@@ -154,13 +155,15 @@ const SealedEntrySchema = z.discriminatedUnion("type", [
   z.strictObject({ path: z.string(), type: z.literal("directory"), mode: z.literal(DIR_MODE) }),
   z.strictObject({ path: z.string(), type: z.literal("file"), mode: z.literal(FILE_MODE), sha256: z.string().regex(/^[0-9a-f]{64}$/) }),
 ]);
+/** The entries the sealed program refused for a set-user-ID, set-group-ID or sticky bit, by path from the workspace root (D-248). */
+const Bits = z.array(z.string()).max(MAX_CHECKPOINT_ENTRIES).optional();
 const SealedAnswer = z.union([
-  z.strictObject({ error: z.string() }),
-  z.strictObject({ manifest: z.array(SealedEntrySchema), contents: z.record(z.string(), z.string()) }),
-  z.strictObject({ refusals: z.array(z.string()) }),
-  z.strictObject({ refused: z.array(z.string()) }),
-  z.strictObject({ failed: z.string(), kept: z.string().nullable() }),
-  z.strictObject({ restored: z.array(SealedEntrySchema), kept: z.string().nullable() }),
+  z.strictObject({ error: z.string(), bits: Bits }),
+  z.strictObject({ manifest: z.array(SealedEntrySchema), contents: z.record(z.string(), z.string()), bits: Bits }),
+  z.strictObject({ refusals: z.array(z.string()), bits: Bits }),
+  z.strictObject({ refused: z.array(z.string()), bits: Bits }),
+  z.strictObject({ failed: z.string(), kept: z.string().nullable(), bits: Bits }),
+  z.strictObject({ restored: z.array(SealedEntrySchema), kept: z.string().nullable(), bits: Bits }),
 ]);
 type SealedAnswer = z.infer<typeof SealedAnswer>;
 
@@ -204,13 +207,52 @@ export class SealedWorkspace {
           return null;
         }
       })());
-      if (!parsed.success) return { error: `the sealed copy context did not answer (exit ${String(result.exitCode)}${result.stderr.trim() === "" ? "" : `: ${result.stderr.trim().slice(0, 500)}`})` };
-      return parsed.data;
+      // D-250: what the sealed program printed is its text too, shown as a name (D-249).
+      if (!parsed.success) return { error: `the sealed copy context did not answer (exit ${String(result.exitCode)}${result.stderr.trim() === "" ? "" : `: ${shownName(result.stderr.trim().slice(0, 500))}`})` };
+      return this.#named(parsed.data, root);
     } catch (error: unknown) {
-      return { error: `the sealed copy context did not run: ${error instanceof Error ? error.message : String(error)}` };
+      return { error: `the sealed copy context did not run: ${operatorText(error instanceof Error ? error.message : String(error))}` };
     } finally {
       closeSync(fd);
     }
+  }
+
+  /**
+   * The sealed program's answer, with the remedy for an entry it refused for a set-user-ID, set-group-ID or sticky bit
+   * (D-247, D-248, D-251). The entries come only from the answer's own `bits` field, never from any text (a name in the
+   * workspace is the agent's to choose). The remedy is given only when at least one entry is plain, lies inside this
+   * session's folder on this host with no symbolic link on the way, and this host itself sees with such a bit. It is
+   * never a command (operator ruling D-251: no command a refusal prints holds anything a workspace or the Claude Code
+   * user can name, its entries' names, paths or owners): it says what to do in words and points to the guide's section
+   * that holds the fixed command. The entry itself is named by the sealed program's own text, an escaped quotation.
+   */
+  #named(answer: SealedAnswer, root: string): SealedAnswer {
+    const { bits, ...raw } = answer as SealedAnswer & { readonly bits?: readonly string[] };
+    // D-249: every text of the sealed program's can hold names the agent chose (its own words name entries only through
+    // JSON, which escapes line breaks but not backticks or every character a terminal acts on): each is escaped whole, as
+    // a name is, before JUNO adds a word of its own.
+    const rest = ("error" in raw ? { error: shownName(raw.error) } : "refusals" in raw ? { refusals: raw.refusals.map(shownName) } : "refused" in raw ? { refused: raw.refused.map(shownName) } : "failed" in raw ? { failed: shownName(raw.failed), kept: raw.kept } : raw) as SealedAnswer;
+    if (bits === undefined || bits.length === 0) return rest;
+    const base = operatorPath(join(this.workspace, root.slice("/work".length)));
+    const seen = [...new Set(bits)].some((rel) => {
+      if (rel.length > 4096 || (rel !== "" && !rel.split("/").every((part) => part !== "" && part !== "." && part !== ".." && !part.includes("\0")))) return false;
+      const host = rel === "" ? base : join(base, rel);
+      if (host !== base && !host.startsWith(`${base}/`)) return false;
+      try {
+        const stats = lstatSync(host);
+        return realpathSync(host) === host && !stats.isSymbolicLink() && (stats.mode & 0o7000) !== 0;
+      } catch {
+        return false;
+      }
+    });
+    const remedies = seen ? [`to remove such a bit, as the Claude Code user that owns the workspace, never as root, ${guidePointer("specialBits")}`] : [];
+    if (remedies.length === 0) return rest;
+    const line = remedies.join("; ");
+    if ("error" in rest) return { error: `${rest.error}; ${line}` };
+    if ("refusals" in rest) return { refusals: [...rest.refusals, line] };
+    if ("refused" in rest) return { refused: [...rest.refused, line] };
+    if ("failed" in rest) return { failed: `${rest.failed}; ${line}`, kept: rest.kept };
+    return rest;
   }
 
   /**
@@ -236,7 +278,7 @@ export class SealedWorkspace {
       if (createHash("sha256").update(bytes).digest("hex") !== hash) return { ok: false, reason: "a file's content does not match its hash" };
       contents.set(hash, bytes);
     }
-    for (const entry of answer.manifest) if (entry.type === "file" && !contents.has(entry.sha256)) return { ok: false, reason: `no content for ${entry.path}` };
+    for (const entry of answer.manifest) if (entry.type === "file" && !contents.has(entry.sha256)) return { ok: false, reason: `no content for ${shownName(JSON.stringify(entry.path))}` };
     return { ok: true, snapshot: { manifest: answer.manifest, contents, hardLinks: [] } };
   }
 
@@ -256,7 +298,8 @@ export class SealedWorkspace {
     try {
       for (const entry of manifest) if (entry.type === "file") contents[entry.sha256] = content(entry.sha256).toString("base64");
     } catch (error: unknown) {
-      return { ok: false, changed: false, reason: `${error instanceof Error ? error.message : String(error)}; nothing was changed` };
+      // D-247: a Node error names the descriptor path it opened; the operator is given the folder it holds.
+      return { ok: false, changed: false, reason: `${operatorText(error instanceof Error ? error.message : String(error))}; nothing was changed` };
     }
     const answer = await this.#run("restore", root, JSON.stringify({ manifest, contents }));
     const unchanged = (reason: string): string => (/nothing was (read or )?changed$/.test(reason) ? reason : `${reason}; nothing was changed`);
@@ -294,7 +337,7 @@ export class HostReadView extends Workspace {
   }
 
   override restore(): Promise<{ ok: false; reason: string }> {
-    return Promise.resolve({ ok: false, reason: "a host workspace is restored by juno checkpoint restore --workspace, in the sealed context (D-228)" });
+    return Promise.resolve({ ok: false, reason: `a host workspace is restored by ${commandText(junoCommand(["checkpoint", "restore"]))} with --workspace, in the sealed context (D-228)` });
   }
 }
 
@@ -364,7 +407,7 @@ function listNames(workspace: string, root: string): { ok: true; snapshot: Snaps
           } finally {
             closeSync(child);
           }
-        } else return `the workspace holds an entry that is not a file, directory or symlink: ${path}`;
+        } else return `the workspace holds an entry that is not a file, directory or symlink: ${shownName(JSON.stringify(path))}`;
       }
       return null;
     };

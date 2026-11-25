@@ -22,6 +22,7 @@ import {
   runtimeRefusal,
   systemHostIo,
 } from "../../enforcement/src/index.js";
+import { commandText, displayLine, junoCommand, junoProgramText, operatorPath, operatorText } from "../../journal/src/index.js";
 import { type FilesystemIo, caseFoldingRefusals, systemFilesystemIo } from "./filesystem.js";
 import { HookAdmissionService, askAdmission } from "./hook-admission.js";
 import { HookService } from "./hook-service.js";
@@ -67,8 +68,8 @@ export type HookServeIo = {
   readonly err: (text: string) => void;
 };
 
-const SERVE_USAGE = "usage: juno hook serve --socket <hook.sock> --control <admit.sock> --journal <dir> --anchor <operator.pub> --journal-key <dir> --anchors <juno-anchors clone> [--anchor-pin <file>] [--anchor-interval <seconds>] --workspace <dir> --checkpoints <dir> [--protect <path> ...] [--gateway <name>]\n";
-const ADMIT_USAGE = "usage: juno hook admit --control <admit.sock> <session file>\n";
+const SERVE_USAGE = `usage: ${junoProgramText()} hook serve --socket <hook.sock> --control <admit.sock> --journal <dir> --anchor <operator.pub> --journal-key <dir> --anchors <juno-anchors clone> [--anchor-pin <file>] [--anchor-interval <seconds>] --workspace <dir> --checkpoints <dir> [--protect <path> ...] [--gateway <name>]\n`;
+const ADMIT_USAGE = `usage: ${junoProgramText()} hook admit --control <admit.sock> <session file>\n`;
 
 /** What `juno hook serve` asks the shared start-up check to judge (D-194, D-196). */
 export function hookStartupSpec(options: { readonly socket: string; readonly control: string; readonly journal: string; readonly anchor: string; readonly workspace: string; readonly checkpoints: string; readonly protect: readonly string[]; readonly anchoring: AnchoringConfig }): StartupSpec {
@@ -88,7 +89,8 @@ export function hookStartupSpec(options: { readonly socket: string; readonly con
 }
 
 function refused(io: { readonly err: (text: string) => void }, command: string, refusals: readonly string[]): number {
-  io.err(`juno hook ${command}: refused:\n${refusals.map((line) => `  - ${line}`).join("\n")}\n`);
+  // D-247: no refusal names a descriptor path; each is named by the folder the descriptor holds.
+  io.err(`juno hook ${command}: refused:\n${refusals.map((line) => `  - ${displayLine(operatorText(line))}`).join("\n")}\n`);
   return 1;
 }
 
@@ -159,7 +161,7 @@ export async function runHookServeCli(args: readonly string[], io: HookServeIo):
   }
   // D-224, D-228: a session admitted before this start keeps a reversible workspace only once the sealed context confirms
   // its checkpoint can still be restored; until then (and if not), its writes there park.
-  for (const note of await sessions.confirmReversible()) io.err(`juno hook: ${note}\n`);
+  for (const note of await sessions.confirmReversible()) io.err(`juno hook: ${displayLine(operatorText(note))}\n`);
   // 0660: the runner and the socket folder's group, through which the Claude Code user's hook connects (D-173).
   const hook = new HookService(sessions, { socketMode: 0o660 });
   const admission = new HookAdmissionService(sessions, grants);
@@ -172,15 +174,19 @@ export async function runHookServeCli(args: readonly string[], io: HookServeIo):
   }
   // §3.4.1 (D-198): every record is anchored at most one interval after it is written, and once more when the service stops.
   layer.startAnchoring();
+  // D-243: the lock of a service that was provably no longer running was taken over at this start, and recorded.
+  const reclaimed = layer.reclaimedLock;
+  if (reclaimed !== null) io.err(`juno hook: the journal's lock was left by a JUNO process that is no longer running (${reclaimed.reason}, process ${String(reclaimed.holder["pid"])}), for example after WSL shut down under it. It was taken over and recorded in the journal (stale_lock_reclaimed), after the journal was checked (D-243).\n`);
+  for (const path of layer.clearedSockets) io.err(`juno hook: removed ${displayLine(operatorPath(path))}, a socket file left by a JUNO process that is no longer running (nothing answered on it), so this start could listen there (D-243).\n`);
   // D-206 item 1 (D-207): a torn final write was repaired at this start; say what it cost.
   const recovery = layer.recovery;
   if (recovery !== null) io.err(`juno hook: the journal's last entry was left incomplete (a power loss or a crash in the middle of a write). It was dropped and recorded (recovered_truncation). Every grant used by a session open at that moment is now exhausted and needs a new, newly signed grant: ${recovery.exhausted_grants.length === 0 ? "(none)" : recovery.exhausted_grants.join(", ")} (D-206).\n`);
   // D-201: sessions admitted before this start go on from the journal; they are never admitted again.
   const rebuilt = sessions.rebuilt;
   if (rebuilt.sessions.length > 0) io.out(`juno hook: ${String(rebuilt.sessions.length)} session(s) admitted before this start go on from the journal, with the budget and limits they had (D-201).\n`);
-  for (const why of rebuilt.grants) io.err(`juno hook: a grant file could not be read again, so its grant is absent until the service is restarted with the file in place: ${why}\n`);
-  for (const [id, why] of rebuilt.failed) io.err(`juno hook: ${id} could not be rebuilt from the journal and stays closed: ${why}\n`);
-  io.out(`juno hook: serving ${socket}; admit a session with: juno hook admit --control ${control} <session file>. Stop with Ctrl+C.\n`);
+  for (const why of rebuilt.grants) io.err(`juno hook: a grant file could not be read again, so its grant is absent until the service is restarted with the file in place: ${displayLine(operatorText(why))}\n`);
+  for (const [id, why] of rebuilt.failed) io.err(`juno hook: ${displayLine(id)} could not be rebuilt from the journal and stays closed: ${displayLine(operatorText(why))}\n`);
+  io.out(`juno hook: serving ${socket}; admit a session with: ${commandText(junoCommand(["hook", "admit", "--control", control]), "<session file>")}. Stop with Ctrl+C.\n`);
   io.ready?.({ layer });
   await io.stopped();
   await Promise.all([hook.close(), admission.close()]);
@@ -228,6 +234,7 @@ export async function runHookAdmitCli(args: readonly string[], io: { readonly ou
   io.out(`admitted ${parsed.data.task_id}\nStart Claude Code for it with: claude --session-id ${sessionId}\n`);
   const check = parsed.data.check;
   // §3.4.1 (D-198): the line that checks this session's journal against the anchors pushed to juno-anchors.
-  if (check !== undefined) io.out(`Check its journal with: node /opt/juno/dist/runner/src/juno.js journal check --journal ${check.journal} --anchors ${check.anchors} --key ${check.key} ${parsed.data.task_id}\n`);
+  // D-247: this copy's own Node and juno.js, never a literal path.
+  if (check !== undefined) io.out(`Check its journal with: ${commandText(junoCommand(["journal", "check", "--journal", check.journal, "--anchors", check.anchors, "--key", check.key, parsed.data.task_id]))}\n`);
   return 0;
 }

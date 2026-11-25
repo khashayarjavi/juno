@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import { chmodSync, closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -311,6 +312,10 @@ describe("juno checkpoint restore for a hook session's host folder (§2.2.2, D-2
     const recorded = entries(journal()).filter((entry) => entry["type"] === "checkpoint_restore");
     expect(recorded).toEqual([expect.objectContaining({ outcome: "refused" }), expect.objectContaining({ checkpoint: held, outcome: "restored", principal: PRINCIPAL, workspace: work, root: "/work/project", kept })]);
     expect(readTrajectory(journal(), `session-${SESSION}`).at(-1)?.actor).toBe(PRINCIPAL);
+    // D-243: the list names who restored, for the refused and the done restore alike.
+    const relisted = cliIo();
+    expect(await runCheckpointCli(["list", "--journal", journal(), `session-${SESSION}`], relisted.io)).toBe(0);
+    expect((JSON.parse(relisted.text()) as { restores: unknown[] }).restores).toEqual([expect.objectContaining({ outcome: "refused", by: PRINCIPAL }), expect.objectContaining({ checkpoint: held, outcome: "restored", by: PRINCIPAL, kept })]);
     // The service starts again on the journal the restore wrote to; the session goes on from it (D-201).
     // (The same journal key as the first start: the in-memory anchors were signed with it, as the real key file persists.)
     said = [];
@@ -429,5 +434,94 @@ describe("the hook service holds the journal's lock (D-221)", () => {
     lock.release();
     said = [];
     expect(await serving(() => Promise.resolve(), { anchoring: testAnchoring({ sink: anchors, journalKey: key }) }), said.join("")).toBe(0);
+  });
+
+  // proves D-243: a socket file left at the service's socket path is removed only when it is a socket of this user on
+  // which nothing answers; a live listener there, or a file that is not a socket, is never removed and the start refuses
+  it("removes a dead service's socket file, never a live socket or another file", async () => {
+    const { createServer } = await import("node:net");
+    const key = testJournalKey();
+    const path = join(sockets, "hook.sock");
+    // The test host reports the socket's owner as the layer's own user, or as another (a suite run as root makes it root's;
+    // test/layer.ts names owners the same way for its folders).
+    const base = ordinaryHost();
+    const ownedBy = (uid: number): HookServeIo["host"] => ({ ...base, lstat: (at: string) => {
+      const facts = base.lstat(at);
+      return at === path && facts !== null ? Object.assign(Object.create(Object.getPrototypeOf(facts) as object) as typeof facts, facts, { uid }) : facts;
+    } });
+    const mine = ownedBy(base.uid);
+    // A live listener at the path, this user's own: left alone, and the start refuses.
+    const live = createServer();
+    await new Promise<void>((resolve) => live.listen(path, resolve));
+    said = [];
+    expect(await serving(() => Promise.resolve(), { host: mine, anchoring: testAnchoring({ sink: anchors, journalKey: key }) })).toBe(1);
+    expect(said.join("")).toContain("EADDRINUSE");
+    expect(existsSync(path)).toBe(true);
+    await new Promise<void>((resolve) => live.close(() => resolve()));
+    // A file that is not a socket: left alone, and the start refuses.
+    writeFileSync(path, "not a socket\n", { mode: 0o600 });
+    said = [];
+    expect(await serving(() => Promise.resolve(), { host: mine, anchoring: testAnchoring({ sink: anchors, journalKey: key }) })).toBe(1);
+    expect(readFileSync(path, "utf8")).toBe("not a socket\n");
+    rmSync(path);
+    // A listener killed with SIGKILL leaves its socket file, on which nothing answers: the start removes it, says so, and serves.
+    const child = execFile(process.execPath, ["-e", "require(\"node:net\").createServer().listen(process.argv[1], () => process.stdout.write(\"up\\n\"))", path]);
+    await new Promise<void>((resolve) => child.stdout?.once("data", () => resolve()));
+    const gone = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+    child.kill("SIGKILL");
+    await gone;
+    expect(existsSync(path)).toBe(true);
+    // Someone else's socket file: left alone, and the start refuses.
+    said = [];
+    expect(await serving(() => Promise.resolve(), { host: ownedBy(base.uid + 1), anchoring: testAnchoring({ sink: anchors, journalKey: key }) })).toBe(1);
+    expect(existsSync(path)).toBe(true);
+    said = [];
+    expect(await serving(() => Promise.resolve(), { host: mine, anchoring: testAnchoring({ sink: anchors, journalKey: key }) }), said.join("")).toBe(0);
+    expect(said.join("")).toContain(`juno hook: removed ${path}, a socket file left by a JUNO process that is no longer running`);
+  });
+
+  // proves D-243: a lock left by a service killed without a stop (its process gone, same host, boot and PID namespace) is
+  // refused by the checkpoint restore, changing nothing and saying to start the service once; the next start takes it
+  // over, records that in the journal's own record after checking the journal, says so, and the start after reads it back
+  it("takes over a dead service's lock at the next start and records it; the restore refuses it with a working remedy", async () => {
+    const { systemProbe } = await import("../../journal/src/lock.js");
+    const { listRecords } = await import("../../journal/src/index.js");
+    const { runCheckpointCli } = await import("../../runner/src/restore.js");
+    const journal = (): string => join(dir, "state", "journal");
+    const cliIo = (): { text: () => string; io: { readFile: () => string; out: (text: string) => void; err: (text: string) => void } } => {
+      const lines: string[] = [];
+      return { text: () => lines.join(""), io: { readFile: () => "", out: (text) => lines.push(text), err: (text) => lines.push(text) } };
+    };
+    const key = testJournalKey();
+    expect(await serving(() => Promise.resolve(), { anchoring: testAnchoring({ sink: anchors, journalKey: key }) })).toBe(0);
+    const dead = await new Promise<number>((resolve, reject) => {
+      const child = execFile(process.execPath, ["-e", "0"]);
+      child.on("error", reject);
+      child.on("exit", () => (child.pid === undefined ? reject(new Error("no pid")) : resolve(child.pid)));
+    });
+    const stale = JSON.stringify({ pid: dead, host: systemProbe.hostId(), boot: systemProbe.bootId(), pid_ns: systemProbe.pidNamespace(), pid_start: 1, started_at: "2026-11-24T09:00:00.000Z", nonce: "killed" });
+    const lockFile = join(journal(), "runner.lock");
+    writeFileSync(lockFile, stale, { mode: 0o600 });
+    const restore = cliIo();
+    const runner = { uid: () => 4242, ownerOf: () => 4242, filesystem: systemFilesystemIo(), launcher: () => Promise.resolve(unsealedLauncher) };
+    expect(await runCheckpointCli(["restore", "--journal", journal(), "--checkpoints", join(dir, "state", "checkpoints"), "--workspace", work, "--principal", PRINCIPAL, `session-${SESSION}`, "0".repeat(64)], restore.io, undefined, undefined, runner)).toBe(1);
+    expect(restore.text()).toContain("stopped without releasing the journal's lock");
+    expect(restore.text()).toContain("systemctl --user start juno-hook.service");
+    expect(restore.text()).toContain(`${journal()}/runner.lock`);
+    expect(restore.text()).not.toContain("/proc/self/fd");
+    expect(readFileSync(lockFile, "utf8")).toBe(stale);
+    said = [];
+    expect(await serving(() => Promise.resolve(), { anchoring: testAnchoring({ sink: anchors, journalKey: key }) }), said.join("")).toBe(0);
+    expect(said.join("")).toContain(`the journal's lock was left by a JUNO process that is no longer running (owner_not_running, process ${String(dead)})`);
+    expect(existsSync(lockFile)).toBe(false);
+    const notes = listRecords(journal()).flatMap((record) => (record.taskId === null ? [] : readTrajectory(journal(), record.taskId)).map((entry) => {
+      const blob = readPayload(journal(), entry.payload_ref);
+      return blob.status === "present" ? (JSON.parse(new TextDecoder().decode(blob.bytes)) as Record<string, unknown>) : {};
+    })).filter((payload) => payload["type"] === "stale_lock_reclaimed");
+    expect(notes).toEqual([{ type: "stale_lock_reclaimed", reason: "owner_not_running", holder: expect.objectContaining({ pid: dead, nonce: "killed" }) }]);
+    // The next start verifies the journal's own record with that note in it, and takes nothing over.
+    said = [];
+    expect(await serving(() => Promise.resolve(), { anchoring: testAnchoring({ sink: anchors, journalKey: key }) }), said.join("")).toBe(0);
+    expect(said.join("")).not.toContain("no longer running");
   });
 });

@@ -11,8 +11,16 @@ Description=JUNO hook service (governs Claude Code's tool calls)
 # Rootless Docker answers the runtime check (D-131); start after it.
 After=docker.service
 
+# D-244: never start from a copy of JUNO that is not a finished build (one being built, removed or replaced, as during an
+# upgrade): these files must exist, and juno-build-check must find every file the build manifest names, as built,
+# before JUNO itself is started. Otherwise systemd refuses the start and journalctl says why.
+AssertPathExists=/opt/juno/package.json
+AssertPathExists=/opt/juno/dist/build-manifest.json
+AssertPathExists=/opt/juno/dist/runner/src/juno-build-check.js
+
 [Service]
 Type=simple
+ExecStartPre=/opt/node22/bin/node /opt/juno/dist/runner/src/juno-build-check.js
 # A user service does not read ~/.bashrc: name rootless Docker's socket (%t is /run/user/<uid>) and node's folder here.
 Environment=DOCKER_HOST=unix://%t/docker.sock
 Environment=PATH=/opt/node22/bin:/usr/bin:/bin

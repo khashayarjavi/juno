@@ -16,6 +16,7 @@ import {
   parseAnchorInterval,
   systemHostIo,
 } from "../../enforcement/src/index.js";
+import { displayLine, junoProgramText, operatorPath, operatorText } from "../../journal/src/index.js";
 import { type FilesystemIo, systemFilesystemIo } from "./filesystem.js";
 import { GatewaySessionRequest, McpGateway } from "./gateway.js";
 import { GatewayService } from "./gateway-service.js";
@@ -62,7 +63,7 @@ export type GatewayCliIo = {
   readonly err: (text: string) => void;
 };
 
-const USAGE = "usage: juno gateway serve --session <file> --socket <path> --journal <dir> --anchor <operator.pub> --workspace <dir> --journal-key <dir> --anchors <juno-anchors clone> [--anchor-pin <file>] [--anchor-interval <seconds>] --grant <file> [--grant <file> ...]\n";
+const USAGE = `usage: ${junoProgramText()} gateway serve --session <file> --socket <path> --journal <dir> --anchor <operator.pub> --workspace <dir> --journal-key <dir> --anchors <juno-anchors clone> [--anchor-pin <file>] [--anchor-interval <seconds>] --grant <file> [--grant <file> ...]\n`;
 
 /** What `juno gateway serve` asks the shared start-up check to judge (D-194). */
 export function gatewayStartupSpec(options: { readonly session: string; readonly socket: string; readonly journal: string; readonly anchor: string; readonly workspace: string; readonly grants: readonly string[]; readonly anchoring: AnchoringConfig }): StartupSpec {
@@ -81,7 +82,8 @@ export function gatewayStartupSpec(options: { readonly session: string; readonly
 }
 
 function refused(io: GatewayCliIo, refusals: readonly string[]): number {
-  io.err(`juno gateway serve: refused:\n${refusals.map((line) => `  - ${line}`).join("\n")}\n`);
+  // D-247: no refusal names a descriptor path; each is named by the folder the descriptor holds.
+  io.err(`juno gateway serve: refused:\n${refusals.map((line) => `  - ${displayLine(operatorText(line))}`).join("\n")}\n`);
   return 1;
 }
 
@@ -172,6 +174,10 @@ export async function runGatewayCli(args: readonly string[], io: GatewayCliIo): 
   }
   // §3.4.1 (D-198): every record is anchored at most one interval after it is written, and once more when the gateway stops.
   layer.startAnchoring();
+  // D-243: the lock of a service that was provably no longer running was taken over at this start, and recorded.
+  const reclaimed = layer.reclaimedLock;
+  if (reclaimed !== null) io.err(`juno gateway: the journal's lock was left by a JUNO process that is no longer running (${reclaimed.reason}, process ${String(reclaimed.holder["pid"])}), for example after WSL shut down under it. It was taken over and recorded in the journal (stale_lock_reclaimed), after the journal was checked (D-243).\n`);
+  for (const path of layer.clearedSockets) io.err(`juno gateway: removed ${displayLine(operatorPath(path))}, a socket file left by a JUNO process that is no longer running (nothing answered on it), so this start could listen there (D-243).\n`);
   // D-206 item 1 (D-207): a torn final write was repaired at this start; say what it cost.
   const recovery = layer.recovery;
   if (recovery !== null) io.err(`juno gateway: the journal's last entry was left incomplete (a power loss or a crash in the middle of a write). It was dropped and recorded (recovered_truncation). Every grant used by a session open at that moment is now exhausted and needs a new, newly signed grant: ${recovery.exhausted_grants.length === 0 ? "(none)" : recovery.exhausted_grants.join(", ")} (D-206).\n`);

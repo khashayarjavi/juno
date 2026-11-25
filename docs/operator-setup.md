@@ -235,6 +235,7 @@ Part E comes before Part D because Part D's push key is made inside WSL.
    cat /sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/cgroup.controllers
    ```
    **Check:** the `docker info` line starts `cgroup v2 systemd` and contains `"name=rootless"`; the last line contains `cpu`, `memory` and `pids`. If it says `none` instead of `systemd`, stop and tell the agent. Type `exit` to go back to your admin user.
+   (The `printf` line adds those settings at the end of `~/.bashrc`, after Ubuntu's line that stops reading the file in a shell that is not interactive. So only an interactive shell gets them, and that is all this guide needs: the runner terminal is one; the steps run from PowerShell with `--exec` name every program in full and need none of them; and the hook service sets its own in its service file (Part G step 3). Leave them where they are.)
 9. **Create the Claude Code user, `juno-agent`, and the socket group, `juno-hook`.** Ubuntu (admin):
    ```
    sudo groupadd --system juno-hook
@@ -280,7 +281,7 @@ Part E comes before Part D because Part D's push key is made inside WSL.
     npm ci
     make verify-rootless
     ```
-    **Check:** after 10 to 20 minutes the last line is `make verify-rootless: GREEN`. Send the agent the summary lines, or the last 15 lines if it is not green.
+    **Check:** the last line is `make verify-rootless: GREEN`. It takes about 10 minutes on a 7200 rpm hard disk (as on your machine), less on an SSD, and up to 20 minutes on a slower machine. Send the agent the summary lines, or the last 15 lines if it is not green.
     It also builds, in `juno-runner`'s own Docker, the image JUNO uses to copy and to undo a session's folder (`juno-workload:local`; see "Undo what Claude did in a session"). **Check:** `docker image ls juno-workload:local` prints a line naming it. Leave it there: without it, every session with `reversible_workspaces` is refused at admission.
     This terminal is a login shell, where Ubuntu lets your group write the files you make (umask `0002`). `make` takes that write access off everything it builds, so the result is the same as in any other terminal (D-219).
 12. **A root-owned copy of JUNO, its folders, and the governed workspace.** Admin terminal, first the copy of JUNO, from the same file:
@@ -309,7 +310,11 @@ Part E comes before Part D because Part D's push key is made inside WSL.
     ```
     find /opt/juno /opt/node22 ! -type l -perm /022 -print
     ```
-    **Check:** it prints nothing. Anything it prints is a file or folder that someone other than root could change; stop and send the agent the lines. (`juno hook check` in Part G would refuse it too.)
+    **Check:** it prints nothing. Anything it prints is a file or folder that someone other than root could change; stop and send the agent the lines. (`juno hook check` in Part G would refuse it too.) Then:
+    ```
+    /opt/node22/bin/node /opt/juno/dist/runner/src/juno-build-check.js
+    ```
+    **Check:** it prints `juno-build-check: this copy of JUNO at /opt/juno/ is complete: every file matches dist/build-manifest.json`. `make build` writes that manifest as its very last step: every file JUNO runs from, with its fingerprint. The hook service runs this same check before it starts (Part G step 3), so it never starts from a copy that is not a finished build (D-244).
     **Check**, in the listing: `/opt/juno`, its `dist/mediated/src` and `dist/mediated/definitions` start `drwxr-xr-x` and name `root root`; `/var/lib/juno-runner` is `drwx------ juno-runner juno-runner`; `/var/lib/juno-hook` is `drwxr-s--- juno-runner juno-hook`; `/srv/juno-work` is `drwxrwxr-x+ juno-agent juno-agent` (the `+` is the access list). `getfacl` prints, among its lines, `user:juno-runner:rwx`, `user:juno-agent:rwx`, `default:user:juno-runner:rwx` and `default:user:juno-agent:rwx`. Then `stat -f -c %T /srv/juno-work` prints `ext2/ext3` (that is how `stat` names ext4) and `lsattr -d /srv/juno-work` prints a line with no `F` before the path. Then, admin terminal:
     ```
     findmnt -no SOURCE --target /srv/juno-work
@@ -464,6 +469,7 @@ A `sources` list with folders and the web looks like this:
    systemctl --user status juno-hook.service --no-pager
    ```
    **Check:** the status shows `active (running)` and a line `juno hook: serving /var/lib/juno-hook/hook.sock`. If it shows `inactive` or `failed`, run `journalctl --user -u juno-hook.service --no-pager | tail -20`: it lists every refusal in plain words. Send them to the agent.
+   Before JUNO itself starts, the service file has systemd check that `/opt/juno` is a finished build: three of its files must exist (`AssertPathExists`), and `juno-build-check` must find every file the build manifest names, as built (D-244). If not, the start is refused with `Assertion failed` or `juno-build-check: refused`, and nothing of JUNO runs.
    **GitHub must be reachable every time the service starts, not only today.** At every start the service reads `juno-anchors` from GitHub over SSH (port 22) to check its journal, and refuses to start if it cannot (for example `Could not resolve hostname github.com`). There is no offline mode: on a plane, behind a captive portal, or while the network is changing, the service does not start, and Claude Code is refused every call until it does. A VPN is not needed: on your machine the service started and anchored with the VPN switched off (issue #59). When it refuses for this reason, fix the connection and run `systemctl --user restart juno-hook.service`.
    (`/var/lib/juno-runner/juno-anchors` has no git "remote" set: `git remote -v` in it prints nothing. That is deliberate (D-208): the service gives git the address from root's `/etc/juno/anchors.json` every time and trusts nothing stored in that folder. Do not add a remote.)
 4. **Check the separation** (D-173). Admin terminal:
@@ -540,12 +546,12 @@ When JUNO admits a session with `reversible_workspaces` (Part G step 2), it copi
 
 An empty project gives an empty checkpoint: if `/srv/juno-work/project` held nothing when you admitted the session, the checkpoint store gains nothing, and restoring it empties the folder again. That is correct, not a fault.
 
-1. **Stop the service.** Runner terminal: `systemctl --user stop juno-hook.service`. (The restore refuses while it runs: `the journal is in use, so its service is running`. Claude Code is refused every call meanwhile.)
+1. **Stop the service.** Runner terminal: `systemctl --user stop juno-hook.service`. (The restore refuses while it runs: `the journal is in use, so its service is running`. Claude Code is refused every call meanwhile.) If the service was killed without a stop (WSL shut down under it, say), the restore refuses with `JUNO's service stopped without releasing the journal's lock`: start the service once (`systemctl --user start juno-hook.service`; the start takes the lock over, records that in the journal and checks the journal), stop it again, and go on (D-243). The restore never takes the lock over itself.
 2. **Find the checkpoint.** Runner terminal, with `<task id>` the `session-...` word `hook admit` printed (Part G step 5):
    ```
    /opt/node22/bin/node /opt/juno/dist/runner/src/juno.js checkpoint list --journal /var/lib/juno-runner/journal <task id>
    ```
-   It prints each checkpoint (`checkpoint`, 64 characters), its folder (`root`, for example `/work/project`), `workspace` (`/srv/juno-work`), when it was taken, and every restore already done.
+   It prints each checkpoint (`checkpoint`, 64 characters), its folder (`root`, for example `/work/project`), `workspace` (`/srv/juno-work`), when it was taken, and every restore already done, with who did it (`by`, the principal it was recorded under).
 3. **Restore it.** Runner terminal (as `juno-runner`, never with `sudo`; replace `<principal>` with the `principal` of your session file, `<task id>` and `<checkpoint>` as in step 2):
    ```
    /opt/node22/bin/node /opt/juno/dist/runner/src/juno.js checkpoint restore --journal /var/lib/juno-runner/journal --checkpoints /var/lib/juno-runner/checkpoints --workspace /srv/juno-work --principal <principal> <task id> <checkpoint>
@@ -601,7 +607,9 @@ A gateway session has no reversible workspace: the MCP server makes its own chan
 
 ## Upgrading JUNO to a new commit
 
-For a machine where JUNO is already installed (Parts A to G done). The agent gives you the new **commit hash**. The upgrade replaces only JUNO's code: `/opt/juno` (root's copy) and `~/juno` (the runner's copy for its checks). **It keeps everything else**: the journal, grants, checkpoints, journal key and session files in `/var/lib/juno-runner`, root's files in `/etc/juno`, the service file in `~juno-runner/.config/systemd/user`, and `juno-anchors` on GitHub. Never delete any of those to upgrade. CI proves this on every change: the new service starts on the journal the old one wrote, and its sessions go on (D-222).
+For a machine where JUNO is already installed (Parts A to G done). The agent gives you the new **commit hash**. The upgrade replaces only JUNO's code: `/opt/juno` (root's copy) and `~/juno` (the runner's copy for its checks). **It keeps everything else**: the journal, grants, checkpoints, journal key and session files in `/var/lib/juno-runner`, root's files in `/etc/juno`, and `juno-anchors` on GitHub. Never delete any of those to upgrade. CI proves this on every change: the new service starts on the journal the old one wrote, and its sessions go on (D-222).
+
+**The order matters (D-244).** The service is switched off (stopped *and* disabled) before `/opt/juno` is touched, so that WSL restarting in the middle cannot start it on a half-built copy; it is switched on again only once the new copy is complete; and the separation check, which needs the running service, comes last. Every Check below passes as written in this order.
 
 1. **Windows: the new commit, built and packed.** **PowerShell**, with `<commit>` the new hash:
    ```
@@ -620,7 +628,14 @@ For a machine where JUNO is already installed (Parts A to G done). The agent giv
    cmd /c "wsl -d Ubuntu-24.04 -u root --exec /usr/bin/dd of=/opt/juno-setup/juno.bundle status=none < %USERPROFILE%\juno.bundle"
    wsl -d Ubuntu-24.04 -u root --exec /usr/bin/chmod 0444 /opt/juno-setup/juno.bundle
    ```
-3. **Stop JUNO.** Runner terminal: `systemctl --user stop juno-hook.service` (it anchors what is pending as it stops). If the gateway runs (Part H), stop it with **Ctrl+C** in its terminal.
+3. **Stop JUNO, and keep it from starting by itself until step 9.** Runner terminal:
+   ```
+   systemctl --user stop juno-hook.service
+   systemctl --user disable juno-hook.service
+   systemctl --user is-enabled juno-hook.service
+   systemctl --user is-active juno-hook.service
+   ```
+   Stopping it anchors what is pending. **Check:** the last two lines print `disabled` and `inactive` (`failed` instead of `inactive` is fine too: it means the service had already stopped with an error). While it is disabled, WSL restarting does not start it. If the gateway runs (Part H), stop it with **Ctrl+C** in its terminal.
 4. **The runner's copy, and the checks on your machine.** Runner terminal:
    ```
    rm -rf ~/juno
@@ -630,7 +645,7 @@ For a machine where JUNO is already installed (Parts A to G done). The agent giv
    npm ci
    make verify-rootless
    ```
-   **Check:** the hash is the new one, and after 10 to 20 minutes the last line is `make verify-rootless: GREEN`. It also rebuilds the image JUNO copies and undoes a session's folder in: `docker image ls juno-workload:local` prints a line naming it.
+   **Check:** the hash is the new one, and the last line is `make verify-rootless: GREEN`. It takes about 10 minutes on a 7200 rpm hard disk (as on your machine), less on an SSD, and up to 20 minutes on a slower machine. It also rebuilds the image JUNO copies and undoes a session's folder in: `docker image ls juno-workload:local` prints a line naming it.
 5. **Root's copy.** Admin terminal:
    ```
    sudo rm -rf /opt/juno
@@ -640,9 +655,10 @@ For a machine where JUNO is already installed (Parts A to G done). The agent giv
    sudo env PATH=/opt/node22/bin:$PATH npm ci --ignore-scripts
    sudo env PATH=/opt/node22/bin:$PATH make build
    find /opt/juno /opt/node22 ! -type l -perm /022 -print
+   /opt/node22/bin/node /opt/juno/dist/runner/src/juno-build-check.js
    ```
-   **Check:** the hash is the new one, and the `find` line prints nothing (as in Part E step 12).
-6. **Once, for the upgrade from 6706b5a (or earlier) only: the workspace's access list.** Admin terminal:
+   **Check:** the hash is the new one, the `find` line prints nothing (as in Part E step 12), and the last line prints `juno-build-check: this copy of JUNO at /opt/juno/ is complete: every file matches dist/build-manifest.json`. If it prints `refused` instead, run this step again from its first line.
+6. **Once, for the upgrade from 6706b5a (or earlier) only: the workspace's access list.** (Upgrading from bef25fe, skip this step.) Admin terminal:
    ```
    sudo apt install -y acl
    sudo -u juno-agent setfacl -R -m u:juno-runner:rwX,u:juno-agent:rwX /srv/juno-work
@@ -650,21 +666,52 @@ For a machine where JUNO is already installed (Parts A to G done). The agent giv
    getfacl -p /srv/juno-work
    ```
    The two `setfacl` lines run as `juno-agent`, never as root, for Part E step 12's reason (D-226): everything in the workspace is `juno-agent`'s, so they need nothing more. **Check:** as in Part E step 12, and neither `setfacl` line printed anything. If one prints `Operation not permitted`, send the agent the line. Without it, a session with `reversible_workspaces` is refused at admission (`could not be restored by the runner`).
-7. **Check the separation**, admin terminal: first Part E step 12's two lines that read the disk's features (`findmnt …` and `sudo dumpe2fs …`; new for the upgrade from 6706b5a), then Part G step 4's `hook check`. **Check:** as there for each: `casefold` is not in the features line, and the check prints `Case folding is switched off for its whole file system`.
-8. **Start JUNO again.** Runner terminal:
+7. **Once, for the upgrade from bef25fe: remove your stand-in `juno-clear-stale-lock`.** JUNO now does its job itself, and more carefully (D-243): when the service starts and finds the journal's lock left by a JUNO process that is provably no longer running (the same machine, the same start of it, the same process namespace, and that process gone or replaced by another one, judged by when it started), it takes the lock over, records that in the journal and checks the whole journal as at every start. A lock it cannot prove dead still refuses, and the refusal names the real file and the command to run. Your stand-in removes the lock whenever no `juno hook serve` is alive, which does none of that, so it must go. Admin terminal:
    ```
+   sudo grep -rlsI juno-clear-stale-lock /etc /usr/local /home/juno-runner/.config
+   ```
+   It lists every file that names the stand-in. Remove each, as follows, then run the `grep` line again:
+   - the program itself (for example `/usr/local/sbin/juno-clear-stale-lock`): `sudo rm <file>`;
+   - a system unit or timer (a file in `/etc/systemd/system`, for example `juno-clear-stale-lock.service`): first `sudo systemctl disable --now <its file name>`, then `sudo rm <file>`, then `sudo systemctl daemon-reload`;
+   - a drop-in for the hook service (a file in `/home/juno-runner/.config/systemd/user/juno-hook.service.d/`): in the runner terminal, `rm <file>`, then `systemctl --user daemon-reload`;
+   - a line in a file under `/etc/sudoers.d`: `sudo visudo -f <file>`, delete that line, save; if the file then holds nothing else, `sudo rm <file>`.
+
+   **Check:** the `grep` line prints nothing. If it lists a file that is none of these, stop and send the agent the list.
+
+   Then the Windows side: any script of yours in `%USERPROFILE%\juno-setup` (or a Windows scheduled task) that runs the stand-in. **PowerShell** (normal):
+   ```
+   Get-ChildItem -Recurse -File $env:USERPROFILE\juno-setup | Select-String -SimpleMatch juno-clear-stale-lock
+   Get-ScheduledTask | Where-Object { ($_.Actions | Out-String) -match 'juno-clear-stale-lock' } | Select-Object TaskName, TaskPath
+   ```
+   The first line prints each script line that names the stand-in, with its file and line number. In each file, delete exactly those lines (and nothing else: the rest of the script still does its job), save, and run the line again. If the second line prints a task whose only job is the stand-in, remove it: `Unregister-ScheduledTask -TaskName <its name> -Confirm:$false` (in **PowerShell as administrator**); if it does more, send the agent its name instead. **Check:** both lines print nothing. Nothing needs to replace the stand-in: the service's own start now takes a stale lock over (above).
+8. **The new service file** (it now checks that `/opt/juno` is a finished build before JUNO starts, D-244). Runner terminal:
+   ```
+   cp /opt/juno/docs/examples/juno-hook.service ~/.config/systemd/user/juno-hook.service
+   systemctl --user daemon-reload
+   grep -c -e '^AssertPathExists=' -e '^ExecStartPre=' ~/.config/systemd/user/juno-hook.service
+   ```
+   **Check:** the last line prints `4`. If you ever changed the service file yourself (for example `--journal /var/lib/juno-runner/journal-2` after a recovery, "When something goes wrong"), make that change again now, then `systemctl --user daemon-reload`.
+9. **Start JUNO, and let it start by itself again.** Runner terminal:
+   ```
+   systemctl --user enable juno-hook.service
    systemctl --user start juno-hook.service
    systemctl --user status juno-hook.service --no-pager
    ```
-   **Check:** `active (running)` and `juno hook: serving /var/lib/juno-hook/hook.sock`; if sessions were admitted before, also a line saying they `go on from the journal`. After the upgrade from 6706b5a, a session admitted before it can read but its writes park (its checkpoint cannot be restored): admit a new session to write. If it refuses, send the agent `journalctl --user -u juno-hook.service --no-pager | tail -20`; do not delete anything.
+   **Check:** `active (running)`, `enabled`, and `juno hook: serving /var/lib/juno-hook/hook.sock`; if sessions were admitted before, also a line saying they `go on from the journal`. If the old service had been killed without a stop, you also see `the journal's lock was left by a JUNO process that is no longer running` and one or two lines `removed ... a socket file left by a JUNO process that is no longer running`: expected, and recorded (D-243). After the upgrade from 6706b5a, a session admitted before it can read but its writes park (its checkpoint cannot be restored): admit a new session to write. If it refuses, send the agent `journalctl --user -u juno-hook.service --no-pager | tail -20`; do not delete anything.
    If you use the gateway, start it again with Part H step 4's command.
-
-If the agent's note for the new commit says the example service file changed, also copy it again (Part G step 3's `cp` and `daemon-reload`) before step 8.
+10. **Check the separation, now that the service runs.** Admin terminal: first Part E step 12's two lines that read the disk's features (`findmnt …` and `sudo dumpe2fs …`), then Part G step 4's `hook check`. **Check:** as there for each: `casefold` is not in the features line, and the check prints `separated from the runner` and `Case folding is switched off for its whole file system`. If it refuses, stop the service (`systemctl --user stop juno-hook.service`, runner terminal) and send the agent the refusal.
 
 ## When something goes wrong
 
 - A check does not show what it says: stop, and send the agent the last 15 lines on screen. Do not work around it.
 - The hook service will not start: `journalctl --user -u juno-hook.service --no-pager | tail -20` (runner terminal) lists every refusal.
+- **The service was killed without a stop** (WSL shut its instance down, Windows restarted, the power went). Its journal lock (`/var/lib/juno-runner/journal/runner.lock`) and socket files are left behind. Since D-243 the next start takes them over by itself when it can prove the process that left them is gone, records that in the journal and checks the journal; `systemctl --user status juno-hook.service --no-pager` then shows `the journal's lock was left by a JUNO process that is no longer running`. Nothing to do. If a start or a restore still refuses on the lock, its line says why (for example `pid_namespace_differs`: the lock was taken in a process namespace JUNO cannot see into) and names the real file. Then, runner terminal: `pgrep -af 'juno[.]js (hook serve|gateway serve|checkpoint restore)|runner/src/main[.]js'` must print nothing (if it prints a line, that JUNO process is running: stop it, do not remove the lock), and only then `rm /var/lib/juno-runner/journal/runner.lock`, and start the service again. If the refusal also names `runner.lock.takeover` (JUNO was stopped in the middle of taking a lock over), remove both files it names, after the same `pgrep`. Never remove either while that `pgrep` prints anything. Every such refusal gives these commands itself, between backticks, with the real paths (D-247): copy them from the refusal. A start that says `the socket … cannot be listened on (EADDRINUSE)` is handled the same way: the same `pgrep`, then the `rm` it gives.
+- **A refusal names a set-user-ID, set-group-ID or sticky bit in the workspace** (at `hook admit`, at a service start, or from a restore). Something in `/srv/juno-work` carries one of those special permission bits, and JUNO never copies or undoes a folder holding one (D-223, D-228). The refusal names the entry in double quotes, from the session's folder (`"docs"`, say), with any odd character in its name written as `\u{…}`; **it never gives a command for it**, because the name was chosen by whoever made the file, and a command built from it could do something else (D-251). Remove every such bit under `/srv/juno-work` with this fixed command instead, **as `juno-agent`, never as root** (a root command there could be sent through a link to change files elsewhere, D-226). Admin terminal:
+  ```
+  sudo -u juno-agent find /srv/juno-work -xdev -perm /7000 -exec chmod u-s,g-s,o-t {} +
+  ```
+  **Check:** `sudo -u juno-agent find /srv/juno-work -xdev -perm /7000 | wc -l` prints `0`. Then run again what was refused. If the first command prints `Operation not permitted` or `Permission denied` for an entry, that entry does not belong to `juno-agent`: do not use `sudo` alone on it; send the agent the refusal and those lines.
+- **The start is refused with `Assertion failed` or `juno-build-check: refused`**: `/opt/juno` is not a finished build (an upgrade stopped part way, D-244). Nothing of JUNO ran. Do the upgrade's step 5 again from its first line, then start the service.
 - **`hook admit` or `checkpoint restore` says `the sealed copy context did not answer`**: JUNO could not start the sealed container it copies and undoes the folder in (D-228). Runner terminal: `docker image ls juno-workload:local` must print a line; if it prints none, run `cd ~/juno && make verify-rootless` again (Part E step 11), which builds it. If the image is there, send the agent the whole reason.
 - Claude Code says JUNO blocked every call: the service is not running (`systemctl --user status juno-hook.service`), or the session was not admitted (Part G step 5). JUNO fails closed: when in doubt, it blocks.
 - **WSL suddenly shows `Bus error`, `Input/output error`, or commands such as `rm` and `which` "not found".** Check free space on the Windows drive that holds WSL's disk file **first** (File Explorer → This PC, or Part E step 1's check): a full drive makes every write in WSL fail in exactly these ways. Free space on that drive, then `wsl --terminate Ubuntu-24.04` and open it again. Do **not** run `e2fsck` or any repair before checking the space, and send the agent what you saw. On your machine, a full `C:` produced all of these and the file system was undamaged.

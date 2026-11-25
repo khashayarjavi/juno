@@ -1,7 +1,35 @@
 import { chmodSync } from "node:fs";
-import { type Server, type Socket, createServer } from "node:net";
+import { type Server, type Socket, connect, createServer } from "node:net";
 import type { MediatedSessions } from "./session.js";
 import { SessionLayer } from "../../enforcement/src/index.js";
+import { operatorText, socketInUse } from "../../journal/src/index.js";
+
+/**
+ * What a service says when it cannot listen on its socket `path` (D-247): a socket already in use is named by its real
+ * path, with a remedy that works; any other error keeps Node's words, with no descriptor path in them.
+ */
+export function listenError(error: Error, path: string): Error {
+  if ("code" in error && error.code === "EADDRINUSE") return new Error(socketInUse(path));
+  return new Error(operatorText(error.message));
+}
+
+/**
+ * Whether nothing answers on the Unix socket at `socketPath`: a connection to it is refused (D-243). Any other outcome
+ * (it answers, or the attempt fails for another reason) is "something may": the file is then never removed.
+ */
+export function nothingAnswers(socketPath: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const probe = connect(socketPath);
+    probe.once("connect", () => {
+      probe.destroy();
+      resolve(false);
+    });
+    probe.once("error", (error: Error) => {
+      probe.destroy();
+      resolve("code" in error && error.code === "ECONNREFUSED");
+    });
+  });
+}
 
 /**
  * The boundary service for mode C (spec §4.3; DECISIONS.md D-142): a Unix-domain socket on the runner's host. Each
@@ -51,10 +79,13 @@ export class HookService {
     } catch (error: unknown) {
       return Promise.reject(error instanceof Error ? error : new Error(String(error)));
     }
-    return new Promise((resolve, reject) => {
-      this.#server.once("error", reject);
+    // D-243: a socket file left by a service killed without a stop is removed first, under the journal's lock.
+    return this.#sessions.layer.clearStaleSocket(path, nothingAnswers).then(() => new Promise<void>((resolve, reject) => {
+      // D-247: a socket already in use is named by its real path, with a remedy that works.
+      const failed = (error: Error): void => reject(listenError(error, path));
+      this.#server.once("error", failed);
       this.#server.listen(path, () => {
-        this.#server.off("error", reject);
+        this.#server.off("error", failed);
         try {
           chmodSync(path, mode);
         } catch (error: unknown) {
@@ -64,7 +95,7 @@ export class HookService {
         }
         resolve();
       });
-    });
+    }));
   }
 
   close(): Promise<void> {

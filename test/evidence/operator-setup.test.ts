@@ -1,9 +1,10 @@
 import { execFile } from "node:child_process";
-import { createReadStream, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createReadStream, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { executeOutbound } from "../../packages/registry/src/index.js";
+import { HOOK_SERVICE_UNIT, junoEntry } from "../../packages/journal/src/index.js";
 import { GrantStore } from "../../packages/enforcement/src/index.js";
 import { TEST_ANCHOR, signed } from "../../packages/enforcement/test/test-keys.js";
 
@@ -328,5 +329,96 @@ describe("the guide after the field report of the first real install (issue #59;
     const example = JSON.parse(readFileSync(new URL("../../docs/examples/session.example.json", import.meta.url), "utf8")) as { comments: string[]; session: { reversible_workspaces?: string[] } };
     expect(example.session.reversible_workspaces).toEqual(["/work/project"]);
     expect(example.comments.some((line) => line.startsWith("reversible_workspaces:") && line.includes("juno checkpoint restore"))).toBe(true);
+  });
+});
+
+describe("1.5-ops: the upgrade's order, the incomplete copy, the stale lock, and the runner's environment (D-243, D-244)", () => {
+  const upgrade = guide.slice(guide.indexOf("## Upgrading JUNO to a new commit"), guide.indexOf("## When something goes wrong"));
+  const at = (text: string): number => {
+    const index = upgrade.indexOf(text);
+    expect(index, text).toBeGreaterThan(-1);
+    return index;
+  };
+
+  // proves 1.5-ops item 2: every Check passes as written. The service is stopped and disabled before /opt/juno is touched;
+  // enabled and started only after the new copy is checked complete and the new service file is in place; the
+  // separation check, which needs the running service, comes after the start
+  it("orders the upgrade so every Check passes as written, and nothing starts on a half-built copy", () => {
+    const disabled = at("systemctl --user disable juno-hook.service");
+    expect(at("systemctl --user stop juno-hook.service")).toBeLessThan(disabled);
+    expect(disabled).toBeLessThan(at("rm -rf ~/juno"));
+    expect(disabled).toBeLessThan(at("sudo rm -rf /opt/juno"));
+    const complete = at("/opt/node22/bin/node /opt/juno/dist/runner/src/juno-build-check.js");
+    expect(at("sudo env PATH=/opt/node22/bin:$PATH make build")).toBeLessThan(complete);
+    const unit = at("cp /opt/juno/docs/examples/juno-hook.service ~/.config/systemd/user/juno-hook.service");
+    expect(complete).toBeLessThan(unit);
+    expect(at("juno-clear-stale-lock")).toBeLessThan(unit);
+    const enabled = at("systemctl --user enable juno-hook.service");
+    expect(unit).toBeLessThan(enabled);
+    const started = at("systemctl --user start juno-hook.service");
+    expect(enabled).toBeLessThan(started);
+    expect(started).toBeLessThan(at("Part G step 4's `hook check`"));
+    // The steps are numbered 1 to 10, once each, in order.
+    const numbers = [...upgrade.matchAll(/^(\d+)\. \*\*/gm)].map((match) => Number(match[1]));
+    expect(numbers).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expect(upgrade).toContain("about 10 minutes on a 7200 rpm hard disk");
+    expect(guide).toContain("It takes about 10 minutes on a 7200 rpm hard disk (as on your machine)");
+  });
+
+  // proves D-244: the service file refuses to start JUNO from a copy that is not a finished build, before JUNO runs
+  it("has the service file check the build before JUNO starts", () => {
+    const unit = readFileSync(new URL("../../docs/examples/juno-hook.service", import.meta.url), "utf8");
+    const lines = unit.split("\n");
+    const section = (name: string): number => lines.indexOf(`[${name}]`);
+    const index = (line: string): number => lines.indexOf(line);
+    for (const path of ["/opt/juno/package.json", "/opt/juno/dist/build-manifest.json", "/opt/juno/dist/runner/src/juno-build-check.js"]) {
+      expect(index(`AssertPathExists=${path}`), path).toBeGreaterThan(section("Unit"));
+      expect(index(`AssertPathExists=${path}`), path).toBeLessThan(section("Service"));
+    }
+    const pre = index("ExecStartPre=/opt/node22/bin/node /opt/juno/dist/runner/src/juno-build-check.js");
+    expect(pre).toBeGreaterThan(section("Service"));
+    expect(pre).toBeLessThan(lines.findIndex((line) => line.startsWith("ExecStart=")));
+  });
+
+  // proves D-243: the guide says what a start does with a dead service's lock, removes the operator's stand-in, and
+  // gives a remedy that names the real path and checks first that no JUNO process runs
+  it("explains the lock take-over and removes the stand-in", () => {
+    const wrong = guide.slice(guide.indexOf("## When something goes wrong"));
+    expect(wrong).toContain("**The service was killed without a stop**");
+    expect(wrong).toContain("pgrep -af 'juno[.]js (hook serve|gateway serve|checkpoint restore)|runner/src/main[.]js'");
+    expect(wrong).toContain("rm /var/lib/juno-runner/journal/runner.lock");
+    expect(wrong).not.toContain("/proc/self/fd");
+    expect(upgrade).toContain("sudo grep -rlsI juno-clear-stale-lock /etc /usr/local /home/juno-runner/.config");
+    expect(guide).toContain("JUNO's service stopped without releasing the journal's lock");
+    expect(guide).toContain("with who did it (`by`");
+  });
+
+  // proves 1.5-ops item 3: the runner's environment lines sit after Ubuntu's non-interactive early return, and nothing
+  // the guide or the service runs needs them outside an interactive shell: the service file sets its own
+  it("needs the runner's ~/.bashrc only in an interactive shell", () => {
+    expect(guide).toContain("after Ubuntu's line that stops reading the file in a shell that is not interactive");
+    const unit = readFileSync(new URL("../../docs/examples/juno-hook.service", import.meta.url), "utf8");
+    expect(unit).toContain("Environment=DOCKER_HOST=unix://%t/docker.sock");
+    expect(unit).toContain("Environment=PATH=/opt/node22/bin:/usr/bin:/bin");
+    expect(unit).toMatch(/^ExecStart=\/opt\/node22\/bin\/node /m);
+    // Every runner command run from PowerShell names its program in full with --exec, so no shell starts.
+    for (const line of guide.split("\n").filter((text) => /wsl(\.exe)? .*(-u|--user) juno-runner/.test(text) && !/^\s*-\s+\*\*Runner terminal/.test(text) && !/wsl -d Ubuntu-24.04 -u juno-runner` and press Enter/.test(text))) {
+      expect(line, line).toMatch(/--exec \/usr\/bin\//);
+    }
+  });
+});
+
+describe("the names the refusals give are the names the guide installs (D-247)", () => {
+  // proves D-247 item 1: the unit every service command names is the unit the guide installs, from the shipped file of
+  // that name, and the juno.js every JUNO command names is where the guide's commands run it from
+  it("names the unit the guide installs, and the juno.js its commands run", () => {
+    expect(existsSync(new URL(`../../docs/examples/${HOOK_SERVICE_UNIT}`, import.meta.url))).toBe(true);
+    const installs = guide.split("\n").filter((text) => text.includes("cp /opt/juno/docs/examples/") && text.includes("systemd/user"));
+    expect(installs.length).toBeGreaterThan(0);
+    for (const line of installs) expect(line.trim()).toBe(`cp /opt/juno/docs/examples/${HOOK_SERVICE_UNIT} ~/.config/systemd/user/${HOOK_SERVICE_UNIT}`);
+    expect(guide).toContain(`systemctl --user enable --now ${HOOK_SERVICE_UNIT}`);
+    // The build lays juno.js out at dist/runner/src/juno.js, where the guide runs it (/opt/juno/dist/runner/src/juno.js).
+    expect(junoEntry().endsWith("/runner/src/juno.js")).toBe(true);
+    expect(guide).toContain("/opt/node22/bin/node /opt/juno/dist/runner/src/juno.js hook admit");
   });
 });

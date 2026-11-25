@@ -54,7 +54,9 @@ export class JournalKeyError extends Error {
 export type JournalKey = { readonly privateKey: KeyObject; readonly publicKey: KeyObject };
 
 const PRIVATE_FILE = "journal-key.pem";
-const PUBLIC_FILE = "journal-key.pub.pem";
+/** The journal key's public half, in the journal key folder: what `juno journal check --key` reads (§3.4.1). */
+export const JOURNAL_KEY_PUBLIC_FILE = "journal-key.pub.pem";
+const PUBLIC_FILE = JOURNAL_KEY_PUBLIC_FILE;
 
 /**
  * Loads the runner's journal key from `dir`, creating it on first start (an Ed25519 pair; the private half mode 0600,
