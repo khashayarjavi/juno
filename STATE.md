@@ -1,10 +1,25 @@
 # STATE
 
 ## Current increment
-**1.5-ops — the field report of the operator's machine running bef25fe, authorised by you on 2026-11-24 (D-243); continued under your rulings of 2026-11-25 (D-247).** Branch `claude/elegant-heisenberg-nvw7vq` (this session's only pushable branch). Draft PR [khashayarjavi/juno#66](https://github.com/khashayarjavi/juno/pull/66) carries PR #65's fourteen commits unchanged and supersedes it. Main at bef25fe. Spec v0.6.1. No objection open.
+**1.5-ops (queue item 1 of 3, D-251).** Branch `claude/elegant-ritchie-6pkguy` (this session's only pushable branch). It carries PR [khashayarjavi/juno#66](https://github.com/khashayarjavi/juno/pull/66)'s twenty-six commits unchanged; its draft PR supersedes #66, and review rounds 6 to 10 run there. Main at bef25fe. Spec v0.6.1. No objection open. The repository is public now (your choice), so CI runs again.
 
-Status (2026-11-25, this session): **STOPPED after review round 5 (D-250).** The last round you authorised ended DO NOT MERGE. Its finding is fixed, with a test, but not reviewed. CI has stopped starting on this PR (see below). `make verify: GREEN` on 5b851d3 (1,539 unit, 156 container tests). **Nothing is merged; main is unchanged at bef25fe, so your machine is unaffected.**
+Status (2026-11-25, this session): **your ruling of D-251 built (D-252), with tests. `make verify` running. Review round 6 next.** Nothing merged yet; main is unchanged at bef25fe, so your machine is unaffected.
 
+### The queue (D-251)
+1. **1.5-ops**, PR #66's work: your ruling (no command built from a workspace value), then review rounds 6 to 10, then the merge gate. **In progress.**
+2. **1.5-report**: `juno journal report`, a read-only weekly summary of a journal. Not started.
+3. **1.5-public**: the workflows audited for a public repository; a README for a newcomer; SECURITY.md. No LICENSE: **open item for you** (the license is your decision). Not started.
+
+### What D-252 changes, in plain words
+- **Before:** the refusal for a set-user-ID, set-group-ID or sticky bit gave a command naming the file and its owner (`sudo -u <owner> chmod u-s,g-s,o-t <path>`). Both were the Claude Code user's to choose.
+- **Now:** that refusal names the file only in double quotes, with odd characters written as `\u{…}`, gives **no command**, and says to see the guide, "When something goes wrong", item "A refusal names a set-user-ID, set-group-ID or sticky bit in the workspace". That item holds one fixed command, run as `juno-agent`: `sudo -u juno-agent find /srv/juno-work -xdev -perm /7000 -exec chmod u-s,g-s,o-t {} +`.
+- **Also fixed, same kind:** the superblock check showed a mount point inside the workspace exactly as named; it is now shown escaped.
+- **Still printed:** commands built only from JUNO's configured values (the journal's lock, the socket, the service, JUNO's own Node and `juno.js`, the hook check's own command line).
+- **Tests:** names an attacker would choose are planted and every refusal they can reach is triggered; no command in any of them holds the name or a workspace path. A lint test lists every place that builds a command for you, with where its values come from; a new place fails until listed. The guide's fixed command is read from the guide and run in a test; it removes the bits.
+
+**Left, in order:** `make verify` green; the superseding PR; review rounds 6 to 10; CI green on the head; the merge gate; record the merge and your upgrade steps; then queue item 2.
+
+## Before this session: 1.5-ops on PR #66 (rounds 3 to 5)
 ### STOP after review round 5 (D-250)
 - **Why this is a STOP.**
   - Your ruling 2 authorised review rounds 3 to 5. Round 5 ended DO NOT MERGE.

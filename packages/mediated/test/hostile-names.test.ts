@@ -108,7 +108,7 @@ describe("no refusal a hostile workspace name reaches prints a command holding i
       const long = `${name}${"x".repeat(300)}`.replace(/\//g, "_");
       const outcome = await sealed().restore("/work/project", [...taken.snapshot.manifest, { ...file, path: long }], (hash) => store.get(hash));
       expect(outcome.ok).toBe(false);
-      noCommandFromTheWorkspace(outcome.reason ?? "", work);
+      noCommandFromTheWorkspace(outcome.ok ? "" : outcome.reason, work);
       noCommandFromTheWorkspace(JSON.stringify(outcome), work);
     }
   });
