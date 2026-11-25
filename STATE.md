@@ -3,9 +3,16 @@
 ## Current increment
 **1.5-ops — the field report of the operator's machine running bef25fe, authorised by you on 2026-11-24 (D-243); continued under your rulings of 2026-11-25 (D-247).** Branch `claude/elegant-heisenberg-nvw7vq` (this session's only pushable branch). Draft PR [khashayarjavi/juno#66](https://github.com/khashayarjavi/juno/pull/66) carries PR #65's fourteen commits unchanged and supersedes it. Main at bef25fe. Spec v0.6.1. No objection open.
 
-Status (2026-11-25, this session): **your ruling 1 built (D-247). Review round 3: DO NOT MERGE, two findings, both fixed (D-248); `make verify` running on the fix; review round 4 next.**
+Status (2026-11-25, this session): **your ruling 1 built (D-247). Rounds 3 and 4 each ended DO NOT MERGE; every finding is fixed (D-248, D-249). `make verify` is running on the fix; review round 5, the last you authorised, is next.**
 
 **Review rounds on PR #66 (numbered on from #65's):**
+- **Round 4** (2c828f7; `make verify: GREEN` on ba3a183, 1,536 unit and 156 container tests; CI's two rootless jobs green): DO NOT MERGE.
+  1. A file or folder name Claude chose could hold a line break, a fake command between backticks, or a terminal control code. JUNO showed it as it was in a refusal you would see at the next admission, and the guide tells you to copy commands between backticks. Now:
+     - every such name is shown with those characters escaped (as `\u{…}`);
+     - every printed line escapes what a terminal acts on;
+     - JUNO never prints a command holding anything but plain printable characters (no command is given for such a name).
+  2. Three remedy programs (`chmod`, `sudo`) were still written outside the one helper, and the lint scan did not see that form. Now they come from the helper, and the scan sees them.
+  - This is not a STOP: the kind of mistake (an agent's text reaching a command you are told to run) was round 3's, but the way in was new; under D-179 and your ruling 2 it is a fix (D-249).
 - **Round 3** (d29c3b6; CI's two rootless jobs green, `make verify: GREEN` on 7c4812a, 1,534 unit and 156 container tests): DO NOT MERGE.
   1. If an undo stopped part way (a full disk, say), its message still carried Node's own words from inside the sealed container. Those name that container's handle (`/proc/self/fd/22/…`) and the folder as `/work/…`, neither usable on your machine. Now the message names the file it stopped at, from the session's folder, and the error code; your machine's path for the kept folder is added from its own field.
   2. My D-247 fix for the sticky-bit advice read a marker out of the message text. A file name Claude chose could forge that marker and make JUNO tell you to run `chmod` as root on a folder outside the workspace. Now the sealed copy returns those entries in a separate field. A command is given only for an entry inside the session's folder, with no link on the way, that your machine itself sees with the bit. Tests prove a forged marker or path gets no command. Nothing is merged; main is unchanged at bef25fe, so your machine is unaffected.

