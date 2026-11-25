@@ -4,7 +4,7 @@ import { type Server, type Socket, connect, createServer } from "node:net";
 import { z } from "zod";
 import { listenError, nothingAnswers } from "./hook-service.js";
 import { GrantStore, SessionLayer } from "../../enforcement/src/index.js";
-import { JOURNAL_KEY_PUBLIC_FILE, operatorPath, operatorText } from "../../journal/src/index.js";
+import { displayLine, JOURNAL_KEY_PUBLIC_FILE, operatorPath, operatorText } from "../../journal/src/index.js";
 import type { MediatedSessions } from "./session.js";
 import { HookSessionFile } from "./hook-session-file.js";
 
@@ -69,7 +69,8 @@ export class HookAdmissionService {
   /** Admits the session the file names, or says every reason why not, with no descriptor path in any reason (D-247). */
   async admitFile(path: string): ReturnType<HookAdmissionService["admitOrRefuse"]> {
     const answer = await this.admitOrRefuse(path);
-    return answer.admitted ? answer : { admitted: false, failures: answer.failures.map(operatorText) };
+    // D-249: each failure as it is printed (`juno hook admit` prints what this service says, as it says it).
+    return answer.admitted ? answer : { admitted: false, failures: answer.failures.map((failure) => displayLine(operatorText(failure))) };
   }
 
   private async admitOrRefuse(path: string): Promise<{ readonly admitted: true; readonly task_id: string; readonly check?: { readonly journal: string; readonly anchors: string; readonly key: string } } | { readonly admitted: false; readonly failures: readonly string[] }> {

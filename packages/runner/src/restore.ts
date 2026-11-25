@@ -17,7 +17,7 @@ import {
   workloadWorkspace,
 } from "../../enforcement/src/index.js";
 import { type FilesystemIo, caseFoldingRefusals, systemFilesystemIo } from "../../mediated/src/filesystem.js";
-import { canonicalJson, commandText, type EntryDraft, JournalWriter as Writer, junoProgramText, operatorPath, operatorText, readPayload, readTrajectory, serviceCommand, userName } from "../../journal/src/index.js";
+import { canonicalJson, commandText, displayLine, type EntryDraft, JournalWriter as Writer, junoProgramText, operatorPath, operatorText, readPayload, readTrajectory, serviceCommand, userName } from "../../journal/src/index.js";
 import { type CliIo, FILE_IO } from "./grant-cli.js";
 import { RunnerLockRefused, acquireRunnerLock } from "./lock.js";
 
@@ -292,7 +292,7 @@ export async function runCheckpointCli(
       io.out(`${JSON.stringify(listCheckpoints(journalDir, taskId), null, 2)}\n`);
       return 0;
     } catch (error: unknown) {
-      io.err(`juno checkpoint list: ${operatorText(error instanceof Error ? error.message : String(error))}\n`);
+      io.err(`juno checkpoint list: ${displayLine(operatorText(error instanceof Error ? error.message : String(error)))}\n`);
       return 1;
     }
   }
@@ -339,7 +339,7 @@ export async function runCheckpointCli(
       else if (owner !== uid) refusals.push(`${what} ${dir} is not this user's: run it as the user that owns it (${userName(owner)})`);
     }
     if (refusals.length > 0) {
-      io.err(`juno checkpoint restore: refused, nothing was changed:\n${refusals.map((line) => `  - ${line}`).join("\n")}\n`);
+      io.err(`juno checkpoint restore: refused, nothing was changed:\n${refusals.map((line) => `  - ${displayLine(line)}`).join("\n")}\n`);
       return 1;
     }
   }
@@ -352,16 +352,17 @@ export async function runCheckpointCli(
       lock = acquireRunnerLock(journal.root, undefined, undefined, { shown: journalDir, reclaim: false });
     } catch (error: unknown) {
       if (!hostForm) throw error;
-      io.err(`juno checkpoint restore: refused, nothing was changed: ${operatorText(lockRefusal(error))}\n`);
+      io.err(`juno checkpoint restore: refused, nothing was changed: ${displayLine(operatorText(lockRefusal(error)))}\n`);
       return 1;
     }
     const outcome = hostForm
       ? await restoreHostCheckpoint(operatorJournal(journal), storeAt(storeDir), value("--workspace") ?? "", taskId, checkpoint, value("--principal") ?? "", { filesystem: host.filesystem, launcher: await host.launcher() })
       : await restoreCheckpoint(operatorJournal(journal), { workspace: open({ composeFile: (value("--compose") ?? "") as AbsolutePath, project: value("--project") ?? "", service: "workload" }), store: storeAt(storeDir) }, taskId, checkpoint, value("--principal") ?? "");
-    io.out(`${JSON.stringify(outcome, null, 2)}\n`);
+    // D-249: every text in the outcome as a line is printed (JSON escapes control characters, not every one a terminal acts on).
+    io.out(`${JSON.stringify(outcome, (_key, value: unknown) => (typeof value === "string" ? displayLine(value) : value), 2)}\n`);
     return outcome.ok ? 0 : 1;
   } catch (error: unknown) {
-    io.err(`juno checkpoint: ${operatorText(error instanceof Error ? error.message : String(error))}\n`);
+    io.err(`juno checkpoint: ${displayLine(operatorText(error instanceof Error ? error.message : String(error)))}\n`);
     return 1;
   } finally {
     lock?.release();

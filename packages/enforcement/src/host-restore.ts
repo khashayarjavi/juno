@@ -6,7 +6,7 @@ import { z } from "zod";
 import { MAX_CHECKPOINT_BYTES, MAX_CHECKPOINT_ENTRIES, type ManifestEntry, type Snapshot, Workspace, sameManifest } from "./checkpoint.js";
 import { WORKLOAD_NODE } from "./canonical.js";
 import { DIR_MODE, FILE_MODE } from "./workspace-copy.mjs";
-import { commandText, junoCommand, operatorPath, operatorText, ownerName, userName } from "../../journal/src/index.js";
+import { asUserCommand, commandText, junoCommand, operatorPath, operatorText, ownerName, removeBitsCommand, shownName } from "../../journal/src/index.js";
 
 export { DIR_MODE, FILE_MODE, asideName, kernelMayChange, listTree, openRoot, openRootAt, remove as removeEntry, restoreTree, undoRefusals, undoTo } from "./workspace-copy.mjs";
 
@@ -224,8 +224,12 @@ export class SealedWorkspace {
    * its real path and its owner, by name. Anything else gets no command.
    */
   #named(answer: SealedAnswer, root: string): SealedAnswer {
-    const { bits, ...rest } = answer as SealedAnswer & { readonly bits?: readonly string[] };
-    if (bits === undefined || bits.length === 0) return rest as SealedAnswer;
+    const { bits, ...raw } = answer as SealedAnswer & { readonly bits?: readonly string[] };
+    // D-249: every text of the sealed program's can hold names the agent chose (its own words name entries only through
+    // JSON, which escapes line breaks but not backticks or every character a terminal acts on): each is escaped whole, as
+    // a name is, before JUNO adds a word of its own.
+    const rest = ("error" in raw ? { error: shownName(raw.error) } : "refusals" in raw ? { refusals: raw.refusals.map(shownName) } : "refused" in raw ? { refused: raw.refused.map(shownName) } : "failed" in raw ? { failed: shownName(raw.failed), kept: raw.kept } : raw) as SealedAnswer;
+    if (bits === undefined || bits.length === 0) return rest;
     const base = operatorPath(join(this.workspace, root.slice("/work".length)));
     const remedies: string[] = [];
     for (const rel of new Set(bits)) {
@@ -243,16 +247,17 @@ export class SealedWorkspace {
       if (real !== host || stats.isSymbolicLink() || (stats.mode & 0o7000) === 0) continue;
       const owner = ownerName(host);
       if (owner === null) continue;
-      const chmod = ["chmod", "u-s,g-s,o-t", host];
-      remedies.push(`to remove the bit from ${host}, as ${owner}: ${commandText(owner === userName(process.geteuid?.() ?? -1) ? chmod : ["sudo", "-u", owner, ...chmod])}`);
+      // The path is shown as a name (the agent chose its last parts), and a command is given only when every word of it
+      // is printable ASCII with no backtick (commandText, D-249).
+      remedies.push(`to remove the bit from ${shownName(host)}, as ${shownName(owner)}: ${commandText(asUserCommand(owner, removeBitsCommand(host)))}`);
     }
-    if (remedies.length === 0) return rest as SealedAnswer;
+    if (remedies.length === 0) return rest;
     const line = remedies.join("; ");
     if ("error" in rest) return { error: `${rest.error}; ${line}` };
     if ("refusals" in rest) return { refusals: [...rest.refusals, line] };
     if ("refused" in rest) return { refused: [...rest.refused, line] };
     if ("failed" in rest) return { failed: `${rest.failed}; ${line}`, kept: rest.kept };
-    return rest as SealedAnswer;
+    return rest;
   }
 
   /**
@@ -278,7 +283,7 @@ export class SealedWorkspace {
       if (createHash("sha256").update(bytes).digest("hex") !== hash) return { ok: false, reason: "a file's content does not match its hash" };
       contents.set(hash, bytes);
     }
-    for (const entry of answer.manifest) if (entry.type === "file" && !contents.has(entry.sha256)) return { ok: false, reason: `no content for ${entry.path}` };
+    for (const entry of answer.manifest) if (entry.type === "file" && !contents.has(entry.sha256)) return { ok: false, reason: `no content for ${shownName(JSON.stringify(entry.path))}` };
     return { ok: true, snapshot: { manifest: answer.manifest, contents, hardLinks: [] } };
   }
 

@@ -1,7 +1,7 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import { CASE_SENSITIVE_TYPES, type Mount, mountOf, parseMountinfo } from "./filesystem.js";
-import { commandText } from "../../journal/src/index.js";
+import { asRootCommand, commandText } from "../../journal/src/index.js";
 
 /**
  * Case folding switched off for the whole file system, read from its superblock (operator ruling 1 of 2026-11-21 on
@@ -137,7 +137,7 @@ function judgeMount(what: string, path: string, where: string, mount: Mount & { 
   const node = `/dev/${name}`;
   const read = io.readSuperblock(node);
   if (!read.ok) {
-    return `JUNO cannot read the superblock of ${node}, the ext4 file system holding ${what} ${path} (${read.error}), so it cannot confirm that case folding is switched off; run juno hook check as root, with sudo${rerun === undefined ? "" : `: ${commandText(["sudo", ...rerun])}`} (D-242)`;
+    return `JUNO cannot read the superblock of ${node}, the ext4 file system holding ${what} ${path} (${read.error}), so it cannot confirm that case folding is switched off; run juno hook check as root, with sudo${rerun === undefined ? "" : `: ${commandText(asRootCommand(rerun))}`} (D-242)`;
   }
   if (read.blockDevice === null || !same(read.blockDevice, device)) {
     return `${node} is not the block device ${named(device)} that holds ${what} ${path}, so JUNO cannot read that file system's superblock to confirm that case folding is switched off (D-242)`;

@@ -22,7 +22,7 @@ import {
   runtimeRefusal,
   systemHostIo,
 } from "../../enforcement/src/index.js";
-import { commandText, junoCommand, junoProgramText, operatorPath, operatorText } from "../../journal/src/index.js";
+import { commandText, displayLine, junoCommand, junoProgramText, operatorPath, operatorText } from "../../journal/src/index.js";
 import { type FilesystemIo, caseFoldingRefusals, systemFilesystemIo } from "./filesystem.js";
 import { HookAdmissionService, askAdmission } from "./hook-admission.js";
 import { HookService } from "./hook-service.js";
@@ -90,7 +90,7 @@ export function hookStartupSpec(options: { readonly socket: string; readonly con
 
 function refused(io: { readonly err: (text: string) => void }, command: string, refusals: readonly string[]): number {
   // D-247: no refusal names a descriptor path; each is named by the folder the descriptor holds.
-  io.err(`juno hook ${command}: refused:\n${refusals.map((line) => `  - ${operatorText(line)}`).join("\n")}\n`);
+  io.err(`juno hook ${command}: refused:\n${refusals.map((line) => `  - ${displayLine(operatorText(line))}`).join("\n")}\n`);
   return 1;
 }
 
@@ -161,7 +161,7 @@ export async function runHookServeCli(args: readonly string[], io: HookServeIo):
   }
   // D-224, D-228: a session admitted before this start keeps a reversible workspace only once the sealed context confirms
   // its checkpoint can still be restored; until then (and if not), its writes there park.
-  for (const note of await sessions.confirmReversible()) io.err(`juno hook: ${operatorText(note)}\n`);
+  for (const note of await sessions.confirmReversible()) io.err(`juno hook: ${displayLine(operatorText(note))}\n`);
   // 0660: the runner and the socket folder's group, through which the Claude Code user's hook connects (D-173).
   const hook = new HookService(sessions, { socketMode: 0o660 });
   const admission = new HookAdmissionService(sessions, grants);
@@ -177,15 +177,15 @@ export async function runHookServeCli(args: readonly string[], io: HookServeIo):
   // D-243: the lock of a service that was provably no longer running was taken over at this start, and recorded.
   const reclaimed = layer.reclaimedLock;
   if (reclaimed !== null) io.err(`juno hook: the journal's lock was left by a JUNO process that is no longer running (${reclaimed.reason}, process ${String(reclaimed.holder["pid"])}), for example after WSL shut down under it. It was taken over and recorded in the journal (stale_lock_reclaimed), after the journal was checked (D-243).\n`);
-  for (const path of layer.clearedSockets) io.err(`juno hook: removed ${operatorPath(path)}, a socket file left by a JUNO process that is no longer running (nothing answered on it), so this start could listen there (D-243).\n`);
+  for (const path of layer.clearedSockets) io.err(`juno hook: removed ${displayLine(operatorPath(path))}, a socket file left by a JUNO process that is no longer running (nothing answered on it), so this start could listen there (D-243).\n`);
   // D-206 item 1 (D-207): a torn final write was repaired at this start; say what it cost.
   const recovery = layer.recovery;
   if (recovery !== null) io.err(`juno hook: the journal's last entry was left incomplete (a power loss or a crash in the middle of a write). It was dropped and recorded (recovered_truncation). Every grant used by a session open at that moment is now exhausted and needs a new, newly signed grant: ${recovery.exhausted_grants.length === 0 ? "(none)" : recovery.exhausted_grants.join(", ")} (D-206).\n`);
   // D-201: sessions admitted before this start go on from the journal; they are never admitted again.
   const rebuilt = sessions.rebuilt;
   if (rebuilt.sessions.length > 0) io.out(`juno hook: ${String(rebuilt.sessions.length)} session(s) admitted before this start go on from the journal, with the budget and limits they had (D-201).\n`);
-  for (const why of rebuilt.grants) io.err(`juno hook: a grant file could not be read again, so its grant is absent until the service is restarted with the file in place: ${operatorText(why)}\n`);
-  for (const [id, why] of rebuilt.failed) io.err(`juno hook: ${id} could not be rebuilt from the journal and stays closed: ${operatorText(why)}\n`);
+  for (const why of rebuilt.grants) io.err(`juno hook: a grant file could not be read again, so its grant is absent until the service is restarted with the file in place: ${displayLine(operatorText(why))}\n`);
+  for (const [id, why] of rebuilt.failed) io.err(`juno hook: ${displayLine(id)} could not be rebuilt from the journal and stays closed: ${displayLine(operatorText(why))}\n`);
   io.out(`juno hook: serving ${socket}; admit a session with: ${commandText(junoCommand(["hook", "admit", "--control", control]), "<session file>")}. Stop with Ctrl+C.\n`);
   io.ready?.({ layer });
   await io.stopped();

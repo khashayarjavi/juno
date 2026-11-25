@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { type Dirent, lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { shownName } from "../../journal/src/index.js";
 
 /**
  * Case-sensitive Linux file systems only (operator ruling of 2026-11-08 on D-177, options (a) and (b); DECISIONS.md
@@ -157,7 +158,7 @@ export async function caseFoldingRefusals(paths: readonly { readonly what: strin
       }
       const entries = io.list(dir);
       if (entries === null) {
-        failed = `JUNO cannot list ${dir} in ${what} ${path}, so it cannot check that it does not fold case (D-178)`;
+        failed = `JUNO cannot list ${shownName(dir)} in ${what} ${path}, so it cannot check that it does not fold case (D-178)`;
         break;
       }
       const names = new Set(entries.map((entry) => entry.name));
@@ -167,7 +168,7 @@ export async function caseFoldingRefusals(paths: readonly { readonly what: strin
         const other = swapped(probe.name) ?? "";
         const original = io.identity(join(dir, probe.name));
         if (original !== null && io.identity(join(dir, other)) === original) {
-          failed = `${dir} in ${what} ${path} matches names without regard to case: ${JSON.stringify(other)} opens ${JSON.stringify(probe.name)}; JUNO refuses a case-folding folder (D-178)`;
+          failed = `${shownName(dir)} in ${what} ${path} matches names without regard to case: ${shownName(JSON.stringify(other))} opens ${shownName(JSON.stringify(probe.name))}; JUNO refuses a case-folding folder (D-178)`;
           break;
         }
       }
@@ -181,12 +182,12 @@ export async function caseFoldingRefusals(paths: readonly { readonly what: strin
       const batch = dirs.slice(start, start + BATCH);
       const answer = await io.attributes(batch);
       if (!answer.ok) {
-        refusals.push(`JUNO cannot read the attributes of the folders in ${what} ${path} (${answer.error}), so it cannot check that none folds case (D-178)`);
+        refusals.push(`JUNO cannot read the attributes of the folders in ${what} ${path} (${shownName(answer.error)}), so it cannot check that none folds case (D-178)`);
         break;
       }
       const folding = batch.find((_dir, index) => (answer.flags[index] ?? "F").includes("F"));
       if (folding !== undefined) {
-        refusals.push(`${folding} in ${what} ${path} has the case-folding attribute (chattr +F), so names in it open files whatever their case; JUNO refuses a case-folding folder (D-178)`);
+        refusals.push(`${shownName(folding)} in ${what} ${path} has the case-folding attribute (chattr +F), so names in it open files whatever their case; JUNO refuses a case-folding folder (D-178)`);
         break;
       }
     }
@@ -202,7 +203,7 @@ export function readLsattr(dirs: readonly string[], stdout: string): { readonly 
   const flags: string[] = [];
   for (const [index, line] of lines.entries()) {
     const space = line.indexOf(" ");
-    if (space <= 0 || line.slice(space + 1) !== dirs[index]) return { ok: false, error: `lsattr's answer for ${dirs[index] ?? ""} cannot be read` };
+    if (space <= 0 || line.slice(space + 1) !== dirs[index]) return { ok: false, error: `lsattr's answer for ${shownName(dirs[index] ?? "")} cannot be read` };
     flags.push(line.slice(0, space));
   }
   return { ok: true, flags };

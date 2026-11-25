@@ -91,15 +91,63 @@ export function ownerName(path: string): string | null {
   }
 }
 
+/**
+ * Characters a terminal may act on or that can make one text look like another, never printed as they are (review
+ * round 4 of PR #66, D-249): every control character (C0 with tab and line breaks, DEL, C1), Unicode's format characters
+ * (direction overrides and isolates, zero-width marks), line and paragraph separators, private-use and unassigned ones.
+ */
+const UNPRINTABLE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Co}\p{Cn}]/gu;
+const escaped = (char: string): string => [...char].map((unit) => `\\u{${(unit.codePointAt(0) ?? 0).toString(16)}}`).join("");
+
+/**
+ * One line of a refusal or remedy as it is printed (D-249): every character a terminal may act on, escaped as `\u{…}`,
+ * so no value in it can start a line, move the cursor or reorder what is shown. Applied by every printer, to each line.
+ */
+export function displayLine(text: string): string {
+  return text.replace(UNPRINTABLE, escaped);
+}
+
+/**
+ * A name that is not JUNO's to choose (a file or folder in a workspace, what a program printed about one) as a refusal
+ * shows it (D-249): what `displayLine` escapes, and a backtick too, so no such name can look like a command JUNO gives.
+ */
+export function shownName(text: string): string {
+  return displayLine(text).replace(/`/g, escaped);
+}
+
+/** What a command may hold, every word: printable ASCII, no backtick (D-249). Anything else gets no command. */
+const COMMAND_WORD = /^[\x20-\x5f\x61-\x7e]+$/;
+
 const PLAIN = /^[A-Za-z0-9_@%+=:,./-]+$/;
 /** One argument as a POSIX shell reads it back unchanged. */
 export function quoteArgument(argument: string): string {
   return PLAIN.test(argument) ? argument : `'${argument.replaceAll("'", "'\\''")}'`;
 }
 
-/** A command for the operator, between backticks (D-247). */
+/**
+ * A command for the operator, between backticks (D-247). A command any of whose words holds a character outside
+ * printable ASCII, or a backtick, is not given at all (D-249): it is said in words instead, so a name no one chose for
+ * the operator never appears inside, or as, a command.
+ */
 export function commandText(argv: readonly string[], placeholder?: string): string {
-  return `\`${[...argv.map(quoteArgument), ...(placeholder === undefined ? [] : [placeholder])].join(" ")}\``;
+  const words = [...argv.map(quoteArgument), ...(placeholder === undefined ? [] : [placeholder])];
+  if (words.length === 0 || !words.every((word) => COMMAND_WORD.test(word))) return "(no command is given here: a name in it holds characters JUNO does not print in a command)";
+  return `\`${words.join(" ")}\``;
+}
+
+/** `argv` run as the user `owner`: as it is when that is this process's own user, else through `sudo -u` (D-249). */
+export function asUserCommand(owner: string, argv: readonly string[]): readonly string[] {
+  return owner === userName(process.geteuid?.() ?? -1) ? argv : ["sudo", "-u", owner, ...argv];
+}
+
+/** `argv` run as root, through `sudo` (D-249). */
+export function asRootCommand(argv: readonly string[]): readonly string[] {
+  return ["sudo", ...argv];
+}
+
+/** Removes the set-user-ID, set-group-ID and sticky bits from exactly `path` (D-247, D-249). */
+export function removeBitsCommand(path: string): readonly string[] {
+  return ["chmod", "u-s,g-s,o-t", operatorPath(path)];
 }
 
 /** This copy of JUNO's `juno.js`. */

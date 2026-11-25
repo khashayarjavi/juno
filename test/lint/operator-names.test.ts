@@ -24,10 +24,13 @@ const FORBIDDEN: readonly { readonly what: string; readonly pattern: RegExp }[] 
   { what: "the journal key's public file", pattern: /journal-key\.pub\.pem/ },
   { what: "a descriptor path", pattern: /\/proc\/(?:self|thread-self|\d+)\/fd|\/dev\/fd\// },
   { what: "a juno command line", pattern: /\bjuno (?:hook|checkpoint|journal|gateway|grant|runtime) [a-z]+ --[a-z]/ },
+  // Review round 4 of PR #66 (D-249): a remedy's program as one word of an argument vector, too.
+  { what: "a remedy's program as an argument", pattern: /["'`](?:sudo|chmod|chown|rm|pgrep|systemctl|journalctl|setfacl)["'`]/ },
 ];
 
 /** Literals that name such a thing for another reason than a message: file, the text the line holds, and why. */
 const ALLOWED: readonly { readonly file: string; readonly holds: string; readonly why: string }[] = [
+  { file: "packages/contracts/src/interpreter.ts", holds: '"sudo",', why: "a program the interpreter table knows runs other programs (§2.3.1); not a remedy" },
   { file: "packages/journal/src/sinks.ts", holds: 'export const JOURNAL_KEY_PUBLIC_FILE = "journal-key.pub.pem";', why: "the file the journal key is written to; messages name it through this constant" },
   { file: "packages/journal/src/handle.ts", holds: "return `/proc/self/fd/${String(fd)}/${name}`;", why: "opens a name inside a held folder (D-213); never a message" },
   { file: "packages/journal/src/handle.ts", holds: 'const via = parseAtBoundary("journal handle", AbsolutePath, `/proc/self/fd/${String(fd)}`);', why: "the handle the journal is held by (D-213); messages name the journal's path, and operatorText names any handle by its folder" },
@@ -103,6 +106,8 @@ describe("every name a message gives is built by the one shared helper (D-247)",
       "`${keys}/journal-key.pub.pem`",
       "`/proc/self/fd/${String(fd)}/runner`",
       "`admit a session with: juno hook admit --control ${control}`",
+      'commandText(["sudo", "-u", owner, ...chmod])',
+      'const chmod = ["chmod", "u-s,g-s,o-t", host];',
     ];
     for (const sample of samples) expect(FORBIDDEN.some(({ pattern }) => pattern.test(sample)), sample).toBe(true);
     expect(FORBIDDEN.some(({ pattern }) => pattern.test('import { rmSync } from "node:fs";'))).toBe(false);
