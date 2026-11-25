@@ -3164,3 +3164,12 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   1. Authorise further review rounds on PR #65 (rounds 3 to 5 remain of the 5 you authorised), treating this finding as fixed.
   2. Direct otherwise.
 - Reason: CLAUDE.md §7 STOP rule; D-233, D-240; D-243.
+
+## D-247 — Operator rulings of 2026-11-25 on D-246 (round 2's finding accepted as fixed; the class of wrong names in refusals and remedies closed; review rounds 3 to 5)
+- Date: 2026-11-25
+- Status: Accepted (operator rulings)
+- Applies to: increment 1.5-ops; PR #65 and the PR that supersedes it from this session's branch `claude/elegant-heisenberg-nvw7vq` (as D-028, D-155: this session may push only there; it carries PR #65's fourteen commits unchanged)
+- **Ruling 1.** Round 2's finding is accepted as fixed. Its class is closed before the next round: every refusal or remedy text that names a file, folder or command (lock, take-over file, socket, journal, checkpoint, pin, service) builds that name from the one value the code actually uses, through one shared helper, never a literal or a descriptor path. A test triggers each such refusal against a real service and real files, and checks that every path it names exists (or is the exact file to remove) and every command it gives runs. Every existing test is kept.
+- **Ruling 2.** Review rounds 3 to 5 on PR #65 are authorised, under D-179 and D-211. A finding that is another wrong path or command in a message after ruling 1 is fixed under ruling 1 and is not a STOP.
+- **Ruling 3.** On MERGE: merge through the gate (CI green on the head, read by the agent). Then STOP and report the merge commit hash and the operator's exact upgrade steps, including how to remove `juno-clear-stale-lock` and update the scripts in `C:\Users\Khashayar\juno-setup` that call it.
+- Reason: the operator's rulings; CLAUDE.md §7.
