@@ -460,8 +460,10 @@ export class MediatedSessions {
     const built = this.#registryFor(request);
     let task = admitted.task;
     let floor: Sensitivity = "public";
-    const pending: Session["pending"] = new Map();
-    const Pending = z.object({ call_seq: z.int().nullable().default(null), tool_use_id: z.string().nullable().default(null), reads: SensitivitySchema });
+    // D-201, D-266: the calls JUNO allowed whose result has not arrived, by THE replay, which `juno journal report` reads too.
+    const malformed = record.replay.malformed[0];
+    if (malformed !== undefined) throw new MediatedError(malformed);
+    const pending: Session["pending"] = new Map([...record.replay.pending].map(([key, call]) => [key, call.gateway ? { call_seq: null, reads: call.reads, gateway: true as const } : { call_seq: call.call_seq, reads: call.reads }]));
     const checkpointed: Record<string, unknown>[] = [];
     if (request.reversible_workspaces.length > 0 && this.#checkpoints === undefined) throw new MediatedError("the session has reversible workspaces and this service has no checkpoint store (D-136)");
     for (const { entry, payload } of record.entries) {
@@ -474,14 +476,7 @@ export class MediatedSessions {
         const verdict = z.object({ capability: z.string(), verdict: z.object({ reason: z.literal("adapter_quarantined"), adapter: z.string(), observation: z.unknown() }) }).safeParse(payload);
         // A quarantine is permanent (§2.4, D-064): the ones this session's journal records are applied again.
         if (verdict.success) built.registry.quarantine({ capability: verdict.data.capability, adapter: verdict.data.verdict.adapter, observation: verdict.data.verdict.observation as never });
-      } else if (entry.kind === "capability_result") {
-        pending.delete(typeof body.data["tool_use_id"] === "string" ? body.data["tool_use_id"] : "");
-      } else if (entry.kind === "note" && (type === "updated_input" || type === "authorized" || type === "gateway_call")) {
-        const call = Pending.parse(payload);
-        const fallback = type === "gateway_call" ? `gateway-${String(entry.seq)}` : `call-${String(call.call_seq)}`;
-        pending.set(call.tool_use_id ?? fallback, type === "gateway_call" ? { call_seq: null, reads: call.reads, gateway: true } : { call_seq: call.call_seq, reads: call.reads });
-      } else if (entry.kind === "note" && type === "result_missing") pending.clear();
-      else if (entry.kind === "note" && type === "state" && body.data["to"] === "failed") task = Task.parse({ ...task, state: "failed", runtime_substate: null });
+      } else if (entry.kind === "note" && type === "state" && body.data["to"] === "failed") task = Task.parse({ ...task, state: "failed", runtime_substate: null });
       else if (entry.kind === "note" && type === "checkpoint") checkpointed.push(body.data);
     }
     // D-224 (review round 2 of PR #60, F1): §2.2.2 counts a workspace reversible only while its checkpoint can be

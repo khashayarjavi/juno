@@ -40,6 +40,7 @@ import type { GrantStore } from "./grants.js";
 import { type VerifiedPin, recoveryEpochOf } from "./anchor-pin.js";
 import { type TrustAnchor } from "./signature.js";
 import { type HostIo, type ServiceName, type StartupSpec, StartupRefused, laterFileRefusals, socketRefusals, startupCheck, systemHostIo } from "./startup.js";
+import { type RecoveredEntry, type RejectionMark, type SessionReplay, grantUseOf, replaySession } from "./replay.js";
 
 /**
  * THE session layer (operator ruling D-193; DECISIONS.md D-194). Every mode (JUNO's own loop, the Claude Code hook, the
@@ -84,76 +85,6 @@ const CLOSED_STATES: ReadonlySet<string> = new Set(["verified", "failed", "abort
 /** The reserved prefix of JUNO's own records (the runner's `RESERVED_ID_PREFIX`); no task or session id may start with it. */
 const OWN_RECORD_PREFIX = "juno.";
 
-/**
- * What one journal entry is as a tool call (D-256 to D-258), or null when it is none. Each tool call for which JUNO
- * journalled a decision has exactly one entry of kind `call` (a judged call, with its verdict's outcome; a judged park
- * is that call's, counted as the park), `park` (a park no judged call records: the hook's own, or the budget's),
- * `rejection` (a rejection no judged call records; one that names a judged call is that call's), `result_missing` (the
- * call denied because an earlier call's result never arrived), or `session_ended` with `call: true` (the call that
- * found the session's time to live expired, denied, D-258). `gateway_call` is a call passed to JUNO's gateway, which
- * decides it in its own journal. `rejection_limit` is the park a session makes when a rejection reaches its limit: it
- * follows that rejected call and is not a call of its own (D-257). `session_ended` with `call: false` is a session
- * stopped because its journal head could not be anchored, which can happen outside any call. **After a session ends,
- * or when its admission was refused, JUNO denies its calls; it journals only a shell command it cannot read** (D-151,
- * D-152: parked whatever the session's state), so every other such call has no entry, and no count (D-258, D-259).
- * The one rule for a service's replay of a session (`reopen`) and for `juno journal report`, so the two can never
- * classify an entry differently.
- */
-export function journalledCall(entry: TrajectoryEntry, payload: unknown): { readonly kind: "call"; readonly outcome: unknown } | { readonly kind: "park"; readonly judged: boolean; readonly reason: unknown; readonly command: boolean } | { readonly kind: "rejection_limit" } | { readonly kind: "rejection" } | { readonly kind: "result_missing" } | { readonly kind: "session_ended"; readonly reason: string; readonly call: boolean } | { readonly kind: "gateway_call" } | null {
-  const judged = field(payload, "call_seq") !== undefined && field(payload, "call_seq") !== null;
-  if (entry.kind === "capability_call") return { kind: "call", outcome: field(field(payload, "verdict"), "outcome") };
-  if (entry.kind === "park") {
-    const reason = field(payload, "reason");
-    if (reason === "rejection_limit") return { kind: "rejection_limit" };
-    return { kind: "park", judged, reason, command: field(payload, "command") !== undefined };
-  }
-  if (entry.kind !== "note") return null;
-  const type = field(payload, "type");
-  if (type === "gateway_call") return { kind: "gateway_call" };
-  if (type === "rejection" && !judged) return { kind: "rejection" };
-  if (type === "result_missing") return { kind: "result_missing" };
-  const reason = field(payload, "reason");
-  // The hook's and the gateway's end of a session: only `ttl_expired` is always written while a call is handled.
-  if (type === "state" && field(payload, "to") === "failed" && typeof reason === "string") return { kind: "session_ended", reason, call: reason === "ttl_expired" };
-  return null;
-}
-
-/**
- * What one journal entry says of a session's end (D-264), or null when it says nothing of it: a `stopped` note (the
- * session layer's stop for good, journalled when it happens, in a call or in the background: the interval's anchoring,
- * or a stop that could not anchor) or a mode's `state: failed` note, each with its reason. `stop` is true for a stop for
- * good, which a restarted service restores (`anchor_unavailable`); a `ttl_expired` end needs no restoring, as the
- * session's time to live is judged again from its admission. The one rule for a service's start (`#stoppedIn`, the
- * first entry with `stop`) and for `juno journal report` (the first entry that is an end), so the two can never judge
- * a session's end differently.
- */
-export function sessionEnd(entry: TrajectoryEntry, payload: unknown): { readonly reason: string; readonly stop: boolean } | null {
-  if (entry.kind !== "note") return null;
-  const type = field(payload, "type");
-  const reason = field(payload, "reason");
-  if (typeof reason !== "string") return null;
-  if (type === "stopped") return { reason, stop: true };
-  if (type === "state" && field(payload, "to") === "failed") return { reason, stop: reason === "anchor_unavailable" };
-  return null;
-}
-
-/**
- * What a session record's admission notes say (D-263): `admitted` when any admission note says `outcome: "admitted"`
- * (an id is admitted at most once, D-201), with the refused attempts journalled before it; `refused` when every
- * admission note is a refusal (JUNO journals a refusal only for an id not yet admitted); `not_recorded` when there is
- * none. The one rule for a service's start (`#recover`, `#planRepair`) and for `juno journal report`, so the two can
- * never judge a session's admission differently.
- */
-export function admissionOf(entries: readonly { readonly entry: TrajectoryEntry; readonly payload: unknown }[]): { readonly kind: "admitted"; readonly payload: Readonly<Record<string, unknown>>; readonly refused_before: number } | { readonly kind: "refused"; readonly payload: Readonly<Record<string, unknown>>; readonly attempts: number } | { readonly kind: "not_recorded" } {
-  const notes = entries.filter((item) => item.entry.kind === "note" && field(item.payload, "type") === "admission");
-  const index = notes.findIndex((item) => field(item.payload, "outcome") === "admitted");
-  const admitted = index < 0 ? undefined : notes[index];
-  if (admitted !== undefined) return { kind: "admitted", payload: admitted.payload as Readonly<Record<string, unknown>>, refused_before: index };
-  const first = notes[0];
-  if (first === undefined) return { kind: "not_recorded" };
-  return { kind: "refused", payload: first.payload as Readonly<Record<string, unknown>>, attempts: notes.length };
-}
-
 /** Every journal's own record id begins so (D-202); `juno journal report` finds it by this prefix on a copy (D-254). */
 export const JOURNAL_RECORD_PREFIX = `${OWN_RECORD_PREFIX}journal.`;
 
@@ -189,16 +120,21 @@ export function journalRecordId(journalRoot: string): string {
   return `${OWN_RECORD_PREFIX}journal.${createHash("sha256").update(journalRoot, "utf8").digest("hex").slice(0, 32)}`;
 }
 
-/** One journal entry with its payload as the journal stores it (parsed JSON), or `undefined` when it cannot be read. */
-export type RecoveredEntry = { readonly entry: TrajectoryEntry; readonly payload: unknown };
-
 /** One record of the journal as it stood, verified, when the service started. */
 export type RecoveredRecord = {
   readonly id: string;
   readonly entries: readonly RecoveredEntry[];
   /** The payload of the note that admitted it, or null for a record that admitted nothing (a refused admission, JUNO's own records). */
   readonly admission: Readonly<Record<string, unknown>> | null;
+  /** THE replay of its entries (D-266): what a start rebuilds from it, and all `juno journal report` reads of it. */
+  readonly replay: SessionReplay;
 };
+
+/** A verified record as a start rebuilds it (D-201, D-266): its entries, its admission and its replay. `juno journal report` builds its records with it too. */
+export function recoveredRecord(id: string, entries: readonly RecoveredEntry[]): RecoveredRecord {
+  const replay = replaySession(entries);
+  return { id, entries, admission: replay.admission.kind === "admitted" ? replay.admission.payload : null, replay };
+}
 
 function field(payload: unknown, name: string): unknown {
   return typeof payload === "object" && payload !== null ? (payload as Record<string, unknown>)[name] : undefined;
@@ -268,9 +204,6 @@ export type SessionLimits = {
   /** Fields every park of this session carries (hook: `{ mode: "hook", answer: "deny" }`; gateway: `{ mode: "gateway", answer: "isError" }`). */
   readonly park_fields?: Readonly<Record<string, unknown>>;
 };
-
-/** One rejection counted toward the limit: what it was and the journal `seq` that records it. */
-export type RejectionMark = { readonly kind: string; readonly seq: number | null };
 
 const NO_COST = { tokens_in: 0, tokens_out: 0, tokens_cached: 0, currency: 0, duration_ms: 0 };
 const encoder = new TextEncoder();
@@ -560,8 +493,8 @@ export class SessionLayer {
         }
         continue;
       }
-      const admission = admissionOf(entries);
-      this.#recovered.set(id, { id, entries, admission: admission.kind === "admitted" ? admission.payload : null });
+      // D-266: THE replay, the one `juno journal report` runs too.
+      this.#recovered.set(id, recoveredRecord(id, entries));
     }
     // §3.4.1: what was written and not yet copied off the host is copied before the service serves anything.
     const unanchored = await this.anchorPending();
@@ -581,11 +514,11 @@ export class SessionLayer {
     for (const id of ids) {
       if (id === this.#indexId) continue;
       const entries = this.#read(id, stored.get(id)?.verdict);
-      const admission = admissionOf(entries);
+      // D-263, D-266: the admission and the last state by THE replay.
+      const replay = replaySession(entries);
+      const admission = replay.admission;
       if (admission.kind !== "admitted") continue;
-      let state: unknown = null;
-      for (const item of entries) if (item.entry.kind === "note" && field(item.payload, "type") === "state") state = field(item.payload, "to");
-      if (typeof state === "string" && CLOSED_STATES.has(state)) continue;
+      if (replay.state !== null && CLOSED_STATES.has(replay.state)) continue;
       open.push(id);
       const held = field(field(admission.payload, "task"), "grants");
       if (Array.isArray(held)) for (const grant of held) if (typeof grant === "string") grants.add(grant);
@@ -701,8 +634,9 @@ export class SessionLayer {
         const blob = readPayload(this.#journal.root, entry.payload_ref);
         if (blob.status !== "present") throw new SessionLayerError(`journal record ${id} entry ${String(entry.seq)} has no readable payload, so grant use cannot be counted (D-201)`);
         const payload: unknown = JSON.parse(decoder.decode(blob.bytes));
-        const grant = field(payload, "grant");
-        if (typeof grant === "string" && field(field(payload, "verdict"), "outcome") === "proceed") used.set(grant, (used.get(grant) ?? 0) + 1);
+        // D-266: a grant's use by the one rule the replay, and so `juno journal report`, counts it by.
+        const grant = grantUseOf(entry, payload);
+        if (grant !== null) used.set(grant, (used.get(grant) ?? 0) + 1);
       }
     }
     for (const [grant, count] of this.#counted?.use() ?? []) used.set(grant, Math.max(used.get(grant) ?? 0, count));
@@ -1014,12 +948,8 @@ export class SessionLayer {
 
   /** The stop for good a record journals (`stopped`, or a mode's `state: failed` for `anchor_unavailable`), or null. */
   #stoppedIn(taskId: string): string | null {
-    // D-264: by the one rule the report uses too (`sessionEnd`).
-    for (const { entry, payload } of this.#recovered.get(taskId)?.entries ?? []) {
-      const end = sessionEnd(entry, payload);
-      if (end?.stop === true) return end.reason;
-    }
-    return null;
+    // D-264, D-266: by THE replay, which the report reads too.
+    return this.#recovered.get(taskId)?.replay.stop ?? null;
   }
 
   #noted(taskId: string): boolean {
@@ -1045,28 +975,10 @@ export class SessionLayer {
     if (this.#sessions.has(taskId)) throw new SessionLayerError(`session ${taskId} is already open`);
     const admittedAt = Date.parse(String(record.admission["admitted_at"]));
     if (!Number.isFinite(admittedAt)) throw new SessionLayerError(`the admission of ${taskId} records no admission time, so its limits cannot be rebuilt (D-201)`);
-    let turns = 0;
-    let rejections: RejectionMark[] = [];
-    const stopped = this.#stoppedIn(taskId);
-    for (const { entry, payload } of record.entries) {
-      // D-256: one rule says what each entry is as a call, for this replay and for `juno journal report`.
-      const call = journalledCall(entry, payload);
-      if (call === null) continue;
-      if (call.kind === "call") {
-        turns += 1;
-        if (call.outcome === "reject") rejections.push({ kind: "call", seq: entry.seq });
-        else if (call.outcome === "proceed") rejections = [];
-      } else if (call.kind === "park") {
-        if (!call.judged && call.reason !== "budget_exceeded" && !call.command) turns += 1;
-        rejections = [];
-      } else if (call.kind === "rejection_limit") rejections = [];
-      else if (call.kind === "gateway_call") turns += 1;
-      else if (call.kind === "result_missing" || call.kind === "session_ended") continue;
-      else {
-        turns += 1;
-        rejections.push({ kind: "call", seq: entry.seq });
-      }
-    }
+    // D-256, D-266: the calls counted against the budget, the consecutive rejections and the stop, by THE replay,
+    // which `juno journal report` reads too.
+    const { turns, stop: stopped } = record.replay;
+    const rejections: RejectionMark[] = [...record.replay.rejections];
     const session = new GovernedSession(this, taskId, this.mode, limits, admittedAt, { ...NO_SPEND, turns }, options.now ?? (() => this.now()));
     session.setRejections(rejections);
     if (this.#noted(taskId)) session.noteAnchoring();

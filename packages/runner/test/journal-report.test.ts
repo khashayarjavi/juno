@@ -503,9 +503,9 @@ describe("juno journal report (D-251 queue item 2, D-254)", () => {
   // proves D-263 (review round 6's note): a session stopped because its journal head could not be anchored may have been
   // found by a call, which JUNO denies with no entry of its own; the report never says only "every later call" of it
   it("says of a session whose head could not be anchored that the call that found it is not counted either", () => {
-    const empty = { allowed: 0, parked: 0, rejected: 0, denied_session_ended: 0, denied_result_missing: 0, passed_to_gateway: 0, rejection_limit_reached: 0, parks_by_reason: [], parks_by_capability: [], parks_by_program: [], blocked_targets: [] };
-    const session: SessionReport = { ...empty, id: "session-x", admission: "admitted", refused_attempts: 0, mode: "hook", principal: PRINCIPAL, ended: { reason: "anchor_unavailable", at: "2026-11-26T00:00:00.000Z" }, first_entry: null, last_entry: null };
-    const text = reportText({ ok: true, verified: { records: 2, history: "checked", never_written: [], empty_folders: [] }, sessions: [session], total: empty });
+    const empty = { allowed: 0, parked: 0, rejected: 0, denied_session_ended: 0, denied_result_missing: 0, passed_to_gateway: 0, rejection_limit_reached: 0, parks_by_reason: [], parks_by_capability: [], parks_by_program: [], blocked_targets: [], results: { for_allowed_calls: 0, without_decision: 0, awaiting: 0 }, grant_uses: [], not_counted: [] };
+    const session: SessionReport = { ...empty, id: "session-x", admission: "admitted", refused_attempts: 0, mode: "hook", principal: PRINCIPAL, ended: { reason: "anchor_unavailable", at: "2026-11-26T00:00:00.000Z" }, first_entry: null, last_entry: null, results_without_decision: [], recorded_missing: [] };
+    const text = reportText({ ok: true, verified: { records: 2, history: "checked", never_written: [], empty_folders: [], not_summarised: [] }, sessions: [session], total: empty });
     expect(text).toContain('ended at 2026-11-26T00:00:00.000Z: "anchor_unavailable". JUNO denied the call that found this, if a call found it, and every later call of this session.');
   });
 
