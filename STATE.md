@@ -1,7 +1,31 @@
 # STATE
 
 ## Current increment
-**1.5-report (queue item 2 of D-251), continued under your rulings of 2026-11-26 (D-266).** Branch `claude/jolly-mayer-053n1a` (this session may push only there, as D-028): fast-forwarded to PR #70's head (00a9657), then this session's work. A new draft PR from it supersedes PR #70 and carries its commits unchanged; PR #70 is left open and untouched. Review rounds 9 to 11 are authorised (D-266 ruling 4). Spec v0.6.1. No objection open.
+**STOP (D-266 ruling 4): 1.5-report merged** as `68c7fa85d176b881a94f89c0a2ef4a9a64cdee96` (PR [khashayarjavi/juno#71](https://github.com/khashayarjavi/juno/pull/71), supersedes #68 and #70). As your ruling says, the autopilot stops here: nothing further is started. The queue of D-251 is done: 1.5-ops (9fc412b), 1.5-report (68c7fa8) and 1.5-public (e886818) are all merged. Spec v0.6.1. No objection open. PRs #68 and #70 are left open and untouched; #71 carried their commits.
+
+### Merge this session (2026-11-26)
+- **PR #71 (1.5-report): merged** as `68c7fa85d176b881a94f89c0a2ef4a9a64cdee96`, pinned to head `ebfa5d661b9ec2370b06a12217841e44df950746`.
+  - **Reviewer:** round 9 DO NOT MERGE (fixed, D-267); round 10 DO NOT MERGE (fixed, D-268); **round 11 MERGE** on ebfa5d6, all six checks PASS, no new mechanism.
+  - **CI on ebfa5d6:** run 45878122244: `verify`, `verify-rootless` and `verify-rootless-operator` green. **Locally:** `make verify: GREEN` on ebfa5d6 (1,578 unit, 156 container).
+  - **CI on main for 68c7fa8:** run 45879325893: in progress when this was written; its result follows in the next commit.
+  - **Round 11's two notes, not blocking (left for a later increment, not fixed: the head was not moved after the review):**
+    - A refused admission the gateway journals into a record it already admitted ("this gateway already holds a session") is counted in no figure. The report prints nothing false about it.
+    - The guide says each session is rebuilt "exactly as the service rebuilds it when it starts". A gateway session is in fact rebuilt when it is admitted again, not at a start.
+
+### Your upgrade steps, to 68c7fa8
+Follow the guide's **"Upgrading JUNO to a new commit"** (`docs/operator-setup.md`) with the hash `68c7fa85d176b881a94f89c0a2ef4a9a64cdee96`.
+- **If your machine is already on 9fc412b** (you did the last upgrade): steps 1 to 5, then 9 and 10. Skip 6, 7 and 8: the service file did not change, and the stand-in is already gone.
+- **If your machine is still on bef25fe:** steps 1 to 10 in order, skipping only 6. That is the 9fc412b upgrade written in STATE before, now with this hash.
+- **Each step's Check is the guide's.** Step 1: `git rev-parse HEAD` prints the hash. Step 4: `make verify-rootless: GREEN`. Step 5: `… is complete: every file matches dist/build-manifest.json`. Step 9: `active (running)`, `enabled`, `serving /var/lib/juno-hook/hook.sock`. Step 10: no `casefold`; `separated from the runner`; `Case folding is switched off for its whole file system`.
+
+**What is new for you after the upgrade:** your weekly review, Part G step 8, `juno journal report`. Run it on the same copies right after step 7's check, with the service stopped. It checks the whole journal first, and refuses one that does not verify. Then it rebuilds each session the way the service does and prints what it finds:
+- the calls allowed, parked and rejected;
+- the tool results, including any run without JUNO's decision;
+- each grant's uses;
+- which sessions ended or were refused;
+- what was blocked most often.
+
+JUNO's behaviour while it runs is unchanged: the service now rebuilds through the shared replay, which gives the same results as before.
 
 ### What your rulings changed, in plain words (D-266)
 - **The report is built on JUNO's own rebuild.** There is now one replay of a session's journal, `replaySession`. The service's start rebuilds every session through it: the calls counted against the budget, the rejections in a row, a stop for good, the admission, the calls still waiting for a result, and each grant's uses. The report runs the same replay and prints only its answers. It keeps no counting rule of its own, so the two cannot disagree. The full unit suite passed unchanged on this change, before any new test (1,568 tests).
@@ -17,7 +41,9 @@
 
 - **Round 10** (49634fd): DO NOT MERGE. A call the hook passes to JUNO's gateway is judged by the gateway, not by JUNO here. Its result was counted as one "for calls JUNO allowed", and such a call still waiting as an "allowed call", beside "0 allowed". Fixed: those results and waiting calls are reported as the gateway's, from the replay's own flag. Also from its notes: an admission with no admission time is flagged as not rebuilt, and a message the gateway could not complete is counted (D-268).
 
-**Left, in order:** `make verify` green on the fix; review round 11, the last authorised; on MERGE, the gate, then STOP with the merge hash and your upgrade steps; if round 11 ends DO NOT MERGE, the PR stays a draft and I STOP with the finding.
+- **Round 11** (ebfa5d6; `make verify: GREEN` there, 1,578 unit, 156 container; CI run 45878122244 green): **MERGE**. Merged through the gate as 68c7fa8 (above).
+
+**Left:** nothing in 1.5-report. Your next step is the upgrade above.
 
 ### Review rounds 6 to 8 (D-262), on PR #70 (before this session)
 - **Round 6** (fb6f586; `make verify: GREEN` on 18d13f3, 1,565 unit, 156 container): DO NOT MERGE. A session refused once and then admitted under the same id was reported as `ADMISSION REFUSED` while its allowed calls were counted. Fixed: one admission rule that the service's start and the report share, and a test through the real hook service (D-263).
