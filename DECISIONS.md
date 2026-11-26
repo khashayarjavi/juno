@@ -3444,3 +3444,13 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
   - **Concurrency (autopilot ruling, restrictive):** every run outside a pull request is in a group named by its own run id (`github.run_id`), so no push to main and no manual run can ever cancel or replace another. D-260's sentence on manual runs is corrected by this.
   - The test reads each checkout step's own lines only (to the first line indented left of its keys); its self-test now also plants two checkouts in a row, the first without `persist-credentials: false`.
 - Reason: CLAUDE.md §7 steps 5 and 6; §2.2.2; §2.3.2.
+
+## D-262 — Operator rulings of 2026-11-26 on PR #68 (1.5-report): review rounds 6 to 8; the resume test's time limit; merge then STOP
+- Date: 2026-11-26
+- Status: Accepted (operator rulings)
+- Applies to: draft PR #68 and its branch's work; `packages/runner/test/resume.test.ts`
+- **Ruling 1 — review rounds 6 to 8 authorised on PR #68,** under D-179 and D-211. The report is read-only, but its numbers drive the operator's next grant decisions: a finding that it miscounts, or says more than the journal supports, is a real defect and is fixed with a test.
+- **Ruling 2 — in the same PR,** `resume.test.ts`'s restart test ("checks a rebuilt task against the pins taken before the restart") gets an explicit time limit, the flake recorded in STATE on 2026-11-26 (CI run 45754638405, attempt 1). **Built:** 30 seconds, the limit the repository's other heavy tests use (`entry-points.test.ts`); no assertion changed.
+- **Ruling 3 — on MERGE:** merge through the gate (CLAUDE.md §7 step 6: CI green on the head, read by the agent; merge pinned to that SHA), then STOP and report the merge hash and the operator's upgrade steps. If round 8 still ends DO NOT MERGE: leave the PR a draft and STOP with the open finding in one plain paragraph.
+- **Branch (autopilot ruling, as D-028):** this session may push only to `claude/ecstatic-fermat-7rzlnf`, not to PR #68's branch `claude/elegant-ritchie-6pkguy`. That branch is fast-forwarded to PR #68's head (96840d0, which already holds main e886818), and the work continues on a new draft PR from it, which carries PR #68's commits unchanged and supersedes it. Its review rounds are numbered on from PR #68's (6 to 8). PR #68 is left open and untouched.
+- Reason: the operator's message of 2026-11-26.
