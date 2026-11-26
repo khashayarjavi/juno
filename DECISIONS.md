@@ -3327,3 +3327,19 @@ D-001 to D-007 were set during the October 2026 planning review, before the buil
 - **Open items for the operator (not done here):** the licence (the operator's decision; no LICENSE is added); switching on private vulnerability reporting in the repository's settings if it is off (the agent never changes repository settings).
 - **Tests:** `test/lint/workflows.test.ts` fails on a `pull_request_target`, a secret, a write permission or a permission per job, an action not pinned by full commit SHA, a checkout that keeps the token, and a concurrency setting other than the above; its self-test plants each form. It also pins the three jobs and their commands, and forbids `continue-on-error` and `if: false`.
 - Reason: D-251 (queue item 3); CLAUDE.md §7 (the CI workflow's checks never loosened).
+
+## D-261 — Review round 1 (PR #69): the README names only commands main has, and states the threat model as the spec does; STATE carries PR #67's merge record; every run outside a pull request in a group of its own run id
+- Date: 2026-11-26
+- Status: Accepted (built with tests)
+- Applies to: `README.md`, `STATE.md`, `.github/workflows/verify.yml` (`concurrency.group`), `test/lint/workflows.test.ts`
+- **Round 1 (fresh reviewer, the review prompt verbatim; head 5f13c32): DO NOT MERGE.** Checks 1 to 6 PASS; three further findings and two notes:
+  - **A.** The README named `juno journal report`, which is only on draft PR #68, not on main; and said `journal check` "verifies a copy of the journal ... from a separate account", which overstated what it is.
+  - **B.** This branch's STATE.md still said 1.5-ops was in progress and nothing was merged, and lacked PR #67's merge record (CLAUDE.md §7 step 6) and the operator's upgrade steps, which were only on PR #68's branch.
+  - **C.** The README said untrusted content "never chooses" an outside recipient, an irreversible target or which program runs; §2.2.2 and §2.3.2 let it choose among the exact values a grant lists, and a program from the operator's approved list.
+  - **Notes:** the test's checkout check could read past one checkout step into the next; two manual runs on one commit shared a concurrency group, so a pending one could be replaced (the merge gate is not affected).
+- **Fixed:**
+  - The README names `juno journal check` only, as what it is: run from a separate account on a copy of the journal, it verifies each session's chain against the heads in the anchor repository. The threat model says what §2.2.2 and §2.3.2 say.
+  - STATE.md holds PR #67's merge record (PR, head 8d61cfe, CI runs 45709796122 and 45711095168, the reviewer's verdict), the operator's upgrade steps from bef25fe to 9fc412b, and where 1.5-report stands.
+  - **Concurrency (autopilot ruling, restrictive):** every run outside a pull request is in a group named by its own run id (`github.run_id`), so no push to main and no manual run can ever cancel or replace another. D-260's sentence on manual runs is corrected by this.
+  - The test reads each checkout step's own lines only (to the first line indented left of its keys); its self-test now also plants two checkouts in a row, the first without `persist-credentials: false`.
+- Reason: CLAUDE.md §7 steps 5 and 6; §2.2.2; §2.3.2.

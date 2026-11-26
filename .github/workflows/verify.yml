@@ -18,10 +18,11 @@ permissions:
 
 # A new push to a pull request's branch cancels that branch's run still in progress: the superseded head is never
 # merged, and the merge gate reads the run on the head it merges (CLAUDE.md §7 step 6b), which no later push cancels
-# without moving the head, so the gate refuses it. A push to main (each merge commit) and a manual run each get a group
-# of their own (their commit), so none is ever cancelled or replaced by another: §7 step 6d reads each merge's run.
+# without moving the head, so the gate refuses it. Every other run (a push to main for each merge commit, a manual run)
+# is in a group of its own, named by its own run id, so none is ever cancelled or replaced by another: §7 step 6d reads
+# each merge's run (D-260, D-261).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.sha }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:

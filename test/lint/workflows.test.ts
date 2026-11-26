@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 // workflow is safe to run on a pull request from anyone, a fork included. This test reads every workflow and fails on:
 // a `pull_request_target` trigger; any permission but `contents: read`, or one granted per job; a secret; a third-party
 // action not pinned by its full commit SHA; a checkout that keeps the token; and a concurrency setting that could cancel
-// a run on main or a manual run, or that is missing. It also pins the three verify jobs and their commands, so none can
+// a run on main or a manual run (each is in a group of its own run id), or that is missing. It also pins the three verify jobs and their commands, so none can
 // quietly stop running (CLAUDE.md §7: the CI workflow's checks are never loosened).
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
@@ -36,10 +36,24 @@ function problems(text: string): string[] {
     if (action === undefined || action.startsWith("./")) continue;
     if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_./-]+@[0-9a-f]{40}$/.test(action)) found.push(`an action not pinned by full commit SHA: ${action}`);
   }
-  const checkouts = [...code.matchAll(/uses:\s*actions\/checkout@[^\n]*\n((?:[ \t]+(?!- ).*\n)*)/g)];
-  for (const [, body] of checkouts) if (!/persist-credentials:\s*false/.test(body ?? "")) found.push("a checkout that keeps the token");
+  // Each checkout step's own lines: from its `uses:` to the first line indented left of its keys (the next step's `- `,
+  // or the next job); never into the next step (review round 1 of PR #69).
+  const lines = code.split("\n");
+  lines.forEach((line, index) => {
+    if (!/uses:\s*actions\/checkout@/.test(line)) return;
+    const indent = line.indexOf("uses:");
+    const body: string[] = [];
+    for (const next of lines.slice(index + 1)) {
+      if (next.trim() === "") continue;
+      const at = next.length - next.trimStart().length;
+      // The step's keys sit at `uses:`'s indentation; the next step's `- ` (or the next job) sits left of it.
+      if (at < indent) break;
+      body.push(next);
+    }
+    if (!body.some((text) => /^\s*persist-credentials:\s*false\s*$/.test(text))) found.push("a checkout that keeps the token");
+  });
   const concurrency = /^concurrency:\n((?:[ \t]+.*\n)+)/m.exec(code)?.[1] ?? "";
-  if (!/group:.*github\.event_name == 'pull_request' && format\('pr-\{0\}', github\.event\.pull_request\.number\) \|\| github\.sha/.test(concurrency)) found.push("concurrency: one group per pull request, and one per commit otherwise");
+  if (!/group:.*github\.event_name == 'pull_request' && format\('pr-\{0\}', github\.event\.pull_request\.number\) \|\| github\.run_id \}\}/.test(concurrency)) found.push("concurrency: one group per pull request, and one per run otherwise");
   if (!/cancel-in-progress:\s*\$\{\{\s*github\.event_name == 'pull_request'\s*\}\}/.test(concurrency)) found.push("concurrency: cancel only a pull request's superseded run");
   return found;
 }
@@ -80,7 +94,9 @@ describe("the workflows are safe for a public repository (D-251 queue item 3, D-
       ["an action not pinned by full commit SHA: actions/setup-node@v5", safe.replace(/actions\/setup-node@[0-9a-f]{40}/, "actions/setup-node@v5")],
       ["a checkout that keeps the token", safe.replace("          persist-credentials: false\n", "")],
       ["concurrency: cancel only a pull request's superseded run", safe.replace("cancel-in-progress: ${{ github.event_name == 'pull_request' }}", "cancel-in-progress: true")],
-      ["concurrency: one group per pull request, and one per commit otherwise", safe.replace("|| github.sha }}", "|| github.ref }}")],
+      ["concurrency: one group per pull request, and one per run otherwise", safe.replace("|| github.run_id }}", "|| github.sha }}")],
+      // Two checkouts in a row, the first without the setting: the second's line never counts for the first.
+      ["a checkout that keeps the token", safe.replace("        with:\n          fetch-depth: 0\n          persist-credentials: false\n", "        with:\n          fetch-depth: 0\n      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09\n        with:\n          persist-credentials: false\n")],
     ];
     for (const [rule, text] of planted) expect(problems(text), rule).toContain(rule);
   });

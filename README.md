@@ -7,7 +7,7 @@ JUNO is a governance layer for AI agents. Before an agent's action runs, JUNO ch
 **It is:**
 - **An enforcement boundary** that sits between an agent and its effects. It governs three ways in (spec §4.3): JUNO's own agent loop (mode A); Claude Code, through a hook Claude Code cannot turn off (mode C); and an MCP server, behind JUNO's gateway (mode B).
 - **Authority from one key only.** A grant counts only if the operator's key signed it, and that key is kept off the machine except while signing. A tampered, foreign or unsigned grant is refused.
-- **A journal you can check yourself.** Every decision is hash-chained, and the chain heads are pushed to a public git repository the operator owns. `juno journal check` and `juno journal report` verify a copy of the journal against that repository from a separate account.
+- **A journal you can check yourself.** Every decision is hash-chained, and the chain heads are pushed to a public git repository the operator owns. `juno journal check`, run from a separate account on a copy of the journal, verifies each session's chain against the heads in that repository.
 - **Fail-closed.** When JUNO cannot decide, it blocks. Some parks, such as an injected shell command, cannot be overridden by anyone.
 
 **It is not:**
@@ -25,7 +25,7 @@ Every change is accepted only when `make verify` (typecheck, lint, unit tests, t
 
 ## The threat model, in short
 
-- **The agent is not trusted.** Anything it wrote, read or was steered by is *untrusted*. Untrusted content may choose what a write says, but not where it goes, except inside a folder you made reversible (checkpointed first, and restorable). It never chooses an outside recipient, an irreversible target, or which program runs. See spec §2.2.2, and the table in `docs/evidence/slice-1.5.md`.
+- **The agent is not trusted.** Anything it wrote, read or was steered by is *untrusted*. Untrusted content may choose what a write says, but not where it goes, except inside a folder you made reversible (checkpointed first, and restorable). It chooses an outside recipient or an irreversible target only among the exact values the grant lists, and a program only from the list the operator approved, never by a name or path of its own. See spec §2.2.2 and §2.3.2, and the table in `docs/evidence/slice-1.5.md`.
 - **Your key and your Windows account are trusted.** Authority comes only from grants your key signed; your Windows account is trusted like that key.
 - **Root and the runner's account are inside the boundary.** The services run as a dedicated runner user. Whoever takes it over can disturb JUNO on that machine. They cannot sign a grant, and they cannot erase anchored history without trace: your own check from another account shows it.
 - **What JUNO cannot see, it cannot govern.** Each mode's limits are listed plainly, with every known residual, in `docs/evidence/slice-1.5.md` ("What each mode does not protect").
