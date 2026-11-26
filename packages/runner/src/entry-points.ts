@@ -71,7 +71,7 @@ async function runtimeCheck(args: readonly string[]): Promise<number> {
 export const ENTRY_POINTS: readonly EntryPoint[] = [
   // `juno` commands.
   { id: "grant", kind: "command", module: "packages/runner/src/grant-cli.ts", name: ["grant"], service: null, admits: false, why: "signs or verifies a grant file; opens no journal, serves nothing, admits no session", implementation: runGrantCli, run: (args) => runGrantCli(args) },
-  { id: "journal", kind: "command", module: "packages/runner/src/journal-cli.ts", name: ["journal"], service: null, admits: false, why: "reads and verifies a journal; writes nothing", implementation: runJournalCli, run: (args) => runJournalCli(args) },
+  { id: "journal", kind: "command", module: "packages/runner/src/journal-cli.ts", name: ["journal"], service: null, admits: false, why: "reads and verifies a journal, and summarises a verified one (report); writes nothing", implementation: runJournalCli, run: (args) => runJournalCli(args) },
   {
     id: "checkpoint",
     kind: "command",
@@ -105,7 +105,7 @@ export const ENTRY_POINTS: readonly EntryPoint[] = [
   { id: "class.GatewayService", kind: "class", module: "packages/mediated/src/gateway-service.ts", name: "GatewayService", service: "gateway", admits: false, implementation: GatewayService },
 ];
 
-const USAGE = "usage: juno grant sign|verify ... | juno journal check ... | juno checkpoint restore ... | juno hook install ... | juno hook check ... | juno hook serve ... | juno hook admit ... | juno gateway serve ... | juno runtime check\n";
+const USAGE = "usage: juno grant sign|verify ... | juno journal check|report ... | juno checkpoint restore ... | juno hook install ... | juno hook check ... | juno hook serve ... | juno hook admit ... | juno gateway serve ... | juno runtime check\n";
 
 /** The `juno` command: runs the registered command its first word names, or prints the usage (exit 2). */
 export async function dispatch(argv: readonly string[]): Promise<number> {

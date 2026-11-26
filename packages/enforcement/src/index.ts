@@ -13,5 +13,6 @@ export * from "./command-string.js";
 export * from "./runtime.js";
 export * from "./anchor-pin.js";
 export * from "./startup.js";
+export * from "./replay.js";
 export * from "./session-layer.js";
 export * from "./anchoring.js";

@@ -336,5 +336,7 @@ describe("§3.4.4 B2 across a restart (D-112)", () => {
     const changed = restart([turn([])]);
     expect((await changed.runner.resume("task-1")).reason).toBe("verification_fail");
     expect(ofKind("note").filter((note) => note["type"] === "verification").at(-1)?.["changed_paths"]).toEqual(["/work/project/done.txt"]);
-  });
+    // Two harnesses and three restarts: an explicit limit, as the other heavy tests have, so a loaded CI
+    // runner does not fail it on vitest's default 5 seconds (D-262 ruling 2; no assertion changed).
+  }, 30_000);
 });

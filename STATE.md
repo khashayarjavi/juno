@@ -1,13 +1,55 @@
 # STATE
 
 ## Current increment
-**1.5-public (queue item 3 of D-251).** Branch `claude/elegant-ritchie-6pkguy-public` (made from main at 9fc412b, with your permission of 2026-11-26). Built (D-260): the workflow pins its actions by commit SHA, keeps no token after checkout, and cancels only a pull request's superseded run; a README for a newcomer; SECURITY.md; a test that fails on any unsafe workflow form. **Open items for you:** the licence (none added), and switching on private vulnerability reporting in the repository's settings if it is off. Queue item 2 (1.5-report) is draft PR #68, its five review rounds used (D-259, on its own branch); its STATE is there.
+**1.5-report (queue item 2 of D-251), continued under your rulings of 2026-11-26 (D-266).** Branch `claude/jolly-mayer-053n1a` (this session may push only there, as D-028): fast-forwarded to PR #70's head (00a9657), then this session's work. A new draft PR from it supersedes PR #70 and carries its commits unchanged; PR #70 is left open and untouched. Review rounds 9 to 11 are authorised (D-266 ruling 4). Spec v0.6.1. No objection open.
 
-## This session (2026-11-25 and 26): 1.5-ops merged; 1.5-report a draft
-- **1.5-ops: merged** as 9fc412b, this branch's base (the record below).
-- **1.5-report:** draft PR [khashayarjavi/juno#68](https://github.com/khashayarjavi/juno/pull/68), on the branch `claude/elegant-ritchie-6pkguy`; its five review rounds are used, the last DO NOT MERGE, its findings fixed but not reviewed (D-254 to D-259, on that branch). It needs your decision: further review rounds, or otherwise. Its STATE is on its branch.
+### What your rulings changed, in plain words (D-266)
+- **The report is built on JUNO's own rebuild.** There is now one replay of a session's journal, `replaySession`. The service's start rebuilds every session through it: the calls counted against the budget, the rejections in a row, a stop for good, the admission, the calls still waiting for a result, and each grant's uses. The report runs the same replay and prints only its answers. It keeps no counting rule of its own, so the two cannot disagree. The full unit suite passed unchanged on this change, before any new test (1,568 tests).
+- **Tool results are in the report (round 8's finding).** For each session: results for calls JUNO allowed; each result run without JUNO's decision, quoted with its tool and `tool_use_id`; each call whose result JUNO recorded missing, and whether its result came later; calls still waiting. A result that came after JUNO recorded it missing is shown as exactly that. "Never arrived" is gone.
+- **Every kind of entry has a place.** A table says, for every entry kind and note type, what it counts as, or why it counts nothing. A test reads JUNO's source for every note type it writes and fails on one with no place. An entry with no place makes the report refuse.
+- **The guide's step 8 is a list again,** with the calls the report cannot count (the hook blocked a call itself because the service was unreachable or slow; input the service could not read).
+- **Tests through the real hook service:** round 8's order (call A allowed, call B denied, then A's result), a restart rebuilt by the same replay (it denies the next call for a result still waiting, as the report showed), and random sequences in which the replay judges every result as the service wrote it.
 
-### Merges this session
+**Autopilot rulings (D-266, one line each):** a result in the gateway or own loop is the call's that its `call_seq` names when that call proceeded with no result yet; only `session-…` and `gateway-…` records are summarised, any other is listed, verified, by id; an entry with no place refuses the report; this work supersedes PR #70 on this session's branch, rounds numbered on (9 to 11).
+
+### Review rounds on PR [khashayarjavi/juno#71](https://github.com/khashayarjavi/juno/pull/71) (numbered on from PR #70's)
+- **Round 9** (2ef9abe; `make verify: GREEN` there, 1,575 unit, 156 container): DO NOT MERGE. A call Claude Code sends without a `tool_use_id` waits under JUNO's own label. The report then said the journal held no result for it, though it did, and showed the label as an id. Fixed in the replay: each call keeps its own id or none; the report never says "holds no result" and names a label as JUNO's. Also from its notes: a session a start would not rebuild is flagged, and the guide's two sentences are made exact (D-267).
+
+- **Round 10** (49634fd): DO NOT MERGE. A call the hook passes to JUNO's gateway is judged by the gateway, not by JUNO here. Its result was counted as one "for calls JUNO allowed", and such a call still waiting as an "allowed call", beside "0 allowed". Fixed: those results and waiting calls are reported as the gateway's, from the replay's own flag. Also from its notes: an admission with no admission time is flagged as not rebuilt, and a message the gateway could not complete is counted (D-268).
+
+**Left, in order:** `make verify` green on the fix; review round 11, the last authorised; on MERGE, the gate, then STOP with the merge hash and your upgrade steps; if round 11 ends DO NOT MERGE, the PR stays a draft and I STOP with the finding.
+
+### Review rounds 6 to 8 (D-262), on PR #70 (before this session)
+- **Round 6** (fb6f586; `make verify: GREEN` on 18d13f3, 1,565 unit, 156 container): DO NOT MERGE. A session refused once and then admitted under the same id was reported as `ADMISSION REFUSED` while its allowed calls were counted. Fixed: one admission rule that the service's start and the report share, and a test through the real hook service (D-263).
+- **Round 7** (574923f; `make verify: GREEN` there, 1,567 unit, 156 container; CI green): DO NOT MERGE. A session JUNO stopped for good in the background, with no later call, was reported as never ended. Fixed: one end rule that the service's start and the report share, and a test (D-264).
+- **Round 8** (3f9f79e; `make verify: GREEN` there, 1,568 unit, 156 container; CI run 45762605920 green, all three jobs): DO NOT MERGE, the finding above (D-265).
+- **Your ruling 2, done:** `resume.test.ts`'s restart test has a 30-second limit; no assertion changed (D-262).
+
+### The queue (D-251)
+1. **1.5-ops: merged** as 9fc412b (below).
+2. **1.5-report: draft PR #70, not merged** (above).
+3. **1.5-public: merged** as e886818 (PR #69; record below).
+   - **Open item for you: the licence.** No LICENSE is added. The README says none is granted until you choose one.
+   - **Open item for you: private vulnerability reporting.** SECURITY.md points reporters to GitHub's private vulnerability reporting. If it is not switched on, switch it on in the repository's Settings, under Security. I do not change repository settings.
+
+### 1.5-report, in plain words
+- **What it is:** `juno journal report`, the guide's new Part G step 8. It runs after step 7's check, on the same copies. It checks the whole journal (every session) against your fresh clone of `juno-anchors`, and refuses a journal that does not verify. Then it prints, per session and in total:
+  - the calls allowed, parked and rejected;
+  - parks by reason, capability and program;
+  - the paths and commands most often blocked;
+  - how often a session hit its rejection limit;
+  - whether a session ended, was never admitted, or was admitted after refused attempts.
+- Everything Claude or the workspace chose is shown in quotes, escaped. It gives no command.
+- **Rounds 1 to 5 (PR #68):** a deleted session left out (D-255); a gateway rejection counted twice (D-256); a rejection-limit park counted as a call (D-257); calls after a session ended (D-258); a refused admission that looked ordinary (D-259). Each was fixed with tests, and round 5's fix was reviewed in round 6.
+- **Residual (recorded):** a session the service could not rebuild after a restart is refused in memory, and nothing more about it is journalled.
+
+### Merges before this session
+- **PR [khashayarjavi/juno#69](https://github.com/khashayarjavi/juno/pull/69) (1.5-public): merged** as `e886818ef344ca9b82fce1cc17dfc99bbc44c828`, pinned to head `6d685ddf713203aa35109a1c937df5922620eb22`. Pushed from the branch `claude/elegant-ritchie-6pkguy-public`, made from main, with your permission of 2026-11-26.
+  - **Reviewer:** round 1 DO NOT MERGE (the README named `juno journal report`, not on main; STATE lacked PR #67's record; the threat model overstated the spec), fixed (D-261); **round 2 MERGE** on 6d685dd, all six checks PASS.
+  - **CI on 6d685dd:** run 45754638405. Attempt 1: `verify` failed on one test this PR does not touch (`packages/runner/test/resume.test.ts`, "checks a rebuilt task against the pins taken before the restart", over vitest's 5-second limit while the four-minute kernel-oracle test ran beside it); both rootless jobs green. Attempt 2 (the failed job re-run): all three green. **Locally:** `make verify: GREEN` on 6d685dd (1,551 unit, 156 container).
+  - **CI on main for e886818:** run 45757004361: green (all three jobs, with the actions pinned by SHA).
+  - **Flaky test, to fix in a later increment (recorded, not fixed here):** `resume.test.ts`'s restart test uses vitest's default 5-second limit, which a loaded CI runner can pass. It has not failed before. The fix is an explicit limit on that test, as the other heavy tests have; no assertion changes.
+  - **Your upgrade steps for e886818:** none needed on your machine. It changes only the CI workflow, the README, SECURITY.md and a CI test; JUNO's code is the same as 9fc412b's. Upgrade to 9fc412b's steps below if you have not yet.
 - **PR [khashayarjavi/juno#67](https://github.com/khashayarjavi/juno/pull/67) (1.5-ops; supersedes #65 and #66): merged** as `9fc412bdaf4555be1decbd118ee5945214da70e6`, pinned to head `8d61cfe377c9c2062cff0c55d9e7f57091cc2184`.
   - **Reviewer:** round 6 DO NOT MERGE (fixed, D-253); **round 7 MERGE** on 8d61cfe, all six checks PASS, no new mechanism. Two notes, not blocking: the `pgrep` test's assertion is conditional on no JUNO process running (D-253); the command scan's program list could name more programs (`mv`, `cp`, `ln`, `tar`, `e2fsck`), none of which appears in a refusal today.
   - **CI on 8d61cfe:** run 45709796122: `verify`, `verify-rootless`, `verify-rootless-operator` green. **Locally:** `make verify: GREEN` on 8d61cfe (1,548 unit, 156 container).
