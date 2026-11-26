@@ -7,7 +7,7 @@
 - **PR #71 (1.5-report): merged** as `68c7fa85d176b881a94f89c0a2ef4a9a64cdee96`, pinned to head `ebfa5d661b9ec2370b06a12217841e44df950746`.
   - **Reviewer:** round 9 DO NOT MERGE (fixed, D-267); round 10 DO NOT MERGE (fixed, D-268); **round 11 MERGE** on ebfa5d6, all six checks PASS, no new mechanism.
   - **CI on ebfa5d6:** run 45878122244: `verify`, `verify-rootless` and `verify-rootless-operator` green. **Locally:** `make verify: GREEN` on ebfa5d6 (1,578 unit, 156 container).
-  - **CI on main for 68c7fa8:** run 45879325893: in progress when this was written; its result follows in the next commit.
+  - **CI on main for 68c7fa8:** run 45879325893: green (`verify`, `verify-rootless`, `verify-rootless-operator`).
   - **Round 11's two notes, not blocking (left for a later increment, not fixed: the head was not moved after the review):**
     - A refused admission the gateway journals into a record it already admitted ("this gateway already holds a session") is counted in no figure. The report prints nothing false about it.
     - The guide says each session is rebuilt "exactly as the service rebuilds it when it starts". A gateway session is in fact rebuilt when it is admitted again, not at a start.
