@@ -17,7 +17,7 @@ import { runJournalCli } from "../src/journal-cli.js";
 // D-254 and D-256 (review round 2 of PR #68): `juno journal report` on a journal JUNO's gateway wrote (`juno gateway
 // serve`, the real shim, socket and test upstream, as packages/mediated/test/gateway-cli.test.ts runs them). The gateway
 // journals a call its boundary rejects twice over: the judged call (outcome `reject`) and a `rejection` note naming it.
-// The report counts that call once, by the rule a service's replay uses (`journalledCall`).
+// The report counts that call once, by THE replay a service's start rebuilds with (`replaySession`, D-266).
 
 const SERVER = fileURLToPath(new URL("../../../test/mcp/test-server.mjs", import.meta.url));
 const ENTRY = { capability: { id: "mcp.message.send", interface: { to: { type: { kind: "string" }, role: "data", data_effect: "target" }, body: { type: { kind: "string" }, role: "data", data_effect: "payload" } }, providers: ["gateway.mcp"], side_effect: "external", isolation_tier: 1, max_input_sensitivity: "internal", min_argument_integrity: "operator", output_class: { sensitivity: "input", integrity: "untrusted" }, cost_model: { expected_cost: 0, expected_latency_ms: 100, cost_of_failure: 0 } } };
@@ -119,5 +119,8 @@ describe("juno journal report on a gateway journal (D-254, D-256)", () => {
     // naming it), and the limit reached once after the third, which is not a call of its own (D-256, D-257).
     expect(report.sessions[0]).toMatchObject({ mode: "gateway", allowed: 1, parked: 1, rejected: 3, rejection_limit_reached: 1, passed_to_gateway: 0, parks_by_reason: [{ value: "integrity_floor", count: 1 }], parks_by_capability: [{ value: "mcp.message.send", count: 1 }] });
     expect(report.total).toMatchObject({ allowed: 1, parked: 1, rejected: 3, rejection_limit_reached: 1 });
+    // D-266: the allowed call's result, journalled by the gateway right after the call it ran and naming it, is that
+    // call's, as THE replay judges it; nothing waits, and the grant's one use is the call that proceeded under it.
+    expect(report.sessions[0]).toMatchObject({ results: { for_allowed_calls: 1, without_decision: 0, awaiting: 0 }, results_without_decision: [], grant_uses: [{ value: "g", count: 1 }] });
   }, 120_000);
 });

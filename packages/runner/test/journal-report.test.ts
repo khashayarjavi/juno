@@ -7,7 +7,8 @@ import { MemoryAnchorSink, testAnchoring, testJournalKey } from "../../enforceme
 import { ordinaryHost } from "../../enforcement/test/layer.js";
 import { unsealedLauncher } from "../../enforcement/test/sealed.js";
 import { TEST_ANCHOR, signed } from "../../enforcement/test/test-keys.js";
-import { taskDigest } from "../../journal/src/index.js";
+import { recoveredRecord } from "../../enforcement/src/index.js";
+import { listRecords, readPayload, taskDigest } from "../../journal/src/index.js";
 import { systemFilesystemIo } from "../../mediated/src/filesystem.js";
 import { runHookClient } from "../../mediated/src/hook-client.js";
 import { runHookAdmitCli, runHookServeCli } from "../../mediated/src/hook-serve.js";
@@ -135,6 +136,32 @@ async function twoSessions(): Promise<void> {
     expect(await call(second, "WebFetch", { url: "https://evil.example/`id`" })).toBe("denied");
     expect(await call(second, "Write", { file_path: join(work, "project", "new.txt"), content: "z" })).toBe("denied");
   });
+}
+
+/** A record of a journal copy replayed by THE replay a service's start runs (D-266), with its entries' payloads. */
+function replayed(journalPath: string, id: string): ReturnType<typeof recoveredRecord> {
+  const record = listRecords(journalPath).find((candidate) => candidate.taskId === id);
+  if (record === undefined || !record.verdict.ok) throw new Error(`no verified record ${id}`);
+  return recoveredRecord(id, record.verdict.entries.map((entry) => {
+    const blob = readPayload(journalPath, entry.payload_ref);
+    return { entry, payload: blob.status === "present" ? (JSON.parse(Buffer.from(blob.bytes).toString("utf8")) as unknown) : undefined };
+  }));
+}
+
+/**
+ * D-266: the replay judges every tool result as the hook service judged it when it journalled it: without JUNO's
+ * decision exactly when the service wrote `without_authorized_call`. Answers the entries of the results without it.
+ */
+function resultsAgree(journalPath: string, id: string): number[] {
+  const { replay } = replayed(journalPath, id);
+  const without: number[] = [];
+  for (const judged of replay.judged) {
+    if (judged.entry.kind !== "capability_result") continue;
+    const flagged = (judged.payload as { without_authorized_call?: unknown }).without_authorized_call === true;
+    expect(judged.result?.authorized, `result at entry ${String(judged.entry.seq)}`).toBe(!flagged);
+    if (flagged) without.push(judged.entry.seq);
+  }
+  return without;
 }
 
 beforeEach(() => {
@@ -316,6 +343,15 @@ describe("juno journal report (D-251 queue item 2, D-254)", () => {
       { name: "parked", run: async (session) => (await call(session, "Write", { file_path: "/etc/passwd", content: "x" })) },
       { name: "parked", run: async (session) => (await call(session, "Write", { file_path: join(work, "project", "n.txt"), content: "x" })) },
       { name: "rejected", run: async (session) => (await call(session, "mcp__other__send", { to: "x" })) },
+      { name: "late_result", run: async (session) => {
+        // Round 8 of PR #70: a call JUNO allowed, the next call denied for its missing result, then that result after all.
+        uses += 1;
+        const asked = { session_id: session, hook_event_name: "PreToolUse", tool_name: "Read", tool_input: { file_path: join(work, "project", "notes.txt") }, tool_use_id: `toolu_${String(uses)}`, cwd: join(work, "project") };
+        expect((await runHookClient(JSON.stringify(asked), join(sockets, "hook.sock"))).stdout).toBe("");
+        const outcome = await call(session, "Read", { file_path: join(work, "project", "notes.txt") });
+        await runHookClient(JSON.stringify({ ...asked, hook_event_name: "PostToolUse", tool_response: { content: "late" } }), join(sockets, "hook.sock"));
+        return outcome;
+      } },
       { name: "result_missing", run: async (session) => {
         // A call JUNO allowed whose result never comes, then the next call, denied for it.
         uses += 1;
@@ -324,7 +360,7 @@ describe("juno journal report (D-251 queue item 2, D-254)", () => {
         return (await call(session, "Read", { file_path: join(work, "project", "notes.txt") }));
       } },
     ];
-    const reached = { limits: 0, result_missing: 0 };
+    const reached = { limits: 0, result_missing: 0, late: 0 };
     for (const seed of [1, 7, 42]) {
       sink = new MemoryAnchorSink();
       rmSync(join(dir, "state", "journal"), { recursive: true, force: true });
@@ -334,7 +370,7 @@ describe("juno journal report (D-251 queue item 2, D-254)", () => {
         state = (state * 1103515245 + 12345) % 2147483648;
         return state % n;
       };
-      const expected = { allowed: 0, parked: 0, rejected: 0, result_missing: 0, limits: 0 };
+      const expected = { allowed: 0, parked: 0, rejected: 0, result_missing: 0, limits: 0, results: 0, late: 0 };
       let consecutiveRejections = 0;
       await serving(async () => {
         const id = SESSIONS[0] ?? "";
@@ -347,7 +383,8 @@ describe("juno journal report (D-251 queue item 2, D-254)", () => {
           const kind = kinds[step];
           if (kind === undefined) continue;
           const outcome = await kind.run(id);
-          if (kind.name === "result_missing") {
+          if (kind.name === "result_missing" || kind.name === "late_result") {
+            if (kind.name === "late_result") expected.late += 1;
             // The first Read was allowed; the second was denied for its missing result.
             expected.allowed += 1;
             expected.result_missing += 1;
@@ -366,22 +403,29 @@ describe("juno journal report (D-251 queue item 2, D-254)", () => {
               consecutiveRejections = 0;
             }
           } else {
-            if (kind.name === "allowed") expected.allowed += 1;
-            else expected.parked += 1;
+            if (kind.name === "allowed") {
+              expected.allowed += 1;
+              expected.results += 1;
+            } else expected.parked += 1;
             consecutiveRejections = 0;
           }
         }
       });
-      const result = await report(await adminCopy(), ["--json"]);
+      const copy = await adminCopy();
+      const result = await report(copy, ["--json"]);
       expect(result.code, result.out).toBe(0);
       const total = (JSON.parse(result.out) as { total: Record<string, unknown> }).total;
-      expect(total, `seed ${String(seed)}`).toMatchObject({ allowed: expected.allowed, parked: expected.parked, rejected: expected.rejected, denied_result_missing: expected.result_missing, rejection_limit_reached: expected.limits });
+      expect(total, `seed ${String(seed)}`).toMatchObject({ allowed: expected.allowed, parked: expected.parked, rejected: expected.rejected, denied_result_missing: expected.result_missing, rejection_limit_reached: expected.limits, results: { for_allowed_calls: expected.results, without_decision: expected.late, awaiting: 0 } });
+      // D-266: the replay the report reads judges every result as the service journalled it.
+      expect(resultsAgree(copy.journal, `session-${SESSIONS[0] ?? ""}`)).toHaveLength(expected.late);
+      reached.late += expected.late;
       reached.limits += expected.limits;
       reached.result_missing += expected.result_missing;
     }
     // The seeds reach the cases the class is about: the rejection limit, and a result that never arrived.
     expect(reached.limits).toBeGreaterThan(0);
     expect(reached.result_missing).toBeGreaterThan(0);
+    expect(reached.late).toBeGreaterThan(0);
   }, 300_000);
 
   // proves D-258 (review round 4 of PR #68): a session that ends (here its time to live) is reported as ended, with
@@ -508,6 +552,90 @@ describe("juno journal report (D-251 queue item 2, D-254)", () => {
     const text = reportText({ ok: true, verified: { records: 2, history: "checked", never_written: [], empty_folders: [], not_summarised: [] }, sessions: [session], total: empty });
     expect(text).toContain('ended at 2026-11-26T00:00:00.000Z: "anchor_unavailable". JUNO denied the call that found this, if a call found it, and every later call of this session.');
   });
+
+  // proves D-266 (review round 8 of PR #70, operator rulings 1 and 2): tool results are judged by THE replay a service's
+  // start rebuilds with. A result journalled after JUNO recorded it missing is a result without JUNO's decision, listed
+  // with its tool and tool_use_id, and never said to have "never arrived"; a result no allowed call waited for is listed
+  // too; an allowed call with no result at the stop is still waiting, and a restarted service, rebuilt by the same
+  // replay, denies the next call for it and records it missing
+  it("reports a result journalled after JUNO recorded it missing as one without JUNO's decision, as the rebuild judges it", async () => {
+    const id = SESSIONS[0] ?? "";
+    const read = { file_path: join(work, "project", "notes.txt") };
+    const ask = (toolUseId: string): Record<string, unknown> => ({ session_id: id, hook_event_name: "PreToolUse", tool_name: "Read", tool_input: read, tool_use_id: toolUseId, cwd: join(work, "project") });
+    await serving(async () => {
+      writeFileSync(join(dir, "state", `session-${id}.json`), JSON.stringify(sessionFile(id)), { mode: 0o600 });
+      expect(await runHookAdmitCli(["--control", join(sockets, "admit.sock"), join(dir, "state", `session-${id}.json`)], quiet)).toBe(0);
+      // A: allowed; its result does not come before the next call.
+      expect((await runHookClient(JSON.stringify(ask("toolu_late")), join(sockets, "hook.sock"))).stdout).toBe("");
+      // B: denied, and A's result recorded missing.
+      expect(await call(id, "Read", read)).toBe("denied");
+      // A's result after all (PreToolUse A, PreToolUse B, PostToolUse A: the order round 8 reproduced).
+      await runHookClient(JSON.stringify({ ...ask("toolu_late"), hook_event_name: "PostToolUse", tool_response: { content: "late" } }), join(sockets, "hook.sock"));
+      // A result no call JUNO allowed was ever waiting for.
+      await runHookClient(JSON.stringify({ ...ask("toolu_unasked"), hook_event_name: "PostToolUse", tool_response: { content: "x" } }), join(sockets, "hook.sock"));
+      // C: allowed, with its result.
+      expect(await call(id, "Read", read)).toBe("ran");
+      // D: allowed; the service stops before its result comes.
+      expect((await runHookClient(JSON.stringify(ask("toolu_waiting")), join(sockets, "hook.sock"))).stdout).toBe("");
+    });
+    const before = await adminCopy();
+    const first = await report(before, ["--json"]);
+    expect(first.code, first.out).toBe(0);
+    expect((JSON.parse(first.out) as { sessions: Record<string, unknown>[] }).sessions[0]).toMatchObject({ allowed: 3, denied_result_missing: 1, results: { for_allowed_calls: 1, without_decision: 2, awaiting: 1 } });
+    // A restarted service rebuilds by the same replay: D waits, so the next call is denied and D recorded missing.
+    await serving(async () => {
+      expect(await call(id, "Read", read)).toBe("denied");
+      expect(await call(id, "Read", read)).toBe("ran");
+    });
+    const copy = await adminCopy();
+    const without = resultsAgree(copy.journal, `session-${id}`);
+    expect(without).toHaveLength(2);
+    const json = await report(copy, ["--json"]);
+    expect(json.code, json.out).toBe(0);
+    const session = (JSON.parse(json.out) as { sessions: Record<string, unknown>[] }).sessions[0] as Record<string, unknown> & { recorded_missing: { recorded_at: number; result_seq: number | null }[] };
+    expect(session).toMatchObject({ admission: "admitted", allowed: 4, parked: 0, rejected: 0, denied_result_missing: 2, results: { for_allowed_calls: 2, without_decision: 2, awaiting: 0 } });
+    const late = session.recorded_missing[0];
+    expect(session.recorded_missing).toEqual([
+      { tool_use_id: "toolu_late", call_seq: expect.any(Number), recorded_at: expect.any(Number), result_seq: without[0] },
+      { tool_use_id: "toolu_waiting", call_seq: expect.any(Number), recorded_at: expect.any(Number), result_seq: null },
+    ]);
+    expect(session["results_without_decision"]).toEqual([
+      { seq: without[0], tool: "Read", tool_use_id: "toolu_late", outcome: "succeeded", recorded_missing_at: late?.recorded_at },
+      { seq: without[1], tool: "Read", tool_use_id: "toolu_unasked", outcome: "succeeded", recorded_missing_at: null },
+    ]);
+    const text = await report(copy);
+    expect(text.out).not.toContain("never arrived");
+    expect(text.out).toContain("tool calls: 4 allowed, 0 parked, 0 rejected, 2 denied because an earlier call's result had not arrived when they came");
+    expect(text.out).toContain("  tool results: 2 for calls JUNO allowed, 2 without JUNO's decision (listed below)");
+    expect(text.out).toContain(`  result without JUNO's decision (entry ${String(without[0])}): tool "Read", tool_use_id "toolu_late", "succeeded": JUNO had recorded this call's result missing (entry ${String(late?.recorded_at)}) and denied the next call; the result came after, and JUNO journals it as without its decision.`);
+    expect(text.out).toContain(`  result without JUNO's decision (entry ${String(without[1])}): tool "Read", tool_use_id "toolu_unasked", "succeeded": no call JUNO allowed was waiting for it, so the harness ran it without JUNO's decision.`);
+    expect(text.out).toContain(`  result recorded missing (entry ${String(late?.recorded_at)}): tool_use_id "toolu_late": its result came later (entry ${String(without[0])}), journalled without JUNO's decision.`);
+    expect(text.out).toContain('tool_use_id "toolu_waiting": the journal holds no result for it.');
+    expect(text.out).toContain('  grant uses (calls that proceeded under each grant):\n        4  "grant-cc"');
+  }, 120_000);
+
+  // proves D-266 (operator ruling 2, fail-closed): an entry of a kind the report does not place makes it refuse,
+  // reporting nothing, even in a journal that verifies
+  it("refuses a journal holding an entry it does not place", async () => {
+    const id = SESSIONS[0] ?? "";
+    await serving(async (layer) => {
+      writeFileSync(join(dir, "state", `session-${id}.json`), JSON.stringify(sessionFile(id)), { mode: 0o600 });
+      expect(await runHookAdmitCli(["--control", join(sockets, "admit.sock"), join(dir, "state", `session-${id}.json`)], quiet)).toBe(0);
+      layer.append(`session-${id}`, "note", { sensitivity: "internal", integrity: "derived" }, { type: "a_type_juno_does_not_write" }, { actor: "juno.test" });
+    });
+    const result = await report(await adminCopy());
+    expect(result.code).not.toBe(0);
+    expect(result.out + result.err).toContain(`refused: journal record "session-${id}" entry`);
+    expect(result.out + result.err).toContain('is of a kind the report does not place ("note:a_type_juno_does_not_write"); the report places every kind of entry JUNO writes, so it reports nothing for this journal (D-266)');
+    expect(result.out).not.toContain("tool calls:");
+  }, 120_000);
+
+  // proves D-266: the total lists every entry no figure counts, by its place, so nothing in the journal is passed over
+  it("lists the entries it does not count, by kind", async () => {
+    await twoSessions();
+    const text = await report(await adminCopy());
+    expect(text.out).toContain("  entries not counted (no tool call, result, admission or end):\n        2  note:anchoring: the session's anchoring interval and journal key");
+  }, 120_000);
 
   // proves D-259 (round 5's note): an empty record folder, which a crash can leave before a record's first entry and a
   // service's start passes, is listed, not refused; it holds nothing to hide

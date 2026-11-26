@@ -276,7 +276,7 @@ export function journalReport(journal: string, anchorsOf: (digest: string) => un
     // D-266: THE replay a service's start rebuilds the session with; every figure below is its answer.
     const { replay } = recoveredRecord(id, read.read);
     const unplaced = replay.judged.find((judged) => judged.placement === null);
-    if (unplaced !== undefined) return refuse(`journal record ${quoted(id)} entry ${String(unplaced.entry.seq)} is of a kind the report does not place (${quoted(unplaced.entry.kind === "note" ? `note:${String(field(unplaced.payload, "type"))}` : unplaced.entry.kind)})`);
+    if (unplaced !== undefined) return { ok: false, refused: `journal record ${quoted(id)} entry ${String(unplaced.entry.seq)} is of a kind the report does not place (${quoted(unplaced.entry.kind === "note" ? `note:${String(field(unplaced.payload, "type"))}` : unplaced.entry.kind)}); the report places every kind of entry JUNO writes, so it reports nothing for this journal (D-266)` };
     const admission = replay.admission.kind === "not_recorded" ? undefined : replay.admission.payload;
     sessions.push({
       id,
