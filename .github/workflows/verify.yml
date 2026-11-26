@@ -10,8 +10,20 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# The repository is public (the operator's choice, D-251; D-260). Every job runs with a read-only token: no step can
+# write to the repository, whoever opened the pull request, a fork included. No secret is used anywhere, and the
+# workflow never runs on `pull_request_target` (which would give a fork's code the base repository's token).
 permissions:
   contents: read
+
+# A new push to a pull request's branch cancels that branch's run still in progress: the superseded head is never
+# merged, and the merge gate reads the run on the head it merges (CLAUDE.md §7 step 6b), which no later push cancels
+# without moving the head, so the gate refuses it. Every other run (a push to main for each merge commit, a manual run)
+# is in a group of its own, named by its own run id, so none is ever cancelled or replaced by another: §7 step 6d reads
+# each merge's run (D-260, D-261).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   verify:
@@ -20,11 +32,14 @@ jobs:
     steps:
       # The whole history: test/evidence/upgrade.test.ts builds the commit installed on the operator's machine from it,
       # to prove the service starts on its old journal after an upgrade (DECISIONS.md D-222).
-      - uses: actions/checkout@v5
+      # Third-party actions are pinned by full commit SHA (D-260), the tag they were resolved from in the comment. The
+      # token is not kept in .git/config after checkout: no later step needs it.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
+          persist-credentials: false
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: "22"
 
@@ -66,9 +81,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: "22"
 
@@ -89,9 +106,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: "22"
 

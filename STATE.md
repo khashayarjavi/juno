@@ -1,12 +1,12 @@
 # STATE
 
 ## Current increment
-**Queue item 2, 1.5-report: draft PR [khashayarjavi/juno#68](https://github.com/khashayarjavi/juno/pull/68), its five review rounds used, ended DO NOT MERGE (D-259). Left as a draft, as your rule says.** Branch `claude/elegant-ritchie-6pkguy` (this session's only pushable branch), at 70f5f12, on top of main 9fc412b. Spec v0.6.1. No objection open.
+**Queue item 2, 1.5-report: draft PR [khashayarjavi/juno#68](https://github.com/khashayarjavi/juno/pull/68), its five review rounds used, ended DO NOT MERGE (D-259). Left as a draft, as your rule says.** Branch `claude/elegant-ritchie-6pkguy`, with main (e886818, PR #69's merge) merged in so it stays mergeable; DECISIONS.md holds D-254 to D-259 (this PR) and D-260, D-261 (PR #69) in order. Spec v0.6.1. No objection open.
 
 ### The queue (D-251)
 1. **1.5-ops: merged** as 9fc412b (below).
 2. **1.5-report: draft PR #68, not merged.** Its last finding is fixed but **not reviewed** (below). Your decision: authorise more review rounds on it, or direct otherwise.
-3. **1.5-public: prepared, not pushed.** See "Queue item 3" below for why, and what it holds.
+3. **1.5-public: merged** as e886818 (PR #69; record below).
    - **Open item for you: the licence.** No LICENSE is added; the README says none is granted until you choose one.
    - **Open item for you: private vulnerability reporting.** SECURITY.md points reporters to GitHub's private vulnerability reporting. If it is not switched on, switch it on in the repository's Settings, Security (I do not change repository settings).
 
@@ -19,17 +19,15 @@
   - **Round 4** (31644ef): after a session ended, the report claimed to count calls the journal does not hold. Fixed: it says when a session ended (D-258).
   - **Round 5** (4c5e924): DO NOT MERGE. A session whose admission was refused looked like an ordinary one, and the "not counted" sentence was wrong for shell commands JUNO still journals. **Fixed, not reviewed** (D-259).
 - **Residual (recorded):** a session the service could not rebuild after a restart is refused in memory, and nothing more about it is journalled.
-- `make verify` on 70f5f12: running.
-
-### Queue item 3 (1.5-public): prepared, not pushed
-- **Why not pushed:** this session may push to one branch only, and that branch holds PR #68's unmerged work. Item 3 does not depend on #68, but on this branch it would ride inside #68.
-- **What it holds** (one commit, local only, D-260 when pushed):
-  - The workflow: `actions/checkout` pinned to `fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09` (v5.1.0) and `actions/setup-node` to `a0853c24544627f65ddf259abe73b1d18a591444` (v5.0.0), both read from GitHub's own tags. `persist-credentials: false` on every checkout. `concurrency`: one group per pull request that cancels its superseded run; every push to main and every manual run in a group of its own commit, so none is ever cancelled. Already true and kept: no `pull_request_target`, `permissions: contents: read` only, no secrets, so a fork's pull request can run nothing with write access.
-  - A README for a newcomer: what JUNO is and is not, the status (Slice 1.5, one real install), the threat model in short, links to the spec, the evidence and the guide.
-  - SECURITY.md: private reporting through GitHub's private vulnerability reporting.
-  - `test/lint/workflows.test.ts`: fails on any of the unsafe forms above, and pins the three verify jobs and their commands.
+- `make verify: GREEN` on 70f5f12 (1,562 unit, 156 container).
 
 ### Merges this session
+- **PR [khashayarjavi/juno#69](https://github.com/khashayarjavi/juno/pull/69) (1.5-public): merged** as `e886818ef344ca9b82fce1cc17dfc99bbc44c828`, pinned to head `6d685ddf713203aa35109a1c937df5922620eb22`. Pushed from the branch `claude/elegant-ritchie-6pkguy-public`, made from main, with your permission of 2026-11-26.
+  - **Reviewer:** round 1 DO NOT MERGE (the README named `juno journal report`, not on main; STATE lacked PR #67's record; the threat model overstated the spec), fixed (D-261); **round 2 MERGE** on 6d685dd, all six checks PASS.
+  - **CI on 6d685dd:** run 45754638405. Attempt 1: `verify` failed on one test this PR does not touch (`packages/runner/test/resume.test.ts`, "checks a rebuilt task against the pins taken before the restart", over vitest's 5-second limit while the four-minute kernel-oracle test ran beside it); both rootless jobs green. Attempt 2 (the failed job re-run): all three green. **Locally:** `make verify: GREEN` on 6d685dd (1,551 unit, 156 container).
+  - **CI on main for e886818:** run 45757004361, being read (the next STATE commit says).
+  - **Flaky test, to fix in a later increment (recorded, not fixed here):** `resume.test.ts`'s restart test uses vitest's default 5-second limit, which a loaded CI runner can pass. It has not failed before. The fix is an explicit limit on that test, as the other heavy tests have; no assertion changes.
+  - **Your upgrade steps for e886818:** none needed on your machine. It changes only the CI workflow, the README, SECURITY.md and a CI test; JUNO's code is the same as 9fc412b's. Upgrade to 9fc412b's steps below if you have not yet.
 - **PR [khashayarjavi/juno#67](https://github.com/khashayarjavi/juno/pull/67) (1.5-ops; supersedes #65 and #66): merged** as `9fc412bdaf4555be1decbd118ee5945214da70e6`, pinned to head `8d61cfe377c9c2062cff0c55d9e7f57091cc2184`.
   - **Reviewer:** round 6 DO NOT MERGE (fixed, D-253); **round 7 MERGE** on 8d61cfe, all six checks PASS, no new mechanism. Two notes, not blocking: the `pgrep` test's assertion is conditional on no JUNO process running (D-253); the command scan's program list could name more programs (`mv`, `cp`, `ln`, `tar`, `e2fsck`), none of which appears in a refusal today.
   - **CI on 8d61cfe:** run 45709796122: `verify`, `verify-rootless`, `verify-rootless-operator` green. **Locally:** `make verify: GREEN` on 8d61cfe (1,548 unit, 156 container).
