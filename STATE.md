@@ -1,16 +1,20 @@
 # STATE
 
 ## Current increment
-**STOP (D-265): queue item 2, 1.5-report, draft PR [khashayarjavi/juno#70](https://github.com/khashayarjavi/juno/pull/70), not merged.** Review round 8, the last you authorised (D-262), ended DO NOT MERGE. The PR stays a draft, as your ruling 3 says. PR #70 supersedes draft PR #68 and carries its commits unchanged (this session may push only to `claude/ecstatic-fermat-7rzlnf`). PR #68 is left open and untouched. Spec v0.6.1. No objection open.
+**1.5-report (queue item 2 of D-251), continued under your rulings of 2026-11-26 (D-266).** Branch `claude/jolly-mayer-053n1a` (this session may push only there, as D-028): fast-forwarded to PR #70's head (00a9657), then this session's work. A new draft PR from it supersedes PR #70 and carries its commits unchanged; PR #70 is left open and untouched. Review rounds 9 to 11 are authorised (D-266 ruling 4). Spec v0.6.1. No objection open.
 
-### The open finding, in plain words
-The report leaves out tool results. Sometimes a call comes in while an earlier allowed call is still waiting for its result. JUNO then records the earlier result as missing and denies the new call. If that result arrives after all, JUNO journals it and marks it as run without JUNO's decision. The report still says the result "never arrived", and it never shows any result JUNO marked that way. The reviewer reproduced this through the real hook service. It is not shown that Claude Code sends events in that order. **Not fixed:** your ruling stops the session here. D-265 records the fix for when you authorise one.
+### What your rulings changed, in plain words (D-266)
+- **The report is built on JUNO's own rebuild.** There is now one replay of a session's journal, `replaySession`. The service's start rebuilds every session through it: the calls counted against the budget, the rejections in a row, a stop for good, the admission, the calls still waiting for a result, and each grant's uses. The report runs the same replay and prints only its answers. It keeps no counting rule of its own, so the two cannot disagree. The full unit suite passed unchanged on this change, before any new test (1,568 tests).
+- **Tool results are in the report (round 8's finding).** For each session: results for calls JUNO allowed; each result run without JUNO's decision, quoted with its tool and `tool_use_id`; each call whose result JUNO recorded missing, and whether its result came later; calls still waiting. A result that came after JUNO recorded it missing is shown as exactly that. "Never arrived" is gone.
+- **Every kind of entry has a place.** A table says, for every entry kind and note type, what it counts as, or why it counts nothing. A test reads JUNO's source for every note type it writes and fails on one with no place. An entry with no place makes the report refuse.
+- **The guide's step 8 is a list again,** with a complete list of the calls the report cannot count (the hook blocked a call itself because the service was unreachable or slow; input the service could not read).
+- **Tests through the real hook service:** round 8's order (call A allowed, call B denied, then A's result), a restart rebuilt by the same replay (it denies the next call for a result still waiting, as the report showed), and random sequences in which the replay judges every result as the service wrote it.
 
-**Your decision, recommended first:**
-1. Authorise one more round of fixes and review on PR #70 for this finding: list each result JUNO marked as run without its decision, never say "never arrived" for a result the journal holds, and add a test. The guide's step 8 paragraph and the reviewer's three notes would be fixed in the same round (D-265).
-2. Direct otherwise.
+**Autopilot rulings (D-266, one line each):** a result in the gateway or own loop is the call's that its `call_seq` names when that call proceeded with no result yet; only `session-…` and `gateway-…` records are summarised, any other is listed, verified, by id; an entry with no place refuses the report; this work supersedes PR #70 on this session's branch, rounds numbered on (9 to 11).
 
-### Review rounds 6 to 8 this session (D-262), on PR #70
+**Left, in order:** `make verify` green; the new draft PR; review round 9 (up to 11); on MERGE, the gate, then STOP with the merge hash and your upgrade steps; if round 11 ends DO NOT MERGE, the PR stays a draft and I STOP with the finding.
+
+### Review rounds 6 to 8 (D-262), on PR #70 (before this session)
 - **Round 6** (fb6f586; `make verify: GREEN` on 18d13f3, 1,565 unit, 156 container): DO NOT MERGE. A session refused once and then admitted under the same id was reported as `ADMISSION REFUSED` while its allowed calls were counted. Fixed: one admission rule that the service's start and the report share, and a test through the real hook service (D-263).
 - **Round 7** (574923f; `make verify: GREEN` there, 1,567 unit, 156 container; CI green): DO NOT MERGE. A session JUNO stopped for good in the background, with no later call, was reported as never ended. Fixed: one end rule that the service's start and the report share, and a test (D-264).
 - **Round 8** (3f9f79e; `make verify: GREEN` there, 1,568 unit, 156 container; CI run 45762605920 green, all three jobs): DO NOT MERGE, the finding above (D-265).
