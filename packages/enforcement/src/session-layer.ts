@@ -126,6 +126,23 @@ export function journalledCall(entry: TrajectoryEntry, payload: unknown): { read
   return null;
 }
 
+/**
+ * What a session record's admission notes say (D-263): `admitted` when any admission note says `outcome: "admitted"`
+ * (an id is admitted at most once, D-201), with the refused attempts journalled before it; `refused` when every
+ * admission note is a refusal (JUNO journals a refusal only for an id not yet admitted); `not_recorded` when there is
+ * none. The one rule for a service's start (`#recover`, `#planRepair`) and for `juno journal report`, so the two can
+ * never judge a session's admission differently.
+ */
+export function admissionOf(entries: readonly { readonly entry: TrajectoryEntry; readonly payload: unknown }[]): { readonly kind: "admitted"; readonly payload: Readonly<Record<string, unknown>>; readonly refused_before: number } | { readonly kind: "refused"; readonly payload: Readonly<Record<string, unknown>>; readonly attempts: number } | { readonly kind: "not_recorded" } {
+  const notes = entries.filter((item) => item.entry.kind === "note" && field(item.payload, "type") === "admission");
+  const index = notes.findIndex((item) => field(item.payload, "outcome") === "admitted");
+  const admitted = index < 0 ? undefined : notes[index];
+  if (admitted !== undefined) return { kind: "admitted", payload: admitted.payload as Readonly<Record<string, unknown>>, refused_before: index };
+  const first = notes[0];
+  if (first === undefined) return { kind: "not_recorded" };
+  return { kind: "refused", payload: first.payload as Readonly<Record<string, unknown>>, attempts: notes.length };
+}
+
 /** Every journal's own record id begins so (D-202); `juno journal report` finds it by this prefix on a copy (D-254). */
 export const JOURNAL_RECORD_PREFIX = `${OWN_RECORD_PREFIX}journal.`;
 
@@ -524,8 +541,8 @@ export class SessionLayer {
         }
         continue;
       }
-      const admission = entries.find((item) => item.entry.kind === "note" && field(item.payload, "type") === "admission" && field(item.payload, "outcome") === "admitted");
-      this.#recovered.set(id, { id, entries, admission: admission === undefined ? null : (admission.payload as Readonly<Record<string, unknown>>) });
+      const admission = admissionOf(entries);
+      this.#recovered.set(id, { id, entries, admission: admission.kind === "admitted" ? admission.payload : null });
     }
     // §3.4.1: what was written and not yet copied off the host is copied before the service serves anything.
     const unanchored = await this.anchorPending();
@@ -545,8 +562,8 @@ export class SessionLayer {
     for (const id of ids) {
       if (id === this.#indexId) continue;
       const entries = this.#read(id, stored.get(id)?.verdict);
-      const admission = entries.find((item) => item.entry.kind === "note" && field(item.payload, "type") === "admission" && field(item.payload, "outcome") === "admitted");
-      if (admission === undefined) continue;
+      const admission = admissionOf(entries);
+      if (admission.kind !== "admitted") continue;
       let state: unknown = null;
       for (const item of entries) if (item.entry.kind === "note" && field(item.payload, "type") === "state") state = field(item.payload, "to");
       if (typeof state === "string" && CLOSED_STATES.has(state)) continue;
