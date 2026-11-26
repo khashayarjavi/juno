@@ -1,7 +1,8 @@
 # STATE
 
 ## Current increment
-**The queue is as far as it can go without you (STOP, D-251): items 1 and 3 merged; item 2 waits on your decision.** **Queue item 2, 1.5-report: draft PR [khashayarjavi/juno#68](https://github.com/khashayarjavi/juno/pull/68), its five review rounds used, ended DO NOT MERGE (D-259). Left as a draft, as your rule says.** Branch `claude/elegant-ritchie-6pkguy`, with main (e886818, PR #69's merge) merged in so it stays mergeable; DECISIONS.md holds D-254 to D-259 (this PR) and D-260, D-261 (PR #69) in order. Spec v0.6.1. No objection open.
+**Queue item 2, 1.5-report: draft PR [khashayarjavi/juno#70](https://github.com/khashayarjavi/juno/pull/70)** (supersedes draft PR #68, carrying its commits unchanged; this session may push only to `claude/ecstatic-fermat-7rzlnf`, D-262). **Your rulings of 2026-11-26 (D-262):** review rounds 6 to 8 authorised; `resume.test.ts`'s restart test gets an explicit limit (done: 30 seconds, no assertion changed); on MERGE, the gate, then STOP with the merge hash and your upgrade steps; if round 8 ends DO NOT MERGE, the PR stays a draft and the session STOPs.
+- **Now:** review round 6 on PR #70's head. Spec v0.6.1. No objection open.
 
 ### The queue (D-251)
 1. **1.5-ops: merged** as 9fc412b (below).
