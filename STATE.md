@@ -1,14 +1,33 @@
 # STATE
 
 ## Current increment
-**1.5-report (queue item 2 of 3, D-251): `juno journal report`.** Branch `claude/elegant-ritchie-6pkguy`, restarted from main at 9fc412b (its PR #67 merged). Spec v0.6.1. No objection open.
-
-Status: **built (D-254), with tests; draft PR [khashayarjavi/juno#68](https://github.com/khashayarjavi/juno/pull/68). Review round 1: DO NOT MERGE (a session deleted from the journal copy was left out instead of refused); fixed (D-255). Round 2: DO NOT MERGE (a call the gateway rejects was counted twice); fixed by one shared rule for the report and the service's replay (D-256). Round 3: DO NOT MERGE (a call that hit the rejection limit was counted twice); fixed in the shared rule, with a test over random call sequences that every call is counted exactly once (D-257). Round 4: DO NOT MERGE (calls after a session ended are not journalled, and the report claimed to count every call); fixed: the report says when a session ended and that its later calls are not counted (D-258). Round 5, the last authorised for this PR, next.** What it does, in plain words: after Part G step 7's check, on the same copies, `juno journal report` checks the whole journal (every session) against your fresh clone of `juno-anchors`, refuses one that does not verify, and then prints, per session and in total, the calls allowed, parked and rejected, the parks by reason, capability and program, and the paths and commands most often blocked. Every value Claude or the workspace chose is shown in quotes, escaped; it gives no command. The guide's new Part G step 8 gives the command.
+**Queue item 2, 1.5-report: draft PR [khashayarjavi/juno#68](https://github.com/khashayarjavi/juno/pull/68), its five review rounds used, ended DO NOT MERGE (D-259). Left as a draft, as your rule says.** Branch `claude/elegant-ritchie-6pkguy` (this session's only pushable branch), at 70f5f12, on top of main 9fc412b. Spec v0.6.1. No objection open.
 
 ### The queue (D-251)
 1. **1.5-ops: merged** as 9fc412b (below).
-2. **1.5-report**: `juno journal report`, a read-only weekly summary of a journal. **In progress (built).**
-3. **1.5-public**: the workflows audited for a public repository; a README for a newcomer; SECURITY.md. No LICENSE: **open item for you** (the license is your decision). Not started.
+2. **1.5-report: draft PR #68, not merged.** Its last finding is fixed but **not reviewed** (below). Your decision: authorise more review rounds on it, or direct otherwise.
+3. **1.5-public: prepared, not pushed.** See "Queue item 3" below for why, and what it holds.
+   - **Open item for you: the licence.** No LICENSE is added; the README says none is granted until you choose one.
+   - **Open item for you: private vulnerability reporting.** SECURITY.md points reporters to GitHub's private vulnerability reporting. If it is not switched on, switch it on in the repository's Settings, Security (I do not change repository settings).
+
+### 1.5-report (PR #68), in plain words
+- **What it is:** `juno journal report`, the guide's new Part G step 8, run after step 7's check on the same copies. It checks the whole journal (every session) against your fresh clone of `juno-anchors` and refuses one that does not verify. Then it prints, per session and in total: the calls allowed, parked and rejected; parks by reason, capability and program; the paths and commands most often blocked; how often a session hit its rejection limit; and whether a session ended or was never admitted. Everything Claude or the workspace chose is shown in quotes, escaped. It gives no command.
+- **Review rounds, each finding fixed with tests:**
+  - **Round 1** (2985e0d): a session deleted from the journal copy was left out instead of refused. Fixed (D-255).
+  - **Round 2** (2d1b4bb): a call the gateway rejects was counted twice. Fixed by one rule the report and the service's own replay share (D-256).
+  - **Round 3** (7bb2c35): a call that hit the rejection limit was counted twice. Fixed in that rule, with a test over random call sequences (D-257).
+  - **Round 4** (31644ef): after a session ended, the report claimed to count calls the journal does not hold. Fixed: it says when a session ended (D-258).
+  - **Round 5** (4c5e924): DO NOT MERGE. A session whose admission was refused looked like an ordinary one, and the "not counted" sentence was wrong for shell commands JUNO still journals. **Fixed, not reviewed** (D-259).
+- **Residual (recorded):** a session the service could not rebuild after a restart is refused in memory, and nothing more about it is journalled.
+- `make verify` on 70f5f12: running.
+
+### Queue item 3 (1.5-public): prepared, not pushed
+- **Why not pushed:** this session may push to one branch only, and that branch holds PR #68's unmerged work. Item 3 does not depend on #68, but on this branch it would ride inside #68.
+- **What it holds** (one commit, local only, D-260 when pushed):
+  - The workflow: `actions/checkout` pinned to `fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09` (v5.1.0) and `actions/setup-node` to `a0853c24544627f65ddf259abe73b1d18a591444` (v5.0.0), both read from GitHub's own tags. `persist-credentials: false` on every checkout. `concurrency`: one group per pull request that cancels its superseded run; every push to main and every manual run in a group of its own commit, so none is ever cancelled. Already true and kept: no `pull_request_target`, `permissions: contents: read` only, no secrets, so a fork's pull request can run nothing with write access.
+  - A README for a newcomer: what JUNO is and is not, the status (Slice 1.5, one real install), the threat model in short, links to the spec, the evidence and the guide.
+  - SECURITY.md: private reporting through GitHub's private vulnerability reporting.
+  - `test/lint/workflows.test.ts`: fails on any of the unsafe forms above, and pins the three verify jobs and their commands.
 
 ### Merges this session
 - **PR [khashayarjavi/juno#67](https://github.com/khashayarjavi/juno/pull/67) (1.5-ops; supersedes #65 and #66): merged** as `9fc412bdaf4555be1decbd118ee5945214da70e6`, pinned to head `8d61cfe377c9c2062cff0c55d9e7f57091cc2184`.
