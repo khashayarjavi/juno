@@ -54,9 +54,9 @@ const journal = (): string => join(dir, "state", "journal");
 const quiet = { out: (): void => undefined, err: (): void => undefined };
 
 /** Runs the real hook service until `drive` finishes; the service stops, anchoring what is pending. */
-async function serving(drive: (layer: SessionLayer) => Promise<void>): Promise<void> {
+async function serving(drive: (layer: SessionLayer) => Promise<void>, extra: readonly string[] = []): Promise<void> {
   let driving: Promise<void> = Promise.resolve();
-  const args = ["--socket", join(sockets, "hook.sock"), "--control", join(sockets, "admit.sock"), "--journal", journal(), "--anchor", join(dir, "anchor", "operator.pub"), "--workspace", work, "--checkpoints", join(dir, "state", "checkpoints"), "--journal-key", join(dir, "state", "journal-key"), "--anchors", join(dir, "state", "juno-anchors"), "--anchor-pin", writePin(journal()), "--protect", join(dir, "claude-home")];
+  const args = ["--socket", join(sockets, "hook.sock"), "--control", join(sockets, "admit.sock"), "--journal", journal(), "--anchor", join(dir, "anchor", "operator.pub"), "--workspace", work, "--checkpoints", join(dir, "state", "checkpoints"), "--journal-key", join(dir, "state", "journal-key"), "--anchors", join(dir, "state", "juno-anchors"), "--anchor-pin", writePin(journal()), "--protect", join(dir, "claude-home"), ...extra];
   const code = await runHookServeCli(args, {
     host: ordinaryHost(),
     filesystem: systemFilesystemIo(),
@@ -547,7 +547,7 @@ describe("juno journal report (D-251 queue item 2, D-254)", () => {
   // proves D-263 (review round 6's note): a session stopped because its journal head could not be anchored may have been
   // found by a call, which JUNO denies with no entry of its own; the report never says only "every later call" of it
   it("says of a session whose head could not be anchored that the call that found it is not counted either", () => {
-    const empty = { allowed: 0, parked: 0, rejected: 0, denied_session_ended: 0, denied_result_missing: 0, passed_to_gateway: 0, rejection_limit_reached: 0, parks_by_reason: [], parks_by_capability: [], parks_by_program: [], blocked_targets: [], results: { for_allowed_calls: 0, without_decision: 0, awaiting: 0 }, grant_uses: [], not_counted: [] };
+    const empty = { allowed: 0, parked: 0, rejected: 0, denied_session_ended: 0, denied_result_missing: 0, passed_to_gateway: 0, rejection_limit_reached: 0, gateway_errors: 0, parks_by_reason: [], parks_by_capability: [], parks_by_program: [], blocked_targets: [], results: { for_allowed_calls: 0, for_passed_calls: 0, without_decision: 0, awaiting: 0, awaiting_passed: 0 }, grant_uses: [], not_counted: [] };
     const session: SessionReport = { ...empty, id: "session-x", admission: "admitted", refused_attempts: 0, mode: "hook", principal: PRINCIPAL, ended: { reason: "anchor_unavailable", at: "2026-11-26T00:00:00.000Z" }, first_entry: null, last_entry: null, results_without_decision: [], recorded_missing: [], not_rebuilt: null };
     const text = reportText({ ok: true, verified: { records: 2, history: "checked", never_written: [], empty_folders: [], not_summarised: [] }, sessions: [session], total: empty });
     expect(text).toContain('ended at 2026-11-26T00:00:00.000Z: "anchor_unavailable". JUNO denied the call that found this, if a call found it, and every later call of this session.');
@@ -670,6 +670,35 @@ describe("juno journal report (D-251 queue item 2, D-254)", () => {
     expect((JSON.parse(json.out) as { sessions: Record<string, unknown>[] }).sessions[0]).toMatchObject({ not_rebuilt: expect.stringMatching(/records a call waiting for its result that cannot be read$/) });
     const text = await report(copy);
     expect(text.out).toMatch(/ {2}NOT REBUILT AT A START: "entry \d+ records a call waiting for its result that cannot be read"\. A restarted service does not reopen this session and denies every later call of it without a journal entry, so those are not counted here\./);
+  }, 120_000);
+
+  // proves D-268 (review round 10 of PR #71): a call the hook passes to JUNO's gateway is not a call JUNO allowed here;
+  // the gateway judges it in its own journal, and a park or rejection there comes back as an error result. Its result is
+  // reported as one for a call passed to the gateway, never "for calls JUNO allowed"; a passed call still waiting is
+  // never an "allowed call"; and a restarted service, rebuilt by the same replay, denies the next call for it
+  it("reports results of calls passed to the gateway apart from calls JUNO allowed", async () => {
+    const id = SESSIONS[0] ?? "";
+    const passed = (toolUseId: string): Record<string, unknown> => ({ session_id: id, hook_event_name: "PreToolUse", tool_name: "mcp__juno__message_send", tool_input: { to: "a@example.com", body: "hi" }, tool_use_id: toolUseId, cwd: join(work, "project"), mcp_server: { name: "juno", source: "enterprise" } });
+    await serving(async () => {
+      writeFileSync(join(dir, "state", `session-${id}.json`), JSON.stringify(sessionFile(id)), { mode: 0o600 });
+      expect(await runHookAdmitCli(["--control", join(sockets, "admit.sock"), join(dir, "state", `session-${id}.json`)], quiet)).toBe(0);
+      expect((await runHookClient(JSON.stringify(passed("toolu_gw_1")), join(sockets, "hook.sock"))).stdout).toBe("");
+      // The gateway parked it: Claude Code gets an error result, which the hook journals as the passed call's.
+      await runHookClient(JSON.stringify({ ...passed("toolu_gw_1"), hook_event_name: "PostToolUse", tool_response: { isError: true, content: [{ type: "text", text: "JUNO parked this call" }] } }), join(sockets, "hook.sock"));
+      expect((await runHookClient(JSON.stringify(passed("toolu_gw_2")), join(sockets, "hook.sock"))).stdout).toBe("");
+    }, ["--gateway", "juno"]);
+    const before = await report(await adminCopy(), ["--json"]);
+    expect(before.code, before.out).toBe(0);
+    expect((JSON.parse(before.out) as { sessions: Record<string, unknown>[] }).sessions[0]).toMatchObject({ allowed: 0, passed_to_gateway: 2, results: { for_allowed_calls: 0, for_passed_calls: 1, without_decision: 0, awaiting: 0, awaiting_passed: 1 } });
+    const text = await report(await adminCopy());
+    expect(text.out).toContain("  tool results: 0 for calls JUNO allowed, 1 for calls passed to the gateway (which judged them in its own journal; a park or rejection there comes back as an error result); 1 call passed to the gateway with no result in the journal yet");
+    expect(text.out).not.toMatch(/allowed calls? with no result/);
+    // A restarted service rebuilds by the same replay: the passed call still waits, so the next call is denied for it.
+    await serving(async () => {
+      expect(await call(id, "Read", { file_path: join(work, "project", "notes.txt") })).toBe("denied");
+    }, ["--gateway", "juno"]);
+    const after = await report(await adminCopy(), ["--json"]);
+    expect((JSON.parse(after.out) as { sessions: Record<string, unknown>[] }).sessions[0]).toMatchObject({ denied_result_missing: 1, results: { awaiting_passed: 0 }, recorded_missing: [{ tool_use_id: "toolu_gw_2", label: null }] });
   }, 120_000);
 
   // proves D-266 (operator ruling 2, fail-closed): an entry of a kind the report does not place makes it refuse,

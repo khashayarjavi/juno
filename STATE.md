@@ -15,7 +15,9 @@
 ### Review rounds on PR [khashayarjavi/juno#71](https://github.com/khashayarjavi/juno/pull/71) (numbered on from PR #70's)
 - **Round 9** (2ef9abe; `make verify: GREEN` there, 1,575 unit, 156 container): DO NOT MERGE. A call Claude Code sends without a `tool_use_id` waits under JUNO's own label. The report then said the journal held no result for it, though it did, and showed the label as an id. Fixed in the replay: each call keeps its own id or none; the report never says "holds no result" and names a label as JUNO's. Also from its notes: a session a start would not rebuild is flagged, and the guide's two sentences are made exact (D-267).
 
-**Left, in order:** `make verify` green on the fix; review round 10 (up to 11); on MERGE, the gate, then STOP with the merge hash and your upgrade steps; if round 11 ends DO NOT MERGE, the PR stays a draft and I STOP with the finding.
+- **Round 10** (49634fd): DO NOT MERGE. A call the hook passes to JUNO's gateway is judged by the gateway, not by JUNO here. Its result was counted as one "for calls JUNO allowed", and such a call still waiting as an "allowed call", beside "0 allowed". Fixed: those results and waiting calls are reported as the gateway's, from the replay's own flag. Also from its notes: an admission with no admission time is flagged as not rebuilt, and a message the gateway could not complete is counted (D-268).
+
+**Left, in order:** `make verify` green on the fix; review round 11, the last authorised; on MERGE, the gate, then STOP with the merge hash and your upgrade steps; if round 11 ends DO NOT MERGE, the PR stays a draft and I STOP with the finding.
 
 ### Review rounds 6 to 8 (D-262), on PR #70 (before this session)
 - **Round 6** (fb6f586; `make verify: GREEN` on 18d13f3, 1,565 unit, 156 container): DO NOT MERGE. A session refused once and then admitted under the same id was reported as `ADMISSION REFUSED` while its allowed calls were counted. Fixed: one admission rule that the service's start and the report share, and a test through the real hook service (D-263).

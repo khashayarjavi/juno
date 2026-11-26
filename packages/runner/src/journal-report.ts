@@ -37,7 +37,7 @@ export type Summary = CallCounts & {
   /** The paths, URLs and commands of parked or rejected calls, most often blocked first. */
   readonly blocked_targets: Tally;
   /** The tool results the journal holds, as the replay judges them, and the allowed calls still waiting for one. */
-  readonly results: { readonly for_allowed_calls: number; readonly without_decision: number; readonly awaiting: number };
+  readonly results: { readonly for_allowed_calls: number; readonly for_passed_calls: number; readonly without_decision: number; readonly awaiting: number; readonly awaiting_passed: number };
   /** Each grant's uses: one per call that proceeded under it, as a service's start counts them. */
   readonly grant_uses: Tally;
   /** The entries that are no tool call, result, admission or end, by their place (`ENTRY_PLACEMENT`). */
@@ -154,14 +154,17 @@ function summarise(replay: SessionReplay): Summary {
   const targets: string[] = [];
   const grants: string[] = [];
   const notCounted: string[] = [];
-  const results = { for_allowed_calls: 0, without_decision: 0, awaiting: replay.pending.size };
+  // D-268 (review round 10): a call the hook passed to JUNO's gateway is no call JUNO allowed here; the gateway judged it.
+  const waiting = [...replay.pending.values()];
+  const results = { for_allowed_calls: 0, for_passed_calls: 0, without_decision: 0, awaiting: waiting.filter((call) => !call.gateway).length, awaiting_passed: waiting.filter((call) => call.gateway).length };
   for (const judged of replay.judged) {
     const payload = (typeof judged.payload === "object" && judged.payload !== null ? judged.payload : {}) as Payload;
     const place = judged.placement === null ? undefined : ENTRY_PLACEMENT[judged.placement];
     if (place !== undefined && "not_counted" in place) notCounted.push(judged.placement ?? "");
     if (judged.grant_use !== null) grants.push(judged.grant_use);
     if (judged.result !== null) {
-      if (judged.result.authorized) results.for_allowed_calls += 1;
+      if (judged.result.authorized && judged.result.gateway) results.for_passed_calls += 1;
+      else if (judged.result.authorized) results.for_allowed_calls += 1;
       else results.without_decision += 1;
     }
     const call = judged.call;
@@ -202,11 +205,12 @@ function sum(parts: readonly Summary[]): Summary {
     denied_result_missing: parts.reduce((total, part) => total + part.denied_result_missing, 0),
     passed_to_gateway: parts.reduce((total, part) => total + part.passed_to_gateway, 0),
     rejection_limit_reached: parts.reduce((total, part) => total + part.rejection_limit_reached, 0),
+    gateway_errors: parts.reduce((total, part) => total + part.gateway_errors, 0),
     parks_by_reason: merge((part) => part.parks_by_reason),
     parks_by_capability: merge((part) => part.parks_by_capability),
     parks_by_program: merge((part) => part.parks_by_program),
     blocked_targets: merge((part) => part.blocked_targets),
-    results: { for_allowed_calls: parts.reduce((total, part) => total + part.results.for_allowed_calls, 0), without_decision: parts.reduce((total, part) => total + part.results.without_decision, 0), awaiting: parts.reduce((total, part) => total + part.results.awaiting, 0) },
+    results: { for_allowed_calls: parts.reduce((total, part) => total + part.results.for_allowed_calls, 0), for_passed_calls: parts.reduce((total, part) => total + part.results.for_passed_calls, 0), without_decision: parts.reduce((total, part) => total + part.results.without_decision, 0), awaiting: parts.reduce((total, part) => total + part.results.awaiting, 0), awaiting_passed: parts.reduce((total, part) => total + part.results.awaiting_passed, 0) },
     grant_uses: merge((part) => part.grant_uses),
     not_counted: merge((part) => part.not_counted),
   };
@@ -300,7 +304,8 @@ export function journalReport(journal: string, anchorsOf: (digest: string) => un
       results_without_decision: replay.judged.flatMap((judged) => (judged.result === null || judged.result.authorized ? [] : [{ seq: judged.entry.seq, tool: text(field(judged.payload, "tool")), tool_use_id: text(field(judged.payload, "tool_use_id")), outcome: text(field(judged.payload, "outcome")), recorded_missing_at: judged.result.recorded_missing }])),
       recorded_missing: replay.missing.map((item) => ({ ...item })),
       // D-266 (review round 9's note): the hook service's start refuses to rebuild such a session (`#restore`).
-      not_rebuilt: replay.mode === "hook" ? (replay.malformed[0] ?? null) : null,
+      // D-268: and every mediated mode's start (`resume`) refuses an admission with no admission time it can read.
+      not_rebuilt: replay.mode === "hook" && replay.malformed[0] !== undefined ? replay.malformed[0] : (replay.mode === "hook" || replay.mode === "gateway") && replay.admission.kind === "admitted" && replay.admitted_at === null ? "the admission records no admission time" : null,
     });
   }
   sessions.sort((a, b) => (a.first_entry ?? "").localeCompare(b.first_entry ?? "") || a.id.localeCompare(b.id));
@@ -328,7 +333,8 @@ function summaryLines(summary: Summary): string[] {
   return [
     `  tool calls: ${String(summary.allowed)} allowed, ${String(summary.parked)} parked, ${String(summary.rejected)} rejected${summary.denied_session_ended > 0 ? `, ${String(summary.denied_session_ended)} denied because the session's time to live had expired` : ""}${summary.denied_result_missing > 0 ? `, ${String(summary.denied_result_missing)} denied because an earlier call's result had not arrived when ${summary.denied_result_missing === 1 ? "it" : "they"} came` : ""}${summary.passed_to_gateway > 0 ? `, ${String(summary.passed_to_gateway)} passed to the gateway` : ""}`,
     ...(summary.rejection_limit_reached > 0 ? [`  the session parked at its rejection limit ${String(summary.rejection_limit_reached)} time${summary.rejection_limit_reached === 1 ? "" : "s"} (each after a rejected call counted above)`] : []),
-    `  tool results: ${String(summary.results.for_allowed_calls)} for calls JUNO allowed${summary.results.without_decision > 0 ? `, ${String(summary.results.without_decision)} without JUNO's decision (listed below)` : ""}${summary.results.awaiting > 0 ? `; ${String(summary.results.awaiting)} allowed call${summary.results.awaiting === 1 ? "" : "s"} with no result in the journal yet` : ""}`,
+    `  tool results: ${String(summary.results.for_allowed_calls)} for calls JUNO allowed${summary.results.for_passed_calls > 0 ? `, ${String(summary.results.for_passed_calls)} for calls passed to the gateway (which judged them in its own journal; a park or rejection there comes back as an error result)` : ""}${summary.results.without_decision > 0 ? `, ${String(summary.results.without_decision)} without JUNO's decision (listed below)` : ""}${summary.results.awaiting > 0 ? `; ${String(summary.results.awaiting)} allowed call${summary.results.awaiting === 1 ? "" : "s"} with no result in the journal yet` : ""}${summary.results.awaiting_passed > 0 ? `; ${String(summary.results.awaiting_passed)} call${summary.results.awaiting_passed === 1 ? "" : "s"} passed to the gateway with no result in the journal yet` : ""}`,
+    ...(summary.gateway_errors > 0 ? [`  JUNO's gateway could not complete ${String(summary.gateway_errors)} message${summary.gateway_errors === 1 ? "" : "s"} (each answered with an error, fail-closed; any decision made before the error is counted above)`] : []),
     ...tallyLines("grant uses (calls that proceeded under each grant)", summary.grant_uses),
     ...tallyLines("parks by reason", summary.parks_by_reason),
     ...tallyLines("parks by capability", summary.parks_by_capability),

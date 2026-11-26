@@ -84,6 +84,7 @@ const COUNTED_EXAMPLES: Readonly<Record<string, () => { entry: TrajectoryEntry; 
   "note:stopped": () => entry("note", { type: "stopped", reason: "anchor_unavailable" }),
   "note:gateway_call": () => entry("note", { type: "gateway_call", tool: "mcp__juno__x", tool_use_id: "t", reads: "internal" }),
   "note:authorized": () => entry("note", { type: "authorized", call_seq: 1, tool_use_id: "t", reads: "internal" }),
+  "note:gateway_error": () => entry("note", { type: "gateway_error", method: "tools/call", error: "x" }),
   "note:updated_input": () => entry("note", { type: "updated_input", call_seq: 1, tool_use_id: "t", command: "/usr/bin/cat 'x'", reads: "internal" }),
 };
 
@@ -122,7 +123,7 @@ describe("every entry JUNO writes is placed in the report (D-266, operator rulin
       const replay = replaySession([example]);
       const judged = replay.judged[0];
       expect(judged?.placement, key).toBe(key);
-      const something = judged !== undefined && (judged.call !== null || judged.end !== null || judged.result !== null || judged.grant_use !== null || replay.admission.kind !== "not_recorded" || replay.pending.size > 0);
+      const something = judged !== undefined && (judged.call !== null || judged.end !== null || judged.result !== null || judged.grant_use !== null || judged.gateway_error !== null || replay.admission.kind !== "not_recorded" || replay.pending.size > 0);
       expect(something, key).toBe("counted" in place);
     }
   });

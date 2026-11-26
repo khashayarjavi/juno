@@ -112,13 +112,14 @@ export const ENTRY_PLACEMENT: Readonly<Record<string, { readonly counted: string
   // Counted: what a tool call, its result, its admission or its end is.
   capability_call: { counted: "a tool call JUNO judged: allowed, parked (with its park entry) or rejected" },
   park: { counted: "a park: a call parked (counted once, with its judged call when it names one), or the rejection limit reached (after a rejected call; not a call of its own)" },
-  capability_result: { counted: "a tool result: for a call JUNO allowed, or without JUNO's decision" },
+  capability_result: { counted: "a tool result: for a call JUNO allowed, for a call the hook passed to JUNO's gateway (which judged it in its own journal), or without JUNO's decision" },
   "note:admission": { counted: "the session's admission, or a refused admission attempt" },
   "note:rejection": { counted: "a call rejected (once: with the judged call it names, or on its own when it names none)" },
   "note:result_missing": { counted: "a call denied because an earlier call's result had not arrived; the calls whose result JUNO recorded missing" },
   "note:state": { counted: "the session's end (state failed, with its reason; the call that found its time to live expired)" },
   "note:stopped": { counted: "the session's stop for good (its journal head not copied off the machine)" },
   "note:gateway_call": { counted: "a call passed to JUNO's gateway, which judges it in its own journal" },
+  "note:gateway_error": { counted: "a message JUNO's gateway could not complete, answered with an error (fail-closed)" },
   "note:authorized": { counted: "a call JUNO allowed now waits for its result (matched to the result when it arrives)" },
   "note:updated_input": { counted: "a shell call JUNO allowed, with the command it rebuilt, now waits for its result (matched to the result when it arrives)" },
   // Not counted: no tool call, result, admission or end.
@@ -127,7 +128,6 @@ export const ENTRY_PLACEMENT: Readonly<Record<string, { readonly counted: string
   "note:checkpoint": { not_counted: "a checkpoint of a reversible workspace, taken at admission" },
   "note:checkpoint_restore": { not_counted: "an undo the operator ran (juno checkpoint restore)" },
   "note:recovered_truncation": { not_counted: "a torn final write JUNO repaired at a start (D-207)" },
-  "note:gateway_error": { not_counted: "a gateway message JUNO could not handle" },
   "note:server_request_refused": { not_counted: "a request from the upstream server to the client, refused (D-186); not a call of the session" },
   "note:record": { not_counted: "the journal's own record naming a record" },
   "note:recovery_epoch": { not_counted: "the journal's own record of its recovery epoch" },
@@ -203,6 +203,8 @@ export type EntryJudgement = {
   readonly grant_use: string | null;
   /** For a park or rejection that names a judged call (`call_seq`): that call's entry and payload. */
   readonly judged_call: RecoveredEntry | null;
+  /** For a `gateway_error` note: the message JUNO's gateway could not complete (D-268). */
+  readonly gateway_error: { readonly method: string | null } | null;
 };
 
 export type CallCounts = {
@@ -220,10 +222,14 @@ export type CallCounts = {
   readonly passed_to_gateway: number;
   /** Times the session parked at its rejection limit: each after a rejected call counted above, not a call of its own (D-257). */
   readonly rejection_limit_reached: number;
+  /** Messages JUNO's gateway could not complete (`gateway_error`): each answered with an error, fail-closed (D-268). */
+  readonly gateway_errors: number;
 };
 
 export type SessionReplay = {
   readonly admission: AdmissionJudgement;
+  /** The admitting note's admission time in milliseconds, or null when it records none a start can read (`resume` refuses then). */
+  readonly admitted_at: number | null;
   /** The admitting note's mode (`hook`, `gateway`, `own_loop`), or the first refusal's; null when none names one. */
   readonly mode: string | null;
   /** One judgement per entry, in the record's order. */
@@ -273,7 +279,8 @@ export function replaySession(entries: readonly RecoveredEntry[]): SessionReplay
   const admission = admissionOf(entries);
   const mode = admission.kind === "not_recorded" ? null : typeof admission.payload["mode"] === "string" ? admission.payload["mode"] : null;
   const judged: EntryJudgement[] = [];
-  const counts = { allowed: 0, parked: 0, rejected: 0, denied_session_ended: 0, denied_result_missing: 0, passed_to_gateway: 0, rejection_limit_reached: 0 };
+  const counts = { allowed: 0, parked: 0, rejected: 0, denied_session_ended: 0, denied_result_missing: 0, passed_to_gateway: 0, rejection_limit_reached: 0, gateway_errors: 0 };
+  const admittedAt = admission.kind === "admitted" ? Date.parse(String(admission.payload["admitted_at"])) : Number.NaN;
   const proceeded = new Map<number, boolean>();
   const calls = new Map<number, RecoveredEntry>();
   const pending = new Map<string, PendingCall>();
@@ -366,9 +373,11 @@ export function replaySession(entries: readonly RecoveredEntry[]): SessionReplay
         result = { authorized: false, recorded_missing: late?.recorded_at ?? null };
       }
     }
+    const gatewayError = entry.kind === "note" && type === "gateway_error" ? { method: typeof field(payload, "method") === "string" ? (field(payload, "method") as string) : null } : null;
+    if (gatewayError !== null) counts.gateway_errors += 1;
     const callSeq = field(payload, "call_seq");
     const judgedCall = (call?.kind === "park" || entry.kind === "note") && typeof callSeq === "number" && entry.kind !== "capability_result" ? (calls.get(callSeq) ?? null) : null;
-    judged.push({ entry, payload, placement: Object.hasOwn(ENTRY_PLACEMENT, key) ? key : null, call, end: ended, result, grant_use: grant, judged_call: judgedCall });
+    judged.push({ entry, payload, placement: Object.hasOwn(ENTRY_PLACEMENT, key) ? key : null, call, end: ended, result, grant_use: grant, judged_call: judgedCall, gateway_error: gatewayError });
   }
-  return { admission, mode, judged, calls: counts, turns, rejections, stop, end, state, pending, missing, malformed, grant_use: grantUse };
+  return { admission, admitted_at: Number.isFinite(admittedAt) ? admittedAt : null, mode, judged, calls: counts, turns, rejections, stop, end, state, pending, missing, malformed, grant_use: grantUse };
 }

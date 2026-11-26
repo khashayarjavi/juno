@@ -973,8 +973,9 @@ export class SessionLayer {
     const record = this.#recovered.get(taskId);
     if (record === undefined || record.admission === null) return null;
     if (this.#sessions.has(taskId)) throw new SessionLayerError(`session ${taskId} is already open`);
-    const admittedAt = Date.parse(String(record.admission["admitted_at"]));
-    if (!Number.isFinite(admittedAt)) throw new SessionLayerError(`the admission of ${taskId} records no admission time, so its limits cannot be rebuilt (D-201)`);
+    // D-268: the admission time by THE replay, which `juno journal report` reads too.
+    const admittedAt = record.replay.admitted_at;
+    if (admittedAt === null) throw new SessionLayerError(`the admission of ${taskId} records no admission time, so its limits cannot be rebuilt (D-201)`);
     // D-256, D-266: the calls counted against the budget, the consecutive rejections and the stop, by THE replay,
     // which `juno journal report` reads too.
     const { turns, stop: stopped } = record.replay;
