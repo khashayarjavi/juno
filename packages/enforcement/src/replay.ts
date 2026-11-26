@@ -81,8 +81,8 @@ export type AdmissionJudgement = { readonly kind: "admitted"; readonly payload: 
  * What a session record's admission notes say (D-263): `admitted` when any admission note says `outcome: "admitted"`
  * (an id is admitted at most once, D-201), with the refused attempts journalled before it; `refused` when every
  * admission note is a refusal; `not_recorded` when there is none. The hook service journals a refusal only for an id
- * not yet admitted; the gateway journals one into an admitted record when the same id is offered again with a changed
- * session file in the process that admitted it (`refused_before` counts only the refusals before the admission).
+ * not yet admitted; the gateway journals one into an admitted record when an admission under the same id is asked
+ * again of the gateway process that already holds it ("this gateway already holds a session") (`refused_before` counts only the refusals before the admission).
  */
 export function admissionOf(entries: readonly RecoveredEntry[]): AdmissionJudgement {
   const notes = entries.filter((item) => item.entry.kind === "note" && field(item.payload, "type") === "admission");
