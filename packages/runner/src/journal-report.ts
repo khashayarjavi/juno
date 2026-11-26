@@ -1,6 +1,6 @@
 import type { KeyObject } from "node:crypto";
 import type { TrajectoryEntry } from "../../contracts/src/index.js";
-import { JOURNAL_RECORD_PREFIX, admissionOf, journalledCall, ownRecordEntry } from "../../enforcement/src/index.js";
+import { JOURNAL_RECORD_PREFIX, admissionOf, journalledCall, ownRecordEntry, sessionEnd } from "../../enforcement/src/index.js";
 import { checkAnchors, listRecords, readPayload, shownName, taskDigest } from "../../journal/src/index.js";
 
 /**
@@ -285,14 +285,16 @@ export function journalReport(journal: string, anchorsOf: (digest: string) => un
     // D-263: by the one rule a service's start uses; mode and principal from the admitting note when there is one.
     const judgedAdmission = admissionOf(read.read);
     const admission = judgedAdmission.kind === "not_recorded" ? undefined : judgedAdmission.payload;
-    const end = read.read.map(({ entry, payload }) => ({ entry, judged: journalledCall(entry, payload) })).find(({ judged }) => judged?.kind === "session_ended");
+    // D-264: the session's end by the one rule a service's start uses (`sessionEnd`): its first `stopped` or
+    // `state: failed` note, whether a call or the background anchoring wrote it, at the time it was journalled.
+    const end = read.read.map(({ entry, payload }) => ({ entry, judged: sessionEnd(entry, payload) })).find(({ judged }) => judged !== null);
     sessions.push({
       id,
       admission: judgedAdmission.kind === "admitted" ? "admitted" : judgedAdmission.kind === "refused" ? "refused" : "not recorded",
       refused_attempts: judgedAdmission.kind === "admitted" ? judgedAdmission.refused_before : judgedAdmission.kind === "refused" ? judgedAdmission.attempts : 0,
       mode: text(admission?.["mode"]),
       principal: text(field(admission?.["request"], "principal")),
-      ended: end?.judged?.kind === "session_ended" ? { reason: end.judged.reason, at: end.entry.timestamp } : null,
+      ended: end?.judged == null ? null : { reason: end.judged.reason, at: end.entry.timestamp },
       first_entry: entries[0]?.timestamp ?? null,
       last_entry: entries[entries.length - 1]?.timestamp ?? null,
       ...summarise(read.read),
@@ -344,7 +346,7 @@ export function reportText(report: Report): string {
     "",
   ];
   for (const session of report.sessions) {
-    lines.push(`Session ${quoted(session.id)} (${session.mode === null ? "mode not recorded" : `mode ${quoted(session.mode)}`}${session.principal === null ? "" : `, principal ${quoted(session.principal)}`}), ${session.first_entry ?? "?"} to ${session.last_entry ?? "?"}:`, ...summaryLines(session), ...(session.admission === "refused" ? [`  ADMISSION REFUSED: JUNO denied every call of this session. ${UNJOURNALLED}`] : []), ...(session.admission === "admitted" && session.refused_attempts > 0 ? [`  admitted after ${String(session.refused_attempts)} refused admission attempt${session.refused_attempts === 1 ? "" : "s"}: JUNO denied every call made before the admission. ${UNJOURNALLED}`] : []), ...(session.admission === "not recorded" ? ["  no admission recorded: JUNO admitted nothing under this id."] : []), ...(session.ended === null ? [] : [`  ended at ${session.ended.at}: ${quoted(session.ended.reason)}. ${session.ended.reason === "ttl_expired" ? "JUNO denied every later call of this session." : "JUNO denied the call that found this, if a call found it, and every later call of this session."} ${UNJOURNALLED}`]), "");
+    lines.push(`Session ${quoted(session.id)} (${session.mode === null ? "mode not recorded" : `mode ${quoted(session.mode)}`}${session.principal === null ? "" : `, principal ${quoted(session.principal)}`}), ${session.first_entry ?? "?"} to ${session.last_entry ?? "?"}:`, ...summaryLines(session), ...(session.admission === "refused" ? [`  ADMISSION REFUSED: JUNO denied every call of this session. ${UNJOURNALLED}`] : []), ...(session.admission === "admitted" && session.refused_attempts > 0 ? [`  admitted after ${String(session.refused_attempts)} refused admission attempt${session.refused_attempts === 1 ? "" : "s"}: JUNO denied every call made before the admission. ${UNJOURNALLED}`] : []), ...(session.admission === "not recorded" ? [`  no admission recorded: JUNO admitted nothing under this id, and denied every call under it. ${UNJOURNALLED}`] : []), ...(session.ended === null ? [] : [`  ended at ${session.ended.at}: ${quoted(session.ended.reason)}. ${session.ended.reason === "ttl_expired" ? "JUNO denied every later call of this session." : "JUNO denied the call that found this, if a call found it, and every later call of this session."} ${UNJOURNALLED}`]), "");
   }
   const endedCount = report.sessions.filter((session) => session.ended !== null).length;
   const refusedCount = report.sessions.filter((session) => session.admission !== "admitted").length;

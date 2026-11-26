@@ -467,6 +467,39 @@ describe("juno journal report (D-251 queue item 2, D-254)", () => {
     expect(text.out).toMatch(/^Total, 1 session:$/m);
   }, 120_000);
 
+  // proves D-264 (review round 7 of PR #70): a session the background anchoring stopped for good while it was idle, with
+  // no later call, is reported as ended (reason and the stop's own time), by the one rule a service's start uses
+  // (`sessionEnd`); a restarted service judges it stopped too and denies its next call
+  it("reports a session stopped in the background, with no later call, as ended", async () => {
+    const id = SESSIONS[0] ?? "";
+    let stoppedAt = "";
+    await serving(async (layer) => {
+      writeFileSync(join(dir, "state", `session-${id}.json`), JSON.stringify(sessionFile(id)), { mode: 0o600 });
+      expect(await runHookAdmitCli(["--control", join(sockets, "admit.sock"), join(dir, "state", `session-${id}.json`)], quiet)).toBe(0);
+      expect(await call(id, "Read", { file_path: join(work, "project", "notes.txt") })).toBe("ran");
+      // The destination is unreachable for one round of the interval's anchoring (§3.4.1, D-198): the session stops for
+      // good, journalled as it happens; the destination is back before the service stops, so everything is anchored.
+      sink.unreachable = "destination unreachable";
+      await layer.anchorPending();
+      sink.unreachable = null;
+      stoppedAt = new Date().toISOString();
+    });
+    const copy = await adminCopy();
+    const json = await report(copy, ["--json"]);
+    expect(json.code, json.out).toBe(0);
+    const session = (JSON.parse(json.out) as { sessions: Record<string, unknown>[] }).sessions[0];
+    expect(session).toMatchObject({ id: `session-${id}`, admission: "admitted", allowed: 1, parked: 0, rejected: 0, denied_session_ended: 0, ended: { reason: "anchor_unavailable" } });
+    // The stop's own time: journalled before the destination came back, not at a later call or the service's stop.
+    expect(((session?.["ended"] ?? {}) as { at: string }).at <= stoppedAt).toBe(true);
+    const text = await report(copy);
+    expect(text.out).toMatch(/ended at \S+: "anchor_unavailable"\. JUNO denied the call that found this, if a call found it, and every later call of this session\./);
+    expect(text.out).toContain("Total, 1 session (1 ended: the calls JUNO denied there without journalling them are not counted):");
+    // The same rule at a service's start: the session stays stopped, and its next call is denied.
+    await serving(async () => {
+      expect(await call(id, "Read", { file_path: join(work, "project", "notes.txt") })).toBe("denied");
+    });
+  }, 120_000);
+
   // proves D-263 (review round 6's note): a session stopped because its journal head could not be anchored may have been
   // found by a call, which JUNO denies with no entry of its own; the report never says only "every later call" of it
   it("says of a session whose head could not be anchored that the call that found it is not counted either", () => {

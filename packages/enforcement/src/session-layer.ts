@@ -85,14 +85,6 @@ const CLOSED_STATES: ReadonlySet<string> = new Set(["verified", "failed", "abort
 const OWN_RECORD_PREFIX = "juno.";
 
 /**
- * The id of a journal's own record (D-202): one note per record the journal ever held, written before that record's
- * first entry, chained and anchored like every record. It is named after the journal's folder, so two journals that
- * anchor to one repository never share it. The name is the folder's path exactly as the service was given it, which is
- * exactly what the anchor pin names; the path is never looked up a second time to name the record (review round 7
- * finding F3; D-213), and the journal itself is opened once, from a directory handle (`openJournalFolder`). At start, a record the journal holds that it does not name was not written
- * by JUNO, and anchors of a record it names that the journal no longer holds show a deleted record.
- */
-/**
  * What one journal entry is as a tool call (D-256 to D-258), or null when it is none. Each tool call for which JUNO
  * journalled a decision has exactly one entry of kind `call` (a judged call, with its verdict's outcome; a judged park
  * is that call's, counted as the park), `park` (a park no judged call records: the hook's own, or the budget's),
@@ -123,6 +115,25 @@ export function journalledCall(entry: TrajectoryEntry, payload: unknown): { read
   const reason = field(payload, "reason");
   // The hook's and the gateway's end of a session: only `ttl_expired` is always written while a call is handled.
   if (type === "state" && field(payload, "to") === "failed" && typeof reason === "string") return { kind: "session_ended", reason, call: reason === "ttl_expired" };
+  return null;
+}
+
+/**
+ * What one journal entry says of a session's end (D-264), or null when it says nothing of it: a `stopped` note (the
+ * session layer's stop for good, journalled when it happens, in a call or in the background: the interval's anchoring,
+ * or a stop that could not anchor) or a mode's `state: failed` note, each with its reason. `stop` is true for a stop for
+ * good, which a restarted service restores (`anchor_unavailable`); a `ttl_expired` end needs no restoring, as the
+ * session's time to live is judged again from its admission. The one rule for a service's start (`#stoppedIn`, the
+ * first entry with `stop`) and for `juno journal report` (the first entry that is an end), so the two can never judge
+ * a session's end differently.
+ */
+export function sessionEnd(entry: TrajectoryEntry, payload: unknown): { readonly reason: string; readonly stop: boolean } | null {
+  if (entry.kind !== "note") return null;
+  const type = field(payload, "type");
+  const reason = field(payload, "reason");
+  if (typeof reason !== "string") return null;
+  if (type === "stopped") return { reason, stop: true };
+  if (type === "state" && field(payload, "to") === "failed") return { reason, stop: reason === "anchor_unavailable" };
   return null;
 }
 
@@ -166,6 +177,14 @@ export function ownRecordEntry(entry: TrajectoryEntry, payload: unknown): { read
   return null;
 }
 
+/**
+ * The id of a journal's own record (D-202): one note per record the journal ever held, written before that record's
+ * first entry, chained and anchored like every record. It is named after the journal's folder, so two journals that
+ * anchor to one repository never share it. The name is the folder's path exactly as the service was given it, which is
+ * exactly what the anchor pin names; the path is never looked up a second time to name the record (review round 7
+ * finding F3; D-213), and the journal itself is opened once, from a directory handle (`openJournalFolder`). At start, a record the journal holds that it does not name was not written
+ * by JUNO, and anchors of a record it names that the journal no longer holds show a deleted record.
+ */
 export function journalRecordId(journalRoot: string): string {
   return `${OWN_RECORD_PREFIX}journal.${createHash("sha256").update(journalRoot, "utf8").digest("hex").slice(0, 32)}`;
 }
@@ -995,12 +1014,10 @@ export class SessionLayer {
 
   /** The stop for good a record journals (`stopped`, or a mode's `state: failed` for `anchor_unavailable`), or null. */
   #stoppedIn(taskId: string): string | null {
+    // D-264: by the one rule the report uses too (`sessionEnd`).
     for (const { entry, payload } of this.#recovered.get(taskId)?.entries ?? []) {
-      if (entry.kind !== "note") continue;
-      const type = field(payload, "type");
-      const reason = field(payload, "reason");
-      if (type === "stopped" && typeof reason === "string") return reason;
-      if (type === "state" && field(payload, "to") === "failed" && reason === "anchor_unavailable") return "anchor_unavailable";
+      const end = sessionEnd(entry, payload);
+      if (end?.stop === true) return end.reason;
     }
     return null;
   }

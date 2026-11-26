@@ -3,7 +3,8 @@
 ## Current increment
 **Queue item 2, 1.5-report: draft PR [khashayarjavi/juno#70](https://github.com/khashayarjavi/juno/pull/70)** (supersedes draft PR #68, carrying its commits unchanged; this session may push only to `claude/ecstatic-fermat-7rzlnf`, D-262). **Your rulings of 2026-11-26 (D-262):** review rounds 6 to 8 authorised; `resume.test.ts`'s restart test gets an explicit limit (done: 30 seconds, no assertion changed); on MERGE, the gate, then STOP with the merge hash and your upgrade steps; if round 8 ends DO NOT MERGE, the PR stays a draft and the session STOPs.
 - **Review round 6** (fb6f586; `make verify: GREEN` on 18d13f3, 1,565 unit and 156 container tests): DO NOT MERGE. A session refused once and then admitted under the same id was reported as `ADMISSION REFUSED` while its allowed calls were counted. Fixed with one admission rule the service's start and the report share, and a test through the real hook service (D-263).
-- **Now:** review round 7 on the fix. Spec v0.6.1. No objection open.
+- **Review round 7** (574923f; `make verify: GREEN` there, 1,567 unit and 156 container tests; CI green): DO NOT MERGE. A session JUNO stopped for good in the background (its journal could not be copied off the machine) and that made no later call was reported as never ended. Fixed with one end rule the service's start and the report share, and a test through the real hook service (D-264).
+- **Now:** review round 8, the last authorised (D-262). Spec v0.6.1. No objection open.
 
 ### The queue (D-251)
 1. **1.5-ops: merged** as 9fc412b (below).
