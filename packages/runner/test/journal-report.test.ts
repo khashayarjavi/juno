@@ -548,7 +548,7 @@ describe("juno journal report (D-251 queue item 2, D-254)", () => {
   // found by a call, which JUNO denies with no entry of its own; the report never says only "every later call" of it
   it("says of a session whose head could not be anchored that the call that found it is not counted either", () => {
     const empty = { allowed: 0, parked: 0, rejected: 0, denied_session_ended: 0, denied_result_missing: 0, passed_to_gateway: 0, rejection_limit_reached: 0, parks_by_reason: [], parks_by_capability: [], parks_by_program: [], blocked_targets: [], results: { for_allowed_calls: 0, without_decision: 0, awaiting: 0 }, grant_uses: [], not_counted: [] };
-    const session: SessionReport = { ...empty, id: "session-x", admission: "admitted", refused_attempts: 0, mode: "hook", principal: PRINCIPAL, ended: { reason: "anchor_unavailable", at: "2026-11-26T00:00:00.000Z" }, first_entry: null, last_entry: null, results_without_decision: [], recorded_missing: [] };
+    const session: SessionReport = { ...empty, id: "session-x", admission: "admitted", refused_attempts: 0, mode: "hook", principal: PRINCIPAL, ended: { reason: "anchor_unavailable", at: "2026-11-26T00:00:00.000Z" }, first_entry: null, last_entry: null, results_without_decision: [], recorded_missing: [], not_rebuilt: null };
     const text = reportText({ ok: true, verified: { records: 2, history: "checked", never_written: [], empty_folders: [], not_summarised: [] }, sessions: [session], total: empty });
     expect(text).toContain('ended at 2026-11-26T00:00:00.000Z: "anchor_unavailable". JUNO denied the call that found this, if a call found it, and every later call of this session.');
   });
@@ -596,8 +596,8 @@ describe("juno journal report (D-251 queue item 2, D-254)", () => {
     expect(session).toMatchObject({ admission: "admitted", allowed: 4, parked: 0, rejected: 0, denied_result_missing: 2, results: { for_allowed_calls: 2, without_decision: 2, awaiting: 0 } });
     const late = session.recorded_missing[0];
     expect(session.recorded_missing).toEqual([
-      { tool_use_id: "toolu_late", call_seq: expect.any(Number), recorded_at: expect.any(Number), result_seq: without[0] },
-      { tool_use_id: "toolu_waiting", call_seq: expect.any(Number), recorded_at: expect.any(Number), result_seq: null },
+      { tool_use_id: "toolu_late", label: null, call_seq: expect.any(Number), recorded_at: expect.any(Number), result_seq: without[0] },
+      { tool_use_id: "toolu_waiting", label: null, call_seq: expect.any(Number), recorded_at: expect.any(Number), result_seq: null },
     ]);
     expect(session["results_without_decision"]).toEqual([
       { seq: without[0], tool: "Read", tool_use_id: "toolu_late", outcome: "succeeded", recorded_missing_at: late?.recorded_at },
@@ -608,10 +608,68 @@ describe("juno journal report (D-251 queue item 2, D-254)", () => {
     expect(text.out).toContain("tool calls: 4 allowed, 0 parked, 0 rejected, 2 denied because an earlier call's result had not arrived when they came");
     expect(text.out).toContain("  tool results: 2 for calls JUNO allowed, 2 without JUNO's decision (listed below)");
     expect(text.out).toContain(`  result without JUNO's decision (entry ${String(without[0])}): tool "Read", tool_use_id "toolu_late", "succeeded": JUNO had recorded this call's result missing (entry ${String(late?.recorded_at)}) and denied the next call; the result came after, and JUNO journals it as without its decision.`);
-    expect(text.out).toContain(`  result without JUNO's decision (entry ${String(without[1])}): tool "Read", tool_use_id "toolu_unasked", "succeeded": no call JUNO allowed was waiting for it, so the harness ran it without JUNO's decision.`);
+    expect(text.out).toContain(`  result without JUNO's decision (entry ${String(without[1])}): tool "Read", tool_use_id "toolu_unasked", "succeeded": no call JUNO allowed was waiting under its tool_use_id, so JUNO journals it as run without its decision.`);
     expect(text.out).toContain(`  result recorded missing (entry ${String(late?.recorded_at)}): tool_use_id "toolu_late": its result came later (entry ${String(without[0])}), journalled without JUNO's decision.`);
-    expect(text.out).toContain('tool_use_id "toolu_waiting": the journal holds no result for it.');
+    expect(text.out).toContain('tool_use_id "toolu_waiting": no result in the journal names its tool_use_id.');
+    expect(text.out).not.toContain("holds no result");
     expect(text.out).toContain('  grant uses (calls that proceeded under each grant):\n        4  "grant-cc"');
+  }, 120_000);
+
+  // proves D-266 (review round 9 of PR #71): a call Claude Code gives no tool_use_id waits under JUNO's own label; when
+  // JUNO records its result missing, the report names it by that label (never as a tool_use_id) and says no result can be
+  // matched to it, never that the journal holds none; the result that came with no id is listed as without JUNO's
+  // decision, exactly as the service journalled it; a restarted service, rebuilt by the same replay, then runs the next call
+  it("names a call with no tool_use_id by JUNO's label, and never says the journal holds no result for it", async () => {
+    const id = SESSIONS[0] ?? "";
+    const read = { file_path: join(work, "project", "notes.txt") };
+    const ask = { session_id: id, hook_event_name: "PreToolUse", tool_name: "Read", tool_input: read, cwd: join(work, "project") };
+    await serving(async () => {
+      writeFileSync(join(dir, "state", `session-${id}.json`), JSON.stringify(sessionFile(id)), { mode: 0o600 });
+      expect(await runHookAdmitCli(["--control", join(sockets, "admit.sock"), join(dir, "state", `session-${id}.json`)], quiet)).toBe(0);
+      // Allowed, with no tool_use_id; then the next call (no id either) is denied for its missing result; then its result.
+      expect((await runHookClient(JSON.stringify(ask), join(sockets, "hook.sock"))).stdout).toBe("");
+      expect((await runHookClient(JSON.stringify(ask), join(sockets, "hook.sock"))).stdout).toContain("deny");
+      await runHookClient(JSON.stringify({ ...ask, hook_event_name: "PostToolUse", tool_response: { content: "late" } }), join(sockets, "hook.sock"));
+    });
+    await serving(async () => {
+      expect(await call(id, "Read", read)).toBe("ran");
+    });
+    const copy = await adminCopy();
+    const without = resultsAgree(copy.journal, `session-${id}`);
+    expect(without).toHaveLength(1);
+    const json = await report(copy, ["--json"]);
+    expect(json.code, json.out).toBe(0);
+    const session = (JSON.parse(json.out) as { sessions: Record<string, unknown>[] }).sessions[0] as Record<string, unknown> & { recorded_missing: { label: string | null; recorded_at: number }[] };
+    expect(session).toMatchObject({ allowed: 2, denied_result_missing: 1, results: { for_allowed_calls: 1, without_decision: 1, awaiting: 0 }, not_rebuilt: null });
+    expect(session.recorded_missing).toEqual([{ tool_use_id: null, label: expect.stringMatching(/^call-\d+$/), call_seq: expect.any(Number), recorded_at: expect.any(Number), result_seq: null }]);
+    expect(session["results_without_decision"]).toEqual([{ seq: without[0], tool: "Read", tool_use_id: null, outcome: "succeeded", recorded_missing_at: null }]);
+    const label = session.recorded_missing[0]?.label ?? "";
+    const text = await report(copy);
+    expect(text.out).not.toContain("holds no result");
+    expect(text.out).not.toContain(`tool_use_id "${label}"`);
+    expect(text.out).toContain(`  result recorded missing (entry ${String(session.recorded_missing[0]?.recorded_at)}): a call Claude Code gave no tool_use_id (JUNO's label "${label}"): no result can be matched to it, so the journal cannot show whether its result came; a result with no tool_use_id is listed as without JUNO's decision.`);
+    expect(text.out).toContain(`  result without JUNO's decision (entry ${String(without[0])}): tool "Read", tool_use_id none recorded, "succeeded": it carries no tool_use_id, so JUNO could match it to no call it allowed, and journals it as without its decision.`);
+  }, 120_000);
+
+  // proves D-266 (review round 9's note): a session whose journal holds a waiting call the replay cannot read is one a
+  // restarted hook service does not rebuild; the report says so, by the same replay, and the restarted service denies it
+  it("says when a start would not rebuild a session, as the hook service judges it", async () => {
+    const id = SESSIONS[0] ?? "";
+    await serving(async (layer) => {
+      writeFileSync(join(dir, "state", `session-${id}.json`), JSON.stringify(sessionFile(id)), { mode: 0o600 });
+      expect(await runHookAdmitCli(["--control", join(sockets, "admit.sock"), join(dir, "state", `session-${id}.json`)], quiet)).toBe(0);
+      expect(await call(id, "Read", { file_path: join(work, "project", "notes.txt") })).toBe("ran");
+      layer.append(`session-${id}`, "note", { sensitivity: "internal", integrity: "derived" }, { type: "authorized", call_seq: 99, tool_use_id: "toolu_x", reads: "not a class" }, { actor: "juno.test" });
+    });
+    await serving(async () => {
+      expect(await call(id, "Read", { file_path: join(work, "project", "notes.txt") })).toBe("denied");
+    });
+    const copy = await adminCopy();
+    const json = await report(copy, ["--json"]);
+    expect(json.code, json.out).toBe(0);
+    expect((JSON.parse(json.out) as { sessions: Record<string, unknown>[] }).sessions[0]).toMatchObject({ not_rebuilt: expect.stringMatching(/records a call waiting for its result that cannot be read$/) });
+    const text = await report(copy);
+    expect(text.out).toMatch(/ {2}NOT REBUILT AT A START: "entry \d+ records a call waiting for its result that cannot be read"\. A restarted service does not reopen this session and denies every later call of it without a journal entry, so those are not counted here\./);
   }, 120_000);
 
   // proves D-266 (operator ruling 2, fail-closed): an entry of a kind the report does not place makes it refuse,

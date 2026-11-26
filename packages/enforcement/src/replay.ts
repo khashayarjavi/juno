@@ -166,7 +166,13 @@ export function placementKey(entry: TrajectoryEntry, payload: unknown): string {
 }
 
 /** A call JUNO allowed that waits for its result, as the hook service holds it (plan item 8; D-201). */
-export type PendingCall = { readonly call_seq: number | null; readonly reads: Sensitivity; readonly gateway: boolean };
+export type PendingCall = {
+  readonly call_seq: number | null;
+  readonly reads: Sensitivity;
+  readonly gateway: boolean;
+  /** The call's own `tool_use_id`, or null when Claude Code gave it none: then the key it waits under is JUNO's label (`call-<seq>`, `gateway-<seq>`). */
+  readonly tool_use_id: string | null;
+};
 
 /** What the replay judges a tool result to be. */
 export type ResultJudgement =
@@ -178,8 +184,13 @@ export type ResultJudgement =
    */
   | { readonly authorized: false; readonly recorded_missing: number | null };
 
-/** One call a `result_missing` note recorded, and the result the journal holds for it later, if any. */
-export type MissingCall = { readonly tool_use_id: string | null; readonly call_seq: number | null; readonly recorded_at: number; readonly result_seq: number | null };
+/**
+ * One call a `result_missing` note recorded (D-266, review round 9). `tool_use_id` is the call's own id, as the call
+ * waiting for its result held it; null when it had none, and then `label` is the key JUNO recorded it under (its own
+ * label, never Claude Code's id). Only a call with an id can be matched to a result that came later (`result_seq`): a
+ * result with no id names no call, exactly as the hook service matches it.
+ */
+export type MissingCall = { readonly tool_use_id: string | null; readonly label: string | null; readonly call_seq: number | null; readonly recorded_at: number; readonly result_seq: number | null };
 
 export type EntryJudgement = {
   readonly entry: TrajectoryEntry;
@@ -266,7 +277,7 @@ export function replaySession(entries: readonly RecoveredEntry[]): SessionReplay
   const proceeded = new Map<number, boolean>();
   const calls = new Map<number, RecoveredEntry>();
   const pending = new Map<string, PendingCall>();
-  const missing: { tool_use_id: string | null; call_seq: number | null; recorded_at: number; result_seq: number | null }[] = [];
+  const missing: { tool_use_id: string | null; label: string | null; call_seq: number | null; recorded_at: number; result_seq: number | null }[] = [];
   const malformed: string[] = [];
   const grantUse = new Map<string, number>();
   let turns = 0;
@@ -326,11 +337,16 @@ export function replaySession(entries: readonly RecoveredEntry[]): SessionReplay
       const toolUseId = idOrNull(field(payload, "tool_use_id"));
       const reads = Sensitivity.safeParse(field(payload, "reads"));
       if (callSeq === undefined || toolUseId === undefined || !reads.success) malformed.push(`entry ${String(entry.seq)} records a call waiting for its result that cannot be read`);
-      else pending.set(toolUseId ?? (type === "gateway_call" ? `gateway-${String(entry.seq)}` : `call-${String(callSeq)}`), type === "gateway_call" ? { call_seq: null, reads: reads.data, gateway: true } : { call_seq: callSeq, reads: reads.data, gateway: false });
+      else pending.set(toolUseId ?? (type === "gateway_call" ? `gateway-${String(entry.seq)}` : `call-${String(callSeq)}`), type === "gateway_call" ? { call_seq: null, reads: reads.data, gateway: true, tool_use_id: toolUseId } : { call_seq: callSeq, reads: reads.data, gateway: false, tool_use_id: toolUseId });
     } else if (entry.kind === "note" && type === "result_missing") {
       const listed = field(payload, "calls");
       for (const listedCall of Array.isArray(listed) ? listed : []) {
-        missing.push({ tool_use_id: idOrNull(field(listedCall, "tool_use_id")) ?? null, call_seq: seqOrNull(field(listedCall, "call_seq")) ?? null, recorded_at: entry.seq, result_seq: null });
+        // The hook service records each waiting call under the key it waited by; the call's own id is the one it held.
+        // A key no waiting call held is taken as JUNO's label, never as an id (restrictive: it can then match no result).
+        const key = idOrNull(field(listedCall, "tool_use_id")) ?? null;
+        const held = key === null ? undefined : pending.get(key);
+        const own = held?.tool_use_id ?? null;
+        missing.push({ tool_use_id: own, label: own === null ? key : null, call_seq: seqOrNull(field(listedCall, "call_seq")) ?? null, recorded_at: entry.seq, result_seq: null });
       }
       pending.clear();
     } else if (entry.kind === "capability_result") {

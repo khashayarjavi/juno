@@ -73,7 +73,14 @@ export type SessionReport = Summary & {
   /** Each result the replay judges was run without JUNO's decision, with the `result_missing` note that recorded it missing, if one did. */
   readonly results_without_decision: readonly ResultWithoutDecision[];
   /** Each call whose result JUNO recorded missing (`result_missing`), and the entry holding its result when it came later. */
-  readonly recorded_missing: readonly { readonly tool_use_id: string | null; readonly call_seq: number | null; readonly recorded_at: number; readonly result_seq: number | null }[];
+  readonly recorded_missing: readonly { readonly tool_use_id: string | null; readonly label: string | null; readonly call_seq: number | null; readonly recorded_at: number; readonly result_seq: number | null }[];
+  /**
+   * Why a restarted hook service would not rebuild this session from its journal, when the replay finds a call waiting
+   * for its result that it cannot read (the service then denies every call of it in memory, journalling none); null
+   * otherwise. Other reasons a start may not rebuild a session (a grant file gone, a checkpoint store missing) lie
+   * outside the journal and cannot be shown here.
+   */
+  readonly not_rebuilt: string | null;
 };
 
 export type Report =
@@ -292,6 +299,8 @@ export function journalReport(journal: string, anchorsOf: (digest: string) => un
       ...summarise(replay),
       results_without_decision: replay.judged.flatMap((judged) => (judged.result === null || judged.result.authorized ? [] : [{ seq: judged.entry.seq, tool: text(field(judged.payload, "tool")), tool_use_id: text(field(judged.payload, "tool_use_id")), outcome: text(field(judged.payload, "outcome")), recorded_missing_at: judged.result.recorded_missing }])),
       recorded_missing: replay.missing.map((item) => ({ ...item })),
+      // D-266 (review round 9's note): the hook service's start refuses to rebuild such a session (`#restore`).
+      not_rebuilt: replay.mode === "hook" ? (replay.malformed[0] ?? null) : null,
     });
   }
   sessions.sort((a, b) => (a.first_entry ?? "").localeCompare(b.first_entry ?? "") || a.id.localeCompare(b.id));
@@ -332,8 +341,10 @@ function summaryLines(summary: Summary): string[] {
 function resultLines(session: SessionReport): string[] {
   const shown = (value: string | null): string => (value === null ? "none recorded" : quoted(value));
   return [
-    ...session.results_without_decision.map((result) => `  result without JUNO's decision (entry ${String(result.seq)}): tool ${shown(result.tool)}, tool_use_id ${shown(result.tool_use_id)}, ${shown(result.outcome)}: ${result.recorded_missing_at === null ? "no call JUNO allowed was waiting for it, so the harness ran it without JUNO's decision." : `JUNO had recorded this call's result missing (entry ${String(result.recorded_missing_at)}) and denied the next call; the result came after, and JUNO journals it as without its decision.`}`),
-    ...session.recorded_missing.map((call) => `  result recorded missing (entry ${String(call.recorded_at)}): tool_use_id ${shown(call.tool_use_id)}: ${call.result_seq === null ? "the journal holds no result for it." : `its result came later (entry ${String(call.result_seq)}), journalled without JUNO's decision.`}`),
+    ...session.results_without_decision.map((result) => `  result without JUNO's decision (entry ${String(result.seq)}): tool ${shown(result.tool)}, tool_use_id ${shown(result.tool_use_id)}, ${shown(result.outcome)}: ${result.recorded_missing_at === null ? (result.tool_use_id === null ? "it carries no tool_use_id, so JUNO could match it to no call it allowed, and journals it as without its decision." : "no call JUNO allowed was waiting under its tool_use_id, so JUNO journals it as run without its decision.") : `JUNO had recorded this call's result missing (entry ${String(result.recorded_missing_at)}) and denied the next call; the result came after, and JUNO journals it as without its decision.`}`),
+    // D-266 (review round 9): a call with no tool_use_id is named by JUNO's own label, and no result can be matched to it.
+    ...session.recorded_missing.map((call) => `  result recorded missing (entry ${String(call.recorded_at)}): ${call.tool_use_id === null ? `a call Claude Code gave no tool_use_id (JUNO's label ${shown(call.label)}): no result can be matched to it, so the journal cannot show whether its result came; a result with no tool_use_id is listed as without JUNO's decision.` : `tool_use_id ${quoted(call.tool_use_id)}: ${call.result_seq === null ? "no result in the journal names its tool_use_id." : `its result came later (entry ${String(call.result_seq)}), journalled without JUNO's decision.`}`}`),
+    ...(session.not_rebuilt === null ? [] : [`  NOT REBUILT AT A START: ${quoted(session.not_rebuilt)}. A restarted service does not reopen this session and denies every later call of it without a journal entry, so those are not counted here.`]),
   ];
 }
 
